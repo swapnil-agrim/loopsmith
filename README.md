@@ -1,4 +1,4 @@
-# sdlc-kit
+# loopsmith
 
 **Portable Goal-Based SDLC for any repo.** Install once, and every prompt is held to a 7-phase
 development spine — Goal → Research → Plan → Plan-Review → Implement → Review → Retrospective — so the
@@ -18,7 +18,7 @@ and a non-skippable human gate — wrapped around the SDLC as the per-item engin
 
 ```
 /plugin marketplace add <git-url-or-local-path>
-/plugin install sdlc-kit
+/plugin install loopsmith
 ```
 
 Installs the durable spine globally — the SDLC hook then fires in **every** project. Then run
@@ -28,10 +28,10 @@ Installs the durable spine globally — the SDLC hook then fires in **every** pr
 ## Install (fallback — no plugin system)
 
 ```
-git clone <git-url> && cd sdlc-kit && ./install.sh
+git clone <git-url> && cd loopsmith && ./install.sh
 ```
 
-`install.sh` copies the spine into `~/.claude/skills/sdlc-kit/` and **prints** the `settings.json`
+`install.sh` copies the spine into `~/.claude/skills/loopsmith/` and **prints** the `settings.json`
 hook snippet for you to paste (it never edits your settings — malformed JSON silently disables
 hooks). Parse-check `settings.json` after pasting.
 

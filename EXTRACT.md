@@ -1,6 +1,6 @@
-# Extracting sdlc-kit into its own repository
+# Extracting loopsmith into its own repository
 
-`sdlc-kit/` is fully self-contained — it imports nothing outside itself and carries zero
+`loopsmith/` is fully self-contained — it imports nothing outside itself and carries zero
 host-project specifics (enforced by `tests/test_self_contained.py`). That's what makes publishing
 it a plain copy, with no surgery.
 
@@ -8,12 +8,12 @@ it a plain copy, with no surgery.
 
 1. Copy the directory out, into a fresh location:
    ```bash
-   cp -R sdlc-kit /path/to/sdlc-kit-repo
-   cd /path/to/sdlc-kit-repo
+   cp -R loopsmith /path/to/loopsmith-repo
+   cd /path/to/loopsmith-repo
    ```
 2. Initialise and commit:
    ```bash
-   git init && git add -A && git commit -m "initial import of sdlc-kit"
+   git init && git add -A && git commit -m "initial import of loopsmith"
    ```
 3. Confirm it stands alone — the tests must pass with no changes, from outside any parent repo:
    ```bash
@@ -28,7 +28,7 @@ it a plain copy, with no surgery.
 5. Users then install it with:
    ```
    /plugin marketplace add <git-url>
-   /plugin install sdlc-kit
+   /plugin install loopsmith
    ```
 
 The kit's `pytest tests/ -v` suite must stay green in the new repo with zero edits — that's the

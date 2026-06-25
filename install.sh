@@ -4,7 +4,7 @@
 # (never edits settings.json — malformed JSON silently kills the hook).
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
-DEST="${SDLC_KIT_SKILLS_DIR:-$HOME/.claude/skills}/sdlc-kit"
+DEST="${SDLC_KIT_SKILLS_DIR:-$HOME/.claude/skills}/loopsmith"
 
 mkdir -p "$DEST"
 cp -R "$SRC/hooks" "$DEST/"
@@ -14,7 +14,7 @@ cp -R "$SRC/hooks" "$DEST/"
 
 cat <<EOF
 
-✅ sdlc-kit copied to: $DEST
+✅ loopsmith copied to: $DEST
 
 To activate the SDLC hook, add this to ~/.claude/settings.json under "hooks"
 (parse-check the file afterward — malformed JSON silently disables hooks):
