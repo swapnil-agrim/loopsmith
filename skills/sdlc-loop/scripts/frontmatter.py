@@ -27,5 +27,6 @@ def set_field(text, key, value):
     block = m.group(1)
     line_re = re.compile(rf"^{re.escape(key)}:.*$", re.MULTILINE)
     new_line = f"{key}: {value}"
-    block2 = line_re.sub(new_line, block) if line_re.search(block) else block + f"\n{new_line}"
+    # function replacement: keeps `value` literal (a string repl would expand \1, \g<>, trailing \)
+    block2 = line_re.sub(lambda _: new_line, block) if line_re.search(block) else block + f"\n{new_line}"
     return text[:m.start(1)] + block2 + text[m.end(1):]
