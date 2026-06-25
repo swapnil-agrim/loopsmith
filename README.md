@@ -9,11 +9,12 @@ The discipline borrows from [](https://github.com//)'s loop
 engineering — a checkable goal, durable-vs-changing state, a separate verifier, a mandatory budget,
 and a non-skippable human gate — wrapped around the SDLC as the per-item engine.
 
-> **Status (v0.4):** all commands shipped — the always-on **SDLC hook**, install paths,
+> **Status (v0.5):** all commands shipped — the always-on **SDLC hook**, install paths,
 > **`/sdlc-init`** (scaffold), **`/sdlc-goal`** (interactive mode), **`/sdlc-loop` +
 > `/sdlc-status`** (autonomous loop driver), and a generic **`sdlc-plan-review`** (the Phase-4 gate
 > `superpowers` doesn't provide). LoopSmith now **auto-installs** its companion plugins (see
-> [Dependencies](#dependencies-auto-installed-companions)).
+> [Dependencies](#dependencies-auto-installed-companions)), and in **github-mode** it drives a
+> **GitHub Projects v2 board** — mirroring each goal's status onto a kanban (new in v0.5).
 
 ---
 
@@ -196,26 +197,40 @@ Treat **GitHub Issues as the backlog** so planning and triage live where your te
 ```json
 "discovery": {
   "source": "github",
-  "github": { "repo": "", "goal_label": "sdlc:goal" }
+  "github": {
+    "repo": "",
+    "goal_label": "sdlc:goal",
+    "project": { "enabled": true, "status_field": "SDLC Status" }
+  }
 }
 ```
 
 File each goal as an **issue labelled `sdlc:goal`** (the issue body is the goal). The loop maps SDLC
-status onto GitHub so the board mirrors reality:
+status onto GitHub — both the **issue** and (when the board is enabled) its **Projects card** — so the
+backlog mirrors reality:
 
-| SDLC status | What the loop does on GitHub |
-|---|---|
-| picked up | adds the `sdlc:in-progress` label |
-| done | **closes** the issue with a completion comment |
-| parked (needs you) | comments the reason, adds `sdlc:parked`, and removes `sdlc:goal` so it leaves the queue |
+| SDLC status | On the issue | On the Projects board |
+|---|---|---|
+| pending (in backlog) | open issue labelled `sdlc:goal` | card set to **Todo** |
+| picked up | adds the `sdlc:in-progress` label | card set to **In Progress** |
+| done | **closes** the issue with a completion comment | card set to **Done** |
+| parked (needs you) | comments the reason, adds `sdlc:parked`, and removes `sdlc:goal` so it leaves the queue | card set to **Parked** |
 
 So your **review queue = open issues labelled `sdlc:parked`**, and **done = closed issues**;
 **re-queue** a parked issue by re-adding the `sdlc:goal` label. The three labels are auto-created on
 first run. **Setup:** run `gh auth login` once; leave `repo` empty to auto-detect from the git remote,
 or set it to `owner/name`.
 
-> Issues + labels are the v1 surface. GitHub **Projects** boards and a `gh`-aware `/sdlc-status` are on
-> the roadmap — for now, github-mode status is one `gh issue list --label sdlc:goal` away.
+#### Projects v2 board (new in v0.5)
+
+With `discovery.github.project.enabled` (on by default for new repos), the loop also drives a **GitHub
+Projects v2 board**: on first run it finds-or-creates a board titled `<repo> — SDLC`, adds every
+`sdlc:goal` issue as a card, and keeps one single-select **SDLC Status** field in sync (Todo → In
+Progress → Done, or Parked) as goals move — the table above. It needs the `gh` token's **`project`**
+scope and is **fail-open**: no scope, or any API error, and the loop simply continues on issues +
+labels (nothing breaks). Tune it under `discovery.github.project` — `owner`/`title` (default
+`<repo> — SDLC`), `number` (reuse an existing board), `status_field` (the field's name). A `gh`-aware
+`/sdlc-status` for github mode is still on the roadmap.
 
 **Which to pick?** **Local** for a self-contained, zero-dependency repo where the backlog ships with
 the code. **GitHub** to keep goals visible to your team, triaged in Issues/Projects, and tied to the
