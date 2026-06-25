@@ -25,8 +25,9 @@ DEFAULT_FIELDS = [
 
 
 SDLC_FIELD = {"id": "F_sdlc", "name": "SDLC Status", "type": "ProjectV2SingleSelectField",
-              "options": [{"id": "s_todo", "name": "Todo"}, {"id": "s_in_progress", "name": "In Progress"},
-                          {"id": "s_done", "name": "Done"}, {"id": "s_parked", "name": "Parked"}]}
+              "options": [{"id": "s_backlog", "name": "Backlog"}, {"id": "s_in_progress", "name": "In Progress"},
+                          {"id": "s_qc", "name": "QC"}, {"id": "s_done", "name": "Done"},
+                          {"id": "s_blocked", "name": "Blocked"}]}
 
 
 def project_world(projects=None, fields=None, items=None, issues=None):
@@ -110,7 +111,7 @@ def test_project_enabled_false_makes_no_project_calls():
     src = _mod("sources")
     run = project_world()
     gh = src.GitHubSource(_cfg(project={"enabled": False}), run=run)
-    gh.mark_in_progress("5")
+    gh.mark_in_progress("5"); gh.mark_qc("5")
     assert not any(c and c[0] == "project" for c in run.calls)
 
 
@@ -125,12 +126,12 @@ def test_first_transition_creates_board_field_and_syncs_backlog():
     gh.mark_in_progress("5")
     v = _verbs(run)
     assert any(c.startswith("project create") for c in v)                       # no board existed -> create
-    assert any("project field-create" in c and "Parked" in c for c in v)        # SDLC Status field w/ Parked
+    assert any("project field-create" in c and "QC" in c and "Blocked" in c for c in v)  # SDLC Status w/ QC+Blocked
     assert any("project field-delete" in c for c in v)                          # default Status removed (we created it)
-    # backlog synced: both open goal issues are board items; the picked one is In Progress, the other Todo
+    # backlog synced: both open goal issues are board items; the picked one is In Progress, the other Backlog
     e = _edits(run)
     assert {"item": "PVTI_5", "option": "s_in_progress"}.items() <= next(x for x in e if x["item"] == "PVTI_5").items()
-    assert any(x["item"] == "PVTI_7" and x["option"] == "s_todo" for x in e)
+    assert any(x["item"] == "PVTI_7" and x["option"] == "s_backlog" for x in e)
     assert all(x["field"] == "F_sdlc" and x["project"] == "PVT_new" for x in e)  # right field + project threaded
 
 
@@ -143,12 +144,20 @@ def test_complete_sets_done():
     assert any("issue close 5" in c for c in _verbs(run))                        # issue still closed
 
 
-def test_park_sets_parked_and_keeps_issue_transitions():
+def test_mark_qc_sets_qc():
+    src = _mod("sources")
+    run = project_world(projects=[], issues=[{"number": 5, "labels": [{"name": "sdlc:goal"}]}])
+    gh = src.GitHubSource(_cfg(project={"enabled": True}), run=run)
+    gh.mark_in_progress("5"); gh.mark_qc("5")
+    assert any(x["item"] == "PVTI_5" and x["option"] == "s_qc" for x in _edits(run))  # Review -> QC column
+
+
+def test_park_sets_blocked_and_keeps_issue_transitions():
     src = _mod("sources")
     run = project_world(projects=[], issues=[{"number": 9, "labels": [{"name": "sdlc:goal"}]}])
     gh = src.GitHubSource(_cfg(project={"enabled": True}), run=run)
     gh.park("9", "hit a deploy gate")
-    assert any(x["item"] == "PVTI_9" and x["option"] == "s_parked" for x in _edits(run))
+    assert any(x["item"] == "PVTI_9" and x["option"] == "s_blocked" for x in _edits(run))
     v = _verbs(run)
     assert any("issue comment 9" in c and "hit a deploy gate" in c for c in v)   # existing park behavior intact
     assert any("issue edit 9" in c and "--remove-label sdlc:goal" in c for c in v)
@@ -159,9 +168,7 @@ def test_park_sets_parked_and_keeps_issue_transitions():
 def test_reuse_existing_project_no_create_no_default_delete():
     src = _mod("sources")
     existing = [{"number": 4, "id": "PVT_x", "title": "chatgpt-clone-demo — SDLC"}]
-    fields = DEFAULT_FIELDS + [{"id": "F_sdlc", "name": "SDLC Status", "type": "ProjectV2SingleSelectField",
-                               "options": [{"id": "s_todo", "name": "Todo"}, {"id": "s_in_progress", "name": "In Progress"},
-                                           {"id": "s_done", "name": "Done"}, {"id": "s_parked", "name": "Parked"}]}]
+    fields = DEFAULT_FIELDS + [SDLC_FIELD]
     run = project_world(projects=existing, fields=fields, issues=[{"number": 5, "labels": [{"name": "sdlc:goal"}]}])
     gh = src.GitHubSource(_cfg(project={"enabled": True}), run=run)
     gh.mark_in_progress("5")
@@ -221,7 +228,7 @@ def test_sync_does_not_reset_status_of_cards_already_on_board():
     run = project_world(projects=existing, fields=DEFAULT_FIELDS + [SDLC_FIELD], items=items, issues=issues)
     gh = src.GitHubSource(_cfg(project={"enabled": True}), run=run)
     gh.mark_in_progress("5")
-    assert not any(e["item"] == "PVTI_7" and e["option"] == "s_todo" for e in _edits(run))  # 7 untouched
+    assert not any(e["item"] == "PVTI_7" and e["option"] == "s_backlog" for e in _edits(run))  # 7 untouched
     assert any(e["item"] == "PVTI_5" and e["option"] == "s_in_progress" for e in _edits(run))
 
 
