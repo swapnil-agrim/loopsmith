@@ -10,6 +10,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "WebSearch|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/research_capture.py\"",
+            "statusMessage": "Capturing research to the knowledge graph"
+          }
+        ]
+      }
     ]
   }
 }
