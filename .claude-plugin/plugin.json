@@ -1,5 +1,5 @@
 {
-  "name": "sdlc-kit",
+  "name": "loopsmith",
   "description": "Portable Goal-Based SDLC for any repo: a 7-phase development spine with interactive goal-mode and autonomous park-and-continue loop-mode.",
   "version": "0.4.0",
   "author": { "name": "Swapnil Dubey" },
