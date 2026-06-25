@@ -53,6 +53,15 @@ def test_idempotent_skip_preserves_edits():
         assert state.read_text() == "LIVE PROGRESS — do not clobber"
 
 
+def test_config_discovery_supports_local_and_github():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        mod.scaffold(tmp)
+        cfg = json.loads((pathlib.Path(tmp) / ".sdlc" / "config.json").read_text())
+        assert cfg["discovery"]["source"] == "local-goals"      # default stays local (zero-dep)
+        assert cfg["discovery"]["github"]["goal_label"]          # github knobs present for opt-in
+
+
 def test_main_errors_on_missing_target():
     mod = _load()
     assert mod.main(["sdlc_init.py", "/no/such/dir/really"]) == 1
