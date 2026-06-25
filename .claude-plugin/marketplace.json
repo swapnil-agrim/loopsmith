@@ -1,12 +1,12 @@
 {
   "name": "loopsmith",
-  "description": "Portable Goal-Based SDLC kit",
+  "description": "Guardrails + an overnight autopilot for AI coding agents",
   "owner": { "name": "Swapnil Dubey" },
   "allowCrossMarketplaceDependenciesOn": ["claude-plugins-official"],
   "plugins": [
     {
       "name": "loopsmith",
-      "description": "Portable Goal-Based SDLC for any repo (goal-mode + loop-mode).",
+      "description": "Guardrails + an overnight autopilot for your AI coding agent — a plan-gated 7-phase SDLC on a GitHub Projects board.",
       "version": "0.5.0",
       "source": "./"
     }
