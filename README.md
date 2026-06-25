@@ -1,9 +1,11 @@
 # LoopSmith
 
-**Portable Goal-Based SDLC for any repo.** Install once, and every prompt is held to a 7-phase
-development spine — Goal → Research → Plan → Plan-Review → Implement → Review → Retrospective — so the
-agent stops jumping straight to code. Run it two ways: **goal-mode** (interactive, intervention-driven) or **loop-mode**
-(autonomous, park-and-continue).
+**Guardrails + an overnight autopilot for your AI coding agent.** Every non-trivial prompt is held to
+a 7-phase SDLC spine — Goal → Research → Plan → Plan-Review → Implement → Review → Retrospective — so
+the agent stops jumping straight to code. Then queue a backlog and let it **run autonomously**: each
+goal moves across a **GitHub Projects board** (Backlog → In Progress → QC → Done) with a full audit
+trail recorded on the issue. Two modes: **interactive** (intervention-driven) or **autonomous**
+(park-and-continue).
 
 The discipline borrows from [loop-maker](https://github.com/EricTechPro/loop-maker)'s loop
 engineering — a checkable goal, durable-vs-changing state, a separate verifier, a mandatory budget,
@@ -15,6 +17,19 @@ and a non-skippable human gate — wrapped around the SDLC as the per-item engin
 > `superpowers` doesn't provide). LoopSmith now **auto-installs** its companion plugins (see
 > [Dependencies](#dependencies-auto-installed-companions)), and in **github-mode** it drives a
 > **GitHub Projects v2 board** — mirroring each goal's status onto a kanban (new in v0.5).
+
+## Quickstart
+
+```
+/plugin marketplace add <git-url-or-local-path>
+/plugin install loopsmith
+/sdlc-init --demo     # scaffolds a small, safe, runnable demo goal
+/sdlc-loop            # watch it run Goal → Research → … → Review end-to-end
+```
+
+Add **`--github`** to `/sdlc-init` to also set up the GitHub Projects board + issue templates and run
+the demo on a real board (Backlog → In Progress → QC → Done). Full setup:
+[Your backlog](#your-backlog-local-files-or-github-issues).
 
 ---
 

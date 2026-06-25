@@ -12,9 +12,11 @@ Scaffold the `.sdlc/` project layer, then report what happened.
 
    `python3 "${CLAUDE_SKILL_DIR}/scripts/sdlc_init.py"`
 
-   (Pass a target path as the first argument. Add `--github` to also install the GitHub PM
-   scaffolding — epic/task/bug issue templates, the auto-add-to-project workflow, a critical-insight
-   template, and a label guide — into `.github/`, for GitHub Projects board users.)
+   (Pass a target path as the first argument, and pass through any `--github` / `--demo` flags the
+   user gave. **`--github`** also installs the GitHub PM scaffolding — epic/task/bug issue templates,
+   the auto-add-to-project workflow, a critical-insight template, and a label guide — into `.github/`.
+   **`--demo`** queues a small, safe, runnable demo goal so `/sdlc-loop` shows the SDLC immediately;
+   with `--github`, also file it as an `sdlc:goal` issue (`gh issue create`) so it runs on the board.)
 2. Read the printed `created / skipped` summary and the git tip.
 3. Report which files were created. If `.sdlc/project.md` was newly created, prompt the
    user to fill its **Verify command** and **Stack** sections before running goals.

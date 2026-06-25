@@ -128,6 +128,31 @@ def test_main_without_github_flag_skips_dotgithub():
         assert not (pathlib.Path(tmp) / ".github").exists()             # opt-in only
 
 
+def test_demo_flag_queues_runnable_goal():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        assert mod.main(["sdlc_init.py", tmp, "--demo"]) == 0
+        demo = pathlib.Path(tmp) / ".sdlc" / "goals" / "0000-demo.md"
+        assert demo.exists()
+        t = demo.read_text()
+        assert "status: pending" in t and "done_when" in t and "loopsmith-demo.md" in t
+
+
+def test_no_demo_flag_no_demo_goal():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        mod.main(["sdlc_init.py", tmp])
+        assert not (pathlib.Path(tmp) / ".sdlc" / "goals" / "0000-demo.md").exists()   # opt-in only
+
+
+def test_scaffold_demo_idempotent_preserves_edits():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        assert mod.scaffold_demo(tmp) is True
+        d = pathlib.Path(tmp) / ".sdlc" / "goals" / "0000-demo.md"; d.write_text("EDITED")
+        assert mod.scaffold_demo(tmp) is False and d.read_text() == "EDITED"
+
+
 def test_main_errors_on_missing_target():
     mod = _load()
     assert mod.main(["sdlc_init.py", "/no/such/dir/really"]) == 1
