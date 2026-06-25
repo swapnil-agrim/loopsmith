@@ -16,6 +16,12 @@ def test_distinguishes_shipped_plan_review_from_companions():
     assert "superpowers" in README and "code-review" in README  # the companions it relies on
 
 
+def test_documents_both_backlog_sources():
+    assert "discovery" in README                      # the config knob that selects the source
+    assert ".sdlc/goals/" in README                   # the local files source
+    assert "GitHub issues" in README and "sdlc:goal" in README   # the github source + its label scheme
+
+
 def test_documents_dependency_mechanism_and_fix_path():
     assert "allowCrossMarketplaceDependenciesOn" in README   # the allowlist that makes it resolve
     assert "claude-plugins-official" in README                # the marketplace the companions live in
