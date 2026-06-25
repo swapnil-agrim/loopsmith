@@ -62,6 +62,15 @@ def test_config_discovery_supports_local_and_github():
         assert cfg["discovery"]["github"]["goal_label"]          # github knobs present for opt-in
 
 
+def test_config_knowledge_graph_off_by_default():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        mod.scaffold(tmp)
+        kg = json.loads((pathlib.Path(tmp) / ".sdlc" / "config.json").read_text())["knowledge_graph"]
+        assert kg["enabled"] is False                # opt-in only
+        assert kg["scope"] == "full" and kg["builder"] == "graphify"
+
+
 def test_main_errors_on_missing_target():
     mod = _load()
     assert mod.main(["sdlc_init.py", "/no/such/dir/really"]) == 1
