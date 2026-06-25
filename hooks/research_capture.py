@@ -21,21 +21,26 @@ def _slug(text, n=48):
 
 
 def _kg_enabled(project_dir):
+    # strict: only an explicit boolean true opts in — a stringy "false"/"no" must NOT enable.
     try:
         cfg = json.loads((Path(project_dir) / ".sdlc" / "config.json").read_text(encoding="utf-8"))
-        return bool((cfg.get("knowledge_graph") or {}).get("enabled"))
+        return (cfg.get("knowledge_graph") or {}).get("enabled") is True
     except Exception:
         return False
 
 
 def build_breadcrumb(tool_name, tool_input, tool_response):
-    """Pure: (relative_path, markdown) for a web tool, else None."""
+    """Pure: (relative_path, markdown) for a web tool with a subject, else None."""
     if tool_name not in _WEB_TOOLS:
         return None
+    raw = tool_input.get("query", "") if tool_name == "WebSearch" else tool_input.get("url", "")
+    subject = (raw or "").strip()
+    if not subject:
+        return None                                     # skip failed/empty web calls — no junk breadcrumbs
     now = datetime.now(timezone.utc)
     ts = now.isoformat(timespec="microseconds")
     stamp = now.strftime("%Y-%m-%dT%H%M%S-%f")          # collision-safe to the microsecond
-    subject = tool_input.get("query", "") if tool_name == "WebSearch" else tool_input.get("url", "")
+    heading = subject.replace("\n", " ").replace("\r", " ")[:200]  # one-line, can't break the markdown
     body = tool_response if isinstance(tool_response, str) else json.dumps(tool_response, ensure_ascii=False)
     md = ("---\n"
           f"source: {tool_name.lower()}\n"
@@ -43,7 +48,7 @@ def build_breadcrumb(tool_name, tool_input, tool_response):
           f"captured_at: {ts}\n"
           "contributor: loopsmith\n"
           "---\n\n"
-          f"# {tool_name}: {subject}\n\n"
+          f"# {tool_name}: {heading}\n\n"
           f"{body[:4000]}\n")
     return f".sdlc/knowledge/research/web/{stamp}-{_slug(subject)}.md", md
 

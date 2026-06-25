@@ -22,6 +22,13 @@ def test_documents_both_backlog_sources():
     assert "GitHub issues" in README and "sdlc:goal" in README   # the github source + its label scheme
 
 
+def test_documents_optional_knowledge_graph():
+    assert "knowledge_graph" in README                       # the config toggle
+    assert "graphify" in README                              # the default builder
+    assert "off by default" in README or "opt-in" in README  # not on without consent
+    assert ".sdlc/knowledge/" in README                      # the corpus (research + analysis)
+
+
 def test_documents_dependency_mechanism_and_fix_path():
     assert "allowCrossMarketplaceDependenciesOn" in README   # the allowlist that makes it resolve
     assert "claude-plugins-official" in README                # the marketplace the companions live in

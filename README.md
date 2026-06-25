@@ -223,6 +223,41 @@ PRs the work produces.
 
 ---
 
+## Knowledge graph (optional, off by default)
+
+LoopSmith can accumulate a **knowledge graph** of what it learns, so research and analysis compound
+across runs instead of evaporating. It's **opt-in** (`knowledge_graph.enabled: false` by default) and
+built by an external tool (default **graphify**, `pip install graphifyy`) — the core stays zero-dep.
+
+Two things feed it, for two objectives — *enhance the learnings* and *build a knowledge base around the
+code*:
+- **External research** — every `WebSearch` / `WebFetch` is auto-captured to
+  `.sdlc/knowledge/research/web/` by a fail-open hook (only when KG is enabled; a hard no-op otherwise).
+- **Internal analysis** — durable findings and Retrospective **lessons** you write to
+  `.sdlc/knowledge/analysis/`.
+- **The code** — graphed too, but only at `scope: full`.
+
+Turn it on in `.sdlc/config.json`:
+```json
+"knowledge_graph": {
+  "enabled": true,
+  "scope": "full",
+  "builder": "graphify",
+  "auto_refresh": false
+}
+```
+`scope` is **`full`** (code + external research + internal analysis) or **`research`** (skip code —
+internal analysis + external research only). `auto_refresh: true` rebuilds the graph at the end of each
+Retrospective.
+
+Then **`/sdlc-kg`** builds, refreshes, and queries it. Querying via graphify **saves the answer back
+into the graph** — each query makes the next one better (the learning-enhancement loop). The builder is
+a **soft dependency**: if it isn't installed, `/sdlc-kg` says so and the rest of the SDLC runs
+unaffected.
+
+> Keep `.sdlc/knowledge/research/` and the builder's output (`graphify-out/`) out of git — they're
+> machine-accumulated. Commit `.sdlc/knowledge/analysis/` to version your curated learnings.
+
 ## Install (plugin — recommended)
 
 ```
@@ -297,6 +332,8 @@ a second-host (Codex/etc.) adapter is not yet shipped.
 - **Runtime:** bash + python3 (stdlib) — zero dependencies. The optional **GitHub backlog source**
   additionally needs the [`gh`](https://cli.github.com) CLI, authenticated (`gh auth login`); the
   default local source stays zero-dep.
+- **Knowledge graph (optional):** the graph builder — default `graphify` (`pip install graphifyy`);
+  off unless `knowledge_graph.enabled` is set.
 - **Companions:** `superpowers` + `code-review` (auto-installed via the plugin path; manual on the
   fallback path).
 - **Dev/test:** `pip install pytest`, then `pytest tests/ -v`.

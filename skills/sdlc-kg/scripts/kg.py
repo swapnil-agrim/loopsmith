@@ -16,7 +16,9 @@ def load_config(sdlc_dir):
         cfg = json.loads((pathlib.Path(sdlc_dir) / "config.json").read_text())
     except Exception:
         cfg = {}
-    return {**_DEFAULTS, **(cfg.get("knowledge_graph") or {})}
+    kg = {**_DEFAULTS, **(cfg.get("knowledge_graph") or {})}
+    kg["enabled"] = kg.get("enabled") is True       # strict: only explicit boolean true opts in
+    return kg
 
 
 def corpus_dir(sdlc_dir):
@@ -52,7 +54,9 @@ def status(sdlc_dir):
         "corpus": str(corpus),
         "research_files": _count_md(corpus / "research"),
         "analysis_files": _count_md(corpus / "analysis"),
-        "graph_built": (pathlib.Path(sdlc_dir).parent / "graphify-out" / "graph.json").exists(),
+        # the builder writes <builder>-out/ at the repo root (parent of .sdlc); graphify -> graphify-out
+        "graph_built": (pathlib.Path(sdlc_dir).resolve().parent
+                        / f"{kg.get('builder', 'graphify')}-out" / "graph.json").exists(),
     }
 
 

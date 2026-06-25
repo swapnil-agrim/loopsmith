@@ -60,6 +60,21 @@ def test_builder_and_auto_refresh_configurable():
         assert plan["builder"] == "mygraph" and plan["auto_refresh"] is True
 
 
+def test_enabled_must_be_strict_true():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, {"enabled": "true"})        # stringy -> treated as disabled
+        assert kg.load_config(base)["enabled"] is False and kg.build_plan(base) is None
+
+
+def test_status_graph_built_follows_builder_output_dir():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, {"enabled": True, "builder": "mygraph"})
+        out = pathlib.Path(d) / "mygraph-out"; out.mkdir(); (out / "graph.json").write_text("{}")
+        assert kg.status(base)["graph_built"] is True   # not hardcoded to graphify-out
+
+
 def test_load_config_tolerates_missing_or_garbage_config():
     kg = _kg()
     with tempfile.TemporaryDirectory() as d:
