@@ -1,7 +1,16 @@
 {
   "_comment": "Authoritative machine config for the loop. Mirrors project.md prose; this file wins on conflict.",
   "mode": { "default": "goal" },
-  "discovery": { "source": "local-goals" },
+  "discovery": {
+    "source": "local-goals",
+    "_source_options": "local-goals (files in .sdlc/goals/) | github (issues labelled sdlc:goal, needs the gh CLI)",
+    "github": {
+      "repo": "",
+      "goal_label": "sdlc:goal",
+      "in_progress_label": "sdlc:in-progress",
+      "parked_label": "sdlc:parked"
+    }
+  },
   "budget": { "max_iterations": 20, "max_tokens": 500000, "max_minutes": 480 },
   "gates": {
     "irreversible_actions": ["deploy", "delete", "overwrite", "spend", "migrate"],

@@ -1,4 +1,5 @@
-"""Backlog discovery. Pluggable by source; only 'local-goals' implemented (GitHub adapter = v1.1)."""
+"""Local-goals backlog discovery (the file source). Source selection lives in sources.py, which also
+implements the GitHub-issues source; this module is the zero-dep local-files adapter."""
 import pathlib, importlib.util
 
 _HERE = pathlib.Path(__file__).resolve().parent
