@@ -216,7 +216,6 @@ LoopSmith stands on other people's work.
 - **[loop-maker](https://github.com/EricTechPro/loop-maker)** by **Eric Tech ([@EricTechPro](https://github.com/EricTechPro))** — the design foundation. LoopSmith's loop engineering is built on loop-maker's ideas: a *checkable* goal, *durable-vs-changing* state, a *separate verifier*, a mandatory stop condition (*budget*), and a *non-skippable* human gate. That vocabulary lives on in LoopSmith's config schema (`discovery` / `verify` / `gates` / `budget`) and its portable-kit packaging (`install.sh` + `SKILL.md` + `templates/`). No code or text was copied — LoopSmith's scripts are original and self-contained — but the concepts and shape are its lineage. MIT-licensed, like this kit.
 - **[superpowers](https://github.com/obra/superpowers)** by **Jesse Vincent ([@obra](https://github.com/obra))** — supplies the per-phase execution skills (brainstorming, writing-plans, test-driven-development, executing-plans, requesting-code-review, verification-before-completion). Auto-installed as a dependency.
 - **[code-review](https://github.com/anthropics/claude-plugins-official)** by **Anthropic** — the `/code-review` skill used in the Review phase. Auto-installed as a dependency.
-- **[Claude Code](https://claude.com/claude-code)** by **Anthropic** — the host runtime the SDLC hook and all skills run on.
 
 Both companion plugins install from the official **`claude-plugins-official`** marketplace.
 
