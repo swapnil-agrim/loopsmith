@@ -120,6 +120,28 @@ def test_park_excludes_issue_even_if_parked_label_cannot_be_applied():
     assert gh.next_pending() is None         # goal label removed -> excluded despite the parked-label failure
 
 
+def test_github_note_comments_on_the_issue():
+    src = _mod("sources")
+    run = _recording_runner()
+    gh = src.GitHubSource({"discovery": {"source": "github", "github": {"repo": "o/r"}}}, run=run)
+    gh.note("5", "research: 3 affected files")
+    flat = [" ".join(c) for c in run.calls]
+    assert any("issue comment 5" in c and "research: 3 affected files" in c and "--repo o/r" in c for c in flat)
+
+
+def test_local_note_appends_journey_log():
+    src = _mod("sources")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True)
+        g = base / "goals" / "0001-x.md"; g.write_text("---\nstatus: pending\n---\n")
+        local = src.get_source(str(base), {})
+        local.note(str(g), "plan: 4 steps, TDD")
+        jlog = base / "journey" / "0001-x.md"
+        assert jlog.exists() and "plan: 4 steps, TDD" in jlog.read_text()
+        local.note(str(g), "review: tests green")
+        assert jlog.read_text().count("## ") == 2          # appended across phases, not overwritten
+
+
 def test_run_gh_raises_clear_error_on_failure():
     src = _mod("sources")
     # a failing gh invocation (gh subcommand that doesn't exist) must raise a helpful RuntimeError,
