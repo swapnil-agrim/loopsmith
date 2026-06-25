@@ -30,6 +30,28 @@ def test_no_breadcrumb_for_non_web_tool():
     assert _mod().build_breadcrumb("Bash", {"command": "ls"}, "out") is None
 
 
+def test_no_breadcrumb_for_empty_subject():
+    rc = _mod()
+    assert rc.build_breadcrumb("WebSearch", {}, "resp") is None          # failed/empty call -> no junk
+    assert rc.build_breadcrumb("WebFetch", {"url": "   "}, "resp") is None
+
+
+def test_heading_has_no_embedded_newline():
+    _, md = _mod().build_breadcrumb("WebSearch", {"query": "line1\nline2"}, "r")
+    heading = md.split("---\n\n", 1)[1].splitlines()[0]
+    assert "\n" not in heading and "line1 line2" in heading
+
+
+def test_enabled_must_be_strict_true():
+    rc = _mod()
+    with tempfile.TemporaryDirectory() as tmp:
+        base = pathlib.Path(tmp) / ".sdlc"; base.mkdir()
+        (base / "config.json").write_text('{"knowledge_graph":{"enabled":"false"}}')
+        assert rc._kg_enabled(tmp) is False             # a stringy value must not opt in
+        (base / "config.json").write_text('{"knowledge_graph":{"enabled":true}}')
+        assert rc._kg_enabled(tmp) is True
+
+
 # --- end-to-end gating + fail-open (the hook ships globally) ---
 
 def _run(project_dir, payload_bytes):
