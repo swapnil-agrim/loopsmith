@@ -1,0 +1,8 @@
+{
+  "name": "sdlc-kit",
+  "description": "Portable Goal-Based SDLC for any repo: a 7-phase development spine with interactive goal-mode and autonomous park-and-continue loop-mode.",
+  "version": "0.4.0",
+  "author": { "name": "Swapnil Dubey" },
+  "license": "MIT",
+  "keywords": ["sdlc", "workflow", "autonomous", "loop", "tdd", "skills"]
+}

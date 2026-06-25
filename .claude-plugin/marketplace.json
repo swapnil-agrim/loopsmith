@@ -1,0 +1,13 @@
+{
+  "name": "sdlc-kit",
+  "description": "Portable Goal-Based SDLC kit",
+  "owner": { "name": "Swapnil Dubey" },
+  "plugins": [
+    {
+      "name": "sdlc-kit",
+      "description": "Portable Goal-Based SDLC for any repo (goal-mode + loop-mode).",
+      "version": "0.4.0",
+      "source": "./"
+    }
+  ]
+}
