@@ -27,7 +27,8 @@ def load_cursor(sdlc_dir):
 def _set_line(text, key, value):
     line_re = re.compile(rf"^{re.escape(key)}:.*$", re.MULTILINE)
     new = f"{key}: {value}"
-    return line_re.sub(new, text) if line_re.search(text) else text.rstrip() + f"\n{new}\n"
+    # function replacement: keeps `value` literal (a string repl would expand \1, \g<>, trailing \)
+    return line_re.sub(lambda _: new, text) if line_re.search(text) else text.rstrip() + f"\n{new}\n"
 
 
 def save_cursor(sdlc_dir, iteration, run_iteration, summary):

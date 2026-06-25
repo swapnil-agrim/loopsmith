@@ -31,3 +31,11 @@ def test_set_field_replaces_in_place_not_body():
     out = fm.set_field(g, "status", "done")
     assert fm.get(out, "status") == "done" and "body text" in out
     assert "in the body should be untouched" in out          # body collision safe
+
+
+def test_set_field_value_with_backslash_is_literal():
+    # value is the *replacement* arg of re.sub: \1, \g<..>, trailing \ must NOT be
+    # interpreted as backreferences (would raise re.error or silently corrupt).
+    fm = _mod("frontmatter")
+    out = fm.set_field("---\nstatus: pending\n---\n", "status", r"a\1b")
+    assert fm.get(out, "status") == r"a\1b"
