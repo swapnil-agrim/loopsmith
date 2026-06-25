@@ -9,14 +9,14 @@ A tiny project (`greeter.py` + `test_greeter.py`) with the SDLC kit already init
 > `sdlc-plan-review`. Install superpowers for the full engine; without it the phase names still
 > guide the work.
 
-## Run it (day mode — interactive)
+## Run it (interactive mode)
 ```
 /sdlc-goal .sdlc/goals/0001-add-exclaim.md
 ```
 You'll be walked through the goal one gate at a time (you approve each). At the end, `greet()`
 returns `"Hello, x!"`, `test_greeter.py` passes, and the goal is recorded `done`.
 
-## Run it (night mode — autonomous)
+## Run it (autonomous mode)
 ```
 /sdlc-loop
 ```

@@ -2,15 +2,15 @@
 
 **Portable Goal-Based SDLC for any repo.** Install once, and every prompt is held to a 7-phase
 development spine — Goal → Research → Plan → Plan-Review → Implement → Review → Retrospective — so the
-agent stops jumping straight to code. Run it two ways: **goal-mode** (interactive, intervention-driven
-— "day") or **loop-mode** (autonomous, park-and-continue — "night").
+agent stops jumping straight to code. Run it two ways: **goal-mode** (interactive, intervention-driven) or **loop-mode**
+(autonomous, park-and-continue).
 
 The discipline borrows from [](https://github.com//)'s loop
 engineering — a checkable goal, durable-vs-changing state, a separate verifier, a mandatory budget,
 and a non-skippable human gate — wrapped around the SDLC as the per-item engine.
 
 > **Status (v0.4):** all commands shipped — the always-on **SDLC hook**, install paths,
-> **`/sdlc-init`** (scaffold), **`/sdlc-goal`** (interactive day mode), **`/sdlc-loop` +
+> **`/sdlc-init`** (scaffold), **`/sdlc-goal`** (interactive mode), **`/sdlc-loop` +
 > `/sdlc-status`** (autonomous loop driver), and a generic **`sdlc-plan-review`** (the Phase-4 gate
 > `superpowers` doesn't provide). LoopSmith now **auto-installs** its companion plugins (see
 > [Dependencies](#dependencies-auto-installed-companions)).
@@ -32,6 +32,30 @@ matching SDLC directive:
 The hook is *advisory and fail-safe*: a false positive over-reminds, a false negative falls back to
 the standard policy, and it always emits valid JSON (even on garbage or empty stdin). It never calls
 out, never blocks — it shapes what the agent does next.
+
+### How it falls through
+
+A prompt enters through the always-on hook, which routes by intent. Code work then falls through the
+seven phases — with two **gates** that can send it back, and a **park** exit for anything that needs you:
+
+```mermaid
+flowchart TD
+    P(["Your prompt"]) --> H{"Hook classifies intent"}
+    H -->|"read-only / conversational"| ANS(["Answer directly"])
+    H -->|"code change / non-trivial"| G["1. Goal"]
+    G --> RS["2. Research"]
+    RS --> PL["3. Plan"]
+    PL --> PR{"4. Plan-Review"}
+    PR -->|"FIX-FIRST"| PL
+    PR -->|"SOUND"| IM["5. Implement (TDD)"]
+    IM --> RV{"6. Review + verify"}
+    RV -->|"unverified"| IM
+    RV -->|"evidence passes"| RT["7. Retrospective"]
+    RT --> DN(["Done"])
+    PR -.->|"blocked"| PK(["Park"])
+    IM -.->|"irreversible / stuck"| PK
+    RV -.->|"blocked"| PK
+```
 
 ### The seven phases
 
@@ -76,8 +100,8 @@ out, never blocks — it shapes what the agent does next.
 | `hooks/sdlc_gate.sh` | The always-on, intent-aware hook that injects the 7-phase policy on every prompt |
 | **`sdlc-plan-review`** | Phase-4 gate: adversarial plan review (the one phase superpowers doesn't cover) |
 | **`/sdlc-init`** | Scaffold the per-project `.sdlc/` layer (project stub, goals, config, state) |
-| **`/sdlc-goal`** | Day-mode orchestrator: drive ONE goal through all 7 phases interactively |
-| **`/sdlc-loop`** | Night-mode orchestrator: drive the backlog through all 7 phases autonomously |
+| **`/sdlc-goal`** | Interactive orchestrator: drive ONE goal through all 7 phases, pausing at each gate |
+| **`/sdlc-loop`** | Autonomous orchestrator: drive the backlog through all 7 phases, park-and-continue |
 | **`/sdlc-status`** | Report backlog counts + whether the review queue needs attention |
 
 **Relies on** (auto-installed companions — see [Dependencies](#dependencies-auto-installed-companions)):
@@ -99,7 +123,7 @@ out, never blocks — it shapes what the agent does next.
 Both modes drive the **same seven phases** per goal — they differ in who's in the loop and what
 happens at a checkpoint. The always-on hook underpins both.
 
-### `/sdlc-goal <goal>` — day (interactive)
+### `/sdlc-goal <goal>` — interactive
 
 One goal through the engine, **pausing for your approval at each gate**. Take a goal from
 `.sdlc/goals/` (preferred — so it's tracked) or inline text, then walk Goal → Research → Plan →
@@ -107,9 +131,10 @@ One goal through the engine, **pausing for your approval at each gate**. Take a 
 before "done"). It does **not** auto-proceed past checkpoints — you approve each one. The outcome is
 recorded to `.sdlc/` (`done`, or `parked` with a reason) so it shows in `/sdlc-status`.
 
-### `/sdlc-loop` — night (autonomous)
+### `/sdlc-loop` — autonomous
 
-Pulls the `.sdlc/goals/` backlog and runs **each goal autonomously** through the same phases. Anything
+Pulls the backlog — local `.sdlc/goals/` files or [GitHub issues](#your-backlog-local-files-or-github-issues) —
+and runs **each goal autonomously** through the same phases. Anything
 that needs a human is **parked to `.sdlc/state/review-queue.md`** and the loop continues — it parks,
 it does not force. It parks on:
 
@@ -123,13 +148,78 @@ each invocation and is resume-safe (a budget stop, re-run, picks up where it lef
 **`/sdlc-status`** any time for backlog counts (pending / in-progress / done / parked) + whether the
 review queue needs attention.
 
-| | `/sdlc-goal` (day) | `/sdlc-loop` (night) |
+The autonomous loop runs the backlog **park-and-continue** — it parks whatever needs you and keeps going:
+
+```mermaid
+flowchart TD
+    ST(["/sdlc-loop — reset run budget"]) --> NX{"Next pending goal?"}
+    NX -->|"backlog empty"| SD(["Stop — all done"])
+    NX -->|"budget reached"| SB(["Stop — budget"])
+    NX -->|"goal"| RUN["Run it through the 7-phase pipeline"]
+    RUN -->|"done + verified"| CMP["Mark done"]
+    RUN -->|"needs you / irreversible / unresolved"| PRK["Park to review queue"]
+    CMP --> NX
+    PRK --> NX
+```
+
+| | `/sdlc-goal` (interactive) | `/sdlc-loop` (autonomous) |
 |---|---|---|
 | Scope | one goal | the whole `.sdlc/goals/` backlog |
 | At a checkpoint | pauses for you | parks to the review queue, continues |
 | Approval | every gate | only what it parks |
 | Stops on | goal complete / you stop | backlog empty or per-run budget |
 | Irreversible action | asks you | always parks — never runs it |
+
+---
+
+## Your backlog: local files or GitHub issues
+
+Goals live in a backlog — you choose **where**, once, in `.sdlc/config.json` → `discovery.source`.
+The loop runs the **same** way for both; only the source of goals and how status is recorded differ.
+
+### Local goal files — default, zero-dep
+
+Goals are markdown files under `.sdlc/goals/NNNN-slug.md`; the loop advances each file's frontmatter
+`status: pending → in_progress → done | parked`, in filename order.
+
+- **Add a goal:** copy `0001-example.md`, bump the number, fill `done_when` (a *checkable* condition).
+- **Commit** `.sdlc/goals/`, `.sdlc/project.md`, `.sdlc/config.json`; **gitignore** `.sdlc/state/`
+  (machine-written loop state — `/sdlc-init` prints this tip).
+- **Parked** goals collect in `.sdlc/state/review-queue.md` — your "needs a human" list.
+
+Everything stays in your repo; nothing leaves your machine. This is the zero-dependency path.
+
+### GitHub issues — opt-in, needs the `gh` CLI
+
+Treat **GitHub Issues as the backlog** so planning and triage live where your team already works:
+
+```json
+"discovery": {
+  "source": "github",
+  "github": { "repo": "", "goal_label": "sdlc:goal" }
+}
+```
+
+File each goal as an **issue labelled `sdlc:goal`** (the issue body is the goal). The loop maps SDLC
+status onto GitHub so the board mirrors reality:
+
+| SDLC status | What the loop does on GitHub |
+|---|---|
+| picked up | adds the `sdlc:in-progress` label |
+| done | **closes** the issue with a completion comment |
+| parked (needs you) | comments the reason, adds `sdlc:parked`, and removes `sdlc:goal` so it leaves the queue |
+
+So your **review queue = open issues labelled `sdlc:parked`**, and **done = closed issues**;
+**re-queue** a parked issue by re-adding the `sdlc:goal` label. The three labels are auto-created on
+first run. **Setup:** run `gh auth login` once; leave `repo` empty to auto-detect from the git remote,
+or set it to `owner/name`.
+
+> Issues + labels are the v1 surface. GitHub **Projects** boards and a `gh`-aware `/sdlc-status` are on
+> the roadmap — for now, github-mode status is one `gh issue list --label sdlc:goal` away.
+
+**Which to pick?** **Local** for a self-contained, zero-dependency repo where the backlog ships with
+the code. **GitHub** to keep goals visible to your team, triaged in Issues/Projects, and tied to the
+PRs the work produces.
 
 ---
 
@@ -204,7 +294,9 @@ a second-host (Codex/etc.) adapter is not yet shipped.
 
 ## Requirements
 
-- **Runtime:** bash + python3 (stdlib) — zero dependencies.
+- **Runtime:** bash + python3 (stdlib) — zero dependencies. The optional **GitHub backlog source**
+  additionally needs the [`gh`](https://cli.github.com) CLI, authenticated (`gh auth login`); the
+  default local source stays zero-dep.
 - **Companions:** `superpowers` + `code-review` (auto-installed via the plugin path; manual on the
   fallback path).
 - **Dev/test:** `pip install pytest`, then `pytest tests/ -v`.
