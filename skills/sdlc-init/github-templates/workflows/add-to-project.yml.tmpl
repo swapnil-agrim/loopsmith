@@ -1,0 +1,16 @@
+name: Add new issues to the project board
+# Auto-adds every opened/reopened issue to your GitHub Projects v2 board (its Backlog).
+# Self-activates once you set the repo variable SDLC_PROJECT_URL and the secret ADD_TO_PROJECT_PAT
+# (a PAT with project write scope). Until then it is a no-op — nothing fails.
+on:
+  issues:
+    types: [opened, reopened]
+jobs:
+  add-to-project:
+    runs-on: ubuntu-latest
+    if: ${{ vars.SDLC_PROJECT_URL != '' }}
+    steps:
+      - uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: ${{ vars.SDLC_PROJECT_URL }}
+          github-token: ${{ secrets.ADD_TO_PROJECT_PAT }}

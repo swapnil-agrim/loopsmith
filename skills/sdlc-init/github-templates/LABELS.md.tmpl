@@ -1,0 +1,15 @@
+# Issue labels — {{PROJECT_NAME}}
+
+Every issue carries **exactly one `type`** label and **at least one `component`/`area`** label, so the
+board can be filtered and grouped meaningfully.
+
+- **type** (exactly one): `epic` · `task` · `bug` · `feature` · `chore`
+- **component** (one or more): your subsystems — e.g. `component:api`, `component:ui`, `component:infra`
+  (rename to fit this repo).
+- **area** (optional): cross-cutting initiatives — e.g. `area:security`.
+
+Create the base type labels:
+
+```bash
+for t in epic task bug feature chore; do gh label create "$t" --force; done
+```

@@ -5,6 +5,7 @@ import sys, pathlib
 
 # script is at skills/sdlc-init/scripts/sdlc_init.py; templates sit beside scripts/
 TEMPLATES = pathlib.Path(__file__).resolve().parent.parent / "templates"
+GITHUB_TEMPLATES = pathlib.Path(__file__).resolve().parent.parent / "github-templates"
 
 
 def scaffold(target_dir):
@@ -24,8 +25,28 @@ def scaffold(target_dir):
     return created, skipped
 
 
+def scaffold_github(target_dir):
+    """Materialize the GitHub PM scaffolding (issue templates, auto-add workflow, label rule, the
+    critical-insight template) into <target>/.github/, skip-if-exists. Opt-in via the --github flag."""
+    target = pathlib.Path(target_dir)
+    project_name = target.resolve().name
+    created, skipped = [], []
+    for tmpl in sorted(GITHUB_TEMPLATES.rglob("*.tmpl")):
+        rel = tmpl.relative_to(GITHUB_TEMPLATES).with_name(tmpl.name[:-len(".tmpl")])
+        dest = target / ".github" / rel
+        if dest.exists():
+            skipped.append(str(rel))
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(tmpl.read_text().replace("{{PROJECT_NAME}}", project_name))
+        created.append(str(rel))
+    return created, skipped
+
+
 def main(argv):
-    target = argv[1] if len(argv) > 1 else "."
+    flags = {a for a in argv[1:] if a.startswith("--")}
+    pos = [a for a in argv[1:] if not a.startswith("--")]
+    target = pos[0] if pos else "."
     if not pathlib.Path(target).is_dir():
         print(f"sdlc-init: target directory does not exist: {target}", file=sys.stderr)
         return 1
@@ -40,6 +61,17 @@ def main(argv):
         print("\nTip: commit .sdlc/goals/, .sdlc/project.md and .sdlc/config.json; add "
               "'.sdlc/state/' to .gitignore so machine-written loop state isn't committed "
               "(this script won't edit .gitignore for you).")
+    if "--github" in flags:
+        gcreated, gskipped = scaffold_github(target)
+        print(f"\nsdlc-init: GitHub PM scaffolding — {len(gcreated)} created, {len(gskipped)} skipped")
+        for c in gcreated:
+            print(f"  + .github/{c}")
+        for s in gskipped:
+            print(f"  = .github/{s} (exists, kept)")
+        if gcreated:
+            print("\nGitHub Projects board: create the board, then set repo variable SDLC_PROJECT_URL "
+                  "(your board URL) and secret ADD_TO_PROJECT_PAT (a PAT with project write scope) to "
+                  "enable auto-add of new issues to the Backlog.")
     return 0
 
 
