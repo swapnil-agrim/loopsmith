@@ -1,4 +1,4 @@
-# loopsmith
+# LoopSmith
 
 **Portable Goal-Based SDLC for any repo.** Install once, and every prompt is held to a 7-phase
 development spine — Goal → Research → Plan → Plan-Review → Implement → Review → Retrospective — so the
@@ -12,14 +12,14 @@ and a non-skippable human gate — wrapped around the SDLC as the per-item engin
 > **Status (v0.4):** all commands shipped — the always-on **SDLC hook**, install paths,
 > **`/sdlc-init`** (scaffold), **`/sdlc-goal`** (interactive day mode), **`/sdlc-loop` +
 > `/sdlc-status`** (autonomous loop driver), and a generic **`sdlc-plan-review`** (the Phase-4 gate
-> `superpowers` doesn't provide). loopsmith now **auto-installs** its companion plugins (see
+> `superpowers` doesn't provide). LoopSmith now **auto-installs** its companion plugins (see
 > [Dependencies](#dependencies-auto-installed-companions)).
 
 ---
 
 ## The pipeline
 
-loopsmith installs one always-on hook (`hooks/sdlc_gate.sh`, wired as a `UserPromptSubmit` hook).
+LoopSmith installs one always-on hook (`hooks/sdlc_gate.sh`, wired as a `UserPromptSubmit` hook).
 On every prompt it classifies intent with fast, deterministic regex — **no LLM** — and injects the
 matching SDLC directive:
 
@@ -44,8 +44,8 @@ out, never blocks — it shapes what the agent does next.
    → *owned by* `superpowers:writing-plans`.
 4. **Plan-Review** — adversarially review the plan **before** any edit: verify each claim against the
    real code, stress-test what breaks after it ships, check scope/fit. Never skipped. This is the gate
-   `superpowers` doesn't provide, so loopsmith ships it.
-   → *owned by* **`sdlc-plan-review`** (ships with loopsmith).
+   `superpowers` doesn't provide, so LoopSmith ships it.
+   → *owned by* **`sdlc-plan-review`** (ships with LoopSmith).
 5. **Implement** — build test-first and execute the plan step by step.
    → *owned by* `superpowers:test-driven-development` + `superpowers:executing-plans`.
 6. **Review** — code-review the diff for real findings, then verify every claim with evidence before
@@ -62,12 +62,12 @@ out, never blocks — it shapes what the agent does next.
 | 1 | Goal | Restate the objective as one concrete, checkable goal | `brainstorming` | superpowers |
 | 2 | Research | Map blast radius — files, patterns, constraints | *(agent practice)* | — |
 | 3 | Plan | Write steps / files / tests / definition-of-done | `writing-plans` | superpowers |
-| 4 | Plan-Review | Adversarially verify the plan against real code before any edit | **`sdlc-plan-review`** | **loopsmith (ships)** |
+| 4 | Plan-Review | Adversarially verify the plan against real code before any edit | **`sdlc-plan-review`** | **LoopSmith (ships)** |
 | 5 | Implement | Build test-first; execute the plan | `test-driven-development`, `executing-plans` | superpowers |
 | 6 | Review | Code-review the diff; verify claims with evidence before "done" | `/code-review`, `requesting-code-review`, `verification-before-completion` | code-review + superpowers |
 | 7 | Retrospective | Capture lessons; lock critical insights | *(agent practice)* | — |
 
-### What loopsmith ships vs relies on
+### What LoopSmith ships vs relies on
 
 **Ships in this kit** (`skills/` + `hooks/`) — zero runtime deps, bash + python3 stdlib only:
 
@@ -89,7 +89,7 @@ out, never blocks — it shapes what the agent does next.
 
 > The orchestrators (`/sdlc-goal`, `/sdlc-loop`) walk a goal through **all seven** phases; `/sdlc-init`
 > and `/sdlc-status` set up and report on the work. The phase owners above are *who does the work* at
-> each step — superpowers and code-review supply the execution muscle, loopsmith supplies the spine,
+> each step — superpowers and code-review supply the execution muscle, LoopSmith supplies the spine,
 > the Phase-4 gate, and the orchestration.
 
 ---
@@ -147,7 +147,7 @@ each repo to scaffold its per-project `.sdlc/` layer (project stub, `goals/`, `c
 
 ## Dependencies (auto-installed companions)
 
-loopsmith ships the *spine*; the *execution muscle* for Phases 1, 3, 5, and 6 lives in two companion
+LoopSmith ships the *spine*; the *execution muscle* for Phases 1, 3, 5, and 6 lives in two companion
 plugins it now declares as native dependencies:
 
 - **`superpowers`** — `brainstorming`, `writing-plans`, `test-driven-development`, `executing-plans`,
@@ -160,11 +160,11 @@ latest release in the official marketplace (no pinned git tags to resolve).
 
 **Requirement:** you must have the **`claude-plugins-official`** marketplace added. It's the official
 marketplace and ships **pre-registered** in current Claude Code, so this is normally already true.
-loopsmith's own `marketplace.json` allowlists it via `allowCrossMarketplaceDependenciesOn` — that
+LoopSmith's own `marketplace.json` allowlists it via `allowCrossMarketplaceDependenciesOn` — that
 allowlist is what lets a dependency in *another* marketplace resolve.
 
 **If a companion is missing** (e.g. the marketplace isn't registered, or it was disabled), Claude Code
-marks loopsmith with a **`dependency-unsatisfied`** error and disables it until resolved. Fixes, in
+marks LoopSmith with a **`dependency-unsatisfied`** error and disables it until resolved. Fixes, in
 order of convenience:
 
 1. Run the `claude plugin install …` command shown in the error, e.g.
@@ -177,7 +177,7 @@ order of convenience:
 3. If a companion is merely disabled, enable it.
 
 **Graceful degradation:** even with the companions absent, the always-on hook still injects the
-7-phase policy and the phase *names* guide the work — loopsmith **degrades, it does not break**. The
+7-phase policy and the phase *names* guide the work — LoopSmith **degrades, it does not break**. The
 named superpowers/code-review skills are how each phase is executed *best*, not a hard runtime
 requirement of the spine. (Ref: [plugin dependencies](https://code.claude.com/docs/en/plugin-dependencies).)
 
@@ -189,7 +189,7 @@ git clone <git-url> && cd loopsmith && ./install.sh
 
 `install.sh` copies the spine into `~/.claude/skills/loopsmith/` and **prints** the `settings.json`
 hook snippet for you to paste (it never edits your settings — malformed JSON silently disables
-hooks). Parse-check `settings.json` after pasting. The fallback installs **only** loopsmith's own
+hooks). Parse-check `settings.json` after pasting. The fallback installs **only** LoopSmith's own
 spine — install `superpowers` and `code-review` yourself to get the phase-execution skills.
 
 ---
