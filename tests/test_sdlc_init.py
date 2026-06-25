@@ -62,6 +62,15 @@ def test_config_discovery_supports_local_and_github():
         assert cfg["discovery"]["github"]["goal_label"]          # github knobs present for opt-in
 
 
+def test_config_discovery_has_github_project_board():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        mod.scaffold(tmp)
+        disc = json.loads((pathlib.Path(tmp) / ".sdlc" / "config.json").read_text())["discovery"]
+        assert disc["source"] == "local-goals"                       # default unchanged
+        assert disc["github_project"]["columns"]["qc"] == "QC"       # board columns scaffolded
+
+
 def test_config_knowledge_graph_off_by_default():
     mod = _load()
     with tempfile.TemporaryDirectory() as tmp:

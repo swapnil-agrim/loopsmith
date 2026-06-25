@@ -3,12 +3,18 @@
   "mode": { "default": "goal" },
   "discovery": {
     "source": "local-goals",
-    "_source_options": "local-goals (files in .sdlc/goals/) | github (issues labelled sdlc:goal, needs the gh CLI)",
+    "_source_options": "local-goals (files) | github (issues+labels, needs gh) | github-project (Projects v2 board Backlog->In Progress->QC->Done->Blocked, needs gh + the project token scope)",
     "github": {
       "repo": "",
       "goal_label": "sdlc:goal",
       "in_progress_label": "sdlc:in-progress",
       "parked_label": "sdlc:parked"
+    },
+    "github_project": {
+      "owner": "",
+      "number": 0,
+      "status_field": "Status",
+      "columns": { "backlog": "Backlog", "in_progress": "In Progress", "qc": "QC", "done": "Done", "blocked": "Blocked" }
     }
   },
   "budget": { "max_iterations": 20, "max_tokens": 500000, "max_minutes": 480 },

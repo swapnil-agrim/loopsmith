@@ -20,6 +20,7 @@ def test_documents_both_backlog_sources():
     assert "discovery" in README                      # the config knob that selects the source
     assert ".sdlc/goals/" in README                   # the local files source
     assert "GitHub issues" in README and "sdlc:goal" in README   # the github source + its label scheme
+    assert "github-project" in README and "QC" in README and "Blocked" in README   # the Projects board source
 
 
 def test_documents_optional_knowledge_graph():

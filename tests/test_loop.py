@@ -94,6 +94,14 @@ def test_run_loop_builds_source_once():    # one source per run, not per _next/_
         assert calls["n"] == 1                 # built once for the whole run
 
 
+def test_cli_qc_verb_is_a_safe_noop_for_local():
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1, max_iter=5)
+        g = base + "/goals/0001.md"
+        r = subprocess.run([sys.executable, str(S / "loop.py"), "qc", base, g], capture_output=True, text=True)
+        assert r.returncode == 0 and "status: pending" in open(g).read()   # board-only op; local untouched
+
+
 def test_cli_start_next_record_and_budget():
     with tempfile.TemporaryDirectory() as d:
         base = _backlog(d, 2, max_iter=1)

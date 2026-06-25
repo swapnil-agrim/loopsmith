@@ -120,6 +120,104 @@ def test_park_excludes_issue_even_if_parked_label_cannot_be_applied():
     assert gh.next_pending() is None         # goal label removed -> excluded despite the parked-label failure
 
 
+# --- GitHubProjectSource (Projects v2 board) — fixtures mirror real `gh project` JSON shapes ---
+
+_PROJECT_VIEW = json.dumps({"id": "PVT_x", "number": 3})
+_FIELD_LIST = json.dumps({"fields": [{"id": "FIELD_status", "name": "Status",
+    "type": "ProjectV2SingleSelectField", "options": [
+        {"id": "OPT_backlog", "name": "Backlog"}, {"id": "OPT_wip", "name": "In Progress"},
+        {"id": "OPT_qc", "name": "QC"}, {"id": "OPT_done", "name": "Done"},
+        {"id": "OPT_blocked", "name": "Blocked"}]}]})
+
+
+def _items(rows):  # rows: list of (item_id, status, number)
+    return json.dumps({"items": [
+        {"id": i, "status": s, "repository": "o/r",
+         "content": {"type": "Issue", "number": n, "title": f"t{n}"}} for (i, s, n) in rows],
+        "totalCount": len(rows)})
+
+
+def _project_runner(items_json):
+    return _recording_runner({"view": _PROJECT_VIEW, "field-list": _FIELD_LIST, "item-list": items_json})
+
+
+def _gp(run):
+    return _mod("sources").GitHubProjectSource(
+        {"discovery": {"source": "github-project", "github_project": {"number": 3}}}, run=run)
+
+
+def test_get_source_github_project_when_configured():
+    s = _mod("sources").get_source("/tmp", {"discovery": {"source": "github-project"}})
+    assert type(s).__name__ == "GitHubProjectSource"
+
+
+def test_github_project_next_pending_resumes_started_then_backlog_excludes_terminal():
+    run = _project_runner(_items([("ITEM_5", "Backlog", 5), ("ITEM_3", "In Progress", 3),
+                                  ("ITEM_2", "QC", 2), ("ITEM_9", "Done", 9), ("ITEM_7", "Blocked", 7)]))
+    # QC(2) before In Progress(3) before Backlog(5); Done/Blocked excluded
+    assert _gp(run).next_pending() == "2"
+
+
+def test_github_project_next_pending_none_when_all_terminal():
+    run = _project_runner(_items([("ITEM_9", "Done", 9), ("ITEM_7", "Blocked", 7)]))
+    assert _gp(run).next_pending() is None
+
+
+def test_github_project_transitions_set_correct_status_option():
+    gp = _gp(_project_runner(_items([("ITEM_5", "Backlog", 5)])))
+    gp.mark_in_progress("5"); gp.mark_qc("5"); gp.complete("5")
+    flat = [" ".join(c) for c in gp._run.calls]
+    assert any("project item-edit --id ITEM_5" in c and "OPT_wip" in c for c in flat)
+    assert any("project item-edit --id ITEM_5" in c and "OPT_qc" in c for c in flat)
+    assert any("project item-edit --id ITEM_5" in c and "OPT_done" in c for c in flat)
+    assert all("--field-id FIELD_status" in c and "--project-id PVT_x" in c
+               for c in flat if "item-edit" in c)
+
+
+def test_github_project_park_sets_blocked_and_comments_issue():
+    gp = _gp(_project_runner(_items([("ITEM_5", "In Progress", 5)])))
+    gp.park("5", "hit a deploy gate")
+    flat = [" ".join(c) for c in gp._run.calls]
+    assert any("item-edit --id ITEM_5" in c and "OPT_blocked" in c for c in flat)
+    assert any("issue comment 5" in c and "hit a deploy gate" in c for c in flat)
+
+
+def test_github_project_custom_multiword_status_field_matched_robustly():
+    # gh derives the per-item JSON key from the field name; we match it by normalization, so a
+    # multi-word custom Status field resolves regardless of gh's exact casing/spacing.
+    view = json.dumps({"id": "PVT_x", "number": 3})
+    fl = json.dumps({"fields": [{"id": "F1", "name": "My Status", "options": [
+        {"id": "OPT_b", "name": "Backlog"}, {"id": "OPT_d", "name": "Done"}, {"id": "OPT_x", "name": "Blocked"}]}]})
+    items = json.dumps({"items": [{"id": "ITEM_5", "my Status": "Backlog", "repository": "o/r",
+                                   "content": {"type": "Issue", "number": 5, "title": "t5"}}]})
+    run = _recording_runner({"view": view, "field-list": fl, "item-list": items})
+    gp = _mod("sources").GitHubProjectSource(
+        {"discovery": {"source": "github-project", "github_project": {"number": 3, "status_field": "My Status"}}}, run=run)
+    assert gp.next_pending() == "5"       # custom field key matched (was None before the fix)
+
+
+def test_github_project_clear_error_when_view_has_no_id():
+    run = _recording_runner({"view": json.dumps({"number": 3}), "field-list": _FIELD_LIST,
+                             "item-list": _items([("ITEM_5", "Backlog", 5)])})
+    try:
+        _gp(run).mark_in_progress("5")
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "no id" in str(e)          # clear error, not a bare KeyError
+
+
+def test_mark_qc_is_noop_for_local_and_issues_sources():
+    src = _mod("sources")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True)
+        g = base / "goals" / "0001.md"; g.write_text("---\nstatus: in_progress\n---\n")
+        src.get_source(str(base), {}).mark_qc(str(g))
+        assert "status: in_progress" in g.read_text()         # local: file untouched
+    run = _recording_runner()
+    src.GitHubSource({"discovery": {"source": "github"}}, run=run).mark_qc("5")
+    assert run.calls == []                                     # issues: no gh call
+
+
 def test_run_gh_raises_clear_error_on_failure():
     src = _mod("sources")
     # a failing gh invocation (gh subcommand that doesn't exist) must raise a helpful RuntimeError,

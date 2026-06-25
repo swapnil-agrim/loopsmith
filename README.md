@@ -214,12 +214,31 @@ So your **review queue = open issues labelled `sdlc:parked`**, and **done = clos
 first run. **Setup:** run `gh auth login` once; leave `repo` empty to auto-detect from the git remote,
 or set it to `owner/name`.
 
-> Issues + labels are the v1 surface. GitHub **Projects** boards and a `gh`-aware `/sdlc-status` are on
-> the roadmap — for now, github-mode status is one `gh issue list --label sdlc:goal` away.
+### GitHub Projects board — opt-in, needs `gh` + the `project` scope
 
-**Which to pick?** **Local** for a self-contained, zero-dependency repo where the backlog ships with
-the code. **GitHub** to keep goals visible to your team, triaged in Issues/Projects, and tied to the
-PRs the work produces.
+For full **product management** — a kanban board with a Status field — set `discovery.source:
+"github-project"`. Tasks move through the board as the loop runs:
+
+**Backlog → In Progress → QC → Done**, with **Blocked** for parked items.
+
+| SDLC stage | Board Status |
+|---|---|
+| picked up → Research / Plan / Plan-Review / Implement | **In Progress** |
+| Review (code-review + verification) | **QC** |
+| verified complete | **Done** |
+| parked — needs a human | **Blocked** (+ the reason commented on the issue) |
+
+The loop discovers the Status field + its options at runtime, so the **column names are configurable**
+(`github_project.columns`). A resumed run finishes started work first (QC → In Progress → Backlog).
+**Setup:** create a Projects v2 board with those Status options, `gh auth refresh -s project`, set
+`github_project.number` / `owner` in config, and add tasks to **Backlog**.
+
+> This is phase one of the board integration. Epic → task hierarchy, issue templates + an
+> auto-add-to-project workflow, and recording findings/activity on the issues are the next phases.
+
+**Which to pick?** **Local** for a self-contained, zero-dependency repo. **`github`** (issues + labels)
+for a lightweight team backlog. **`github-project`** for a full PM board (Backlog → In Progress → QC →
+Done + Blocked), visible to your team and tied to the PRs the work produces.
 
 ---
 
