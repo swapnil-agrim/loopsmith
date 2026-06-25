@@ -20,4 +20,4 @@ def test_goal_skill_wellformed_and_records():
 def test_versions_aligned():
     p = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
     mk = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
-    assert p["version"] == "0.4.0" and mk["plugins"][0]["version"] == "0.4.0"
+    assert p["version"] == "0.5.0" and mk["plugins"][0]["version"] == "0.5.0"

@@ -7,7 +7,7 @@
     {
       "name": "loopsmith",
       "description": "Portable Goal-Based SDLC for any repo (goal-mode + loop-mode).",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "source": "./"
     }
   ]

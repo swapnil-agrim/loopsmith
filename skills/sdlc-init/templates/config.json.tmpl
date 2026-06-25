@@ -8,7 +8,15 @@
       "repo": "",
       "goal_label": "sdlc:goal",
       "in_progress_label": "sdlc:in-progress",
-      "parked_label": "sdlc:parked"
+      "parked_label": "sdlc:parked",
+      "project": {
+        "enabled": true,
+        "_comment": "Mirror issue status onto a GitHub Projects v2 board (needs the gh `project` scope). Fail-open: if it can't, the loop still runs on issues+labels.",
+        "owner": "",
+        "title": "",
+        "number": null,
+        "status_field": "SDLC Status"
+      }
     }
   },
   "budget": { "max_iterations": 20, "max_tokens": 500000, "max_minutes": 480 },
