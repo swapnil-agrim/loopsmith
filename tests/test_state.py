@@ -50,3 +50,11 @@ def test_start_run_resets_run_iteration_only():
         base, _ = _sdlc(d); st.save_cursor(base, 5, 9, "x"); st.start_run(base)
         cur = st.load_cursor(base)
         assert cur["run_iteration"] == 0 and cur["iteration"] == 5   # cursor preserved
+
+
+def test_set_line_value_with_backslash_is_literal():
+    # the summary flows from a goal filename; backslash-escapes must stay literal,
+    # not be treated as re.sub replacement backreferences (re.error / corruption).
+    st = _state()
+    out = st._set_line("last_run: none\n", "last_run", r"done g\1")
+    assert "last_run: done g\\1" in out
