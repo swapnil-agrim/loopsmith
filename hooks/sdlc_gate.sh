@@ -24,11 +24,14 @@ except Exception:
 ' 2>/dev/null || true)"
 
 strong='(implement|refactor|rewrite|re-write|migrat|integrat|create (a|an|the)|build (me|a|the)|fix the|fix a|fixing|\.py\b|\.ts\b|\.tsx\b|\.sh\b|\.go\b|\.rs\b|\.java\b)'
-codey='(implement|build |create |add (a|an|the|some)|added|fix|fixes|fixed|refactor|rewrite|patch|wire |integrat|migrat|rename|delete |remove |optimi[sz]|modify|change the|update the|edit |new (feature|endpoint|function|class|file|module|test|hook)|bug|regression|\.py\b|\.ts\b|\.tsx\b|\.sh\b|\.go\b|\.rs\b|\.java\b)'
+codey='(implement|build |create |add |added|write |make |set |convert |extract |replace |fix|fixes|fixed|refactor|rewrite|patch|wire |integrat|migrat|rename|delete |remove |optimi[sz]|modify|change the|update the|edit |new (feature|endpoint|function|class|file|module|test|hook)|bug|regression|\.py\b|\.ts\b|\.tsx\b|\.sh\b|\.go\b|\.rs\b|\.java\b)'
 asky='^[[:space:]]*(what|why|how|where|which|who|when|is|are|does|do|can|could|should|would|explain|show|list|tell|summari|describe|review|look)\b'
 
 mode="standard"
-if printf '%s' "$prompt" | grep -Eiq "$asky"; then
+# asky is a leading-interrogative test; grep is line-oriented, so judge only the FIRST line —
+# else a code request with a later question-shaped line gets mis-read as read-only.
+first_line="${prompt%%$'\n'*}"
+if printf '%s' "$first_line" | grep -Eiq "$asky"; then
   if printf '%s' "$prompt" | grep -Eiq "$strong"; then mode="code"; else mode="ask"; fi
 elif printf '%s' "$prompt" | grep -Eiq "$codey"; then
   mode="code"
