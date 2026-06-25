@@ -56,6 +56,24 @@ def test_drained_backlog_reports_empty_not_budget():   # M1 boundary
         assert res["done"] == 2 and res["stopped"] == "backlog-empty"
 
 
+def test_run_loop_drives_any_injected_source():    # loop.py is source-agnostic (local OR github)
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 0, max_iter=10)         # no goal files; the fake source supplies the backlog
+        lp = _loop()
+
+        class Fake:
+            def __init__(s): s.q = ["a", "b", "c"]; s.done = []
+            def next_pending(s): return s.q[0] if s.q else None
+            def mark_in_progress(s, g): pass
+            def complete(s, g): s.done.append(g); s.q.pop(0)
+            def park(s, g, r): s.q.pop(0)
+
+        fake = Fake()
+        lp.sources.get_source = lambda sdlc_dir, config: fake     # inject via the factory seam
+        res = lp.run_loop(base, lambda g: ("done", ""))
+        assert res["done"] == 3 and res["stopped"] == "backlog-empty" and fake.done == ["a", "b", "c"]
+
+
 def test_cli_start_next_record_and_budget():
     with tempfile.TemporaryDirectory() as d:
         base = _backlog(d, 2, max_iter=1)
