@@ -12,33 +12,31 @@ def _load(name):
     m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
 
 
-discovery = _load("discovery")
 state = _load("state")
-
-
-def _goals_dir(sdlc_dir):
-    return str(pathlib.Path(sdlc_dir) / "goals")
+sources = _load("sources")          # backlog source: local files or GitHub issues (config-selected)
 
 
 def _next(sdlc_dir):
     """(kind, goal): 'goal' (+marks in_progress, the commit point), 'DONE' (drained), 'BUDGET'.
     Drained backlog reports DONE even if budget is also spent (empty wins the tie)."""
-    goal = discovery.next_pending(_goals_dir(sdlc_dir))
+    config = state.load_config(sdlc_dir)
+    source = sources.get_source(sdlc_dir, config)
+    goal = source.next_pending()
     if goal is None:
         return ("DONE", None)
-    config = state.load_config(sdlc_dir)
     run_iteration = state.load_cursor(sdlc_dir)["run_iteration"]
     if run_iteration >= config.get("budget", {}).get("max_iterations", 20):
         return ("BUDGET", None)
-    state.set_in_progress(sdlc_dir, goal)
+    source.mark_in_progress(goal)
     return ("goal", goal)
 
 
 def _record(sdlc_dir, goal, result, detail=""):
+    source = sources.get_source(sdlc_dir, state.load_config(sdlc_dir))
     if result == "done":
-        state.complete(sdlc_dir, goal)
+        source.complete(goal)
     else:                                        # parked or failed
-        state.park(sdlc_dir, goal, detail or result)
+        source.park(goal, detail or result)
     cur = state.load_cursor(sdlc_dir)
     state.save_cursor(sdlc_dir, cur["iteration"] + 1, cur["run_iteration"] + 1,
                       f"last: {pathlib.Path(goal).name} -> {result}")
