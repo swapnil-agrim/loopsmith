@@ -234,6 +234,13 @@ breaks). Tune it under `discovery.github.project` — `owner`/`title` (default `
 (reuse an existing board), `status_field` (the field's name), and `columns` (override the column names
 to match an existing board). A `gh`-aware `/sdlc-status` for github mode is still on the roadmap.
 
+**Sprint / PM scaffolding.** Run **`/sdlc-init --github`** to also install GitHub project-management
+hygiene into `.github/`: **epic** and **task** issue templates (epics decompose into task sub-issues),
+a **bug** template, an **auto-add-to-project workflow** that drops every new issue into the board's
+Backlog, a **critical-insight** comment template (record findings/decisions on the issue), and a
+**label guide** (one `type` + ≥1 `component`/`area`). Enable auto-add by setting the repo variable
+`SDLC_PROJECT_URL` and an `ADD_TO_PROJECT_PAT` secret.
+
 **Which to pick?** **Local** for a self-contained, zero-dependency repo where the backlog ships with
 the code. **GitHub** to keep goals visible to your team, triaged in Issues/Projects, and tied to the
 PRs the work produces.
