@@ -41,6 +41,9 @@ class LocalSource:
     def park(self, goal, reason):
         state.park(self.sdlc_dir, goal, reason)
 
+    def mark_qc(self, goal):
+        pass            # QC is a board-only stage; the local source has no QC column
+
 
 def _run_gh(args, binary="gh"):
     """Run `gh <args>`, return stdout; raise a helpful RuntimeError on failure (binary is for tests)."""
@@ -69,6 +72,10 @@ class GitHubSource:
         # configs behave exactly as before; the sdlc-init template ships `enabled: true` for new repos.
         self._project_cfg = gh.get("project") or {}
         self.project_enabled = bool(self._project_cfg.get("enabled", False))
+        _cols = self._project_cfg.get("columns") or {}     # board column names (configurable for existing boards)
+        self.col = {k: _cols.get(k, d) for k, d in
+                    (("backlog", "Backlog"), ("in_progress", "In Progress"),
+                     ("qc", "QC"), ("done", "Done"), ("blocked", "Blocked"))}
         self._board_attempted = False           # tried to ensure the board this run (success or hard-fail)
         self._board_ready = False               # board fully wired (project + status field + item cache)
         self._project_number = None
@@ -105,12 +112,15 @@ class GitHubSource:
     def mark_in_progress(self, goal):
         self._ensure_labels()
         self._run(["issue", "edit", goal, *self._repo_args(), "--add-label", self.in_progress_label])
-        self._set_board_status(goal, "In Progress")
+        self._set_board_status(goal, self.col["in_progress"])
+
+    def mark_qc(self, goal):
+        self._set_board_status(goal, self.col["qc"])     # board-only: the Review / QC quality stage
 
     def complete(self, goal):
         self._run(["issue", "close", goal, *self._repo_args(),
                    "--comment", "Completed by the LoopSmith SDLC loop."])
-        self._set_board_status(goal, "Done")
+        self._set_board_status(goal, self.col["done"])
 
     def park(self, goal, reason):
         self._run(["issue", "comment", goal, *self._repo_args(),
@@ -123,7 +133,7 @@ class GitHubSource:
         # Robust exclusion: drop the goal label so next_pending's `--label <goal>` query can't return
         # this issue again, regardless of whether the parked label was applied. Re-queue by re-adding it.
         self._run(["issue", "edit", goal, *self._repo_args(), "--remove-label", self.goal_label])
-        self._set_board_status(goal, "Parked")
+        self._set_board_status(goal, self.col["blocked"])
 
     # ----- Projects-v2 board (best-effort mirror of issue status onto a kanban board) -----
     # SDLC status -> the board's "SDLC Status" single-select. The whole layer is fail-open: a missing
@@ -197,7 +207,9 @@ class GitHubSource:
         if fld is None:
             self._run(["project", "field-create", str(number), "--owner", owner, "--name", fname,
                        "--data-type", "SINGLE_SELECT",
-                       "--single-select-options", "Todo,In Progress,Done,Parked", "--format", "json"])
+                       "--single-select-options",
+                       ",".join([self.col["backlog"], self.col["in_progress"], self.col["qc"],
+                                 self.col["done"], self.col["blocked"]]), "--format", "json"])
             fields = self._list_fields(owner, number)        # re-list to read back the new option ids
             fld = self._find_field(fields, fname)
         if fld:
@@ -217,7 +229,7 @@ class GitHubSource:
         actively transitioned. Cards already on the board keep their status — sync never clobbers."""
         out = self._run(["issue", "list", *self._repo_args(), "--label", self.goal_label,
                          "--state", "open", "--json", "number", "--limit", "200"])
-        todo = self._status_options.get("Todo")
+        backlog = self._status_options.get(self.col["backlog"])
         on_board = set(self._items or {})            # numbers already carded -> leave their status alone
         for it in json.loads(out or "[]"):
             n = it.get("number")
@@ -225,9 +237,9 @@ class GitHubSource:
                 continue
             was_new = int(n) not in on_board
             item_id = self._item_id(n)
-            if was_new and item_id and todo:
+            if was_new and item_id and backlog:
                 self._run(["project", "item-edit", "--project-id", self._project_id, "--id", item_id,
-                           "--field-id", self._field_id, "--single-select-option-id", todo])
+                           "--field-id", self._field_id, "--single-select-option-id", backlog])
 
     def _item_id(self, n):
         """Board item id for issue `n`, adding the issue to the board if it isn't there yet (cached)."""
