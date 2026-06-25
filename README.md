@@ -241,6 +241,11 @@ Backlog, a **critical-insight** comment template (record findings/decisions on t
 **label guide** (one `type` + ≥1 `component`/`area`). Enable auto-add by setting the repo variable
 `SDLC_PROJECT_URL` and an `ADD_TO_PROJECT_PAT` secret.
 
+**Recording the audit trail.** As the loop runs each phase, it records a journey-log note (and 🔒
+critical insights for key decisions) — as a **comment on the task issue** in github mode, so the issue
+timeline and the board card hold the full history, or appended to `.sdlc/journey/<goal>.md` in local
+mode. Recording is **fail-open** (never breaks a run).
+
 **Which to pick?** **Local** for a self-contained, zero-dependency repo where the backlog ships with
 the code. **GitHub** to keep goals visible to your team, triaged in Issues/Projects, and tied to the
 PRs the work produces.
