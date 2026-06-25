@@ -71,6 +71,63 @@ def test_config_knowledge_graph_off_by_default():
         assert kg["scope"] == "full" and kg["builder"] == "graphify"
 
 
+def test_scaffold_github_creates_pm_files():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        created, skipped = mod.scaffold_github(tmp)
+        gh = pathlib.Path(tmp) / ".github"
+        for rel in ["ISSUE_TEMPLATE/epic.md", "ISSUE_TEMPLATE/task.md", "ISSUE_TEMPLATE/bug.md",
+                    "ISSUE_TEMPLATE/config.yml", "workflows/add-to-project.yml",
+                    "CRITICAL_INSIGHT_TEMPLATE.md", "LABELS.md"]:
+            assert (gh / rel).exists(), f"missing {rel}"
+        assert skipped == []
+
+
+def test_scaffold_github_idempotent_preserves_edits():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        mod.scaffold_github(tmp)
+        epic = pathlib.Path(tmp) / ".github" / "ISSUE_TEMPLATE" / "epic.md"
+        epic.write_text("MY EDITS")
+        created, skipped = mod.scaffold_github(tmp)
+        assert created == [] and "ISSUE_TEMPLATE/epic.md" in skipped
+        assert epic.read_text() == "MY EDITS"          # never clobbered
+
+
+def test_issue_templates_wellformed():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        mod.scaffold_github(tmp)
+        it = pathlib.Path(tmp) / ".github" / "ISSUE_TEMPLATE"
+        epic = (it / "epic.md").read_text()
+        assert epic.startswith("---") and "labels:" in epic and "Tasks" in epic and "Definition of done" in epic
+        assert "Parent epic" in (it / "task.md").read_text()
+
+
+def test_add_to_project_workflow_self_activates():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        mod.scaffold_github(tmp)
+        wf = (pathlib.Path(tmp) / ".github" / "workflows" / "add-to-project.yml").read_text()
+        assert "add-to-project" in wf and "issues:" in wf
+        assert "SDLC_PROJECT_URL" in wf and "ADD_TO_PROJECT_PAT" in wf   # guarded by repo var + secret
+
+
+def test_main_github_flag_scaffolds_dotgithub_and_sdlc():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        assert mod.main(["sdlc_init.py", tmp, "--github"]) == 0
+        assert (pathlib.Path(tmp) / ".github" / "workflows" / "add-to-project.yml").exists()
+        assert (pathlib.Path(tmp) / ".sdlc" / "config.json").exists()   # still scaffolds .sdlc too
+
+
+def test_main_without_github_flag_skips_dotgithub():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        mod.main(["sdlc_init.py", tmp])
+        assert not (pathlib.Path(tmp) / ".github").exists()             # opt-in only
+
+
 def test_main_errors_on_missing_target():
     mod = _load()
     assert mod.main(["sdlc_init.py", "/no/such/dir/really"]) == 1
