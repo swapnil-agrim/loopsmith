@@ -87,7 +87,7 @@ class GitHubSource:
                          "--state", "open", "--json", "number,labels", "--limit", "200"])  # ponytail: 200-issue cap
         issues = json.loads(out or "[]")
         pending = [i for i in issues
-                   if self.parked_label not in {l["name"] for l in i.get("labels", [])}]
+                   if self.parked_label not in {l.get("name") for l in (i.get("labels") or [])}]
         pending.sort(key=lambda i: i["number"])     # oldest-first, mirrors local filename order
         return str(pending[0]["number"]) if pending else None
 
@@ -100,10 +100,16 @@ class GitHubSource:
                    "--comment", "Completed by the LoopSmith SDLC loop."])
 
     def park(self, goal, reason):
-        self._ensure_labels()
-        self._run(["issue", "edit", goal, *self._repo_args(), "--add-label", self.parked_label])
         self._run(["issue", "comment", goal, *self._repo_args(),
                    "--body", "Parked by LoopSmith — needs human review: " + reason])
+        self._ensure_labels()
+        try:
+            self._run(["issue", "edit", goal, *self._repo_args(), "--add-label", self.parked_label])
+        except Exception:
+            pass   # the parked label is a human-visibility tag; the exclusion below doesn't need it
+        # Robust exclusion: drop the goal label so next_pending's `--label <goal>` query can't return
+        # this issue again, regardless of whether the parked label was applied. Re-queue by re-adding it.
+        self._run(["issue", "edit", goal, *self._repo_args(), "--remove-label", self.goal_label])
 
 
 def get_source(sdlc_dir, config):

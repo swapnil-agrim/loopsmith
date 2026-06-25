@@ -85,6 +85,41 @@ def test_github_custom_labels_respected():
     assert any("--label goal" in " ".join(c) for c in run.calls)      # custom goal label used in the query
 
 
+def test_github_next_pending_tolerates_null_or_nameless_labels():
+    src = _mod("sources")
+    issues = [{"number": 5, "labels": None}, {"number": 6, "labels": [{}]}]  # null + a label with no name
+    run = _recording_runner({"list": json.dumps(issues)})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    assert gh.next_pending() == "5"          # no crash; lowest open goal
+
+
+def test_park_excludes_issue_even_if_parked_label_cannot_be_applied():
+    # park-exclusion must NOT depend on the parked label sticking. Stateful gh where label-create
+    # AND --add-label both fail; park must still drop the goal label so next_pending skips the issue.
+    src = _mod("sources")
+    issues = {5: {"open": True, "labels": {"sdlc:goal"}}}
+
+    def run(a):
+        verb = a[1] if len(a) > 1 else a[0]
+        if a[0] == "label":
+            raise RuntimeError("no labels:write")                       # cannot create labels
+        if verb == "list":
+            want = a[a.index("--label") + 1]                            # honor --label, like real gh
+            return json.dumps([{"number": k, "labels": [{"name": l} for l in v["labels"]]}
+                               for k, v in issues.items() if v["open"] and want in v["labels"]])
+        if verb == "edit":
+            if "--add-label" in a:
+                raise RuntimeError("label not found")                  # parked label missing -> add errors
+            if "--remove-label" in a:
+                issues[int(a[2])]["labels"].discard(a[a.index("--remove-label") + 1])
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    assert gh.next_pending() == "5"
+    gh.park("5", "deploy gate")
+    assert gh.next_pending() is None         # goal label removed -> excluded despite the parked-label failure
+
+
 def test_run_gh_raises_clear_error_on_failure():
     src = _mod("sources")
     # a failing gh invocation (gh subcommand that doesn't exist) must raise a helpful RuntimeError,

@@ -74,6 +74,26 @@ def test_run_loop_drives_any_injected_source():    # loop.py is source-agnostic 
         assert res["done"] == 3 and res["stopped"] == "backlog-empty" and fake.done == ["a", "b", "c"]
 
 
+def test_run_loop_builds_source_once():    # one source per run, not per _next/_record (labels ensured once)
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 0, max_iter=10)
+        lp = _loop()
+        calls = {"n": 0}
+
+        class Fake:
+            def __init__(s): s.q = ["a", "b", "c"]
+            def next_pending(s): return s.q[0] if s.q else None
+            def mark_in_progress(s, g): pass
+            def complete(s, g): s.q.pop(0)
+            def park(s, g, r): s.q.pop(0)
+
+        fake = Fake()
+        def gs(sdlc_dir, config): calls["n"] += 1; return fake
+        lp.sources.get_source = gs
+        lp.run_loop(base, lambda g: ("done", ""))
+        assert calls["n"] == 1                 # built once for the whole run
+
+
 def test_cli_start_next_record_and_budget():
     with tempfile.TemporaryDirectory() as d:
         base = _backlog(d, 2, max_iter=1)

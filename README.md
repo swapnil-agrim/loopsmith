@@ -169,11 +169,12 @@ status onto GitHub so the board mirrors reality:
 |---|---|
 | picked up | adds the `sdlc:in-progress` label |
 | done | **closes** the issue with a completion comment |
-| parked (needs you) | adds `sdlc:parked` + comments the reason |
+| parked (needs you) | comments the reason, adds `sdlc:parked`, and removes `sdlc:goal` so it leaves the queue |
 
-So your **review queue = open issues labelled `sdlc:parked`**, and **done = closed issues**. The three
-labels are auto-created on first run. **Setup:** run `gh auth login` once; leave `repo` empty to
-auto-detect from the git remote, or set it to `owner/name`.
+So your **review queue = open issues labelled `sdlc:parked`**, and **done = closed issues**;
+**re-queue** a parked issue by re-adding the `sdlc:goal` label. The three labels are auto-created on
+first run. **Setup:** run `gh auth login` once; leave `repo` empty to auto-detect from the git remote,
+or set it to `owner/name`.
 
 > Issues + labels are the v1 surface. GitHub **Projects** boards and a `gh`-aware `/sdlc-status` are on
 > the roadmap — for now, github-mode status is one `gh issue list --label sdlc:goal` away.
