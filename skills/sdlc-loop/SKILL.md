@@ -25,6 +25,12 @@ Then repeat until the helper says stop:
    - an **irreversible or expensive action** (deploy, delete, overwrite, spend, migrate) — NEVER
      run one unattended,
    - a failure you cannot resolve.
+
+   As you complete each phase, **record it** so the issue timeline is the audit trail:
+   `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" note .sdlc "$goal" "<phase>: <key findings / decisions>"`.
+   For a decision/finding/fix worth keeping, record a 🔒 Critical Insight (the
+   `.github/CRITICAL_INSIGHT_TEMPLATE.md` format) the same way. This comments the issue in github mode
+   and appends to `.sdlc/journey/<goal>.md` in local mode; it's fail-open (never breaks the run).
 4. Entering the **review** phase? Move the board card to QC:
    `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" qc .sdlc "$goal"` (github-project board only — a no-op for local/issues).
 5. Record the outcome:

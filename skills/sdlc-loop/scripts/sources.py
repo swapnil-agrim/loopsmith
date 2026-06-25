@@ -10,6 +10,7 @@ GitHubSource reaches GitHub only through an injectable `run` callable, so it is 
 without the network or `gh`.
 """
 import json, pathlib, importlib.util
+from datetime import datetime, timezone
 
 _HERE = pathlib.Path(__file__).resolve().parent
 
@@ -43,6 +44,14 @@ class LocalSource:
 
     def mark_qc(self, goal):
         pass            # QC is a board-only stage; the local source has no QC column
+
+    def note(self, goal, text):
+        # journey-log: append a timestamped note for this goal under .sdlc/journey/<stem>.md
+        jdir = pathlib.Path(self.sdlc_dir) / "journey"
+        jdir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with (jdir / (pathlib.Path(goal).stem + ".md")).open("a", encoding="utf-8") as f:
+            f.write(f"\n## {ts}\n{text}\n")
 
 
 def _run_gh(args, binary="gh"):
@@ -134,6 +143,10 @@ class GitHubSource:
         # this issue again, regardless of whether the parked label was applied. Re-queue by re-adding it.
         self._run(["issue", "edit", goal, *self._repo_args(), "--remove-label", self.goal_label])
         self._set_board_status(goal, self.col["blocked"])
+
+    def note(self, goal, text):
+        # record on the issue timeline (the audit trail): a journey-log / critical-insight comment
+        self._run(["issue", "comment", goal, *self._repo_args(), "--body", text])
 
     # ----- Projects-v2 board (best-effort mirror of issue status onto a kanban board) -----
     # SDLC status -> the board's "SDLC Status" single-select. The whole layer is fail-open: a missing

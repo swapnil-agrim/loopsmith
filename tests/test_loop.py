@@ -94,6 +94,25 @@ def test_run_loop_builds_source_once():    # one source per run, not per _next/_
         assert calls["n"] == 1                 # built once for the whole run
 
 
+def test_note_verb_local_appends_journey():
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1, max_iter=5); lp = _loop()
+        rc = lp.main(["loop.py", "note", base, base + "/goals/0001.md", "research: 3 files"])
+        jlog = pathlib.Path(base) / "journey" / "0001.md"
+        assert rc == 0 and jlog.exists() and "research: 3 files" in jlog.read_text()
+
+
+def test_note_verb_is_fail_open():
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 0, max_iter=5); lp = _loop()
+
+        class Boom:
+            def note(self, g, t): raise RuntimeError("no gh")
+
+        lp.sources.get_source = lambda sdlc_dir, config: Boom()
+        assert lp.main(["loop.py", "note", base, "5", "hello"]) == 0     # recording failure is non-fatal
+
+
 def test_cli_qc_verb_is_a_safe_noop_for_local():
     with tempfile.TemporaryDirectory() as d:
         base = _backlog(d, 1, max_iter=5)
