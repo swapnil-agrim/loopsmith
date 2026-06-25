@@ -16,5 +16,12 @@
     "irreversible_actions": ["deploy", "delete", "overwrite", "spend", "migrate"],
     "on_block": "park"
   },
-  "verify": { "command": "" }
+  "verify": { "command": "" },
+  "knowledge_graph": {
+    "enabled": false,
+    "scope": "full",
+    "_scope_options": "full (code + external research + internal analysis) | research (skip code; internal analysis + external research only)",
+    "builder": "graphify",
+    "auto_refresh": false
+  }
 }
