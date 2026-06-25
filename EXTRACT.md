@@ -1,4 +1,4 @@
-# Extracting loopsmith into its own repository
+# Extracting LoopSmith into its own repository
 
 `loopsmith/` is fully self-contained — it imports nothing outside itself and carries zero
 host-project specifics (enforced by `tests/test_self_contained.py`). That's what makes publishing

@@ -15,7 +15,7 @@ if [ -d "$SRC/commands" ]; then cp -R "$SRC/commands" "$DEST/"; fi
 
 cat <<EOF
 
-✅ loopsmith copied to: $DEST
+✅ LoopSmith copied to: $DEST
 
 To activate the SDLC hook, add this to ~/.claude/settings.json under "hooks"
 (parse-check the file afterward — malformed JSON silently disables hooks):

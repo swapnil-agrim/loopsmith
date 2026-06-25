@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generic Goal-Based SDLC enforcement — INTENT-AWARE. Portable (loopsmith).
+# Generic Goal-Based SDLC enforcement — INTENT-AWARE. Portable (LoopSmith).
 # Wired as a UserPromptSubmit hook. Reads {"prompt": "..."} on stdin, classifies
 # intent with deterministic regex (fast — no LLM), and injects an intent-tagged
 # SDLC directive. Advisory: a false positive over-reminds; a false negative falls
