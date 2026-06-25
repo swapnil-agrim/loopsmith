@@ -2,15 +2,15 @@
 
 **Portable Goal-Based SDLC for any repo.** Install once, and every prompt is held to a 7-phase
 development spine — Goal → Research → Plan → Plan-Review → Implement → Review → Retrospective — so the
-agent stops jumping straight to code. Run it two ways: **goal-mode** (interactive, intervention-driven
-— "day") or **loop-mode** (autonomous, park-and-continue — "night").
+agent stops jumping straight to code. Run it two ways: **goal-mode** (interactive, intervention-driven) or **loop-mode**
+(autonomous, park-and-continue).
 
 The discipline borrows from [](https://github.com//)'s loop
 engineering — a checkable goal, durable-vs-changing state, a separate verifier, a mandatory budget,
 and a non-skippable human gate — wrapped around the SDLC as the per-item engine.
 
 > **Status (v0.4):** all commands shipped — the always-on **SDLC hook**, install paths,
-> **`/sdlc-init`** (scaffold), **`/sdlc-goal`** (interactive day mode), **`/sdlc-loop` +
+> **`/sdlc-init`** (scaffold), **`/sdlc-goal`** (interactive mode), **`/sdlc-loop` +
 > `/sdlc-status`** (autonomous loop driver), and a generic **`sdlc-plan-review`** (the Phase-4 gate
 > `superpowers` doesn't provide). LoopSmith now **auto-installs** its companion plugins (see
 > [Dependencies](#dependencies-auto-installed-companions)).
@@ -32,6 +32,30 @@ matching SDLC directive:
 The hook is *advisory and fail-safe*: a false positive over-reminds, a false negative falls back to
 the standard policy, and it always emits valid JSON (even on garbage or empty stdin). It never calls
 out, never blocks — it shapes what the agent does next.
+
+### How it falls through
+
+A prompt enters through the always-on hook, which routes by intent. Code work then falls through the
+seven phases — with two **gates** that can send it back, and a **park** exit for anything that needs you:
+
+```mermaid
+flowchart TD
+    P(["Your prompt"]) --> H{"Hook classifies intent"}
+    H -->|"read-only / conversational"| ANS(["Answer directly"])
+    H -->|"code change / non-trivial"| G["1. Goal"]
+    G --> RS["2. Research"]
+    RS --> PL["3. Plan"]
+    PL --> PR{"4. Plan-Review"}
+    PR -->|"FIX-FIRST"| PL
+    PR -->|"SOUND"| IM["5. Implement (TDD)"]
+    IM --> RV{"6. Review + verify"}
+    RV -->|"unverified"| IM
+    RV -->|"evidence passes"| RT["7. Retrospective"]
+    RT --> DN(["Done"])
+    PR -.->|"blocked"| PK(["Park"])
+    IM -.->|"irreversible / stuck"| PK
+    RV -.->|"blocked"| PK
+```
 
 ### The seven phases
 
@@ -76,8 +100,8 @@ out, never blocks — it shapes what the agent does next.
 | `hooks/sdlc_gate.sh` | The always-on, intent-aware hook that injects the 7-phase policy on every prompt |
 | **`sdlc-plan-review`** | Phase-4 gate: adversarial plan review (the one phase superpowers doesn't cover) |
 | **`/sdlc-init`** | Scaffold the per-project `.sdlc/` layer (project stub, goals, config, state) |
-| **`/sdlc-goal`** | Day-mode orchestrator: drive ONE goal through all 7 phases interactively |
-| **`/sdlc-loop`** | Night-mode orchestrator: drive the backlog through all 7 phases autonomously |
+| **`/sdlc-goal`** | Interactive orchestrator: drive ONE goal through all 7 phases, pausing at each gate |
+| **`/sdlc-loop`** | Autonomous orchestrator: drive the backlog through all 7 phases, park-and-continue |
 | **`/sdlc-status`** | Report backlog counts + whether the review queue needs attention |
 
 **Relies on** (auto-installed companions — see [Dependencies](#dependencies-auto-installed-companions)):
@@ -99,7 +123,7 @@ out, never blocks — it shapes what the agent does next.
 Both modes drive the **same seven phases** per goal — they differ in who's in the loop and what
 happens at a checkpoint. The always-on hook underpins both.
 
-### `/sdlc-goal <goal>` — day (interactive)
+### `/sdlc-goal <goal>` — interactive
 
 One goal through the engine, **pausing for your approval at each gate**. Take a goal from
 `.sdlc/goals/` (preferred — so it's tracked) or inline text, then walk Goal → Research → Plan →
@@ -107,7 +131,7 @@ One goal through the engine, **pausing for your approval at each gate**. Take a 
 before "done"). It does **not** auto-proceed past checkpoints — you approve each one. The outcome is
 recorded to `.sdlc/` (`done`, or `parked` with a reason) so it shows in `/sdlc-status`.
 
-### `/sdlc-loop` — night (autonomous)
+### `/sdlc-loop` — autonomous
 
 Pulls the backlog — local `.sdlc/goals/` files or [GitHub issues](#your-backlog-local-files-or-github-issues) —
 and runs **each goal autonomously** through the same phases. Anything
@@ -124,7 +148,21 @@ each invocation and is resume-safe (a budget stop, re-run, picks up where it lef
 **`/sdlc-status`** any time for backlog counts (pending / in-progress / done / parked) + whether the
 review queue needs attention.
 
-| | `/sdlc-goal` (day) | `/sdlc-loop` (night) |
+The autonomous loop runs the backlog **park-and-continue** — it parks whatever needs you and keeps going:
+
+```mermaid
+flowchart TD
+    ST(["/sdlc-loop — reset run budget"]) --> NX{"Next pending goal?"}
+    NX -->|"backlog empty"| SD(["Stop — all done"])
+    NX -->|"budget reached"| SB(["Stop — budget"])
+    NX -->|"goal"| RUN["Run it through the 7-phase pipeline"]
+    RUN -->|"done + verified"| CMP["Mark done"]
+    RUN -->|"needs you / irreversible / unresolved"| PRK["Park to review queue"]
+    CMP --> NX
+    PRK --> NX
+```
+
+| | `/sdlc-goal` (interactive) | `/sdlc-loop` (autonomous) |
 |---|---|---|
 | Scope | one goal | the whole `.sdlc/goals/` backlog |
 | At a checkpoint | pauses for you | parks to the review queue, continues |

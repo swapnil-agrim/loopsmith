@@ -1,6 +1,6 @@
 ---
 name: sdlc-goal
-description: Run ONE goal through the full Goal-Based SDLC interactively (day mode), pausing for your approval at each gate, then record the outcome. Use when the user runs /sdlc-goal or wants to drive a single goal end-to-end with oversight.
+description: Run ONE goal through the full Goal-Based SDLC interactively, pausing for your approval at each gate, then record the outcome. Use when the user runs /sdlc-goal or wants to drive a single goal end-to-end with oversight.
 allowed-tools: Bash(python3 *)
 ---
 
