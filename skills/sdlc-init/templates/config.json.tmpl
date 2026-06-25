@@ -11,11 +11,12 @@
       "parked_label": "sdlc:parked",
       "project": {
         "enabled": true,
-        "_comment": "Mirror issue status onto a GitHub Projects v2 board (needs the gh `project` scope). Fail-open: if it can't, the loop still runs on issues+labels.",
+        "_comment": "Mirror issue status onto a GitHub Projects v2 board (needs the gh `project` scope). Flow: Backlog -> In Progress -> QC -> Done, Blocked for parked. Fail-open: if it can't, the loop still runs on issues+labels.",
         "owner": "",
         "title": "",
         "number": null,
-        "status_field": "SDLC Status"
+        "status_field": "SDLC Status",
+        "columns": { "backlog": "Backlog", "in_progress": "In Progress", "qc": "QC", "done": "Done", "blocked": "Blocked" }
       }
     }
   },

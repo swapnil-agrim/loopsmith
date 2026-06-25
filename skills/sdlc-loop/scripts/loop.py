@@ -65,11 +65,15 @@ def main(argv):
         config = state.load_config(argv[2])
         kind, goal = _next(argv[2], sources.get_source(argv[2], config), config)
         print(goal if kind == "goal" else kind); return 0
+    if len(argv) >= 4 and argv[1] == "qc":          # board-only: move a goal to QC at the Review phase
+        config = state.load_config(argv[2])
+        sources.get_source(argv[2], config).mark_qc(argv[3]); return 0
     if len(argv) >= 5 and argv[1] == "record":
         config = state.load_config(argv[2])
         _record(argv[2], sources.get_source(argv[2], config), argv[3], argv[4],
                 argv[5] if len(argv) > 5 else ""); return 0
-    print("usage: loop.py start <dir> | next <dir> | record <dir> <goal> done|parked [reason]", file=sys.stderr)
+    print("usage: loop.py start <dir> | next <dir> | qc <dir> <goal> | "
+          "record <dir> <goal> done|parked [reason]", file=sys.stderr)
     return 2
 
 

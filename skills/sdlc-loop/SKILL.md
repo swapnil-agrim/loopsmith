@@ -25,10 +25,13 @@ Then repeat until the helper says stop:
    - an **irreversible or expensive action** (deploy, delete, overwrite, spend, migrate) — NEVER
      run one unattended,
    - a failure you cannot resolve.
-4. Record the outcome:
+4. Entering the **review** phase? Move the board card to QC:
+   `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" qc .sdlc "$goal"` (github-project board only — a no-op for local/issues).
+5. Record the outcome:
    `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" record .sdlc "$goal" done` (or `parked "reason"`).
-5. Loop.
+6. Loop.
 
 At STOP, report: N done, M parked. If anything parked, point the user to the parked items —
-`.sdlc/state/review-queue.md` in local mode, or the issues labelled `sdlc:parked` in github mode.
+`.sdlc/state/review-queue.md` in local mode, or the issues labelled `sdlc:parked` (the **Blocked**
+column on the board) in github mode.
 Parking is always correct over forcing an irreversible action to "finish" a goal.
