@@ -109,7 +109,8 @@ recorded to `.sdlc/` (`done`, or `parked` with a reason) so it shows in `/sdlc-s
 
 ### `/sdlc-loop` — night (autonomous)
 
-Pulls the `.sdlc/goals/` backlog and runs **each goal autonomously** through the same phases. Anything
+Pulls the backlog — local `.sdlc/goals/` files or [GitHub issues](#your-backlog-local-files-or-github-issues) —
+and runs **each goal autonomously** through the same phases. Anything
 that needs a human is **parked to `.sdlc/state/review-queue.md`** and the loop continues — it parks,
 it does not force. It parks on:
 
@@ -130,6 +131,56 @@ review queue needs attention.
 | Approval | every gate | only what it parks |
 | Stops on | goal complete / you stop | backlog empty or per-run budget |
 | Irreversible action | asks you | always parks — never runs it |
+
+---
+
+## Your backlog: local files or GitHub issues
+
+Goals live in a backlog — you choose **where**, once, in `.sdlc/config.json` → `discovery.source`.
+The loop runs the **same** way for both; only the source of goals and how status is recorded differ.
+
+### Local goal files — default, zero-dep
+
+Goals are markdown files under `.sdlc/goals/NNNN-slug.md`; the loop advances each file's frontmatter
+`status: pending → in_progress → done | parked`, in filename order.
+
+- **Add a goal:** copy `0001-example.md`, bump the number, fill `done_when` (a *checkable* condition).
+- **Commit** `.sdlc/goals/`, `.sdlc/project.md`, `.sdlc/config.json`; **gitignore** `.sdlc/state/`
+  (machine-written loop state — `/sdlc-init` prints this tip).
+- **Parked** goals collect in `.sdlc/state/review-queue.md` — your "needs a human" list.
+
+Everything stays in your repo; nothing leaves your machine. This is the zero-dependency path.
+
+### GitHub issues — opt-in, needs the `gh` CLI
+
+Treat **GitHub Issues as the backlog** so planning and triage live where your team already works:
+
+```json
+"discovery": {
+  "source": "github",
+  "github": { "repo": "", "goal_label": "sdlc:goal" }
+}
+```
+
+File each goal as an **issue labelled `sdlc:goal`** (the issue body is the goal). The loop maps SDLC
+status onto GitHub so the board mirrors reality:
+
+| SDLC status | What the loop does on GitHub |
+|---|---|
+| picked up | adds the `sdlc:in-progress` label |
+| done | **closes** the issue with a completion comment |
+| parked (needs you) | adds `sdlc:parked` + comments the reason |
+
+So your **review queue = open issues labelled `sdlc:parked`**, and **done = closed issues**. The three
+labels are auto-created on first run. **Setup:** run `gh auth login` once; leave `repo` empty to
+auto-detect from the git remote, or set it to `owner/name`.
+
+> Issues + labels are the v1 surface. GitHub **Projects** boards and a `gh`-aware `/sdlc-status` are on
+> the roadmap — for now, github-mode status is one `gh issue list --label sdlc:goal` away.
+
+**Which to pick?** **Local** for a self-contained, zero-dependency repo where the backlog ships with
+the code. **GitHub** to keep goals visible to your team, triaged in Issues/Projects, and tied to the
+PRs the work produces.
 
 ---
 
@@ -204,7 +255,9 @@ a second-host (Codex/etc.) adapter is not yet shipped.
 
 ## Requirements
 
-- **Runtime:** bash + python3 (stdlib) — zero dependencies.
+- **Runtime:** bash + python3 (stdlib) — zero dependencies. The optional **GitHub backlog source**
+  additionally needs the [`gh`](https://cli.github.com) CLI, authenticated (`gh auth login`); the
+  default local source stays zero-dep.
 - **Companions:** `superpowers` + `code-review` (auto-installed via the plugin path; manual on the
   fallback path).
 - **Dev/test:** `pip install pytest`, then `pytest tests/ -v`.
