@@ -15,6 +15,9 @@ counterpart to the autonomous `/sdlc-loop`).
    **Goal** (restate) → **Research** (blast radius) → **Plan** → **Plan-Review** (use the
    `sdlc-plan-review` skill — never skip) → **Implement** (test-first) → **Review** (evidence before
    "done"). Use `superpowers:*` skills where installed.
+   Record each phase as you go — `python3 "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/loop.py" note .sdlc
+   "<goal>" "<phase>: <findings / decisions>"` (and 🔒 Critical Insights for key decisions) — so the
+   issue timeline (github mode) or `.sdlc/journey/` (local) holds the audit trail.
 3. When the goal is genuinely complete (verified, not assumed), record it:
    `python3 "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/loop.py" record .sdlc "<goal-path>" done`
    so it shows as done in `/sdlc-status`. If the user stops early, or it hits an irreversible action

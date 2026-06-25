@@ -68,12 +68,19 @@ def main(argv):
     if len(argv) >= 4 and argv[1] == "qc":          # board-only: move a goal to QC at the Review phase
         config = state.load_config(argv[2])
         sources.get_source(argv[2], config).mark_qc(argv[3]); return 0
+    if len(argv) >= 5 and argv[1] == "note":        # record a journey-log / critical-insight note (fail-open)
+        config = state.load_config(argv[2])
+        try:
+            sources.get_source(argv[2], config).note(argv[3], argv[4])
+        except Exception as e:
+            print(f"loop.py note: recording failed (non-fatal): {e}", file=sys.stderr)
+        return 0
     if len(argv) >= 5 and argv[1] == "record":
         config = state.load_config(argv[2])
         _record(argv[2], sources.get_source(argv[2], config), argv[3], argv[4],
                 argv[5] if len(argv) > 5 else ""); return 0
     print("usage: loop.py start <dir> | next <dir> | qc <dir> <goal> | "
-          "record <dir> <goal> done|parked [reason]", file=sys.stderr)
+          "note <dir> <goal> <text> | record <dir> <goal> done|parked [reason]", file=sys.stderr)
     return 2
 
 
