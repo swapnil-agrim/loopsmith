@@ -211,10 +211,11 @@ backlog mirrors reality:
 
 | SDLC status | On the issue | On the Projects board |
 |---|---|---|
-| pending (in backlog) | open issue labelled `sdlc:goal` | card set to **Todo** |
-| picked up | adds the `sdlc:in-progress` label | card set to **In Progress** |
+| pending (in backlog) | open issue labelled `sdlc:goal` | card set to **Backlog** |
+| picked up → Research / Plan / Implement | adds the `sdlc:in-progress` label | card set to **In Progress** |
+| Review (the quality cycle) | issue stays open | card set to **QC** |
 | done | **closes** the issue with a completion comment | card set to **Done** |
-| parked (needs you) | comments the reason, adds `sdlc:parked`, and removes `sdlc:goal` so it leaves the queue | card set to **Parked** |
+| parked (needs you) | comments the reason, adds `sdlc:parked`, and removes `sdlc:goal` so it leaves the queue | card set to **Blocked** |
 
 So your **review queue = open issues labelled `sdlc:parked`**, and **done = closed issues**;
 **re-queue** a parked issue by re-adding the `sdlc:goal` label. The three labels are auto-created on
@@ -225,12 +226,13 @@ or set it to `owner/name`.
 
 With `discovery.github.project.enabled` (on by default for new repos), the loop also drives a **GitHub
 Projects v2 board**: on first run it finds-or-creates a board titled `<repo> — SDLC`, adds every
-`sdlc:goal` issue as a card, and keeps one single-select **SDLC Status** field in sync (Todo → In
-Progress → Done, or Parked) as goals move — the table above. It needs the `gh` token's **`project`**
-scope and is **fail-open**: no scope, or any API error, and the loop simply continues on issues +
-labels (nothing breaks). Tune it under `discovery.github.project` — `owner`/`title` (default
-`<repo> — SDLC`), `number` (reuse an existing board), `status_field` (the field's name). A `gh`-aware
-`/sdlc-status` for github mode is still on the roadmap.
+`sdlc:goal` issue as a card, and keeps one single-select **SDLC Status** field in sync
+(**Backlog → In Progress → QC → Done**, **Blocked** for parked) as goals move — the table above. The
+**QC** card move happens at the Review phase. It needs the `gh` token's **`project`** scope and is
+**fail-open**: no scope, or any API error, and the loop simply continues on issues + labels (nothing
+breaks). Tune it under `discovery.github.project` — `owner`/`title` (default `<repo> — SDLC`), `number`
+(reuse an existing board), `status_field` (the field's name), and `columns` (override the column names
+to match an existing board). A `gh`-aware `/sdlc-status` for github mode is still on the roadmap.
 
 **Which to pick?** **Local** for a self-contained, zero-dependency repo where the backlog ships with
 the code. **GitHub** to keep goals visible to your team, triaged in Issues/Projects, and tied to the
