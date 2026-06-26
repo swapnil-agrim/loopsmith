@@ -217,6 +217,47 @@ def test_project_failures_do_not_break_issue_transitions():
     assert any("issue close 5" in c for c in v)
 
 
+# --- transient-error retry: a `gh project` blip must not silently drop a card-status update ---
+
+def test_transient_project_error_retried_until_card_set():
+    """The bug: an intermittent `gh project` error ("unknown owner type") silently dropped a
+    card-status update, so the board fell out of sync with the issues. With retry/backoff the
+    item-edit is retried and the card eventually lands."""
+    src = _mod("sources")
+    base = project_world(projects=[], issues=[{"number": 5, "labels": [{"name": "sdlc:goal"}]}])
+    attempts = {"item_edit": 0}
+    def flaky(a):
+        if a[:2] == ["project", "item-edit"]:
+            attempts["item_edit"] += 1
+            if attempts["item_edit"] <= 2:                 # first 2 tries blip...
+                raise RuntimeError("gh project item-edit failed: unknown owner type")
+        return base(a)                                     # ...3rd try (and everything else) succeeds
+    flaky.calls = base.calls
+    gh = src.GitHubSource(_cfg(project={"enabled": True}), run=flaky)
+    gh._RETRY_BASE = 0                                     # hermetic: no real backoff sleeps
+    gh.mark_in_progress("5")
+    assert any(x["item"] == "PVTI_5" and x["option"] == "s_in_progress" for x in _edits(base))  # card landed
+    assert attempts["item_edit"] == 3                      # 2 transient failures were retried, then success
+
+
+def test_permanent_project_error_not_retried_stays_fail_open():
+    """A non-transient project error (e.g. missing `project` scope) must fail fast — one attempt,
+    no backoff burned on a hopeless call — and still fall open without breaking issue transitions."""
+    src = _mod("sources")
+    base = project_world(projects=[], issues=[{"number": 5, "labels": [{"name": "sdlc:goal"}]}])
+    attempts = {"item_edit": 0}
+    def flaky(a):
+        if a[:2] == ["project", "item-edit"]:
+            attempts["item_edit"] += 1
+            raise RuntimeError("gh project item-edit failed: missing `project` scope")
+        return base(a)
+    flaky.calls = base.calls
+    gh = src.GitHubSource(_cfg(project={"enabled": True}), run=flaky)
+    gh._RETRY_BASE = 0
+    gh.mark_in_progress("5")                               # must not raise (fail-open)
+    assert attempts["item_edit"] == 1                      # permanent error -> exactly one attempt, no retry
+
+
 # --- backlog sync must not clobber in-flight cards; number match must be type-tolerant ---
 
 def test_sync_does_not_reset_status_of_cards_already_on_board():

@@ -9,7 +9,7 @@ status transitions are recorded, behind four ops: next_pending / mark_in_progres
 GitHubSource reaches GitHub only through an injectable `run` callable, so it is unit-testable
 without the network or `gh`.
 """
-import json, pathlib, importlib.util
+import json, pathlib, importlib.util, time
 from datetime import datetime, timezone
 
 _HERE = pathlib.Path(__file__).resolve().parent
@@ -68,6 +68,13 @@ class GitHubSource:
     """Goals are open GitHub issues labelled `goal_label`, ordered by issue number. Status via labels;
     done closes the issue; parked labels + comments it. Talks to GitHub through `run` (default _run_gh)."""
     _LABEL_COLORS = (("goal_label", "0e8a16"), ("in_progress_label", "fbca04"), ("parked_label", "d93f0b"))
+    # `gh project` is occasionally flaky (intermittent "unknown owner type", 5xx, rate-limit). Those
+    # blips silently dropped card-status updates, drifting the board from the issues (the source of
+    # truth). Retry project calls with short exponential backoff; non-transient errors still fail fast.
+    _PROJECT_RETRIES = 4                         # total attempts for a `gh project` call
+    _RETRY_BASE = 0.5                            # backoff seconds: base * 2**attempt (override to 0 in tests)
+    _TRANSIENT = ("unknown owner type", "rate limit", "secondary rate", "429",
+                  "500", "502", "503", "504", "timeout", "timed out", "try again", "temporarily")
 
     def __init__(self, config, run=None):
         gh = ((config.get("discovery") or {}).get("github")) or {}
@@ -75,7 +82,7 @@ class GitHubSource:
         self.goal_label = gh.get("goal_label", "sdlc:goal")
         self.in_progress_label = gh.get("in_progress_label", "sdlc:in-progress")
         self.parked_label = gh.get("parked_label", "sdlc:parked")
-        self._run = run or _run_gh
+        self._raw_run = run or _run_gh
         self._labels_ready = False
         # Projects-v2 board (opt-in). An ABSENT `project` block => disabled, so existing github
         # configs behave exactly as before; the sdlc-init template ships `enabled: true` for new repos.
@@ -92,6 +99,26 @@ class GitHubSource:
         self._field_id = None
         self._status_options = {}               # {option name -> single-select option id}
         self._items = None                      # {issue number -> board item id}, lazily loaded
+
+    def _run(self, args):
+        """Single chokepoint for every `gh` call. `project` subcommands are retried with bounded
+        exponential backoff on transient API errors (e.g. the intermittent "unknown owner type") so a
+        blip can't silently drop a board update; everything else passes straight through. Still
+        fail-open: after the last attempt the error propagates to the board layer's try/except."""
+        if not args or args[0] != "project":
+            return self._raw_run(args)
+        for attempt in range(self._PROJECT_RETRIES):
+            try:
+                return self._raw_run(args)
+            except Exception as e:
+                if attempt == self._PROJECT_RETRIES - 1 or not self._is_transient(e):
+                    raise
+                time.sleep(self._RETRY_BASE * (2 ** attempt))
+
+    @classmethod
+    def _is_transient(cls, exc):
+        msg = str(exc).lower()
+        return any(m in msg for m in cls._TRANSIENT)
 
     def _repo_args(self):
         return ["--repo", self.repo] if self.repo else []
