@@ -268,6 +268,10 @@ breaks). Tune it under `discovery.github.project` — `owner`/`title` (default `
 (reuse an existing board), `status_field` (the field's name), and `columns` (override the column names
 to match an existing board). A `gh`-aware `/sdlc-status` for github mode is still on the roadmap.
 
+> **One-time board setup:** GitHub's built-in **Status** field can't be deleted, so a kit-managed board
+> carries both it and the **SDLC Status** field the loop drives. To see your cards flow through
+> Backlog → In Progress → QC → Done → Blocked, open the board → **⋯ → Group by → SDLC Status** once.
+
 **Sprint / PM scaffolding.** Run **`/sdlc-init --github`** to also install GitHub project-management
 hygiene into `.github/`: **epic** and **task** issue templates (epics decompose into task sub-issues),
 a **bug** template, an **auto-add-to-project workflow** that drops every new issue into the board's
