@@ -7,9 +7,9 @@ goal moves across a **GitHub Projects board** (Backlog → In Progress → QC �
 trail recorded on the issue. Two modes: **interactive** (intervention-driven) or **autonomous**
 (park-and-continue).
 
-The discipline borrows from [](https://github.com//)'s loop
-engineering — a checkable goal, durable-vs-changing state, a separate verifier, a mandatory budget,
-and a non-skippable human gate — wrapped around the SDLC as the per-item engine.
+The per-item engine is disciplined loop engineering — a checkable goal, durable-vs-changing state, a
+separate verifier, a mandatory budget, and a non-skippable human gate — wrapped around the SDLC spine
+so every goal is driven to a verified finish, not just attempted.
 
 > **Status (v0.5):** all commands shipped — the always-on **SDLC hook**, install paths,
 > **`/sdlc-init`** (scaffold), **`/sdlc-goal`** (interactive mode), **`/sdlc-loop` +
@@ -409,7 +409,6 @@ a second-host (Codex/etc.) adapter is not yet shipped.
 
 LoopSmith stands on other people's work.
 
-- **[](https://github.com//)** by ** ([@](https://github.com/))** — the design foundation. LoopSmith's loop engineering is built on 's ideas: a *checkable* goal, *durable-vs-changing* state, a *separate verifier*, a mandatory stop condition (*budget*), and a *non-skippable* human gate. That vocabulary lives on in LoopSmith's config schema (`discovery` / `verify` / `gates` / `budget`) and its portable-kit packaging (`install.sh` + `SKILL.md` + `templates/`). No code or text was copied — LoopSmith's scripts are original and self-contained — but the concepts and shape are its lineage. MIT-licensed, like this kit.
 - **[superpowers](https://github.com/obra/superpowers)** by **Jesse Vincent ([@obra](https://github.com/obra))** — supplies the per-phase execution skills (brainstorming, writing-plans, test-driven-development, executing-plans, requesting-code-review, verification-before-completion). Auto-installed as a dependency.
 - **[code-review](https://github.com/anthropics/claude-plugins-official)** by **Anthropic** — the `/code-review` skill used in the Review phase. Auto-installed as a dependency.
 
@@ -417,4 +416,4 @@ Both companion plugins install from the official **`claude-plugins-official`** m
 
 ## License
 
-MIT. The companion plugins and  are each under their own licenses (superpowers, code-review, and  are all MIT at the time of writing).
+MIT. The companion plugins are each under their own licenses (superpowers and code-review are both MIT at the time of writing).
