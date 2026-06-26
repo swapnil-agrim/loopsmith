@@ -325,6 +325,22 @@ unaffected.
 > Keep `.sdlc/knowledge/research/` and the builder's output (`graphify-out/`) out of git — they're
 > machine-accumulated. Commit `.sdlc/knowledge/analysis/` to version your curated learnings.
 
+### The read side — context recall (never lose the thread)
+
+The graph above is the *write* side (memory in). The matching *read* side is **`/sdlc-context`**: a
+pre-flight that, before a goal runs, pulls the **relevant slice** of that memory back into context —
+retrieval by **relevance, not recency** — so a crucial earlier finding isn't missed just because the
+context window flushed. It's gated on the KG (a no-op when disabled), and `/sdlc-loop` + `/sdlc-goal`
+run it automatically at the start of each goal. It assembles a short, **cited** brief from three
+sources: the **graph** (`graphify query`), **past issues / 🔒 Critical Insights**, and the
+**conventions** (`.sdlc/project.md` + governing `CLAUDE.md`).
+
+For on-demand pull *during* a run, expose the graph as a live tool — run **`graphify --mcp`** (or add
+the graphify MCP server to your Claude Code config, pointed at `graphify-out/graph.json`) — so the
+agent can query it whenever it hits unfamiliar code, keeping the working window small while the full
+history stays a query away. The closed loop: **record** (issues / journey) → **ingest** (`/sdlc-kg`)
+→ **recall** (`/sdlc-context` + MCP) → run.
+
 ## Install (plugin — recommended)
 
 ```

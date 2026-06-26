@@ -17,7 +17,10 @@ Then repeat until the helper says stop:
 
 1. `goal=$(python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" next .sdlc)`
 2. If output is `DONE` (backlog empty) or `BUDGET` (per-run iteration cap hit) → STOP.
-3. Otherwise read the goal, then run it through the full SDLC (research → plan → plan-review →
+3. Otherwise: first **recall prior art** — if the knowledge graph is enabled, run the `sdlc-context`
+   pre-flight to pull a cited brief from the graph + past issues + conventions, so the goal starts
+   informed by history instead of a flushed window (no-op when the KG is off). Then read the goal and
+   run it through the full SDLC (research → plan → plan-review →
    implement → review). `$goal` is a **file path** in local mode (read the file) or a **GitHub issue
    number** in github mode (`gh issue view "$goal"` to read it). **Park instead of forcing through**
    if you hit any of:
