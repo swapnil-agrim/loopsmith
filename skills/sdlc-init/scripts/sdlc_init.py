@@ -20,14 +20,14 @@ def scaffold(target_dir):
             skipped.append(str(rel))
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(tmpl.read_text().replace("{{PROJECT_NAME}}", project_name))
+        dest.write_text(tmpl.read_text(encoding="utf-8").replace("{{PROJECT_NAME}}", project_name), encoding="utf-8")
         created.append(str(rel))
     return created, skipped
 
 
 _DEMO_GOAL = """---
 id: 0000
-title: "Demo — write a LoopSmith hello note"
+title: "Demo - write a LoopSmith hello note"
 lane: auto
 done_when: "loopsmith-demo.md exists with a one-line note"
 auto_ok: true
@@ -48,7 +48,7 @@ def scaffold_demo(target_dir):
     if dest.exists():
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(_DEMO_GOAL)
+    dest.write_text(_DEMO_GOAL, encoding="utf-8")
     return True
 
 
@@ -65,7 +65,7 @@ def scaffold_github(target_dir):
             skipped.append(str(rel))
             continue
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(tmpl.read_text().replace("{{PROJECT_NAME}}", project_name))
+        dest.write_text(tmpl.read_text(encoding="utf-8").replace("{{PROJECT_NAME}}", project_name), encoding="utf-8")
         created.append(str(rel))
     return created, skipped
 
@@ -90,7 +90,7 @@ def main(argv):
               "(this script won't edit .gitignore for you).")
     if "--github" in flags:
         gcreated, gskipped = scaffold_github(target)
-        print(f"\nsdlc-init: GitHub PM scaffolding — {len(gcreated)} created, {len(gskipped)} skipped")
+        print(f"\nsdlc-init: GitHub PM scaffolding - {len(gcreated)} created, {len(gskipped)} skipped")
         for c in gcreated:
             print(f"  + .github/{c}")
         for s in gskipped:
@@ -101,11 +101,11 @@ def main(argv):
                   "enable auto-add of new issues to the Backlog.")
     if "--demo" in flags:
         if scaffold_demo(target):
-            print("\nsdlc-init: demo goal queued — `.sdlc/goals/0000-demo.md`. Run `/sdlc-loop` to watch "
+            print("\nsdlc-init: demo goal queued - `.sdlc/goals/0000-demo.md`. Run `/sdlc-loop` to watch "
                   "the SDLC run it end to end (Goal -> Research -> ... -> Review).")
             if "--github" in flags:
-                print("  github mode: file it as an issue — `gh issue create --label sdlc:goal "
-                      "--title \"[Demo] LoopSmith\" --body \"<paste the demo goal body>\"` — then `/sdlc-loop` "
+                print("  github mode: file it as an issue - `gh issue create --label sdlc:goal "
+                      "--title \"[Demo] LoopSmith\" --body \"<paste the demo goal body>\"` - then `/sdlc-loop` "
                       "creates the board and moves the card Backlog -> ... -> Done.")
         else:
             print("\nsdlc-init: demo goal already present (kept).")
