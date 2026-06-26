@@ -17,6 +17,19 @@ def test_goal_skill_wellformed_and_records():
     assert "loop.py" in t and "record" in t        # records the outcome to .sdlc state
 
 
+def test_context_skill_gates_on_kg():
+    t = (ROOT / "skills" / "sdlc-context" / "SKILL.md").read_text()
+    assert "name: sdlc-context" in t and "allowed-tools:" in t
+    assert "kg.py" in t and "status" in t          # gated: only acts when the KG is enabled/built
+    assert "graphify query" in t and "--mcp" in t  # push (pre-flight query) + pull (live MCP)
+
+
+def test_orchestrators_run_context_preflight():
+    for skill in ("sdlc-loop", "sdlc-goal"):
+        t = (ROOT / "skills" / skill / "SKILL.md").read_text()
+        assert "sdlc-context" in t, f"{skill} must run the context pre-flight"
+
+
 def test_versions_aligned():
     p = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
     mk = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())

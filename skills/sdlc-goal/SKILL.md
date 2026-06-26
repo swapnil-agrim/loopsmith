@@ -11,7 +11,9 @@ counterpart to the autonomous `/sdlc-loop`).
 
 1. Identify the goal: a path under `.sdlc/goals/` (preferred — so it's tracked) or inline text the
    user gives. If inline, offer to save it as the next `.sdlc/goals/NNNN-*.md`.
-2. Drive the phases, pausing for the user at each gate:
+2. **Recall first** — if the knowledge graph is enabled, run the `sdlc-context` pre-flight to assemble
+   a cited brief from the graph + past issues + conventions (no-op when the KG is off). Then drive the
+   phases, pausing for the user at each gate:
    **Goal** (restate) → **Research** (blast radius) → **Plan** → **Plan-Review** (use the
    `sdlc-plan-review` skill — never skip) → **Implement** (test-first) → **Review** (evidence before
    "done"). Use `superpowers:*` skills where installed.
