@@ -1,4 +1,4 @@
-import json, pathlib, importlib.util, tempfile
+import json, os, subprocess, sys, pathlib, importlib.util, tempfile
 
 SCAFFOLDER = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-init" / "scripts" / "sdlc_init.py"
 
@@ -151,6 +151,18 @@ def test_scaffold_demo_idempotent_preserves_edits():
         assert mod.scaffold_demo(tmp) is True
         d = pathlib.Path(tmp) / ".sdlc" / "goals" / "0000-demo.md"; d.write_text("EDITED")
         assert mod.scaffold_demo(tmp) is False and d.read_text() == "EDITED"
+
+
+def test_scaffold_survives_non_utf8_locale():
+    # templates + the demo goal contain non-ASCII (em-dashes); scaffolding must read/write them as
+    # UTF-8, not the locale default, so it doesn't crash under a C/POSIX locale (bare CI/containers).
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0"}
+        r = subprocess.run([sys.executable, str(SCAFFOLDER), tmp, "--github", "--demo"],
+                           capture_output=True, text=True, env=env)
+        assert r.returncode == 0, r.stderr
+        assert (pathlib.Path(tmp) / ".sdlc" / "goals" / "0000-demo.md").exists()
+        assert (pathlib.Path(tmp) / ".github" / "ISSUE_TEMPLATE" / "epic.md").exists()
 
 
 def test_main_errors_on_missing_target():
