@@ -1,4 +1,4 @@
-import json, pathlib, importlib.util, tempfile
+import json, os, subprocess, sys, pathlib, importlib.util, tempfile
 
 SCAFFOLDER = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-init" / "scripts" / "sdlc_init.py"
 
@@ -126,6 +126,43 @@ def test_main_without_github_flag_skips_dotgithub():
     with tempfile.TemporaryDirectory() as tmp:
         mod.main(["sdlc_init.py", tmp])
         assert not (pathlib.Path(tmp) / ".github").exists()             # opt-in only
+
+
+def test_demo_flag_queues_runnable_goal():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        assert mod.main(["sdlc_init.py", tmp, "--demo"]) == 0
+        demo = pathlib.Path(tmp) / ".sdlc" / "goals" / "0000-demo.md"
+        assert demo.exists()
+        t = demo.read_text()
+        assert "status: pending" in t and "done_when" in t and "loopsmith-demo.md" in t
+
+
+def test_no_demo_flag_no_demo_goal():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        mod.main(["sdlc_init.py", tmp])
+        assert not (pathlib.Path(tmp) / ".sdlc" / "goals" / "0000-demo.md").exists()   # opt-in only
+
+
+def test_scaffold_demo_idempotent_preserves_edits():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        assert mod.scaffold_demo(tmp) is True
+        d = pathlib.Path(tmp) / ".sdlc" / "goals" / "0000-demo.md"; d.write_text("EDITED")
+        assert mod.scaffold_demo(tmp) is False and d.read_text() == "EDITED"
+
+
+def test_scaffold_survives_non_utf8_locale():
+    # templates + the demo goal contain non-ASCII (em-dashes); scaffolding must read/write them as
+    # UTF-8, not the locale default, so it doesn't crash under a C/POSIX locale (bare CI/containers).
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONUTF8": "0"}
+        r = subprocess.run([sys.executable, str(SCAFFOLDER), tmp, "--github", "--demo"],
+                           capture_output=True, text=True, env=env)
+        assert r.returncode == 0, r.stderr
+        assert (pathlib.Path(tmp) / ".sdlc" / "goals" / "0000-demo.md").exists()
+        assert (pathlib.Path(tmp) / ".github" / "ISSUE_TEMPLATE" / "epic.md").exists()
 
 
 def test_main_errors_on_missing_target():
