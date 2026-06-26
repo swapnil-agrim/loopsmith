@@ -77,20 +77,20 @@ flowchart TD
 
 1. **Goal** — restate the objective as one concrete, checkable goal. For feature/creative work, this
    is where you explore intent and requirements first.
-   → *owned by* `superpowers:brainstorming`.
+   → *runs via* `superpowers:brainstorming`.
 2. **Research** — map the blast radius: affected files, existing patterns, constraints, prior art.
    → *agent practice; no dedicated skill.*
 3. **Plan** — write the plan: steps, files, tests, and a definition-of-done.
-   → *owned by* `superpowers:writing-plans`.
+   → *runs via* `superpowers:writing-plans`.
 4. **Plan-Review** — adversarially review the plan **before** any edit: verify each claim against the
    real code, stress-test what breaks after it ships, check scope/fit. Never skipped. This is the gate
    `superpowers` doesn't provide, so LoopSmith ships it.
    → *owned by* **`sdlc-plan-review`** (ships with LoopSmith).
 5. **Implement** — build test-first and execute the plan step by step.
-   → *owned by* `superpowers:test-driven-development` + `superpowers:executing-plans`.
+   → *runs via* `superpowers:test-driven-development` + `superpowers:executing-plans`.
 6. **Review** — code-review the diff for real findings, then verify every claim with evidence before
    declaring anything done.
-   → *owned by* `code-review` (`/code-review`) + `superpowers:requesting-code-review` +
+   → *runs via* `code-review` (`/code-review`) + `superpowers:requesting-code-review` +
    `superpowers:verification-before-completion`.
 7. **Retrospective** — capture lessons; lock the critical insights so the next loop is better.
    → *agent practice; no dedicated skill.*
@@ -106,6 +106,8 @@ flowchart TD
 | 5 | Implement | Build test-first; execute the plan | `test-driven-development`, `executing-plans` | superpowers |
 | 6 | Review | Code-review the diff; verify claims with evidence before "done" | `/code-review`, `requesting-code-review`, `verification-before-completion` | code-review + superpowers |
 | 7 | Retrospective | Capture lessons; lock critical insights | *(agent practice)* | — |
+
+> `superpowers` and `code-review` are **recommended companions** (named in the hook policy + auto-installed) — **not hard dependencies**. LoopSmith names them for the phases above but **degrades gracefully**: without them, the phase names still guide the work.
 
 ### What LoopSmith ships vs relies on
 
@@ -131,6 +133,23 @@ flowchart TD
 > and `/sdlc-status` set up and report on the work. The phase owners above are *who does the work* at
 > each step — superpowers and code-review supply the execution muscle, LoopSmith supplies the spine,
 > the Phase-4 gate, and the orchestration.
+
+### Why not just superpowers?
+
+`superpowers` gives you excellent **per-phase skills on demand**. LoopSmith is the layer *around* them
+— and it works **without** them:
+
+- **Always-on discipline** — the hook holds *every* prompt to the spine, so the agent can't skip
+  planning. (superpowers is on-demand; this is the guardrail.)
+- **The Phase-4 plan-review gate** — adversarial plan review before any code. superpowers has no such gate.
+- **An autonomous loop** — park-and-continue over a backlog (local files, GitHub issues, or a GitHub
+  Projects board) with a budget, status transitions, and a recorded audit trail. superpowers has no
+  loop, no backlog, no board.
+- **The project layer** — `.sdlc/` scaffolding, GitHub PM templates, the board, the optional knowledge graph.
+
+In short: superpowers is *muscle* for four of the phases; LoopSmith is the **spine, the gate, and the
+autonomous engine** that drives a whole backlog through all seven — and it names superpowers as a
+recommended companion, not a hard dependency.
 
 ---
 
