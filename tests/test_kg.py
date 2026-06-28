@@ -75,6 +75,44 @@ def test_status_graph_built_follows_builder_output_dir():
         assert kg.status(base)["graph_built"] is True   # not hardcoded to graphify-out
 
 
+def test_gap_log_appends_and_lists():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        assert kg.gap_list(base) == []                       # nothing logged yet
+        assert kg.gap_log(base, "how does auth refresh work?") is True
+        assert kg.gap_log(base, "where is the retry budget set?") is True
+        assert kg.gap_list(base) == ["how does auth refresh work?",
+                                     "where is the retry budget set?"]
+
+
+def test_gap_log_dedups_so_it_cannot_bloat():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        assert kg.gap_log(base, "same question") is True
+        assert kg.gap_log(base, "same question") is False         # exact dup skipped
+        assert kg.gap_log(base, "  same question  ") is False     # whitespace-normalized dup
+        assert kg.gap_list(base) == ["same question"]
+
+
+def test_gap_log_ignores_empty():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        assert kg.gap_log(base, "   ") is False
+        assert kg.gap_list(base) == []
+
+
+def test_main_gap_log_and_list():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        assert kg.main(["kg.py", "gap", "log", "what calls _set_board_status?", base]) == 0
+        assert kg.main(["kg.py", "gap", "list", base]) == 0
+        assert kg.gap_list(base) == ["what calls _set_board_status?"]   # logged + listable via CLI
+
+
 def test_load_config_tolerates_missing_or_garbage_config():
     kg = _kg()
     with tempfile.TemporaryDirectory() as d:
