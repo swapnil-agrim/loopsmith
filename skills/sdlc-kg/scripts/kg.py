@@ -25,6 +25,35 @@ def corpus_dir(sdlc_dir):
     return pathlib.Path(sdlc_dir) / "knowledge"
 
 
+def _gaps_file(sdlc_dir):
+    return corpus_dir(sdlc_dir) / "gaps.md"
+
+
+def gap_list(sdlc_dir):
+    """Open knowledge gaps - logged query-misses, in log order. [] if none."""
+    f = _gaps_file(sdlc_dir)
+    if not f.exists():
+        return []
+    return [ln[2:].strip() for ln in f.read_text(encoding="utf-8").splitlines() if ln.startswith("- ")]
+
+
+def gap_log(sdlc_dir, question):
+    """Record a query-miss so the graph tracks what it does NOT know - the backlog the loop can later
+    fill. Exact (whitespace-normalized) duplicates are skipped so the gap log can't bloat into the
+    very noise it exists to surface. Returns True if newly logged, False if empty or already known.
+    ponytail: exact-match dedup + no close/resolve; the loop closes gaps in Phase C, add semantic
+    dedup only if the list gets noisy."""
+    question = " ".join(question.split())
+    if not question or question in gap_list(sdlc_dir):
+        return False
+    f = _gaps_file(sdlc_dir)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    head = "" if f.exists() else "# Knowledge gaps - logged query-misses (what the graph doesn't know yet)\n\n"
+    with f.open("a", encoding="utf-8") as fh:
+        fh.write(head + f"- {question}\n")
+    return True
+
+
 def _count_md(d):
     return sum(1 for _ in d.rglob("*.md")) if d.exists() else 0
 
@@ -77,7 +106,21 @@ def main(argv):
         print("knowledge-graph: disabled — nothing to build." if plan is None
               else json.dumps(plan, indent=2))
         return 0
-    print("usage: kg.py status <sdlc_dir> | plan <sdlc_dir> [repo_root]", file=sys.stderr)
+    if len(argv) >= 3 and argv[1] == "gap":
+        sub = argv[2]
+        if sub == "log" and len(argv) >= 4:
+            gdir = argv[4] if len(argv) > 4 else ".sdlc"
+            print(f"kg gap: logged - {argv[3]}" if gap_log(gdir, argv[3])
+                  else f"kg gap: already known (skipped) - {argv[3]}")
+            return 0
+        if sub == "list":
+            gaps = gap_list(argv[3] if len(argv) > 3 else ".sdlc")
+            print("\n".join(f"- {g}" for g in gaps) if gaps else "kg gap: no gaps logged.")
+            return 0
+        print('usage: kg.py gap log "<question>" [sdlc_dir] | gap list [sdlc_dir]', file=sys.stderr)
+        return 2
+    print("usage: kg.py status <sdlc_dir> | plan <sdlc_dir> [repo_root] | "
+          'gap log "<question>" [sdlc_dir] | gap list [sdlc_dir]', file=sys.stderr)
     return 2
 
 

@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# dogfood loop scratch (the kit runs its own SDLC locally; not part of the plugin)
+.sdlc/

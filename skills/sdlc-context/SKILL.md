@@ -22,6 +22,11 @@ touch are the query seeds):
    `graphify query "<the goal, plus the modules/files it will touch>"` — BFS for surrounding context,
    `--dfs` to trace one chain. If the **graphify MCP** is connected, prefer the live `query_graph`
    tool. Quote each answer's `source_location`; if the graph lacks something, say so — never invent an edge.
+   **When the graph comes up empty** (not found / low-confidence), log the unanswered question as a gap
+   so the KG tracks what it doesn't know yet:
+   `python3 "${CLAUDE_SKILL_DIR}/../sdlc-kg/scripts/kg.py" gap log "<the unanswered question>" .sdlc`
+   (deduped + fail-open; it becomes the backlog the loop can later fill). Review the running list with
+   `kg.py gap list .sdlc`.
 2. **Recall past decisions/findings** on those components: `gh issue list --state all --search
    "<components>"`, then read the top issues' 🔒 Critical Insight comments (github mode), or skim
    `.sdlc/journey/` (local mode).

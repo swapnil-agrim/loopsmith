@@ -30,6 +30,9 @@ At `scope: full` the **code** is graphed too; at `scope: research` the code is s
      SDLC keeps working without it (graceful degradation).
 4. **Query** the graph to retrieve learnings: e.g. `graphify query "<question>"`. graphify saves the
    answer back into the graph — that closes the enhancement loop, so each query makes the next better.
+   A query that comes up empty is logged as a **gap** (`kg.py gap log "<q>"`, done automatically by
+   `/sdlc-context`); review the backlog of what the graph doesn't know yet with
+   `python3 "${CLAUDE_SKILL_DIR}/scripts/kg.py" gap list .sdlc`.
 
 When `knowledge_graph.auto_refresh` is `true`, `/sdlc-loop` and `/sdlc-goal` run step 3 at the end of
 the Retrospective phase so the graph stays current without being asked.
