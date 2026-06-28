@@ -4,7 +4,7 @@ analysis (+ optionally the code) into a corpus and hands it to an external graph
 the `graphify` CLI). This helper is the deterministic side — read config, locate the corpus, compute
 the build plan per scope. The /sdlc-kg skill drives the builder itself. Zero-dep; the builder is a
 soft dependency. Disabled by default."""
-import sys, json, pathlib
+import sys, json, pathlib, hashlib, re
 
 _DEFAULTS = {"enabled": False, "scope": "full", "builder": "graphify", "auto_refresh": False}
 
@@ -58,6 +58,41 @@ def _count_md(d):
     return sum(1 for _ in d.rglob("*.md")) if d.exists() else 0
 
 
+_MAINTAIN_THRESHOLD = 200       # research+analysis files before maintenance is flagged due
+                                # ponytail: arbitrary; tune if it fires too early / too late
+
+
+def _cited_paths(text):
+    """Repo paths cited in backticks (must contain '/' + a file extension). ponytail: backtick
+    heuristic only - URLs (with '://') are excluded by the charclass; bare filenames are skipped."""
+    return set(re.findall(r"`([\w.\-/]+/[\w.\-]+\.\w+)`", text))
+
+
+def maintain_report(sdlc_dir, repo_root="."):
+    """Report-only maintenance audit of the knowledge corpus - proposes, never archives/deletes:
+    - stale: analysis notes citing a repo path that no longer exists
+    - dups:  groups of analysis notes with byte-identical content
+    - counts / over_threshold: corpus-size signal
+    ponytail: exact-content dedup + backtick-path citations; richer signals only if this proves noisy."""
+    corpus = corpus_dir(sdlc_dir)
+    analysis = corpus / "analysis"
+    root = pathlib.Path(repo_root)
+    notes = sorted(analysis.rglob("*.md")) if analysis.exists() else []
+    stale, by_hash = [], {}
+    for n in notes:
+        text = n.read_text(encoding="utf-8")
+        dead = sorted(p for p in _cited_paths(text) if not (root / p).exists())
+        if dead:
+            stale.append({"note": str(n.relative_to(corpus)), "missing": dead})
+        by_hash.setdefault(hashlib.sha256(text.encode("utf-8")).hexdigest(), []).append(
+            str(n.relative_to(corpus)))
+    dups = sorted(sorted(v) for v in by_hash.values() if len(v) > 1)
+    counts = {"research": _count_md(corpus / "research"), "analysis": len(notes),
+              "gaps": len(gap_list(sdlc_dir))}
+    return {"stale": stale, "dups": dups, "counts": counts,
+            "over_threshold": counts["research"] + counts["analysis"] > _MAINTAIN_THRESHOLD}
+
+
 def build_plan(sdlc_dir, repo_root="."):
     """The build plan for the configured scope, or None if KG is disabled.
     scope 'full' includes the code tree; 'research' (anything else) is corpus-only."""
@@ -106,6 +141,20 @@ def main(argv):
         print("knowledge-graph: disabled — nothing to build." if plan is None
               else json.dumps(plan, indent=2))
         return 0
+    if len(argv) >= 2 and argv[1] == "maintain":
+        rep = maintain_report(argv[2] if len(argv) > 2 else ".sdlc",
+                              argv[3] if len(argv) > 3 else ".")
+        c = rep["counts"]
+        print(f"knowledge-graph maintain (report-only): research {c['research']}, analysis "
+              f"{c['analysis']}, gaps {c['gaps']}" + (" | OVER THRESHOLD" if rep["over_threshold"] else ""))
+        for s in rep["stale"]:
+            print(f"  stale: {s['note']} -> missing {', '.join(s['missing'])}")
+        for grp in rep["dups"]:
+            print("  duplicate: " + " == ".join(grp))
+        if not rep["stale"] and not rep["dups"]:
+            print("  clean: no stale or duplicate notes.")
+        print("  (report-only: nothing archived/deleted; review + apply yourself - archive, don't delete.)")
+        return 0
     if len(argv) >= 3 and argv[1] == "gap":
         sub = argv[2]
         if sub == "log" and len(argv) >= 4:
@@ -120,6 +169,7 @@ def main(argv):
         print('usage: kg.py gap log "<question>" [sdlc_dir] | gap list [sdlc_dir]', file=sys.stderr)
         return 2
     print("usage: kg.py status <sdlc_dir> | plan <sdlc_dir> [repo_root] | "
+          "maintain <sdlc_dir> [repo_root] | "
           'gap log "<question>" [sdlc_dir] | gap list [sdlc_dir]', file=sys.stderr)
     return 2
 
