@@ -113,6 +113,48 @@ def test_main_gap_log_and_list():
         assert kg.gap_list(base) == ["what calls _set_board_status?"]   # logged + listable via CLI
 
 
+def test_maintain_flags_stale_source_notes():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        (pathlib.Path(d) / "src").mkdir()
+        (pathlib.Path(d) / "src" / "live.py").write_text("x")     # exists under repo_root
+        an = pathlib.Path(base) / "knowledge" / "analysis"; an.mkdir(parents=True)
+        (an / "fresh.md").write_text("documents `src/live.py` which still exists")
+        (an / "stale.md").write_text("documents `backend/gone.py` long deleted")
+        stale = kg.maintain_report(base, repo_root=d)["stale"]
+        assert [s["note"] for s in stale] == ["analysis/stale.md"]   # only the dead-path note
+        assert stale[0]["missing"] == ["backend/gone.py"]
+
+
+def test_maintain_finds_exact_dups():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        an = pathlib.Path(base) / "knowledge" / "analysis"; an.mkdir(parents=True)
+        (an / "a.md").write_text("identical body")
+        (an / "b.md").write_text("identical body")
+        (an / "c.md").write_text("different")
+        assert kg.maintain_report(base, repo_root=d)["dups"] == [["analysis/a.md", "analysis/b.md"]]
+
+
+def test_maintain_clean_corpus_reports_nothing():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        rep = kg.maintain_report(base, repo_root=d)               # empty corpus
+        assert rep["stale"] == [] and rep["dups"] == []
+        assert rep["counts"] == {"research": 0, "analysis": 0, "gaps": 0}
+        assert rep["over_threshold"] is False
+
+
+def test_main_maintain_runs():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        assert kg.main(["kg.py", "maintain", base, d]) == 0       # report-only, exits clean
+
+
 def test_load_config_tolerates_missing_or_garbage_config():
     kg = _kg()
     with tempfile.TemporaryDirectory() as d:

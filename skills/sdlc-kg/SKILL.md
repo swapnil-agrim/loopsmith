@@ -34,6 +34,12 @@ At `scope: full` the **code** is graphed too; at `scope: research` the code is s
    `/sdlc-context`); review the backlog of what the graph doesn't know yet with
    `python3 "${CLAUDE_SKILL_DIR}/scripts/kg.py" gap list .sdlc`.
 
+5. **Maintain** (periodic, report-only) so the corpus self-cleans instead of bloating into noise:
+   `python3 "${CLAUDE_SKILL_DIR}/scripts/kg.py" maintain .sdlc .` audits the corpus — analysis notes
+   citing a repo path that no longer exists (**stale**), byte-identical notes (**duplicates**), and
+   size vs a threshold. It only *proposes*: **archive, don't delete** (move to `knowledge/archive/`;
+   git keeps history), and **destructive trims need your approval** — apply them yourself after review.
+
 When `knowledge_graph.auto_refresh` is `true`, `/sdlc-loop` and `/sdlc-goal` run step 3 at the end of
 the Retrospective phase so the graph stays current without being asked.
 
