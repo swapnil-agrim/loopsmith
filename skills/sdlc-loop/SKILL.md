@@ -40,6 +40,14 @@ Then repeat until the helper says stop:
    `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" record .sdlc "$goal" done` (or `parked "reason"`).
 6. Loop.
 
+**Self-improving (optional, gated):** when the backlog is empty (`next` → `DONE`) but the knowledge
+graph is enabled and `kg.py gap list .sdlc` shows open gaps **and** budget remains, you may close the
+loop instead of stopping: take the oldest gap, research it, write the finding to
+`.sdlc/knowledge/analysis/`, refresh the graph (`/sdlc-kg`), then mark it filled —
+`python3 "${CLAUDE_SKILL_DIR}/../sdlc-kg/scripts/kg.py" gap resolve "<the gap>" .sdlc`. **One gap per
+spare iteration, only within budget, and park (never force)** anything that needs a human. This is how
+the graph fills what it didn't know — turn it off by leaving the KG disabled.
+
 At STOP, report: N done, M parked. If anything parked, point the user to the parked items —
 `.sdlc/state/review-queue.md` in local mode, or the issues labelled `sdlc:parked` (the **Blocked**
 column on the board) in github mode.
