@@ -459,6 +459,23 @@ spine — install `superpowers` and `code-review` yourself to get the phase-exec
 The always-on 7-phase hook underpins both modes. **See the [worked walkthrough](examples/hello-sdlc/)**
 for a runnable end-to-end example. Publishing the kit as its own repo? See [EXTRACT.md](EXTRACT.md).
 
+## Roadmap
+
+**Shipped recently** — LoopSmith now ships **9 skills** + the always-on hook:
+- **Self-improving knowledge graph** — the gap log (tracks what it doesn't know) → `kg.py maintain`
+  (self-cleans) → close-the-loop (fills gaps the loop researches).
+- **Dual-mode onboarding** — drop-in *and* vision-first (`/sdlc-vision` → tiered north-star), with the
+  **strategy-alignment gate** in plan-review.
+- **Velocity calibration** (`/sdlc-velocity`) — size work from measured git pace, not intuition.
+
+**Next (candidate): `research-radar`** — a *proactive* research scout that complements the
+demand-driven gap log. It scans the open backlog, researches the current SOTA against it, dedups
+against the KG + gaps, and surfaces a **ranked digest** (default **dry-run**; opt-in, guard-railed
+filing). The gap log records what you *hit*; the radar surfaces what you didn't know to look for.
+
+**Deferred by design** — structural graph-gap detection (orphan/dangling nodes): it couples to the
+builder's internal graph schema, and the demand-driven gap log already gives the high-signal backlog.
+
 ## Status (honest)
 
 LoopSmith is **Claude Code only.** The core is plain markdown + shell, structured to be host-portable,
