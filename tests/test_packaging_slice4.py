@@ -43,6 +43,12 @@ def test_vision_skill_wellformed():
     assert "north-star" in t and "non-goals" in t       # the tiers it fills (non-goals feed the gate)
 
 
+def test_velocity_skill_wellformed():
+    t = (ROOT / "skills" / "sdlc-velocity" / "SKILL.md").read_text()
+    assert "name: sdlc-velocity" in t and "allowed-tools:" in t
+    assert "velocity.py" in t and "measure" in t and "estimate" in t   # git-throughput sizing
+
+
 def test_versions_aligned():
     p = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
     mk = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
