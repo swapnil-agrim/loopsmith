@@ -30,8 +30,10 @@ touch are the query seeds):
 2. **Recall past decisions/findings** on those components: `gh issue list --state all --search
    "<components>"`, then read the top issues' 🔒 Critical Insight comments (github mode), or skim
    `.sdlc/journey/` (local mode).
-3. **Re-read the governing conventions:** `.sdlc/project.md` (stack, verify command, north-star) plus
-   any `CLAUDE.md` over the touched paths.
+3. **Re-read the governing conventions — north-star first.** If `.sdlc/context/north-star.md` exists
+   (vision-first projects), recall it **first**: the vision / strategy / non-goals are the
+   highest-relevance grounding, so the goal serves the strategy and respects the non-goals. Then
+   `.sdlc/project.md` (stack, verify command) + any `CLAUDE.md` over the touched paths.
 
 Then write a **short, cited, pointer-rich brief** — a handful of bullets (relevant prior decisions,
 constraints, gotchas), each tagged with a `file:line` / `#issue` / graph-node pointer — and carry it

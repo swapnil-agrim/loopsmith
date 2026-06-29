@@ -165,6 +165,32 @@ def test_scaffold_survives_non_utf8_locale():
         assert (pathlib.Path(tmp) / ".github" / "ISSUE_TEMPLATE" / "epic.md").exists()
 
 
+def test_vision_flag_scaffolds_north_star():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        assert mod.main(["sdlc_init.py", tmp, "--vision"]) == 0
+        ns = pathlib.Path(tmp) / ".sdlc" / "context" / "north-star.md"
+        assert ns.exists()
+        t = ns.read_text()
+        for section in ("Vision", "Strategy", "Non-goals", "Design", "Architecture"):
+            assert section in t, f"north-star missing {section}"
+
+
+def test_no_vision_flag_stays_drop_in():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        mod.main(["sdlc_init.py", tmp])
+        assert not (pathlib.Path(tmp) / ".sdlc" / "context").exists()   # opt-in only; drop-in default
+
+
+def test_scaffold_vision_idempotent_preserves_edits():
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        assert mod.scaffold_vision(tmp) is True
+        ns = pathlib.Path(tmp) / ".sdlc" / "context" / "north-star.md"; ns.write_text("MY VISION")
+        assert mod.scaffold_vision(tmp) is False and ns.read_text() == "MY VISION"
+
+
 def test_main_errors_on_missing_target():
     mod = _load()
     assert mod.main(["sdlc_init.py", "/no/such/dir/really"]) == 1
