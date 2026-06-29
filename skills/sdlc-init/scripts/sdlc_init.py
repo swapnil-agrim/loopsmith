@@ -52,6 +52,38 @@ def scaffold_demo(target_dir):
     return True
 
 
+_NORTH_STAR = """# {{PROJECT_NAME}} - North Star
+
+The product context that grounds every goal. Fill the tiers top-down and keep each short - this is
+direction, not a spec. `/sdlc-context` recalls this first; `sdlc-plan-review` checks plans against it.
+
+## Vision (why this exists, for whom)
+<the change you want to make in the world, and who it's for>
+
+## Strategy (what we're building now)
+- Priorities: <the few things that matter this cycle>
+- Non-goals: <what we are deliberately NOT doing - the alignment gate uses these>
+
+## Design (how the product should feel)
+<the experience + the principles a change must respect>
+
+## Architecture (how it's built + the rules we develop by)
+<the shape of the system + dev rules - the stack itself lives in project.md>
+"""
+
+
+def scaffold_vision(target_dir):
+    """Scaffold the opt-in vision-first north-star (.sdlc/context/north-star.md), skip-if-exists.
+    Opt-in via --vision so plain /sdlc-init stays drop-in. Returns True if written, False if present."""
+    target = pathlib.Path(target_dir)
+    dest = target / ".sdlc" / "context" / "north-star.md"
+    if dest.exists():
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(_NORTH_STAR.replace("{{PROJECT_NAME}}", target.resolve().name), encoding="utf-8")
+    return True
+
+
 def scaffold_github(target_dir):
     """Materialize the GitHub PM scaffolding (issue templates, auto-add workflow, label rule, the
     critical-insight template) into <target>/.github/, skip-if-exists. Opt-in via the --github flag."""
@@ -109,6 +141,13 @@ def main(argv):
                       "creates the board and moves the card Backlog -> ... -> Done.")
         else:
             print("\nsdlc-init: demo goal already present (kept).")
+    if "--vision" in flags:
+        if scaffold_vision(target):
+            print("\nsdlc-init: vision-first north-star queued - `.sdlc/context/north-star.md`. Run "
+                  "`/sdlc-vision` to fill the tiers (Vision -> Strategy -> Design -> Architecture); "
+                  "`/sdlc-context` then grounds every goal in it.")
+        else:
+            print("\nsdlc-init: north-star already present (kept).")
     return 0
 
 

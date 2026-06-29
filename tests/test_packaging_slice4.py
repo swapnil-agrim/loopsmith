@@ -30,6 +30,13 @@ def test_orchestrators_run_context_preflight():
         assert "sdlc-context" in t, f"{skill} must run the context pre-flight"
 
 
+def test_vision_skill_wellformed():
+    t = (ROOT / "skills" / "sdlc-vision" / "SKILL.md").read_text()
+    assert "name: sdlc-vision" in t and "allowed-tools:" in t
+    assert "--vision" in t                              # scaffolds the north-star via the init flag
+    assert "north-star" in t and "non-goals" in t       # the tiers it fills (non-goals feed the gate)
+
+
 def test_versions_aligned():
     p = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
     mk = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
