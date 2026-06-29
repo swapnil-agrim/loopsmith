@@ -29,6 +29,7 @@ Every option LoopSmith provides, at a glance:
 | **Board + audit trail** | Cards flow Backlog → In Progress → QC → Done → Blocked; every phase recorded on the issue | `/sdlc-init --github` |
 | **Self-improving knowledge graph** | Captures research + lessons, **tracks what it doesn't know**, prunes itself, and fills gaps | `/sdlc-kg` |
 | **Context recall** | Pulls the relevant slice of project memory into context before each goal | `/sdlc-context` |
+| **Velocity calibration** | Size work from real git throughput, not "this feels like weeks" | `/sdlc-velocity` |
 | **Status at a glance** | Backlog counts + whether the review queue needs you | `/sdlc-status` |
 
 ---
@@ -131,7 +132,8 @@ flowchart TD
    → *runs via* `superpowers:brainstorming`.
 2. **Research** — map the blast radius: affected files, existing patterns, constraints, prior art.
    → *agent practice; no dedicated skill.*
-3. **Plan** — write the plan: steps, files, tests, and a definition-of-done.
+3. **Plan** — write the plan: steps, files, tests, and a definition-of-done. Size it against real
+   throughput with **`/sdlc-velocity`** (measured git pace), not "this feels like weeks."
    → *runs via* `superpowers:writing-plans`.
 4. **Plan-Review** — adversarially review the plan **before** any edit: verify each claim against the
    real code, stress-test what breaks after it ships, check scope/fit, and (vision-first) check it

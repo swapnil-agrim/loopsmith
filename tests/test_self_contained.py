@@ -38,7 +38,12 @@ def test_no_onshot_specifics_in_shipped_files():
     for p in ROOT.rglob("*"):
         if not p.is_file() or p.suffix not in scan_suffixes:
             continue
-        if skip_dirs & set(p.relative_to(ROOT).parts):
+        rel = p.relative_to(ROOT)
+        # the repo's own root .sdlc/ is gitignored dogfood loop scratch, not shipped plugin surface;
+        # examples/**/.sdlc/ (the committed worked example) is still scanned.
+        if rel.parts and rel.parts[0] == ".sdlc":
+            continue
+        if skip_dirs & set(rel.parts):
             continue
         text = p.read_text(errors="ignore")
         offenders += [f"{p.relative_to(ROOT)}: {b}" for b in banned if b in text]
