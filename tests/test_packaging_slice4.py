@@ -11,6 +11,12 @@ def test_plan_review_skill_wellformed():
         assert banned not in t
 
 
+def test_plan_review_has_alignment_gate():
+    t = (ROOT / "skills" / "sdlc-plan-review" / "SKILL.md").read_text()
+    assert "north-star.md" in t                     # vision-first alignment gate
+    assert "non-goal" in t.lower() and "FIX-FIRST" in t   # contradicting the strategy blocks
+
+
 def test_goal_skill_wellformed_and_records():
     t = (ROOT / "skills" / "sdlc-goal" / "SKILL.md").read_text()
     assert "name: sdlc-goal" in t and "allowed-tools:" in t
