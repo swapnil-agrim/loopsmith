@@ -34,15 +34,15 @@ def gap_list(sdlc_dir):
     f = _gaps_file(sdlc_dir)
     if not f.exists():
         return []
-    return [ln[2:].strip() for ln in f.read_text(encoding="utf-8").splitlines() if ln.startswith("- ")]
+    return [ln[2:].strip() for ln in f.read_text(encoding="utf-8").splitlines()
+            if ln.startswith("- ") and not ln.startswith("- [x]")]      # open only; `- [x]` = resolved
 
 
 def gap_log(sdlc_dir, question):
     """Record a query-miss so the graph tracks what it does NOT know - the backlog the loop can later
     fill. Exact (whitespace-normalized) duplicates are skipped so the gap log can't bloat into the
     very noise it exists to surface. Returns True if newly logged, False if empty or already known.
-    ponytail: exact-match dedup + no close/resolve; the loop closes gaps in Phase C, add semantic
-    dedup only if the list gets noisy."""
+    ponytail: exact-match dedup; a re-missed resolved gap re-opens. Semantic dedup only if noisy."""
     question = " ".join(question.split())
     if not question or question in gap_list(sdlc_dir):
         return False
@@ -52,6 +52,25 @@ def gap_log(sdlc_dir, question):
     with f.open("a", encoding="utf-8") as fh:
         fh.write(head + f"- {question}\n")
     return True
+
+
+def gap_resolve(sdlc_dir, question):
+    """Close an open gap (the loop filled it): mark its line `- [x] ...` so gap_list drops it. The
+    resolved line stays as history (archive-not-delete). Returns True if a matching open gap was
+    found; a later re-miss of the same question re-opens it via gap_log."""
+    question = " ".join(question.split())
+    f = _gaps_file(sdlc_dir)
+    if not question or not f.exists():
+        return False
+    out, hit = [], False
+    for ln in f.read_text(encoding="utf-8").splitlines():
+        if not hit and ln.startswith("- ") and not ln.startswith("- [x]") and ln[2:].strip() == question:
+            out.append(f"- [x] {question}"); hit = True
+        else:
+            out.append(ln)
+    if hit:
+        f.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return hit
 
 
 def _count_md(d):
@@ -166,11 +185,17 @@ def main(argv):
             gaps = gap_list(argv[3] if len(argv) > 3 else ".sdlc")
             print("\n".join(f"- {g}" for g in gaps) if gaps else "kg gap: no gaps logged.")
             return 0
-        print('usage: kg.py gap log "<question>" [sdlc_dir] | gap list [sdlc_dir]', file=sys.stderr)
+        if sub == "resolve" and len(argv) >= 4:
+            gdir = argv[4] if len(argv) > 4 else ".sdlc"
+            print(f"kg gap: resolved - {argv[3]}" if gap_resolve(gdir, argv[3])
+                  else f"kg gap: no open gap matching - {argv[3]}")
+            return 0
+        print('usage: kg.py gap log "<q>" [sdlc_dir] | gap list [sdlc_dir] | gap resolve "<q>" [sdlc_dir]',
+              file=sys.stderr)
         return 2
     print("usage: kg.py status <sdlc_dir> | plan <sdlc_dir> [repo_root] | "
           "maintain <sdlc_dir> [repo_root] | "
-          'gap log "<question>" [sdlc_dir] | gap list [sdlc_dir]', file=sys.stderr)
+          'gap log "<q>" [sdlc_dir] | gap list [sdlc_dir] | gap resolve "<q>" [sdlc_dir]', file=sys.stderr)
     return 2
 
 

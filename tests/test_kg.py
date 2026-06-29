@@ -113,6 +113,43 @@ def test_main_gap_log_and_list():
         assert kg.gap_list(base) == ["what calls _set_board_status?"]   # logged + listable via CLI
 
 
+def test_gap_resolve_closes_an_open_gap():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        kg.gap_log(base, "q-one"); kg.gap_log(base, "q-two")
+        assert kg.gap_resolve(base, "q-one") is True
+        assert kg.gap_list(base) == ["q-two"]              # resolved drops out of the open list
+
+
+def test_gap_resolve_unknown_is_noop():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        kg.gap_log(base, "real")
+        assert kg.gap_resolve(base, "never logged") is False
+        assert kg.gap_list(base) == ["real"]               # untouched
+
+
+def test_resolved_gap_reopens_if_missed_again():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        kg.gap_log(base, "flaky"); kg.gap_resolve(base, "flaky")
+        assert kg.gap_list(base) == []                     # closed
+        assert kg.gap_log(base, "flaky") is True           # missed again -> re-opens
+        assert kg.gap_list(base) == ["flaky"]
+
+
+def test_main_gap_resolve():
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        kg.gap_log(base, "via cli")
+        assert kg.main(["kg.py", "gap", "resolve", "via cli", base]) == 0
+        assert kg.gap_list(base) == []
+
+
 def test_maintain_flags_stale_source_notes():
     kg = _kg()
     with tempfile.TemporaryDirectory() as d:
