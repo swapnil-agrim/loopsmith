@@ -42,6 +42,7 @@ def test_vision_skill_wellformed():
     assert "name: sdlc-vision" in t and "allowed-tools:" in t
     assert "--vision" in t                              # scaffolds the north-star via the init flag
     assert "north-star" in t and "non-goals" in t       # the tiers it fills (non-goals feed the gate)
+    assert "draft" in t.lower() and "refine" in t.lower()   # drafts from the repo first, user refines (no blank page)
 
 
 def test_velocity_skill_wellformed():
