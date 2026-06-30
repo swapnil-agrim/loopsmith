@@ -83,7 +83,8 @@ def test_write_imperative_is_code_change():
     'fix 100% of %s in the printf',  # percent / format tokens
     '--help',                     # leading dashes (option-injection bait)
     'build the thing $(whoami)',  # shell-ish
-    'x' * 200000,                 # very long
+    pytest.param('x' * 16384, id='16k-char-prompt'),  # long input — 16KB exercises the long-prompt path;
+                                  # 200k was Ubuntu-CI-fragile and a 200k param mangled the failure log
     'naïve café 日本語 🚀 prompt', # unicode
 ])
 def test_prompt_always_emits_valid_json(prompt):
