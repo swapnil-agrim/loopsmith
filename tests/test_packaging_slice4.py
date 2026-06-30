@@ -50,6 +50,13 @@ def test_velocity_skill_wellformed():
     assert "velocity.py" in t and "measure" in t and "estimate" in t   # git-throughput sizing
 
 
+def test_radar_skill_is_dry_run_by_default():
+    t = (ROOT / "skills" / "sdlc-radar" / "SKILL.md").read_text()
+    assert "name: sdlc-radar" in t and "radar.py" in t and "agenda" in t
+    assert "dry-run" in t.lower()                                       # Phase A writes nothing external
+    assert "file nothing to github" in t.lower() or "never file" in t.lower()
+
+
 def test_versions_aligned():
     p = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
     mk = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())

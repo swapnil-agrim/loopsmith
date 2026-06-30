@@ -30,6 +30,7 @@ Every option LoopSmith provides, at a glance:
 | **Self-improving knowledge graph** | Captures research + lessons, **tracks what it doesn't know**, prunes itself, and fills gaps | `/sdlc-kg` |
 | **Context recall** | Pulls the relevant slice of project memory into context before each goal | `/sdlc-context` |
 | **Velocity calibration** | Size work from real git throughput, not "this feels like weeks" | `/sdlc-velocity` |
+| **Proactive research scout** | Sweep the backlog for new SOTA, dedup, write a ranked digest (dry-run) | `/sdlc-radar` |
 | **Status at a glance** | Backlog counts + whether the review queue needs you | `/sdlc-status` |
 
 ---
@@ -468,10 +469,12 @@ for a runnable end-to-end example. Publishing the kit as its own repo? See [EXTR
   **strategy-alignment gate** in plan-review.
 - **Velocity calibration** (`/sdlc-velocity`) — size work from measured git pace, not intuition.
 
-**Next (candidate): `research-radar`** — a *proactive* research scout that complements the
-demand-driven gap log. It scans the open backlog, researches the current SOTA against it, dedups
-against the KG + gaps, and surfaces a **ranked digest** (default **dry-run**; opt-in, guard-railed
-filing). The gap log records what you *hit*; the radar surfaces what you didn't know to look for.
+**Shipped: `research-radar` Phase A** (`/sdlc-radar`) — a *proactive* research scout that complements
+the demand-driven gap log. It rotates through the open backlog, researches the current SOTA against it,
+dedups against a ledger + the KG gaps, and writes a **ranked digest** — **dry-run: it writes nothing
+external.** The gap log records what you *hit*; the radar surfaces what you didn't know to look for.
+**Phase B** (findings → the gap log, so the loop fills them) and **C** (opt-in, guard-railed GitHub
+filing) are deferred.
 
 **Deferred by design** — structural graph-gap detection (orphan/dangling nodes): it couples to the
 builder's internal graph schema, and the demand-driven gap log already gives the high-signal backlog.
