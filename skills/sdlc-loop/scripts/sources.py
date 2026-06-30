@@ -241,28 +241,41 @@ class GitHubSource:
         return None, None, False
 
     def _ensure_status_field(self, owner, number, created_now):
-        fname = self._project_cfg.get("status_field") or "SDLC Status"
+        # Drive GitHub's BUILT-IN "Status" field so the default Board view groups by it natively — no
+        # manual "group by" step, and no orphan second field. On a fresh board we rewrite its options
+        # to our columns via GraphQL (the gh CLI has no field-edit); on an adopted board we use the
+        # configured field's existing options as-is (the user set them up — like a shared team board).
+        fname = self._project_cfg.get("status_field") or "Status"
         fields = self._list_fields(owner, number)
         fld = self._find_field(fields, fname)
+        cols = [self.col["backlog"], self.col["in_progress"], self.col["qc"],
+                self.col["done"], self.col["blocked"]]
         if fld is None:
+            # the configured status field doesn't exist (a custom name on an adopted board) → create it
             self._run(["project", "field-create", str(number), "--owner", owner, "--name", fname,
-                       "--data-type", "SINGLE_SELECT",
-                       "--single-select-options",
-                       ",".join([self.col["backlog"], self.col["in_progress"], self.col["qc"],
-                                 self.col["done"], self.col["blocked"]]), "--format", "json"])
+                       "--data-type", "SINGLE_SELECT", "--single-select-options", ",".join(cols),
+                       "--format", "json"])
+            fields = self._list_fields(owner, number)        # re-list to read back the new option ids
+            fld = self._find_field(fields, fname)
+        elif created_now:
+            # fresh kit-created board: rewrite the built-in Status field's options to our columns
+            self._run(["api", "graphql", "-f", self._options_mutation(fld.get("id"), cols)])
             fields = self._list_fields(owner, number)        # re-list to read back the new option ids
             fld = self._find_field(fields, fname)
         if fld:
             self._field_id = fld.get("id")
             self._status_options = {o.get("name"): o.get("id") for o in (fld.get("options") or [])}
-        if created_now:
-            # a fresh board ships an empty built-in "Status" field; drop it so our field is the only one
-            default = self._find_field(fields, "Status")
-            if default and default.get("id") != self._field_id:
-                try:
-                    self._run(["project", "field-delete", "--id", default.get("id")])
-                except Exception:
-                    pass
+
+    @staticmethod
+    def _options_mutation(field_id, names):
+        """The GraphQL `updateProjectV2Field` mutation that sets a single-select field's options. The
+        gh CLI has no field-edit, so this is how the built-in Status field gets our columns (verified:
+        updateProjectV2Field accepts singleSelectOptions). Returns the `query=…` arg for `gh api graphql`."""
+        colors = ("GRAY", "YELLOW", "ORANGE", "GREEN", "RED", "BLUE", "PURPLE", "PINK")
+        opts = ", ".join('{name: "%s", color: %s, description: ""}' % (n, colors[i % len(colors)])
+                         for i, n in enumerate(names))
+        return ('query=mutation { updateProjectV2Field(input: {fieldId: "%s", singleSelectOptions: [%s]}) '
+                '{ projectV2Field { ... on ProjectV2SingleSelectField { id } } } }' % (field_id, opts))
 
     def _sync_backlog(self, owner, number, exclude):
         """Seed the board with any open goal issue not yet carded (as Todo), except the one being

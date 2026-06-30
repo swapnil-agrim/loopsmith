@@ -1,7 +1,7 @@
 """GitHubSource Projects-v2 board integration. Like test_sources.py, these are hermetic: a
 tiny in-memory simulator of the `gh project` surface stands in for the network, so we assert the
 real board behavior (find-or-create, status mapping, no-duplicate-add, fail-open) without `gh`."""
-import json, pathlib, importlib.util
+import json, re, pathlib, importlib.util
 
 S = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts"
 
@@ -24,10 +24,12 @@ DEFAULT_FIELDS = [
 ]
 
 
-SDLC_FIELD = {"id": "F_sdlc", "name": "SDLC Status", "type": "ProjectV2SingleSelectField",
-              "options": [{"id": "s_backlog", "name": "Backlog"}, {"id": "s_in_progress", "name": "In Progress"},
-                          {"id": "s_qc", "name": "QC"}, {"id": "s_done", "name": "Done"},
-                          {"id": "s_blocked", "name": "Blocked"}]}
+# An ADOPTED board's built-in Status field, already configured with our columns (the model the kit now
+# drives — GitHub's native Status field, not a separate one).
+STATUS_FILLED = {"id": "F_status", "name": "Status", "type": "ProjectV2SingleSelectField",
+                 "options": [{"id": "s_backlog", "name": "Backlog"}, {"id": "s_in_progress", "name": "In Progress"},
+                             {"id": "s_qc", "name": "QC"}, {"id": "s_done", "name": "Done"},
+                             {"id": "s_blocked", "name": "Blocked"}]}
 
 
 def project_world(projects=None, fields=None, items=None, issues=None):
@@ -45,6 +47,16 @@ def project_world(projects=None, fields=None, items=None, issues=None):
             return json.dumps(state["issues"])
         if v0 in ("issue", "label"):
             return ""
+        if v0 == "api" and v1 == "graphql":          # the GraphQL option-set for the built-in Status field
+            q = _arg(a, "-f") or ""
+            if "updateProjectV2Field" in q:
+                m = re.search(r'fieldId: "([^"]+)"', q)
+                names = re.findall(r'name: "([^"]+)"', q)
+                for f in state["fields"]:
+                    if m and f.get("id") == m.group(1):
+                        f["options"] = [{"id": "s_" + n.lower().replace(" ", "_"), "name": n} for n in names]
+                return json.dumps({"data": {"updateProjectV2Field": {"projectV2Field": {"id": m.group(1) if m else None}}}})
+            return "{}"
         if v0 == "project":
             if v1 == "list":
                 return json.dumps({"projects": state["projects"]})
@@ -126,13 +138,15 @@ def test_first_transition_creates_board_field_and_syncs_backlog():
     gh.mark_in_progress("5")
     v = _verbs(run)
     assert any(c.startswith("project create") for c in v)                       # no board existed -> create
-    assert any("project field-create" in c and "QC" in c and "Blocked" in c for c in v)  # SDLC Status w/ QC+Blocked
-    assert any("project field-delete" in c for c in v)                          # default Status removed (we created it)
+    assert any("api graphql" in c and "updateProjectV2Field" in c and "QC" in c and "Blocked" in c
+               for c in v)                                                      # built-in Status options set via GraphQL
+    assert not any("field-create" in c for c in v)                             # NO separate field created
+    assert not any("field-delete" in c for c in v)                             # built-in Status kept + driven
     # backlog synced: both open goal issues are board items; the picked one is In Progress, the other Backlog
     e = _edits(run)
     assert {"item": "PVTI_5", "option": "s_in_progress"}.items() <= next(x for x in e if x["item"] == "PVTI_5").items()
     assert any(x["item"] == "PVTI_7" and x["option"] == "s_backlog" for x in e)
-    assert all(x["field"] == "F_sdlc" and x["project"] == "PVT_new" for x in e)  # right field + project threaded
+    assert all(x["field"] == "F_status" and x["project"] == "PVT_new" for x in e)  # the BUILT-IN Status field
 
 
 def test_complete_sets_done():
@@ -168,14 +182,15 @@ def test_park_sets_blocked_and_keeps_issue_transitions():
 def test_reuse_existing_project_no_create_no_default_delete():
     src = _mod("sources")
     existing = [{"number": 4, "id": "PVT_x", "title": "chatgpt-clone-demo — SDLC"}]
-    fields = DEFAULT_FIELDS + [SDLC_FIELD]
+    fields = [STATUS_FILLED]
     run = project_world(projects=existing, fields=fields, issues=[{"number": 5, "labels": [{"name": "sdlc:goal"}]}])
     gh = src.GitHubSource(_cfg(project={"enabled": True}), run=run)
     gh.mark_in_progress("5")
     v = _verbs(run)
     assert not any(c.startswith("project create") for c in v)        # reused, not recreated
-    assert not any("project field-create" in c for c in v)           # SDLC Status already present
-    assert not any("project field-delete" in c for c in v)           # never delete a reused board's fields
+    assert not any("project field-create" in c for c in v)           # Status field already configured
+    assert not any("graphql" in c for c in v)                        # adopted board's options used as-is, not rewritten
+    assert not any("project field-delete" in c for c in v)           # never touch a reused board's fields
     assert any(x["item"] == "PVTI_5" and x["option"] == "s_in_progress" for x in _edits(run))
 
 
@@ -266,7 +281,7 @@ def test_sync_does_not_reset_status_of_cards_already_on_board():
     existing = [{"number": 4, "id": "PVT_x", "title": "chatgpt-clone-demo — SDLC"}]
     items = [{"id": "PVTI_7", "content": {"type": "Issue", "number": 7, "url": "x/7"}}]   # 7 already a card
     issues = [{"number": 5, "labels": [{"name": "sdlc:goal"}]}, {"number": 7, "labels": [{"name": "sdlc:goal"}]}]
-    run = project_world(projects=existing, fields=DEFAULT_FIELDS + [SDLC_FIELD], items=items, issues=issues)
+    run = project_world(projects=existing, fields=[STATUS_FILLED], items=items, issues=issues)
     gh = src.GitHubSource(_cfg(project={"enabled": True}), run=run)
     gh.mark_in_progress("5")
     assert not any(e["item"] == "PVTI_7" and e["option"] == "s_backlog" for e in _edits(run))  # 7 untouched
@@ -277,7 +292,7 @@ def test_existing_board_matched_by_string_number():
     """A configured project `number` authored as a string must still match gh's integer number."""
     src = _mod("sources")
     existing = [{"number": 4, "id": "PVT_x", "title": "some other title"}]
-    run = project_world(projects=existing, fields=DEFAULT_FIELDS + [SDLC_FIELD],
+    run = project_world(projects=existing, fields=[STATUS_FILLED],
                         issues=[{"number": 5, "labels": [{"name": "sdlc:goal"}]}])
     gh = src.GitHubSource(_cfg(project={"enabled": True, "number": "4", "title": "won't match by title"}), run=run)
     gh.mark_in_progress("5")
