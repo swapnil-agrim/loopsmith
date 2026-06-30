@@ -13,14 +13,16 @@ building it. Same `.sdlc/` layout, same spine — just a thicker context layer.
 1. **Scaffold the skeleton** if absent (skip-if-exists — never clobbers your edits):
    `python3 "${CLAUDE_SKILL_DIR}/../sdlc-init/scripts/sdlc_init.py" . --vision`
    It writes `.sdlc/context/north-star.md` with four tiers to fill.
-2. **Fill the tiers through a focused conversation**, top-down — keep each short (direction, not a spec):
-   - **Vision** — the change you want in the world, and for whom.
-   - **Strategy** — the few priorities this cycle, and the **non-goals** (what you're deliberately *not*
-     doing — the plan-review alignment gate will use these).
-   - **Design** — how the product should feel; the principles a change must respect.
-   - **Architecture** — the shape of the system + the rules you develop by as a **numbered, checkable
-     list** (the stack stays in `project.md`). Unlike the tiers above, you can **draft this from the
-     codebase** and have the user approve it — and plan-review **enforces** these architecture rules.
+2. **Draft from the repo first, then refine** — don't hand over a blank page. Read the README, the
+   code structure, and recent git history, write a *first-pass draft* of each tier, then walk the user
+   through refining it. Editing a draft beats filling a blank. Keep each short (direction, not a spec):
+   - **Vision** — draft the change / audience you infer from the README and project; the user corrects.
+   - **Strategy** — draft priorities + **non-goals** from recent commits / open issues; the user sets
+     the real ones (the plan-review alignment gate uses the non-goals).
+   - **Design** — draft the UX shape + the principles a change must respect; the user adjusts.
+   - **Architecture** — draft the rules you develop by as a **numbered, checkable list** from the
+     codebase (layering, dependency direction, boundaries) for the user to approve — plan-review
+     **enforces** these (the stack stays in `project.md`).
    Write each tier into the file as you settle it; **never overwrite a tier the user already filled**
    without asking.
 3. **Confirm it's live:** `/sdlc-context` now recalls the north-star first for every goal, grounding
