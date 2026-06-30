@@ -276,7 +276,7 @@ Treat **GitHub Issues as the backlog** so planning and triage live where your te
   "github": {
     "repo": "",
     "goal_label": "sdlc:goal",
-    "project": { "enabled": true, "status_field": "SDLC Status" }
+    "project": { "enabled": true, "status_field": "Status" }
   }
 }
 ```
@@ -302,7 +302,7 @@ or set it to `owner/name`.
 
 With `discovery.github.project.enabled` (on by default for new repos), the loop also drives a **GitHub
 Projects v2 board**: on first run it finds-or-creates a board titled `<repo> — SDLC`, adds every
-`sdlc:goal` issue as a card, and keeps one single-select **SDLC Status** field in sync
+`sdlc:goal` issue as a card, and keeps GitHub's **built-in Status field** in sync
 (**Backlog → In Progress → QC → Done**, **Blocked** for parked) as goals move — the table above. The
 **QC** card move happens at the Review phase. It needs the `gh` token's **`project`** scope and is
 **fail-open**: no scope, or any API error, and the loop simply continues on issues + labels (nothing
@@ -310,9 +310,12 @@ breaks). Tune it under `discovery.github.project` — `owner`/`title` (default `
 (reuse an existing board), `status_field` (the field's name), and `columns` (override the column names
 to match an existing board). A `gh`-aware `/sdlc-status` for github mode is still on the roadmap.
 
-> **One-time board setup:** GitHub's built-in **Status** field can't be deleted, so a kit-managed board
-> carries both it and the **SDLC Status** field the loop drives. To see your cards flow through
-> Backlog → In Progress → QC → Done → Blocked, open the board → **⋯ → Group by → SDLC Status** once.
+> **No manual "group by" step.** The loop drives GitHub's **built-in `Status` field** — it sets that
+> field's options to Backlog → In Progress → QC → Done → Blocked via the API (`updateProjectV2Field`),
+> so the Board view groups by it **natively**. The one thing GitHub exposes to *no* tool is the view
+> *layout* itself: if a new project opens as a Table, switch it to **Board** once (a standard GitHub
+> step, not kit-specific). For **zero per-repo setup**, point several repos at **one shared board** via
+> `discovery.github.project.number` — configure it once, reuse everywhere.
 
 **Sprint / PM scaffolding.** Run **`/sdlc-init --github`** to also install GitHub project-management
 hygiene into `.github/`: **epic** and **task** issue templates (epics decompose into task sub-issues),
