@@ -57,6 +57,12 @@ def test_radar_skill_is_dry_run_by_default():
     assert "file nothing to github" in t.lower() or "never file" in t.lower()
 
 
+def test_doctor_skill_wellformed():
+    t = (ROOT / "skills" / "sdlc-doctor" / "SKILL.md").read_text()
+    assert "name: sdlc-doctor" in t and "doctor.py" in t and "check" in t
+    assert "never run an interactive login" in t.lower() or "hand them the command" in t.lower()
+
+
 def test_versions_aligned():
     p = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
     mk = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())

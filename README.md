@@ -34,6 +34,7 @@ Every option LoopSmith provides, at a glance:
 | **Velocity calibration** | Size work from real git throughput, not "this feels like weeks" | `/sdlc-velocity` |
 | **Proactive research scout** | Sweep the backlog for new SOTA, dedup, write a ranked digest (dry-run) | `/sdlc-radar` |
 | **Status at a glance** | Backlog counts + whether the review queue needs you | `/sdlc-status` |
+| **Setup check-up** | Audits the setup and hands you the exact fix for anything missing — no silent failures | `/sdlc-doctor` |
 
 ---
 
