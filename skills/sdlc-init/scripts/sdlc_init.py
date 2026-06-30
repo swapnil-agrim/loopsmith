@@ -68,7 +68,11 @@ direction, not a spec. `/sdlc-context` recalls this first; `sdlc-plan-review` ch
 <the experience + the principles a change must respect>
 
 ## Architecture (how it's built + the rules we develop by)
-<the shape of the system + dev rules - the stack itself lives in project.md>
+<the shape of the system - the stack itself lives in project.md. Then the **rules** that govern changes
+as a NUMBERED, checkable list: plan-review enforces these (a plan that violates one is blocked). Unlike
+the tiers above, this tier can be AI-drafted from the codebase and user-approved.>
+1. <e.g. the UI layer holds no business logic>
+2. <e.g. dependencies point inward; no sibling imports across modules>
 """
 
 
