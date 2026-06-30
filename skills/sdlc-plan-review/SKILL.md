@@ -22,11 +22,15 @@ each backed by a `file:line`. "The plan says X" is not evidence; the file showin
 Does each step serve the goal? What's over-built (YAGNI)? Does it contradict the project's own
 rules, conventions, or stated direction? Quote the specific rule if so.
 
-## 4. Strategic alignment (vision-first projects)
-If `.sdlc/context/north-star.md` exists, hold the plan to it: read the **Strategy** and **Non-goals**
-tiers and ask — does this serve a stated priority, and does any step **advance a declared non-goal** or
-**contradict the strategy**? A plan that fights the north-star is **FIX-FIRST** — quote the north-star
-line it violates. (No north-star = drop-in project: skip this check; it's a no-op.)
+## 4. Strategic & architectural alignment (vision-first projects)
+If `.sdlc/context/north-star.md` exists, hold the plan to it on two axes:
+- **Strategy / Non-goals** — does it serve a stated priority? Does any step **advance a declared
+  non-goal** or **contradict the strategy**?
+- **Architecture rules** — does any step **violate a numbered architecture rule** (layering,
+  dependency direction, module boundaries, "where new code goes")?
+
+A plan that fights the north-star — its strategy, a non-goal, or an architecture rule — is **FIX-FIRST**;
+quote the line it violates. (No north-star = drop-in project: skip this check; it's a no-op.)
 
 ## Verdict
 One of: **SOUND** (implement as-is) / **SOUND-WITH-REFINEMENTS** (list them) / **FIX-FIRST**

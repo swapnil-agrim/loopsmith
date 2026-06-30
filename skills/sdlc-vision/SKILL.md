@@ -18,7 +18,9 @@ building it. Same `.sdlc/` layout, same spine — just a thicker context layer.
    - **Strategy** — the few priorities this cycle, and the **non-goals** (what you're deliberately *not*
      doing — the plan-review alignment gate will use these).
    - **Design** — how the product should feel; the principles a change must respect.
-   - **Architecture** — the shape of the system + the rules you develop by (the stack stays in `project.md`).
+   - **Architecture** — the shape of the system + the rules you develop by as a **numbered, checkable
+     list** (the stack stays in `project.md`). Unlike the tiers above, you can **draft this from the
+     codebase** and have the user approve it — and plan-review **enforces** these architecture rules.
    Write each tier into the file as you settle it; **never overwrite a tier the user already filled**
    without asking.
 3. **Confirm it's live:** `/sdlc-context` now recalls the north-star first for every goal, grounding
