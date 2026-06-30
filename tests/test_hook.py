@@ -109,3 +109,56 @@ def _run_bytes(stdin_bytes):
 def test_malformed_stdin_always_emits_valid_json(raw):
     out = _run_bytes(raw)
     assert "GOAL-BASED SDLC" in out["hookSpecificOutput"]["additionalContext"]
+
+
+# --- behavioral spec: a labeled prompt corpus pins the intent classifier ---
+# The hook IS the deterministic enforcement of "run the spine", so this is the closest test of
+# behavior (not just plumbing). "code" -> CODE CHANGE banner; "ask" -> READ-ONLY banner;
+# "standard" -> policy only (neither banner).
+_CORPUS = [
+    # clear code-change (imperative, no leading question)
+    ("implement the retry in client.py", "code"),
+    ("refactor the auth module", "code"),
+    ("add a cache to the fetch helper", "code"),
+    ("fix the off-by-one in pagination", "code"),
+    ("migrate the config to TOML", "code"),
+    ("rewrite this to be async", "code"),
+    ("delete the dead helper and update its callers", "code"),
+    ("wire up the webhook handler", "code"),
+    ("rename the column and adjust the schema", "code"),
+    # clear read-only / conversational (leading interrogative, no strong code signal)
+    ("what does the loop do when it parks?", "ask"),
+    ("how does the plan-review gate work?", "ask"),
+    ("why is the hook fail-open?", "ask"),
+    ("explain the self-improving knowledge graph", "ask"),
+    ("list the skills this plugin ships", "ask"),
+    ("show me where the budget is configured", "ask"),
+    ("which backlog sources are supported?", "ask"),
+    # ambiguous: a question that is really a code request (interrogative + strong signal) -> code
+    ("how should I implement the parser in parser.py?", "code"),
+    ("can you refactor this function?", "code"),
+    # standard: neither interrogative nor codey
+    ("hello", "standard"),
+    ("good morning", "standard"),
+    ("", "standard"),
+]
+
+
+@pytest.mark.parametrize("prompt,expected", _CORPUS)
+def test_intent_corpus(prompt, expected):
+    ctx = _run(prompt)["hookSpecificOutput"]["additionalContext"]
+    assert "GOAL-BASED SDLC" in ctx                       # the policy is always present
+    if expected == "code":
+        assert "CODE CHANGE" in ctx and "READ-ONLY" not in ctx
+    elif expected == "ask":
+        assert "READ-ONLY" in ctx and "CODE CHANGE" not in ctx
+    else:                                                 # standard: neither banner
+        assert "CODE CHANGE" not in ctx and "READ-ONLY" not in ctx
+
+
+def test_classifier_no_false_code_flag_on_readonly_corpus():
+    # aggregate bound: NONE of the read-only prompts may be flagged as a code change (false positives
+    # are the costlier error here — they'd force the full spine onto a plain question).
+    asks = [p for p, e in _CORPUS if e == "ask"]
+    flagged = [p for p in asks if "CODE CHANGE" in _run(p)["hookSpecificOutput"]["additionalContext"]]
+    assert flagged == [], f"read-only prompts mis-flagged as code: {flagged}"
