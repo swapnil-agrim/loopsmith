@@ -1,5 +1,7 @@
 # LoopSmith
 
+[![CI](https://github.com/swapnil-agrim/loopsmith/actions/workflows/ci.yml/badge.svg)](https://github.com/swapnil-agrim/loopsmith/actions/workflows/ci.yml)
+
 **Guardrails + an overnight autopilot for your AI coding agent — one that plans before it codes, won't ship work that fights your strategy, and gets sharper every run.**
 
 Drop it into any repo and every non-trivial prompt is held to a disciplined **7-phase SDLC** — Goal →
@@ -493,7 +495,9 @@ but a second-host (Codex/etc.) adapter is not yet shipped.
   off unless `knowledge_graph.enabled` is set.
 - **Companions:** `superpowers` + `code-review` (auto-installed via the plugin path; manual on the
   fallback path).
-- **Dev/test:** `pip install pytest`, then `pytest tests/ -v`.
+- **Dev/test:** `pip install pytest pytest-cov`, then `pytest tests/ -v`. **CI** (GitHub Actions) runs
+  the full suite — including the **leakage gate** and the **hook behavioral-spec** — with an **85%
+  coverage floor** on every push/PR, on Python 3.10 + 3.12.
 
 ## Credits & acknowledgements
 
