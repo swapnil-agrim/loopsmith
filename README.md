@@ -47,12 +47,20 @@ Every option LoopSmith provides, at a glance:
 /sdlc-loop            # watch it run Goal → Research → … → Review end-to-end
 ```
 
+That installs the spine **globally** — the hook then fires in every project — and auto-installs the
+`superpowers` + `code-review` companions ([details](#dependencies-auto-installed-companions));
+`/sdlc-init` scaffolds each repo's `.sdlc/` layer and is safe to re-run. **No plugin system?**
+`git clone <git-url> && cd loopsmith && ./install.sh` copies the spine into `~/.claude/skills/loopsmith/`
+and prints the `settings.json` hook snippet to paste (it never edits your settings) — then install
+`superpowers` + `code-review` yourself.
+
 - Add **`--github`** to `/sdlc-init` to also set up the GitHub Projects board + issue templates and
   run the demo on a real board ([Your backlog](#your-backlog-local-files-or-github-issues)).
 - Add **`--vision`** (or run **`/sdlc-vision`**) to start from a product vision instead
   ([Two ways to start](#two-ways-to-start-drop-in-or-vision-first)).
 
-See the **[worked walkthrough](examples/hello-sdlc/)** for a runnable end-to-end example.
+See the **[worked walkthrough](examples/hello-sdlc/)** for a runnable end-to-end example. Forking the
+kit to publish it? See [EXTRACT.md](EXTRACT.md).
 
 ---
 
@@ -389,32 +397,6 @@ history stays a query away. The full closed loop: **record** (issues / journey) 
 > machine-accumulated. Commit `.sdlc/knowledge/analysis/` to version your curated learnings.
 
 ---
-
-## Install
-
-### Plugin (recommended)
-
-```
-/plugin marketplace add <git-url-or-local-path>
-/plugin install loopsmith
-```
-
-Installs the durable spine globally — the SDLC hook then fires in **every** project — and
-**auto-installs the `superpowers` + `code-review` companions** (see below). Then run `/sdlc-init` in
-each repo to scaffold its per-project `.sdlc/` layer (project stub, `goals/`, `config.json`, loop
-`state/`). Re-running `/sdlc-init` is safe — it never clobbers existing state.
-
-### Fallback (no plugin system)
-
-```
-git clone <git-url> && cd loopsmith && ./install.sh
-```
-
-`install.sh` copies the spine into `~/.claude/skills/loopsmith/` and **prints** the `settings.json`
-hook snippet for you to paste (it never edits your settings — malformed JSON silently disables hooks).
-Parse-check `settings.json` after pasting. The fallback installs **only** LoopSmith's own spine —
-install `superpowers` and `code-review` yourself to get the phase-execution skills. Forking the kit to
-publish it? See [EXTRACT.md](EXTRACT.md).
 
 ## Dependencies (auto-installed companions)
 
