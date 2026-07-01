@@ -49,10 +49,7 @@ Every option LoopSmith provides, at a glance:
 
 That installs the spine **globally** — the hook then fires in every project — and auto-installs the
 `superpowers` + `code-review` companions ([details](#dependencies-auto-installed-companions));
-`/sdlc-init` scaffolds each repo's `.sdlc/` layer and is safe to re-run. **No plugin system?**
-`git clone <git-url> && cd loopsmith && ./install.sh` copies the spine into `~/.claude/skills/loopsmith/`
-and prints the `settings.json` hook snippet to paste (it never edits your settings) — then install
-`superpowers` + `code-review` yourself.
+`/sdlc-init` scaffolds each repo's `.sdlc/` layer and is safe to re-run.
 
 - Add **`--github`** to `/sdlc-init` to also set up the GitHub Projects board + issue templates and
   run the demo on a real board ([Your backlog](#your-backlog-local-files-or-github-issues)).
@@ -61,6 +58,19 @@ and prints the `settings.json` hook snippet to paste (it never edits your settin
 
 See the **[worked walkthrough](examples/hello-sdlc/)** for a runnable end-to-end example. Forking the
 kit to publish it? See [EXTRACT.md](EXTRACT.md).
+
+## No plugin marketplace? Install the fallback
+
+If your Claude Code setup doesn't have the plugin marketplace, **this is your install path** — it wires
+the same spine directly, no marketplace required:
+
+```
+git clone <git-url> && cd loopsmith && ./install.sh
+```
+
+`install.sh` copies the spine into `~/.claude/skills/loopsmith/` and **prints** the `settings.json`
+`UserPromptSubmit` hook snippet for you to paste (it never edits your settings). Then install the
+`superpowers` + `code-review` companions yourself to get the phase-execution skills.
 
 ---
 
