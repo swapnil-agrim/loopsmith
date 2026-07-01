@@ -52,6 +52,8 @@ Every option LoopSmith provides, at a glance:
 - Add **`--vision`** (or run **`/sdlc-vision`**) to start from a product vision instead
   ([Two ways to start](#two-ways-to-start-drop-in-or-vision-first)).
 
+See the **[worked walkthrough](examples/hello-sdlc/)** for a runnable end-to-end example.
+
 ---
 
 ## How it works
@@ -152,20 +154,6 @@ flowchart TD
    `superpowers:verification-before-completion`.
 7. **Retrospective** — capture lessons; lock the critical insights so the next loop is better.
    → *agent practice; no dedicated skill.*
-
-### Phase → owning skill
-
-| # | Phase | What it does | Owning skill | Source |
-|---|-------|--------------|--------------|--------|
-| 1 | Goal | Restate the objective as one concrete, checkable goal | `brainstorming` | superpowers |
-| 2 | Research | Map blast radius — files, patterns, constraints | *(agent practice)* | — |
-| 3 | Plan | Write steps / files / tests / definition-of-done | `writing-plans` | superpowers |
-| 4 | Plan-Review | Adversarially verify the plan against real code + strategy before any edit | **`sdlc-plan-review`** | **LoopSmith (ships)** |
-| 5 | Implement | Build test-first; execute the plan | `test-driven-development`, `executing-plans` | superpowers |
-| 6 | Review | Code-review the diff; verify claims with evidence before "done" | `/code-review`, `requesting-code-review`, `verification-before-completion` | code-review + superpowers |
-| 7 | Retrospective | Capture lessons; lock critical insights | *(agent practice)* | — |
-
-> `superpowers` and `code-review` are **recommended companions** (named in the hook policy + auto-installed) — **not hard dependencies**. LoopSmith names them for the phases above but **degrades gracefully**: without them, the phase names still guide the work.
 
 ### Why not just superpowers?
 
@@ -402,7 +390,9 @@ history stays a query away. The full closed loop: **record** (issues / journey) 
 
 ---
 
-## Install (plugin — recommended)
+## Install
+
+### Plugin (recommended)
 
 ```
 /plugin marketplace add <git-url-or-local-path>
@@ -413,6 +403,18 @@ Installs the durable spine globally — the SDLC hook then fires in **every** pr
 **auto-installs the `superpowers` + `code-review` companions** (see below). Then run `/sdlc-init` in
 each repo to scaffold its per-project `.sdlc/` layer (project stub, `goals/`, `config.json`, loop
 `state/`). Re-running `/sdlc-init` is safe — it never clobbers existing state.
+
+### Fallback (no plugin system)
+
+```
+git clone <git-url> && cd loopsmith && ./install.sh
+```
+
+`install.sh` copies the spine into `~/.claude/skills/loopsmith/` and **prints** the `settings.json`
+hook snippet for you to paste (it never edits your settings — malformed JSON silently disables hooks).
+Parse-check `settings.json` after pasting. The fallback installs **only** LoopSmith's own spine —
+install `superpowers` and `code-review` yourself to get the phase-execution skills. Forking the kit to
+publish it? See [EXTRACT.md](EXTRACT.md).
 
 ## Dependencies (auto-installed companions)
 
@@ -450,40 +452,16 @@ order of convenience:
 named superpowers/code-review skills are how each phase is executed *best*, not a hard runtime
 requirement of the spine. (Ref: [plugin dependencies](https://code.claude.com/docs/en/plugin-dependencies).)
 
-## Install (fallback — no plugin system)
-
-```
-git clone <git-url> && cd loopsmith && ./install.sh
-```
-
-`install.sh` copies the spine into `~/.claude/skills/loopsmith/` and **prints** the `settings.json`
-hook snippet for you to paste (it never edits your settings — malformed JSON silently disables
-hooks). Parse-check `settings.json` after pasting. The fallback installs **only** LoopSmith's own
-spine — install `superpowers` and `code-review` yourself to get the phase-execution skills.
-
----
-
-The always-on 7-phase hook underpins both modes. **See the [worked walkthrough](examples/hello-sdlc/)**
-for a runnable end-to-end example. Publishing the kit as its own repo? See [EXTRACT.md](EXTRACT.md).
-
 ## Roadmap
 
-**Shipped recently** — LoopSmith now ships **9 skills** + the always-on hook:
-- **Self-improving knowledge graph** — the gap log (tracks what it doesn't know) → `kg.py maintain`
-  (self-cleans) → close-the-loop (fills gaps the loop researches).
-- **Dual-mode onboarding** — drop-in *and* vision-first (`/sdlc-vision` → tiered north-star), with the
-  **strategy-alignment gate** in plan-review.
-- **Velocity calibration** (`/sdlc-velocity`) — size work from measured git pace, not intuition.
+Everything shipped is in [What you get](#what-you-get) — **11 skills + the always-on hook**. What's next:
 
-**Shipped: `research-radar` Phase A** (`/sdlc-radar`) — a *proactive* research scout that complements
-the demand-driven gap log. It rotates through the open backlog, researches the current SOTA against it,
-dedups against a ledger + the KG gaps, and writes a **ranked digest** — **dry-run: it writes nothing
-external.** The gap log records what you *hit*; the radar surfaces what you didn't know to look for.
-**Phase B** (findings → the gap log, so the loop fills them) and **C** (opt-in, guard-railed GitHub
-filing) are deferred.
-
-**Deferred by design** — structural graph-gap detection (orphan/dangling nodes): it couples to the
-builder's internal graph schema, and the demand-driven gap log already gives the high-signal backlog.
+- **`research-radar` B/C** — feed the digest's findings into the gap log (so the loop fills them), then
+  opt-in, guard-railed GitHub filing. Deferred until the dry-run digest proves useful.
+- **Structural graph-gap detection** *(deferred by design)* — it couples to the builder's internal
+  graph schema, and the demand-driven gap log already gives the high-signal backlog.
+- **Maturity + reach** — real users, a public marketplace listing, and either a second-host adapter or
+  an honest narrowing of the "portable" claim. This — not more features — is what moves the needle now.
 
 ## Status (honest)
 
