@@ -452,17 +452,6 @@ order of convenience:
 named superpowers/code-review skills are how each phase is executed *best*, not a hard runtime
 requirement of the spine. (Ref: [plugin dependencies](https://code.claude.com/docs/en/plugin-dependencies).)
 
-## Roadmap
-
-Everything shipped is in [What you get](#what-you-get) — **11 skills + the always-on hook**. What's next:
-
-- **`research-radar` B/C** — feed the digest's findings into the gap log (so the loop fills them), then
-  opt-in, guard-railed GitHub filing. Deferred until the dry-run digest proves useful.
-- **Structural graph-gap detection** *(deferred by design)* — it couples to the builder's internal
-  graph schema, and the demand-driven gap log already gives the high-signal backlog.
-- **Maturity + reach** — real users, a public marketplace listing, and either a second-host adapter or
-  an honest narrowing of the "portable" claim. This — not more features — is what moves the needle now.
-
 ## Status (honest)
 
 LoopSmith is **Claude Code only.** The core is plain markdown + shell, structured to be host-portable,
