@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Team ledger
+- **`TEAM.md` now shows `claimed`**: the shared team view records WHO started a ticket and WHEN, not
+  only outcomes — it pairs with `done` to read a ticket's start→finish at a glance. `note` stays
+  personal (unless addressed `to` someone). Inbox/wake behavior is unchanged (that keys off `to`, not
+  the shared-kinds set), so a claim never wakes a teammate.
+
 ## 0.7.0 — the coordination release
 
 The theme: LoopSmith stops being a single-player autopilot, and stops running one thing at

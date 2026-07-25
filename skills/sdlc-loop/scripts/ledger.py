@@ -29,9 +29,10 @@ KINDS = ("claimed", "done", "parked", "failed", "handoff", "ack", "release", "no
 #: Lifecycle of a hand-off, from the point of view of the person it is addressed TO.
 STATES = ("open", "accepted", "deferred", "declined", "resolved")
 
-#: Kinds that belong in the shared/team view even with no explicit addressee. `claimed` and
-#: `note` stay personal unless they name a `to`, so routine churn does not drown the signal.
-SHARED_KINDS = ("done", "parked", "failed", "handoff", "ack", "release")
+#: Kinds that belong in the shared/team view even with no explicit addressee. `claimed` is shared so
+#: the team view records WHO started a ticket and WHEN (it pairs with `done` to show start→finish);
+#: `note` stays personal unless it names a `to`, so routine annotations don't drown the signal.
+SHARED_KINDS = ("claimed", "done", "parked", "failed", "handoff", "ack", "release")
 
 #: Optional fields, all free-form except `state` (validated) — additive by design: an older
 #: reader ignores a field it does not know rather than failing.

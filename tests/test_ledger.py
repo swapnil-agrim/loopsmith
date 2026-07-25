@@ -158,7 +158,7 @@ def test_read_all_on_a_repo_with_no_ledger(tmp_path):
     assert ledger.read_all(_sdlc(tmp_path, OFF)) == []
 
 
-def test_team_view_keeps_addressed_and_outcome_entries(tmp_path):
+def test_team_view_keeps_claims_addressed_and_outcomes(tmp_path):
     entries = [
         {"kind": "claimed", "goal": "a"},
         {"kind": "note", "goal": "b"},
@@ -166,7 +166,9 @@ def test_team_view_keeps_addressed_and_outcome_entries(tmp_path):
         {"kind": "parked", "goal": "d"},
     ]
     kinds = [(e["kind"], e.get("to")) for e in ledger.team(entries)]
-    assert kinds == [("note", "rae"), ("parked", None)]
+    # `claimed` is shared so the team view records who started a ticket (pairs with `done` for
+    # start→finish); a plain `note` stays local unless it is addressed to someone.
+    assert kinds == [("claimed", None), ("note", "rae"), ("parked", None)]
 
 
 def test_addressed_to_filters_by_recipient():
