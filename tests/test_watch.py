@@ -216,6 +216,25 @@ def test_publish_reports_success(tmp_path, monkeypatch):
     assert sync.publish(d, ON, run=lambda c, a: "x" if a[0] == "diff" else "") == "published"
 
 
+def test_publish_renders_and_stages_team_md(tmp_path, monkeypatch):
+    d = _sdlc(tmp_path)
+    ledger.entries_dir(d).mkdir(parents=True)
+    ledger.entry_file(d, ME).write_text(
+        '{"id":"rae:1","ts":"2026-07-25T09:00:00Z","actor":"rae","kind":"claimed","goal":"7"}\n')
+    monkeypatch.setattr(sync, "is_worktree", lambda _d: True)
+    calls = []
+
+    def git(cwd, args):
+        calls.append(list(args))
+        return "TEAM.md" if args[0] == "diff" else ""
+
+    assert sync.publish(d, ON, run=git) == "published"
+    team = (ledger.ledger_dir(d) / "TEAM.md").read_text()
+    assert team.startswith("# Team ledger") and "claimed" in team    # the rolled-up view goes on the branch
+    staged = next(a for a in calls if a[0] == "add")
+    assert "TEAM.md" in staged and f"entries/{ME}.jsonl" in staged    # committed alongside my entries
+
+
 def test_pull_aborts_a_bad_rebase_instead_of_wedging(tmp_path, monkeypatch):
     d = _sdlc(tmp_path)
     monkeypatch.setattr(sync, "is_worktree", lambda _d: True)
