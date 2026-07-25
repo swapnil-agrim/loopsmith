@@ -157,10 +157,13 @@ def pull(sdlc_dir, config, run=None):
 
 
 def publish(sdlc_dir, config, run=None, attempts=PUSH_ATTEMPTS):
-    """Commit MY entries file and fast-forward it onto the ops branch.
+    """Render TEAM.md, commit MY entries file + the rolled-up view, and fast-forward both onto the
+    ops branch — so a lead can read one file on the branch instead of five.
 
-    On rejection we fetch, rebase and retry rather than force — the loser of a race replays their
-    own file onto the winner's, which cannot conflict because nobody shares a file."""
+    Only my entries file and TEAM.md ever change. Entries never conflict (single-writer, with
+    `merge=union` as a backstop). TEAM.md is a pure function of the entries, so on a race we rebase
+    (taking the winner's TEAM.md), regenerate it from the now-merged entries, and retry — the
+    conflict is resolved by re-running, never by hand."""
     git = run or _run_git
     path, name, rem = worktree(sdlc_dir), branch(config), remote(config)
     if not is_worktree(sdlc_dir):
@@ -168,7 +171,8 @@ def publish(sdlc_dir, config, run=None, attempts=PUSH_ATTEMPTS):
     mine = f"entries/{ledger.actor(config)}.jsonl"
     if not (path / mine).exists():
         return "nothing to publish"
-    git(path, ["add", mine])
+    _write_team(sdlc_dir, path)
+    git(path, ["add", mine, "TEAM.md"])
     if not git(path, ["diff", "--cached", "--name-only"]):
         return "nothing to publish"
     git(path, ["commit", "-m", f"ledger: {ledger.actor(config)}"])
@@ -183,10 +187,24 @@ def publish(sdlc_dir, config, run=None, attempts=PUSH_ATTEMPTS):
                 break
             try:
                 git(path, ["fetch", rem, name])
-                git(path, ["rebase", f"{rem}/{name}"])
+                git(path, ["rebase", "-X", "theirs", f"{rem}/{name}"])   # entries union-merge; TEAM.md -> theirs
+                _write_team(sdlc_dir, path)                              # regenerate from the merged entries
+                if git(path, ["diff", "--name-only"]):
+                    git(path, ["add", "TEAM.md"])
+                    git(path, ["commit", "--amend", "--no-edit"])
             except Exception:
+                try:
+                    git(path, ["rebase", "--abort"])
+                except Exception:
+                    pass
                 break
     return f"publish deferred (will retry next tick): {last}"
+
+
+def _write_team(sdlc_dir, path):
+    """Regenerate the rolled-up team view from every author's entries. A pure function of the
+    entries on disk, so it is always safe to overwrite (that is what makes a race resolvable)."""
+    (path / "TEAM.md").write_text(ledger.render(ledger.read_all(sdlc_dir)), encoding="utf-8")
 
 
 def main(argv):

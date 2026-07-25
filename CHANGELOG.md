@@ -7,6 +7,10 @@
   only outcomes — it pairs with `done` to read a ticket's start→finish at a glance. `note` stays
   personal (unless addressed `to` someone). Inbox/wake behavior is unchanged (that keys off `to`, not
   the shared-kinds set), so a claim never wakes a teammate.
+- **`TEAM.md` is published to the ops branch**: `sync.py publish` now renders and commits the rolled-up
+  view alongside your entries file, so a lead can read one file on `sdlc-ledger` instead of cloning and
+  rendering locally. It stays conflict-free — TEAM.md is a pure function of the entries, so a push race
+  is resolved by rebasing and re-rendering from the merged entries, never by hand.
 
 ## 0.7.0 — the coordination release
 
