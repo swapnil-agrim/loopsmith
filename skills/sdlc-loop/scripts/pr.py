@@ -37,9 +37,11 @@ def _load(name):
 ledger = _load("ledger")
 
 DEFAULT_BASE = "main"
-# CI conclusions gh reports; anything not clearly done-good or clearly running is treated as failing.
+# The rollup mixes two shapes: a CheckRun (status + conclusion) and a legacy StatusContext (state).
+# We read whichever is present and normalise it. Anything not clearly good or clearly bad is 'pending'
+# — a check with no verdict yet must never read as a pass.
 _CI_FAIL = ("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE")
-_CI_PENDING = ("IN_PROGRESS", "QUEUED", "PENDING", "WAITING", "REQUESTED", "")
+_CI_PASS = ("SUCCESS", "NEUTRAL", "SKIPPED")
 
 
 def _run_gh(args):
@@ -85,7 +87,7 @@ class PullRequests:
     def open_prs(self):
         """Open, non-draft PRs targeting the review base, oldest first."""
         out = self._run(["pr", "list", *self._repo, "--base", self.base, "--state", "open",
-                         "--json", "number,title,isDraft,reviewDecision,author", "--limit", "100"])
+                         "--json", "number,title,isDraft,reviewDecision,author", "--limit", "200"])  # cap: 200 open
         prs = [p for p in json.loads(out or "[]") if not p.get("isDraft")]
         prs.sort(key=lambda p: p.get("number", 0))
         return prs
@@ -102,17 +104,28 @@ class PullRequests:
             return str(p["number"])
         return None
 
+    @staticmethod
+    def _mark(check):
+        """One rollup item -> 'passing' | 'failing' | 'pending'. A CheckRun carries `conclusion` (once
+        `status` is COMPLETED); a legacy StatusContext carries `state`. Read whichever is set."""
+        signal = (check.get("conclusion") or check.get("state") or check.get("status") or "").upper()
+        if signal in _CI_FAIL:
+            return "failing"
+        if signal in _CI_PASS:
+            return "passing"
+        return "pending"          # IN_PROGRESS / QUEUED / PENDING / EXPECTED / "" — no verdict yet
+
     def ci_state(self, pr):
-        """'passing' | 'pending' | 'failing', from the PR's check rollup. No checks yet => 'pending'
-        (never call a PR with no signal 'passing')."""
+        """'passing' | 'pending' | 'failing' for the whole PR. No checks yet => 'pending' (never call a
+        PR with no signal 'passing'). Any failure wins; else any pending; else all passed."""
         out = self._run(["pr", "view", str(pr), *self._repo, "--json", "statusCheckRollup"])
         rollup = (json.loads(out or "{}").get("statusCheckRollup")) or []
-        marks = [(c.get("conclusion") or c.get("status") or "") for c in rollup]
-        if not marks:
+        if not rollup:
             return "pending"
-        if any(m in _CI_FAIL for m in marks):
+        marks = [self._mark(c) for c in rollup]
+        if "failing" in marks:
             return "failing"
-        if any(m in _CI_PENDING for m in marks):
+        if "pending" in marks:
             return "pending"
         return "passing"
 
@@ -123,8 +136,15 @@ class PullRequests:
         return self._record("review", pr, why or f"reviewing #{pr}")
 
     def rebase(self, pr):
-        """Bring the PR current with its base (GitHub does it server-side; no local push). Records it."""
-        self._run(["pr", "update-branch", "--rebase", str(pr), *self._repo])
+        """Bring the PR current with its base (GitHub does it server-side; no local push). Records it.
+        An already-current branch is success, not an error — `gh` returns non-zero for it, so treat the
+        'up to date' case as a no-op rather than letting it break the cycle."""
+        try:
+            self._run(["pr", "update-branch", "--rebase", str(pr), *self._repo])
+        except Exception as exc:
+            if "up to date" in str(exc).lower() or "up-to-date" in str(exc).lower():
+                return self._record("rebased", pr, f"#{pr} already current with {self.base}")
+            raise
         return self._record("rebased", pr, f"rebased #{pr} onto {self.base}")
 
     def request_changes(self, pr, why):
@@ -156,8 +176,9 @@ class PullRequests:
 
     def _record(self, kind, pr, why):
         # fail-open: a ledger problem must never abort a review cycle (mirrors loop.py's contract).
-        ledger.safe_append(self.sdlc_dir, kind, str(pr), config=self.config, pr=int(pr), why=why)
-        return {"kind": kind, "pr": int(pr), "why": why}
+        pr_num = int(pr) if str(pr).isdigit() else str(pr)      # guard, like handoff.py/ledger.py
+        ledger.safe_append(self.sdlc_dir, kind, str(pr), config=self.config, pr=pr_num, why=why)
+        return {"kind": kind, "pr": pr_num, "why": why}
 
 
 # ------------------------------------------------------------------------------- CLI
@@ -173,55 +194,62 @@ def _flags(argv):
                 out[key] = argv[i + 1]
                 i += 2
             else:
-                out[key] = True
+                out[key] = ""          # a bare --key records an empty value, never the boolean True
                 i += 1
         else:
             i += 1
     return out
 
 
+_USAGE = ("usage: pr.py list|next|ci|claim|rebase|approve|request-changes|hold|merge <sdlc-dir> "
+          "[<pr>] [--why TEXT]")
+_NEEDS_PR = ("ci", "claim", "rebase", "approve", "request-changes", "hold", "merge")
+
+
 def main(argv):
     if len(argv) < 3:
-        print("usage: pr.py list|next|ci|claim|rebase|approve|request-changes|merge <sdlc-dir> [<pr>] "
-              "[--why TEXT]", file=sys.stderr)
+        print(_USAGE, file=sys.stderr)
         return 2
     verb, sdlc_dir = argv[1], argv[2]
     config = _config(sdlc_dir)
+    if not enabled(config):        # honor the default-off contract: nothing touches a PR when review is off
+        print("review pipeline is off — set review.enabled: true in .sdlc/config.json", file=sys.stderr)
+        return 1
     prs = PullRequests(sdlc_dir, config)
     rest = argv[3:]
     flags = _flags(rest)
-    pr = next((a for a in rest if not a.startswith("--")), None)
+    pr = rest[0] if rest and not rest[0].startswith("--") else None   # positional is first, before flags
+    why = flags.get("why", "")
+
+    if verb in _NEEDS_PR and not (pr and pr.isdigit()):
+        print(f"pr.py {verb} needs a numeric <pr>", file=sys.stderr)
+        return 2
 
     if verb == "list":
         for p in prs.open_prs():
-            print(f"#{p['number']}\t{(p.get('author') or {}).get('login','?')}\t{p.get('title','')}")
-        return 0
-    if verb == "next":
+            print(f"#{p['number']}\t{(p.get('author') or {}).get('login', '?')}\t{p.get('title', '')}")
+    elif verb == "next":
         nxt = prs.next_pending()
         if nxt:
             print(nxt)
-        return 0
-    if verb == "ci" and pr:
+    elif verb == "ci":
         print(prs.ci_state(pr))
-        return 0
-    if verb in ("claim", "rebase", "approve", "request-changes", "hold", "merge") and pr:
-        why = flags.get("why", "")
-        if verb == "claim":
-            print(prs.claim(pr, why))
-        elif verb == "rebase":
-            print(prs.rebase(pr))
-        elif verb == "approve":
-            print(prs.approve(pr, why))
-        elif verb == "request-changes":
-            print(prs.request_changes(pr, why or "changes requested"))
-        elif verb == "hold":
-            print(prs.hold(pr, why or "held for human approval"))
-        elif verb == "merge":
-            print(prs.merge(pr, why))
-        return 0
-    print("usage: pr.py list|next|ci|claim|rebase|approve|request-changes|hold|merge <sdlc-dir> "
-          "[<pr>] [--why TEXT]", file=sys.stderr)
-    return 2
+    elif verb == "claim":
+        print(prs.claim(pr, why))
+    elif verb == "rebase":
+        print(prs.rebase(pr))
+    elif verb == "approve":
+        print(prs.approve(pr, why))
+    elif verb == "request-changes":
+        print(prs.request_changes(pr, why or "changes requested"))
+    elif verb == "hold":
+        print(prs.hold(pr, why or "held for human approval"))
+    elif verb == "merge":
+        print(prs.merge(pr, why))
+    else:
+        print(_USAGE, file=sys.stderr)
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

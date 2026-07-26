@@ -4,6 +4,8 @@ import importlib.util
 import json
 import pathlib
 
+import pytest
+
 S = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts"
 
 
@@ -98,7 +100,10 @@ def test_ci_state_classifies_rollup(tmp_path):
 def test_lifecycle_records_each_step_to_the_ledger(tmp_path):
     d, cfg = _sdlc(tmp_path)
     p = pr.PullRequests(d, cfg, run=_runner())
-    p.claim(7); p.rebase(7); p.request_changes(7, "fix the selector"); p.approve(7)
+    p.claim(7)
+    p.rebase(7)
+    p.request_changes(7, "fix the selector")
+    p.approve(7)
     kinds = [(e["kind"], e.get("pr")) for e in ledger.read_all(d)]
     for step in ("review", "rebased", "changes-requested", "approved"):
         assert (step, 7) in kinds                              # every step is on the ledger, tagged with the PR
@@ -152,3 +157,77 @@ def test_cli_next_claim_and_usage(tmp_path, monkeypatch, capsys):
     assert pr.main(["pr.py", "claim", d, "7", "--why", "on it"]) == 0
     assert ("review", 7) in [(e["kind"], e.get("pr")) for e in ledger.read_all(d)]   # --why parsed, recorded
     assert pr.main(["pr.py"]) == 2                                   # usage on missing args
+
+
+# ---- CI edge cases: legacy StatusContext + require_ci ----
+
+def test_ci_state_reads_legacy_statuscontext_state(tmp_path):
+    d, cfg = _sdlc(tmp_path)
+
+    def state(rollup):
+        return pr.PullRequests(d, cfg, run=_runner(ci_json=json.dumps({"statusCheckRollup": rollup}))).ci_state(7)
+
+    # a legacy commit status carries `state`, not conclusion/status — must still classify
+    assert state([{"__typename": "StatusContext", "state": "SUCCESS", "context": "ci/build"}]) == "passing"
+    assert state([{"__typename": "StatusContext", "state": "FAILURE"}]) == "failing"
+    assert state([{"__typename": "StatusContext", "state": "PENDING"}]) == "pending"
+    assert state([{"conclusion": "SUCCESS"}, {"state": "SUCCESS"}]) == "passing"   # mixed shapes, both good
+
+
+def test_merge_ignores_ci_when_require_ci_false(tmp_path):
+    d, cfg = _sdlc(tmp_path, auto_merge=True, require_ci=False)
+    run = _runner(ci_json=json.dumps({"statusCheckRollup": [{"conclusion": "FAILURE"}]}))
+    p = pr.PullRequests(d, cfg, run=run)
+    assert p.merge(7)["merged"] is True                              # CI not consulted when require_ci off
+    assert any(c[:2] == ["pr", "merge"] for c in run.calls)
+
+
+def test_merge_blocked_when_ci_pending(tmp_path):
+    d, cfg = _sdlc(tmp_path, auto_merge=True)
+    run = _runner(ci_json=json.dumps({"statusCheckRollup": [{"status": "IN_PROGRESS"}]}))
+    p = pr.PullRequests(d, cfg, run=run)
+    assert p.merge(7)["merged"] is False and not any(c[:2] == ["pr", "merge"] for c in run.calls)
+
+
+# ---- rebase tolerance ----
+
+def test_rebase_tolerates_an_already_current_branch(tmp_path):
+    d, cfg = _sdlc(tmp_path)
+
+    def run(args):
+        if args[:2] == ["pr", "update-branch"]:
+            raise RuntimeError("pull request branch is already up to date with base branch")
+        return ""
+
+    r = pr.PullRequests(d, cfg, run=run).rebase(7)                   # must NOT raise
+    assert r["kind"] == "rebased"
+    assert ("rebased", 7) in [(e["kind"], e.get("pr")) for e in ledger.read_all(d)]
+
+
+def test_rebase_reraises_a_real_error(tmp_path):
+    d, cfg = _sdlc(tmp_path)
+
+    def run(args):
+        raise RuntimeError("merge conflict")
+
+    with pytest.raises(RuntimeError):
+        pr.PullRequests(d, cfg, run=run).rebase(7)
+
+
+# ---- CLI guards (contract + input) ----
+
+def test_cli_is_inert_when_review_disabled(tmp_path, monkeypatch):
+    d = tmp_path / ".sdlc"
+    (d / "state").mkdir(parents=True)
+    (d / "config.json").write_text(json.dumps({"ledger": {"enabled": True, "actor": "rae"}}))   # no review block
+    called = []
+    monkeypatch.setattr(pr, "_run_gh", lambda a: called.append(a) or "")
+    assert pr.main(["pr.py", "rebase", str(d), "7"]) == 1            # refused — review is off
+    assert called == []                                             # and it never touched a PR
+
+
+def test_cli_rejects_non_numeric_or_missing_pr(tmp_path, monkeypatch):
+    d, _ = _sdlc(tmp_path)
+    monkeypatch.setattr(pr, "_run_gh", lambda a: "")
+    assert pr.main(["pr.py", "claim", d, "HEAD"]) == 2              # non-numeric -> usage, no crash
+    assert pr.main(["pr.py", "ci", d]) == 2                         # missing pr

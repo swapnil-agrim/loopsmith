@@ -127,6 +127,11 @@ def features(sdlc_dir=".sdlc"):
          ("ON — up to %s concurrent slices per wave" % par.get("max_concurrent", 3))
          if par.get("enabled") is True else "off (a goal's slices run one after another)",
          'config: "parallel": {"enabled": true, "max_concurrent": 3}'),
+        ("PR review pipeline",
+         ("ON — merges %s" % ("auto (auto_merge on)" if (cfg.get("review") or {}).get("auto_merge") is True
+                              else "parked for a human (auto_merge off)"))
+         if (cfg.get("review") or {}).get("enabled") is True else "off (PRs are not managed by the loop)",
+         'config: "review": {"enabled": true, "base": "<branch>"}'),
     ]
     return rows
 
