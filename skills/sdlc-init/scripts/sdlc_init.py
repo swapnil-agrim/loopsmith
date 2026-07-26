@@ -172,7 +172,8 @@ def main(argv):
         print(f"  = .sdlc/{s} (exists, kept)")
     if created:
         print("\nTip: commit .sdlc/goals/, .sdlc/project.md and .sdlc/config.json; add "
-              "'.sdlc/state/' to .gitignore so machine-written loop state isn't committed "
+              "'.sdlc/state/', '.sdlc/ledger/' and '.sdlc/work/' to .gitignore so machine-written "
+              "loop state and the two worktree paths aren't committed "
               "(this script won't edit .gitignore for you).")
     if "--github" in flags:
         gcreated, gskipped = scaffold_github(target)

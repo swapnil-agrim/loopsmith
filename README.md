@@ -195,6 +195,8 @@ Everything optional ships OFF — `/sdlc-doctor` prints this dashboard live (`do
 | `ledger: {"enabled": true}` | off | the committed team ledger — claims and outcomes recorded per author, plus cross-area hand-off |
 | `ledger.watch.interval_seconds` | 900 | how often `watch.sh` pulls the ledger ops branch and refreshes the inbox |
 | `parallel: {"enabled": true}` | off | a goal's independent slices run concurrently in waves (`max_concurrent`, default 3) from `.sdlc/plans/<goal>.slices.json` |
+| `work: {"enabled": true}` | off | one worktree + branch + PR per goal; your checkout never moves, and `verify_command` runs in the goal's own tree |
+| `work.auto_merge` | off | arm GitHub auto-merge when the PR is clean **and** safe; anything else parks with the reason |
 | `budget.max_minutes` / `max_tokens` | unset | wall-clock / host-reported token ceilings (iterations always enforce) |
 | `knowledge_graph.enabled` | off | research capture + the self-improving graph |
 | `LOOPSMITH_GATE_GLOBAL=1` (env) | unset | restores the pre-0.6 always-on prompt gate |
@@ -583,6 +585,55 @@ claude --worktree 0007-cache-s3
 The loop never runs it for you. It also never shells out to an unattended `claude -p`: that's uncapped
 spend, and it would put a second worker on one `.sdlc`, which every state file in the kit assumes never
 happens. Leave `parallel` off, or ship no manifest, and every goal runs as one unit exactly as before.
+
+---
+
+## One worktree, one branch, one PR per goal (optional, off by default)
+
+Turn it on with `work: {"enabled": true}`. Until you do, the loop writes to git exactly as little as
+it did before — this is the only feature that lets it commit at all.
+
+```json
+"work": { "enabled": true, "base": "", "remote": "origin", "auto_merge": false }
+```
+
+**Why a worktree and not a branch.** The moment the loop touches git, an in-place `checkout -b`
+breaks two things silently: it moves the working copy out from under whatever you left open, and —
+because `sdlc-init` has you commit `.sdlc/goals/` — every branch switch rewrites the backlog the loop
+is in the middle of reading. A worktree avoids both. Your checkout never moves and never changes
+branch; bookkeeping keeps resolving to the one real `.sdlc`.
+
+**Cutting fresh IS the goal-start rebase.** The worktree is created from `<remote>/<base>` at the
+moment the goal starts, so there is nothing to replay. That matters more than it sounds: a real
+`git rebase` that hits a conflict at 3am leaves a half-applied tree, and every later goal in that run
+then builds on it. The only rebase that ever runs is the reactive one below, and it aborts on
+conflict rather than leave the tree wedged.
+
+**`verify_command` runs in the worktree.** It has to — the main checkout doesn't contain the change.
+A proving command resolved against the wrong tree is a green that proves nothing, and `record done`
+would accept it.
+
+### The merge gate: clean *and* safe
+
+`work.py merge` will not merge unless all three hold:
+
+| Leg | Source | What it catches |
+|---|---|---|
+| fresh local evidence | `loop.py verify`, this run | a green from yesterday, or none at all |
+| `mergeable` | GitHub | textual conflicts with the base |
+| `mergeStateStatus == CLEAN` | GitHub | failing required checks, missing reviews, a stale branch |
+
+Then it arms GitHub's own `--auto` rather than merging on what it just read, so the final decision is
+an atomic re-check at merge time. A `BEHIND` branch is rebased once and re-checked. Everything else
+prints `PARK: <reason>` and the loop records exactly that and moves on — the "human intervention"
+path is the existing review queue, not a new one.
+
+Three honest limits. `CLEAN` is only worth what your **branch protection** is worth: on a repo with
+no required checks GitHub objects to nothing, so the gate says so out loud instead of letting it read
+as "reviewed". A fresh worktree has no `node_modules`/`.venv`/build cache, so a heavy
+`verify_command` pays that cost per goal — part of why this ships off. And `work.py commit` stages
+with `git add -A`, so **anything your `verify_command` leaves behind must be gitignored** or it rides
+along into the PR (`.coverage`, `.pytest_cache/`, build output).
 
 ---
 

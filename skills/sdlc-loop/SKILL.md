@@ -45,7 +45,17 @@ Then repeat until the helper says stop:
    - a failure you cannot resolve — record THIS one as `failed` (see step 6): parked means
      "needs a human decision", failed means "needs a fix"; the queue separates the two.
 
-   **3a. Independent slices? Run the wave — don't queue it.** Once the plan exists, if it declared
+   **3a. Cut this goal's worktree BEFORE you edit anything.** With `config.work.enabled` on:
+   `python3 "${CLAUDE_SKILL_DIR}/scripts/work.py" start .sdlc "$goal"`. It cuts a fresh worktree and
+   branch from `<remote>/<base>` — which **is** the goal-start rebase: nothing to replay, so it
+   cannot conflict or strand a half-applied tree in an unattended run. Do **every edit for this goal
+   inside that worktree**; the human's checkout must never move, and never change branch (it would
+   rewrite `.sdlc/goals/` underneath you). Bookkeeping is the exception and stays in the MAIN
+   checkout — keep passing `loop.py`/`ledger.py` the same `.sdlc` path as always, never the
+   worktree's stale copy of it. `loop.py verify` finds the worktree by itself. Feature off → work in
+   the checkout exactly as before.
+
+   **3b. Independent slices? Run the wave — don't queue it.** Once the plan exists, if it declared
    slices in `.sdlc/plans/<goal-stem>.slices.json`, compute the dispatch plan:
    `python3 "${CLAUDE_SKILL_DIR}/scripts/slices.py" plan .sdlc "$goal"`. It groups the runnable slices
    into **waves** — each wave mutually non-conflicting by declared files, capped at
@@ -84,7 +94,19 @@ Then repeat until the helper says stop:
    With `config.verify.enforce` on, a `done` needs FRESH machine evidence first —
    `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" verify .sdlc "$goal"` runs the goal's proving
    command (frontmatter `verify_command`, else `verify.command`) and records it; `record done` is
-   REFUSED without a passing, this-run verify. Declared a pipeline (`.sdlc/pipeline.json`)? Run the
+   REFUSED without a passing, this-run verify.
+   **Landing the work** (`config.work.enabled` on) — once verify is green, and never with a bare
+   `git` command (the loop has no general git tool on purpose):
+   `work.py commit .sdlc "$goal" --message "<type: what changed>"` → `work.py pr .sdlc "$goal"` →
+   `work.py merge .sdlc "$goal"`. The gate is clean **and** safe: it needs THIS run's passing verify
+   evidence *and* GitHub's `mergeable` + `mergeStateStatus CLEAN` (required checks and reviews folded
+   in), it rebases once if the PR is `BEHIND`, and it arms GitHub's own `--auto` so the last word is
+   an atomic re-check at merge time rather than a stale read. Any line it prints beginning `PARK:` is
+   exactly that: `record parked "<that reason>"` and move on — **never** merge past it by hand. With
+   `work.auto_merge` off (the default) it stops at "clean and safe" and leaves the PR for a human.
+   After a `done`, release the checkout: `work.py finish .sdlc "$goal"` — it deliberately KEEPS a
+   worktree that still holds uncommitted work, so a parked goal stays intact for whoever picks it up.
+   Declared a pipeline (`.sdlc/pipeline.json`)? Run the
    bidirectional report card between goals — `python3 "${CLAUDE_SKILL_DIR}/scripts/pipeline.py" card
    .sdlc` — and treat its findings as inputs, not gates. `pipeline.py propose .sdlc` turns the card's
    FAILING signals into `proposed` goal files (with the failing check wired as `verify_command`);

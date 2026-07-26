@@ -1,0 +1,370 @@
+"""Per-goal worktree + the clean-AND-safe merge gate. Every git/gh call is injected, so these are
+hermetic: no repo, no network, no `gh`. What they actually pin down is the gate's REFUSALS — the
+cheap way to get this wrong is to merge on a lazy UNKNOWN or on evidence from yesterday's run."""
+import importlib.util, json, pathlib, sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+SCRIPTS = ROOT / "skills" / "sdlc-loop" / "scripts"
+
+
+def _load(name):
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+
+
+work = _load("work")
+state = _load("state")
+
+ON = {"work": {"enabled": True}}
+NOSLEEP = lambda _: None                                          # noqa: E731 - one-liner test stub
+
+
+def _runner(handlers):
+    """First substring match wins. A response may be a string, a callable, or an Exception to
+    raise. Anything unmatched returns "" — the honest default for most git commands."""
+    calls = []
+
+    def run(cwd, argv):
+        line = " ".join(str(a) for a in argv)
+        calls.append(line)
+        for token, resp in handlers:
+            if token in line:
+                if isinstance(resp, Exception):
+                    raise resp
+                return resp(line) if callable(resp) else resp
+        return ""
+
+    run.calls = calls
+    return run
+
+
+def _view(mergeable="MERGEABLE", status="CLEAN", checks=(("ci", "SUCCESS"),)):
+    return json.dumps({"mergeable": mergeable, "mergeStateStatus": status,
+                       "statusCheckRollup": [{"name": n, "conclusion": c} for n, c in checks]})
+
+
+def _sdlc(tmp_path, config=None):
+    d = tmp_path / ".sdlc"
+    (d / "state").mkdir(parents=True)
+    (d / "config.json").write_text(json.dumps(config or ON))
+    state.start_run(str(d))
+    return str(d)
+
+
+def _started(sdlc_dir, goal="0001-x.md", pr="7"):
+    wt = pathlib.Path(sdlc_dir).parent / ".sdlc" / "work" / "0001-x"
+    wt.mkdir(parents=True, exist_ok=True)
+    work._save(sdlc_dir, goal, {"worktree": str(wt), "branch": "sdlc/0001-x", "base": "main",
+                                "remote": "origin", "pr": pr})
+    return goal
+
+
+def _evidence(sdlc_dir, goal="0001-x.md", exit_code=0, age=0):
+    ev = state.evidence_path(sdlc_dir, goal)
+    ev.parent.mkdir(parents=True, exist_ok=True)
+    at = state.load_cursor(sdlc_dir)["run_started_at"] - age
+    ev.write_text(json.dumps({"command": "pytest", "exit": exit_code, "at": at, "tail": []}))
+
+
+# --- root: the resolution that makes a green verify mean something -------------------------------
+
+def test_root_falls_back_to_project_root_when_the_feature_is_off(tmp_path):
+    d = _sdlc(tmp_path)
+    assert work.root(d, "0001-x.md") == str(tmp_path.resolve())
+
+
+def test_root_is_the_worktree_once_the_goal_has_one(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    assert work.root(d, goal).endswith("work/0001-x")
+
+
+def test_root_falls_back_when_the_worktree_is_gone(tmp_path):
+    """A removed worktree must not wedge verify — it degrades to the project root."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    pathlib.Path(work._record(d, goal)["worktree"]).rmdir()
+    assert work.root(d, goal) == str(tmp_path.resolve())
+
+
+def test_verify_runs_in_the_worktree_not_the_main_checkout(tmp_path):
+    """The whole point of the root fix: the proving command must see the goal's own tree."""
+    loop = _load("loop")
+    d = _sdlc(tmp_path, {**ON, "verify": {"command": "pwd > where.txt"}})
+    goal = _started(d)
+    assert loop.verify_goal(d, goal) == 0
+    wt = pathlib.Path(work._record(d, goal)["worktree"])
+    assert (wt / "where.txt").read_text().strip() == str(wt)
+    assert not (tmp_path / "where.txt").exists()
+
+
+# --- start: cutting fresh IS the goal-start rebase -----------------------------------------------
+
+def test_start_cuts_from_the_remote_base_and_records_it(tmp_path):
+    d = _sdlc(tmp_path)
+    run = _runner([("rev-parse", "main")])
+    out = work.start(d, ON, "0001-x.md", run=run)
+    assert "sdlc/0001-x" in out and "origin/main" in out
+    assert "git fetch origin main" in run.calls
+    assert any("worktree add -b sdlc/0001-x" in c and "origin/main" in c for c in run.calls)
+    rec = work._record(d, "0001-x.md")
+    assert rec["base"] == "main" and pathlib.Path(rec["worktree"]).is_absolute()
+
+
+def test_start_is_idempotent_so_a_supervisor_relaunch_reattaches(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([])
+    assert "already started" in work.start(d, ON, goal, run=run)
+    assert run.calls == []                       # no second worktree for the same goal
+
+
+def test_start_reattaches_to_a_branch_that_outlived_its_record(tmp_path):
+    d = _sdlc(tmp_path)
+    run = _runner([("rev-parse", "main"), ("worktree add -b", RuntimeError("already exists"))])
+    work.start(d, ON, "0001-x.md", run=run)
+    assert any(c.startswith("git worktree add ") and "-b" not in c for c in run.calls)
+
+
+# --- commit: the loop's only write path into git -------------------------------------------------
+
+def test_commit_only_ever_touches_this_goals_worktree(tmp_path):
+    """The loop gets no general `git` tool, so this is the one place it can write — and it can only
+    write here. If it could reach the main checkout the feature would be pointless."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    wt = work._record(d, goal)["worktree"]
+    run = _runner([("diff --cached", "a.py")])
+    assert work.commit(d, ON, goal, run=run, message="feat: x") == "committed on sdlc/0001-x"
+    assert run.calls == ["git add -A", "git diff --cached --name-only", "git commit -m feat: x"]
+
+
+def test_commit_is_a_noop_when_nothing_changed(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([])
+    assert work.commit(d, ON, goal, run=run) == "nothing to commit"
+    assert not any("commit" in c for c in run.calls)
+
+
+# --- pr: refuse to open something that says nothing ----------------------------------------------
+
+def test_pr_refuses_a_dirty_worktree(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d, pr="")
+    run = _runner([("status --porcelain", " M a.py")])
+    assert "uncommitted changes" in work.pr(d, ON, goal, run=run)
+    assert not any("push" in c for c in run.calls)
+
+
+def test_pr_refuses_an_empty_branch(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d, pr="")
+    run = _runner([("rev-list", "0")])
+    assert "no commits" in work.pr(d, ON, goal, run=run)
+    assert not any("push" in c for c in run.calls)
+
+
+def test_pr_creates_and_records_the_number(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d, pr="")
+    run = _runner([("rev-list", "2"), ("pr list", ""), ("pr view", "12")])
+    assert work.pr(d, ON, goal, run=run) == "PR #12"
+    assert work._record(d, goal)["pr"] == "12"
+    assert any("pr create --fill --base main" in c for c in run.calls)
+
+
+def test_pr_reuses_an_existing_pr(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d, pr="")
+    run = _runner([("rev-list", "2"), ("pr list", "9")])
+    assert work.pr(d, ON, goal, run=run) == "PR #9"
+    assert not any("pr create" in c for c in run.calls)
+
+
+# --- gate: clean AND safe ------------------------------------------------------------------------
+
+def test_gate_retries_the_lazy_unknown_then_accepts(tmp_path):
+    """GitHub's first answer after a push is normally UNKNOWN. Taking it at face value would park
+    every PR; ignoring it would merge blind."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    seen = []
+
+    def view(_line):
+        seen.append(1)
+        return _view(mergeable="UNKNOWN") if len(seen) < 3 else _view()
+
+    ok, verdict, _ = work.gate(d, ON, goal, run=_runner([("pr view", view)]), sleep=NOSLEEP)
+    assert ok and verdict == "clean and safe" and len(seen) == 3
+
+
+def test_gate_parks_on_a_persistent_unknown(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([("pr view", _view(mergeable="UNKNOWN"))])
+    ok, verdict, _ = work.gate(d, ON, goal, run=run, sleep=NOSLEEP)
+    assert not ok and "UNKNOWN" in verdict
+    assert sum("pr view" in c for c in run.calls) == work.UNKNOWN_ATTEMPTS
+
+
+def test_gate_parks_on_conflicts(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    ok, verdict, _ = work.gate(d, ON, goal, run=_runner([("pr view", _view("CONFLICTING", "DIRTY"))]),
+                               sleep=NOSLEEP)
+    assert not ok and "conflicts" in verdict
+
+
+def test_gate_reports_behind_for_the_caller_to_act_on(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    ok, verdict, _ = work.gate(d, ON, goal, run=_runner([("pr view", _view(status="BEHIND"))]),
+                               sleep=NOSLEEP)
+    assert not ok and verdict == work.BEHIND
+
+
+def test_gate_names_the_failing_check(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    view = _view(status="UNSTABLE", checks=(("lint", "SUCCESS"), ("tests", "FAILURE")))
+    ok, verdict, _ = work.gate(d, ON, goal, run=_runner([("pr view", view)]), sleep=NOSLEEP)
+    assert not ok and "UNSTABLE" in verdict and "tests" in verdict and "lint" not in verdict
+
+
+def test_gate_parks_when_review_is_still_required(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    ok, verdict, _ = work.gate(d, ON, goal, run=_runner([("pr view", _view(status="BLOCKED"))]),
+                               sleep=NOSLEEP)
+    assert not ok and "BLOCKED" in verdict
+
+
+# --- merge: the ordering is the safety -----------------------------------------------------------
+
+AUTO = {"work": {"enabled": True, "auto_merge": True}}
+
+
+def test_merge_refuses_without_fresh_local_evidence(tmp_path):
+    """CI is not the only leg. No verify for THIS run means no merge, whatever GitHub says."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([("pr view", _view())])
+    assert work.merge(d, AUTO, goal, run=run, sleep=NOSLEEP).startswith("PARK: no fresh verify")
+    assert not any("pr merge" in c for c in run.calls)
+
+
+def test_merge_refuses_evidence_from_a_previous_run(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal, age=10_000)
+    out = work.merge(d, AUTO, goal, run=_runner([("pr view", _view())]), sleep=NOSLEEP)
+    assert "predates this run" in out
+
+
+def test_merge_refuses_a_failing_verify(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal, exit_code=1)
+    out = work.merge(d, AUTO, goal, run=_runner([("pr view", _view())]), sleep=NOSLEEP)
+    assert "last verify FAILED" in out
+
+
+def test_merge_arms_github_auto_merge_when_clean_and_safe(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    run = _runner([("pr view", _view())])
+    out = work.merge(d, AUTO, goal, run=run, sleep=NOSLEEP)
+    assert out == "auto-merge armed on PR #7"
+    assert "gh pr merge 7 --auto --squash" in run.calls
+
+
+def test_merge_leaves_the_pr_alone_when_auto_merge_is_off(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    run = _runner([("pr view", _view())])
+    out = work.merge(d, ON, goal, run=run, sleep=NOSLEEP)
+    assert "auto_merge is off" in out and not any("pr merge" in c for c in run.calls)
+
+
+def test_merge_says_so_when_the_repo_has_no_required_checks(tmp_path):
+    """CLEAN on a repo that requires nothing is not the same as reviewed — don't let it read that
+    way just because the string is the same."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    run = _runner([("pr view", _view(checks=()))])
+    assert "no required checks" in work.merge(d, AUTO, goal, run=run, sleep=NOSLEEP)
+
+
+def test_merge_rebases_a_behind_branch_then_merges(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    seen = []
+
+    def view(_line):
+        seen.append(1)
+        return _view(status="BEHIND") if len(seen) == 1 else _view()
+
+    run = _runner([("pr view", view)])
+    out = work.merge(d, AUTO, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("auto-merge armed")
+    assert any("rebase --autostash origin/main" in c for c in run.calls)
+    assert any("push --force-with-lease" in c for c in run.calls)
+
+
+def test_a_conflicting_rebase_aborts_and_parks(tmp_path):
+    """The 3am case. A half-applied rebase would poison every later goal in the run."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    run = _runner([("pr view", _view(status="BEHIND")),
+                   ("rebase --autostash", RuntimeError("CONFLICT in a.py"))])
+    out = work.merge(d, AUTO, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("PARK: rebase deferred") and "CONFLICT" in out
+    assert "git rebase --abort" in run.calls
+    assert not any("pr merge" in c for c in run.calls)
+
+
+def test_merge_needs_a_pr(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d, pr="")
+    assert work.merge(d, AUTO, goal, run=_runner([]), sleep=NOSLEEP).startswith("PARK: no PR")
+
+
+# --- finish: don't leak a checkout per goal ------------------------------------------------------
+
+def test_finish_removes_the_worktree_and_clears_the_record(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([])
+    assert "removed" in work.finish(d, ON, goal, run=run)
+    assert work._record(d, goal) is None
+    assert any("worktree prune" in c for c in run.calls)
+
+
+def test_finish_keeps_a_worktree_that_still_holds_work(tmp_path):
+    """A parked goal's tree is what the human picks up — losing it is worse than a leak."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([("worktree remove", RuntimeError("contains modified files"))])
+    assert work.finish(d, ON, goal, run=run).startswith("kept ")
+    assert work._record(d, goal) is not None
+
+
+# --- CLI + the off switch ------------------------------------------------------------------------
+
+def test_cli_refuses_every_command_while_the_feature_is_off(tmp_path, capsys):
+    d = _sdlc(tmp_path, {"work": {"enabled": False}})
+    assert work.main(["work.py", "start", d, "0001-x.md"]) == 1
+    assert "work is off" in capsys.readouterr().err
+
+
+def test_cli_root_works_with_the_feature_off(tmp_path, capsys):
+    """verify calls `root` on every goal, including repos that never enable any of this."""
+    d = _sdlc(tmp_path, {"work": {"enabled": False}})
+    assert work.main(["work.py", "root", d, "0001-x.md"]) == 0
+    assert capsys.readouterr().out.strip() == str(tmp_path.resolve())
