@@ -132,6 +132,13 @@ class PullRequests:
         the author. The caller (agent) posts the actual review body; this is the ledger fact."""
         return self._record("changes-requested", pr, why)
 
+    def hold(self, pr, why):
+        """A serious finding — a design conflict or a contradicted doc: convert the PR back to DRAFT so
+        it cannot be merged, and record it. Escalates to a human; the agent posts the reasoning as the
+        review body. (Ordinary 'please fix this' is request_changes; hold actively blocks the merge.)"""
+        self._run(["pr", "ready", "--undo", str(pr), *self._repo])
+        return self._record("changes-requested", pr, f"held (draft) — {why}")
+
     def approve(self, pr, why=""):
         """The review passed. Records it; merging is a separate, gated step."""
         return self._record("approved", pr, why or f"review passed #{pr}")
@@ -197,7 +204,7 @@ def main(argv):
     if verb == "ci" and pr:
         print(prs.ci_state(pr))
         return 0
-    if verb in ("claim", "rebase", "approve", "request-changes", "merge") and pr:
+    if verb in ("claim", "rebase", "approve", "request-changes", "hold", "merge") and pr:
         why = flags.get("why", "")
         if verb == "claim":
             print(prs.claim(pr, why))
@@ -207,11 +214,13 @@ def main(argv):
             print(prs.approve(pr, why))
         elif verb == "request-changes":
             print(prs.request_changes(pr, why or "changes requested"))
+        elif verb == "hold":
+            print(prs.hold(pr, why or "held for human approval"))
         elif verb == "merge":
             print(prs.merge(pr, why))
         return 0
-    print("usage: pr.py list|next|ci|claim|rebase|approve|request-changes|merge <sdlc-dir> [<pr>] "
-          "[--why TEXT]", file=sys.stderr)
+    print("usage: pr.py list|next|ci|claim|rebase|approve|request-changes|hold|merge <sdlc-dir> "
+          "[<pr>] [--why TEXT]", file=sys.stderr)
     return 2
 
 

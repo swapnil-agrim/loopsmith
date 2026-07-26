@@ -39,9 +39,11 @@ LP="${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts"     # pr.py, ledger.py, sync.py �
      `python3 "$LP/pr.py" merge .sdlc <pr>`. Merge is **gated** — it only lands when
      `review.auto_merge` is on (and the base is safe to land on directly); otherwise it records the
      approval and returns a parked decision for a human. **Never force it.**
-   - **Needs work** (a real finding, a design conflict, a contradicted doc): post your review with the
-     findings, then `python3 "$LP/pr.py" request-changes .sdlc <pr> --why "…"`. Leave it for the author
-     — convert to draft if your host repo uses draft-to-hold. It re-enters the queue when they push.
+   - **Needs a fix** (an ordinary finding the author can address): post your review, then
+     `python3 "$LP/pr.py" request-changes .sdlc <pr> --why "…"`. It re-enters the queue when they push.
+   - **Serious — a design conflict or a contradicted doc:** `python3 "$LP/pr.py" hold .sdlc <pr>
+     --why "…"`. This converts the PR back to **draft** so it cannot be merged, records it, and escalates
+     to a human. Post your reasoning as the review body.
 7. **Publish the ledger** so the team sees it: `python3 "$LP/sync.py" publish .sdlc` (needs the ledger
    set up — `sync.py init .sdlc` once).
 

@@ -104,6 +104,16 @@ def test_lifecycle_records_each_step_to_the_ledger(tmp_path):
         assert (step, 7) in kinds                              # every step is on the ledger, tagged with the PR
 
 
+def test_hold_drafts_the_pr_and_records(tmp_path):
+    d, cfg = _sdlc(tmp_path)
+    run = _runner()
+    p = pr.PullRequests(d, cfg, run=run)
+    p.hold(7, "design conflict with ADR-004")
+    assert any(c[:3] == ["pr", "ready", "--undo"] for c in run.calls)      # converted back to draft
+    entries = [(e["kind"], e.get("pr"), e.get("why")) for e in ledger.read_all(d)]
+    assert ("changes-requested", 7, "held (draft) — design conflict with ADR-004") in entries
+
+
 # ---- gated merge ----
 
 def test_merge_is_parked_when_auto_merge_off(tmp_path):
