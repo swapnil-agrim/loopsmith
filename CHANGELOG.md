@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Per-goal worktree + the merge gate
+- **One worktree, one branch, one PR per goal** (`work: {"enabled": true}`, default OFF): the loop
+  stops sharing your working copy. An in-place `checkout -b` would move the tree out from under
+  whatever you left open *and* rewrite `.sdlc/goals/` — which `sdlc-init` tells you to commit —
+  underneath the loop that is reading it. Both failures are silent; a worktree removes both.
+- **Cutting fresh from `<remote>/<base>` is the goal-start rebase**: nothing to replay, so it cannot
+  conflict. The only real rebase is reactive (GitHub reported the PR `BEHIND`) and it `--abort`s on
+  conflict rather than strand a half-applied tree that every later goal in the run would build on.
+- **`verify_command` now runs in the goal's own worktree**, not the main checkout. It was resolved
+  from `sdlc_dir` alone, which with a worktree would have proved the *unchanged* tree green and let
+  `record done` accept it. `loop.py verify` resolves the root through `work.root()`, matching the
+  injectable `repo_root` `pipeline.py` already had; with the feature off the root is unchanged.
+- **A merge gate that is clean AND safe** (`work.auto_merge`, default OFF): needs this run's passing
+  verify evidence *and* GitHub's `mergeable` + `mergeStateStatus CLEAN` (required checks and reviews
+  folded in), then arms GitHub's own `--auto` so the last word is an atomic re-check at merge time
+  instead of a stale read. It retries the lazy first-read `UNKNOWN` rather than treating it as an
+  answer, and says so out loud when a repo has no required checks — `CLEAN` there means only that
+  GitHub had nothing to object to. Anything else prints `PARK: <reason>` for the existing review
+  queue; no new human-intervention path.
+- **No general `git` tool for the loop**: it commits through `work.py commit`, which can only ever
+  run against this goal's worktree — a broad `Bash(git *)` would hand the unattended loop the exact
+  power the feature exists to remove.
+- `evidence_path`/`done_refusal` moved from `loop.py` to `state.py` so the merge gate can require the
+  same evidence without the two modules importing each other. `loop.py` keeps both names as aliases.
+
 ### Team ledger
 - **`TEAM.md` now shows `claimed`**: the shared team view records WHO started a ticket and WHEN, not
   only outcomes — it pairs with `done` to read a ticket's start→finish at a glance. `note` stays

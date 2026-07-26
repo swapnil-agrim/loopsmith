@@ -122,3 +122,27 @@ def _queue(sdlc_dir, goal_path, reason, needs):
     name = pathlib.Path(goal_path).name
     with q.open("a") as f:        # append-mode: race-safe (single-worker), header written once
         f.write(f"\n## {name}\n- reason: {reason}\n- needs: {needs}\n")
+
+
+def evidence_path(sdlc_dir, goal):
+    stem = pathlib.Path(goal).stem if str(goal).endswith(".md") else str(goal)
+    return pathlib.Path(sdlc_dir) / "state" / "verify" / f"{stem}.json"
+
+
+def done_refusal(sdlc_dir, goal):
+    """None when fresh passing evidence exists for this goal, else the reason to refuse.
+    Fresh = produced at/after this run's start (a stale green from yesterday proves nothing).
+    Lives here, not in loop.py, so the merge gate can require the same evidence without the two
+    modules having to import each other."""
+    ev = evidence_path(sdlc_dir, goal)
+    if not ev.exists():
+        return "no verify evidence for this goal"
+    try:
+        data = json.loads(ev.read_text())
+    except Exception:             # noqa: BLE001 - unreadable evidence proves nothing either
+        return "verify evidence is unreadable"
+    if data.get("exit") != 0:
+        return f"last verify FAILED (exit {data.get('exit')})"
+    if data.get("at", 0) < load_cursor(sdlc_dir)["run_started_at"]:
+        return "verify evidence predates this run"
+    return None

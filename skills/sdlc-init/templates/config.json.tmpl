@@ -29,6 +29,18 @@
     "on_block": "park"
   },
   "verify": { "command": "", "enforce": false },
+  "work": {
+    "enabled": false,
+    "_comment": "One git worktree + branch + PR per goal, so the loop never moves your checkout - and never rewrites .sdlc/goals/ underneath itself by switching branches. The worktree is cut fresh from <remote>/<base>, which IS the goal-start rebase: nothing to replay, so it cannot conflict or strand a half-applied tree. verify_command then runs IN that worktree, because the main checkout does not contain the change. Off by default; absent, the loop writes to git exactly as little as before. Gitignore .sdlc/work/.",
+    "base": "",
+    "_base": "The integration branch to cut from and target. Empty = whichever branch the loop was started on.",
+    "remote": "origin",
+    "branch_prefix": "sdlc/",
+    "worktree_dir": ".sdlc/work",
+    "auto_merge": false,
+    "_auto_merge": "Arm GitHub's own auto-merge once the PR is clean AND safe (mergeable + mergeStateStatus CLEAN) and this run has fresh passing verify evidence. GitHub re-evaluates atomically at merge time, so a stale read can never merge; a BEHIND branch is rebased and re-checked; anything else parks for a human. Your branch protection is what makes CLEAN mean anything - on a repo with no required checks the gate says so out loud rather than passing it off as reviewed.",
+    "merge_method": "squash"
+  },
   "ledger": {
     "enabled": false,
     "_comment": "Append-only team record of what the loop did: .sdlc/ledger/entries/<actor>.jsonl, ONE FILE PER PERSON (you only ever write your own, so concurrent appends cannot conflict). The team view is their union - render it with `ledger.py render <dir> --write`. Off by default; absent, the loop behaves exactly as before.",

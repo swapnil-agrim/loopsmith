@@ -88,6 +88,7 @@ def features(sdlc_dir=".sdlc"):
     verify = cfg.get("verify") or {}
     gate = (cfg.get("gates") or {}).get("hard_plan_gate") or {}
     par = cfg.get("parallel") or {}
+    wk = cfg.get("work") or {}
     rows = [
         ("model+effort auto-selection",
          "AUTO (per-goal `resolve` + per-step `resolve-step`)"
@@ -127,6 +128,15 @@ def features(sdlc_dir=".sdlc"):
          ("ON — up to %s concurrent slices per wave" % par.get("max_concurrent", 3))
          if par.get("enabled") is True else "off (a goal's slices run one after another)",
          'config: "parallel": {"enabled": true, "max_concurrent": 3}'),
+        ("per-goal worktree + PR",
+         "ON — a worktree/branch/PR per goal; verify runs in it"
+         if wk.get("enabled") is True else "off (the loop never writes to git)",
+         'config: "work": {"enabled": true}'),
+        ("auto-merge a clean AND safe PR",
+         ("ARMED (%s) — needs fresh verify + mergeStateStatus CLEAN" % (wk.get("merge_method") or "squash"))
+         if wk.get("enabled") is True and wk.get("auto_merge") is True
+         else "off (a clean, safe PR is left for a human)",
+         'config: "work": {"enabled": true, "auto_merge": true}'),
     ]
     return rows
 

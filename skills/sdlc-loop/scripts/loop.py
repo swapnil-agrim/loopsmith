@@ -19,6 +19,7 @@ def _load(name):
 state = _load("state")
 sources = _load("sources")          # backlog source: local files or GitHub issues (config-selected)
 ledger = _load("ledger")            # team record (config-gated, default OFF; every call is fail-open)
+work = _load("work")                # per-goal worktree/branch/PR (config-gated, default OFF)
 
 
 def _budget_spent(cursor, budget):
@@ -82,9 +83,8 @@ def _record(sdlc_dir, source, goal, result, detail=""):
                        why=detail or None)
 
 
-def _evidence_path(sdlc_dir, goal):
-    stem = pathlib.Path(goal).stem if str(goal).endswith(".md") else str(goal)
-    return pathlib.Path(sdlc_dir) / "state" / "verify" / f"{stem}.json"
+_evidence_path = state.evidence_path       # both live in state.py so work.py can require the same
+_done_refusal = state.done_refusal         # evidence without loop.py and work.py importing each other
 
 
 def verify_goal(sdlc_dir, goal):
@@ -103,9 +103,11 @@ def verify_goal(sdlc_dir, goal):
         print("NO-COMMAND (set goal frontmatter `verify_command` or config `verify.command`)",
               file=sys.stderr)
         return 3
-    # Proving commands run at the PROJECT root (the parent of .sdlc) — same resolution
-    # rule as pipeline.py checks — not at whatever cwd the caller happens to be in.
-    root = str(pathlib.Path(sdlc_dir).resolve().parent)
+    # Proving commands run where THIS GOAL'S CODE IS — its worktree when `work` is on, else the
+    # project root, exactly as before (same injectable-root rule as pipeline.py's `repo_root`).
+    # Deriving it from sdlc_dir alone would test the main checkout while the change sits in the
+    # worktree: a green that proves nothing, and one that `record done` would happily accept.
+    root = work.root(sdlc_dir, goal)
     proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=root)
     ev = _evidence_path(sdlc_dir, goal)
     ev.parent.mkdir(parents=True, exist_ok=True)

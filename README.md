@@ -146,6 +146,8 @@ Every option LoopSmith provides, at a glance:
 | **Cross-area hand-off** | Blocked on someone else's code? It resolves the owner from CODEOWNERS, opens an issue **assigned to them** (so their loop picks it up), and records it — instead of parking into silence | `handoff.py open` / `ack` |
 | **Ledger watcher** | Pulls the ledger's own ops branch on an interval — never your working tree — and surfaces what needs you between goals, deduped | `watch.sh`, `sync.py` |
 | **Slice parallelism (opt-in)** | Declare a goal's slices and the files each touches; independent ones run as concurrent subagents in **waves** (own worktree each), instead of burning one session's context in sequence | `slices.py plan`, `parallel.enabled` |
+| **Per-goal worktree (opt-in)** | Each goal gets its own worktree + branch + PR, so the loop never moves your checkout and never rewrites `.sdlc/goals/` under itself; cutting fresh from the base **is** the goal-start rebase, so it can't conflict | `work.py start`, `work.enabled` |
+| **Clean-AND-safe auto-merge (opt-in)** | A PR merges only on THIS run's passing verify evidence **plus** GitHub's `mergeable` + `mergeStateStatus CLEAN`, then via GitHub's own `--auto` so the last check is atomic; anything else parks with the reason | `work.py merge`, `work.auto_merge` |
 | **Pluggable backlog** | Local goal files, GitHub issues, or a GitHub **Projects v2 board** | `discovery.source` |
 | **Board + audit trail** | Cards flow Backlog → In Progress → QC → Done → Blocked; every phase recorded on the issue | `/sdlc-init --github` |
 | **Self-improving knowledge graph** | Captures research + lessons, **tracks what it doesn't know**, prunes itself, and fills gaps | `/sdlc-kg` |
@@ -195,6 +197,8 @@ Everything optional ships OFF — `/sdlc-doctor` prints this dashboard live (`do
 | `ledger: {"enabled": true}` | off | the committed team ledger — claims and outcomes recorded per author, plus cross-area hand-off |
 | `ledger.watch.interval_seconds` | 900 | how often `watch.sh` pulls the ledger ops branch and refreshes the inbox |
 | `parallel: {"enabled": true}` | off | a goal's independent slices run concurrently in waves (`max_concurrent`, default 3) from `.sdlc/plans/<goal>.slices.json` |
+| `work: {"enabled": true}` | off | one worktree + branch + PR per goal; your checkout never moves, and `verify_command` runs in the goal's own tree |
+| `work.auto_merge` | off | arm GitHub auto-merge when the PR is clean **and** safe; anything else parks with the reason |
 | `budget.max_minutes` / `max_tokens` | unset | wall-clock / host-reported token ceilings (iterations always enforce) |
 | `knowledge_graph.enabled` | off | research capture + the self-improving graph |
 | `LOOPSMITH_GATE_GLOBAL=1` (env) | unset | restores the pre-0.6 always-on prompt gate |
@@ -270,12 +274,18 @@ flowchart TD
     ST(["/sdlc-loop — reset run budget"]) --> NX{"Next pending goal?"}
     NX -->|"backlog empty"| SD(["Stop — all done"])
     NX -->|"budget reached"| SB(["Stop — budget"])
-    NX -->|"goal"| RUN["Run it through the 7-phase pipeline"]
-    RUN -->|"done + verified"| CMP["Mark done"]
+    NX -->|"goal"| WT["Cut its worktree + branch from the base<br/>(work.enabled — else edit in place)"]
+    WT --> RUN["Run it through the 7-phase pipeline"]
+    RUN -->|"done + verified"| GATE{"Merge gate:<br/>clean AND safe?"}
+    GATE -->|"yes"| CMP["Mark done — arm GitHub auto-merge"]
+    GATE -->|"conflict · failing check · BEHIND · no evidence"| PRK
     RUN -->|"needs you / irreversible / unresolved"| PRK["Park to review queue"]
     CMP --> NX
     PRK --> NX
 ```
+
+With `work` off, the two extra boxes collapse: the loop edits in place and never touches git, exactly
+as it did before.
 
 ---
 
@@ -586,6 +596,55 @@ happens. Leave `parallel` off, or ship no manifest, and every goal runs as one u
 
 ---
 
+## One worktree, one branch, one PR per goal (optional, off by default)
+
+Turn it on with `work: {"enabled": true}`. Until you do, the loop writes to git exactly as little as
+it did before — this is the only feature that lets it commit at all.
+
+```json
+"work": { "enabled": true, "base": "", "remote": "origin", "auto_merge": false }
+```
+
+**Why a worktree and not a branch.** The moment the loop touches git, an in-place `checkout -b`
+breaks two things silently: it moves the working copy out from under whatever you left open, and —
+because `sdlc-init` has you commit `.sdlc/goals/` — every branch switch rewrites the backlog the loop
+is in the middle of reading. A worktree avoids both. Your checkout never moves and never changes
+branch; bookkeeping keeps resolving to the one real `.sdlc`.
+
+**Cutting fresh IS the goal-start rebase.** The worktree is created from `<remote>/<base>` at the
+moment the goal starts, so there is nothing to replay. That matters more than it sounds: a real
+`git rebase` that hits a conflict at 3am leaves a half-applied tree, and every later goal in that run
+then builds on it. The only rebase that ever runs is the reactive one below, and it aborts on
+conflict rather than leave the tree wedged.
+
+**`verify_command` runs in the worktree.** It has to — the main checkout doesn't contain the change.
+A proving command resolved against the wrong tree is a green that proves nothing, and `record done`
+would accept it.
+
+### The merge gate: clean *and* safe
+
+`work.py merge` will not merge unless all three hold:
+
+| Leg | Source | What it catches |
+|---|---|---|
+| fresh local evidence | `loop.py verify`, this run | a green from yesterday, or none at all |
+| `mergeable` | GitHub | textual conflicts with the base |
+| `mergeStateStatus == CLEAN` | GitHub | failing required checks, missing reviews, a stale branch |
+
+Then it arms GitHub's own `--auto` rather than merging on what it just read, so the final decision is
+an atomic re-check at merge time. A `BEHIND` branch is rebased once and re-checked. Everything else
+prints `PARK: <reason>` and the loop records exactly that and moves on — the "human intervention"
+path is the existing review queue, not a new one.
+
+Three honest limits. `CLEAN` is only worth what your **branch protection** is worth: on a repo with
+no required checks GitHub objects to nothing, so the gate says so out loud instead of letting it read
+as "reviewed". A fresh worktree has no `node_modules`/`.venv`/build cache, so a heavy
+`verify_command` pays that cost per goal — part of why this ships off. And `work.py commit` stages
+with `git add -A`, so **anything your `verify_command` leaves behind must be gitignored** or it rides
+along into the PR (`.coverage`, `.pytest_cache/`, build output).
+
+---
+
 ## Self-improving knowledge graph (optional, off by default)
 
 LoopSmith can accumulate a **knowledge graph** of what it learns, so research and analysis compound
@@ -686,6 +745,12 @@ install, and the `superpowers`/`code-review` companions. The phase executors are
 **portable**; an experimental Cursor adapter exists but **isn't verified in a live session yet** — see
 [Other platforms supported](#other-platforms-supported).
 
+The **git half** of per-goal worktrees is verified end-to-end against a real repo (worktree cut from
+`<remote>/<base>`, `verify_command` running in the goal's tree, the main checkout left untouched). The
+**`gh` half** — opening the PR and the merge gate — is covered by injected runners and validated
+against `gh` 2.87.3's field and flag names, but **has not yet merged a live pull request**. That is
+part of why `work.auto_merge` ships off.
+
 ## Quality & drift (`evals/`)
 
 The kit's "output" is agent *behavior*, so quality is guarded in two tiers, re-run on every change to
@@ -702,9 +767,10 @@ catch drift (see [`evals/README.md`](evals/README.md)):
 
 ## Requirements
 
-- **Runtime:** bash + python3 (stdlib) — zero dependencies. The optional **GitHub backlog source**
-  additionally needs the [`gh`](https://cli.github.com) CLI, authenticated (`gh auth login`); the
-  default local source stays zero-dep.
+- **Runtime:** bash + python3 (stdlib) — zero dependencies. Two optional features additionally need
+  the [`gh`](https://cli.github.com) CLI, authenticated (`gh auth login`): the **GitHub backlog
+  source**, and the **PR + merge gate** half of per-goal worktrees (`work.enabled` on its own needs
+  only `git`; `work.py pr` / `merge` are what need `gh`). The default local source stays zero-dep.
 - **Knowledge graph (optional):** the graph builder — default `graphify` (`pip install graphifyy`);
   off unless `knowledge_graph.enabled` is set.
 - **Companions (optional):** `superpowers` + `code-review` — **auto-used when already installed**,
