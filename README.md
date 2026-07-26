@@ -148,6 +148,7 @@ Every option LoopSmith provides, at a glance:
 | **Slice parallelism (opt-in)** | Declare a goal's slices and the files each touches; independent ones run as concurrent subagents in **waves** (own worktree each), instead of burning one session's context in sequence | `slices.py plan`, `parallel.enabled` |
 | **Per-goal worktree (opt-in)** | Each goal gets its own worktree + branch + PR, so the loop never moves your checkout and never rewrites `.sdlc/goals/` under itself; cutting fresh from the base **is** the goal-start rebase, so it can't conflict | `work.py start`, `work.enabled` |
 | **Clean-AND-safe auto-merge (opt-in)** | A PR merges only on THIS run's passing verify evidence **plus** GitHub's `mergeable` + `mergeStateStatus CLEAN`, then via GitHub's own `--auto` so the last check is atomic; anything else parks with the reason | `work.py merge`, `work.auto_merge` |
+| **Open-source safe by default** | A fork PR, or a repo you only have read access to, is never merge-attempted — the loop opens the PR, says why it stopped, and records `done`. `auto_merge: "protected"` further limits merging to branches that genuinely require checks or reviews | `work.py merge_rights` / `protection` |
 | **Pluggable backlog** | Local goal files, GitHub issues, or a GitHub **Projects v2 board** | `discovery.source` |
 | **Board + audit trail** | Cards flow Backlog → In Progress → QC → Done → Blocked; every phase recorded on the issue | `/sdlc-init --github` |
 | **Self-improving knowledge graph** | Captures research + lessons, **tracks what it doesn't know**, prunes itself, and fills gaps | `/sdlc-kg` |
@@ -198,7 +199,7 @@ Everything optional ships OFF — `/sdlc-doctor` prints this dashboard live (`do
 | `ledger.watch.interval_seconds` | 900 | how often `watch.sh` pulls the ledger ops branch and refreshes the inbox |
 | `parallel: {"enabled": true}` | off | a goal's independent slices run concurrently in waves (`max_concurrent`, default 3) from `.sdlc/plans/<goal>.slices.json` |
 | `work: {"enabled": true}` | off | one worktree + branch + PR per goal; your checkout never moves, and `verify_command` runs in the goal's own tree |
-| `work.auto_merge` | off | arm GitHub auto-merge when the PR is clean **and** safe; anything else parks with the reason |
+| `work.auto_merge` | `"off"` | `"protected"` merges only where the base *requires* checks/reviews; `"always"` merges any clean+safe PR. A fork or read-only repo never merges — it opens the PR and records `done` |
 | `budget.max_minutes` / `max_tokens` | unset | wall-clock / host-reported token ceilings (iterations always enforce) |
 | `knowledge_graph.enabled` | off | research capture + the self-improving graph |
 | `LOOPSMITH_GATE_GLOBAL=1` (env) | unset | restores the pre-0.6 always-on prompt gate |
@@ -621,9 +622,16 @@ conflict rather than leave the tree wedged.
 A proving command resolved against the wrong tree is a green that proves nothing, and `record done`
 would accept it.
 
-### The merge gate: clean *and* safe
+### The merge gate: may we, should we, and is anything enforcing it
 
-`work.py merge` will not merge unless all three hold:
+**1. May we merge at all?** Permission first, and never a config question:
+
+- a **fork PR**, or a repo where you have only `READ`/`TRIAGE` → the loop opens the PR and stops:
+  `PR #123 opened — read access on this repo; a maintainer merges.` That's the open-source path,
+  where the PR *is* the deliverable. It records **`done`**, not a park — the loop did everything it
+  could, and nothing about it wants your attention. If rights can't be determined, it fails **closed**.
+
+**2. Should we merge?** Three legs, all required:
 
 | Leg | Source | What it catches |
 |---|---|---|
@@ -631,17 +639,33 @@ would accept it.
 | `mergeable` | GitHub | textual conflicts with the base |
 | `mergeStateStatus == CLEAN` | GitHub | failing required checks, missing reviews, a stale branch |
 
-Then it arms GitHub's own `--auto` rather than merging on what it just read, so the final decision is
-an atomic re-check at merge time. A `BEHIND` branch is rebased once and re-checked. Everything else
-prints `PARK: <reason>` and the loop records exactly that and moves on — the "human intervention"
-path is the existing review queue, not a new one.
+A `BEHIND` branch is rebased once and re-checked. Everything else goes to the existing review queue —
+a failing check records `failed` (needs a fix), a conflict records `parked` (needs a decision). No new
+human-intervention path.
 
-Three honest limits. `CLEAN` is only worth what your **branch protection** is worth: on a repo with
-no required checks GitHub objects to nothing, so the gate says so out loud instead of letting it read
-as "reviewed". A fresh worktree has no `node_modules`/`.venv`/build cache, so a heavy
-`verify_command` pays that cost per goal — part of why this ships off. And `work.py commit` stages
-with `git add -A`, so **anything your `verify_command` leaves behind must be gitignored** or it rides
-along into the PR (`.coverage`, `.pytest_cache/`, build output).
+**3. Is anything actually enforcing the answer?** That's `work.auto_merge`:
+
+| Value | Behavior |
+|---|---|
+| `"off"` | **Default.** Never merges; always leaves the PR. |
+| `"protected"` | Merges only where the base branch genuinely **requires** checks or reviews — delegating the gate to GitHub. On an unprotected branch it opens the PR and says why it stopped. |
+| `"always"` | Merges whenever clean+safe, protected or not, and says plainly that local verify was the only gate. |
+
+Legacy booleans still parse (`false`→off, `true`→always).
+
+The point is autonomy proportional to the guardrails that exist — because **`CLEAN` is only worth what
+your branch protection is worth.** A repo can run CI on every PR and *require* none of it, in which
+case GitHub reports `CLEAN` simply because it was never asked to object. So the question asked is
+`repos/{owner}/{repo}/branches/{base}/protection` — a 404 means nothing is enforced — and **not**
+whether a check happened to run.
+
+Then it arms GitHub's own `--auto` rather than merging on what it just read, so the final decision is
+an atomic re-check at merge time.
+
+Two remaining costs. A fresh worktree has no `node_modules`/`.venv`/build cache, so a heavy
+`verify_command` pays that per goal — part of why this ships off. And `work.py commit` stages with
+`git add -A`, so **anything your `verify_command` leaves behind must be gitignored** or it rides along
+into the PR (`.coverage`, `.pytest_cache/`, build output).
 
 ---
 

@@ -46,11 +46,14 @@ def _load(name):
 state = _load("state")
 
 DEFAULTS = {"worktree_dir": ".sdlc/work", "branch_prefix": "sdlc/", "base": "",
-            "remote": "origin", "auto_merge": False, "merge_method": "squash"}
+            "remote": "origin", "auto_merge": "off", "merge_method": "squash"}
 UNKNOWN_ATTEMPTS = 4        # GitHub computes mergeability lazily — the first read is usually UNKNOWN
 UNKNOWN_BACKOFF = 3         # seconds before the first retry, doubled each time
 BEHIND = "BEHIND"           # the one verdict the caller acts on rather than parks
 _CHECK_OK = ("SUCCESS", "NEUTRAL", "SKIPPED", None)
+_CAN_MERGE = ("ADMIN", "MAINTAIN", "WRITE")
+
+OFF, PROTECTED, ALWAYS = "off", "protected", "always"
 
 
 def settings(config):
@@ -61,6 +64,19 @@ def settings(config):
 
 def enabled(config):
     return bool((config.get("work") or {}).get("enabled"))
+
+
+def policy(config):
+    """`auto_merge` as one of off | protected | always. The old booleans still parse (False→off,
+    True→always, which is what True used to do), and anything unrecognised falls to `off` — the only
+    safe way to be wrong about whether you may merge unattended."""
+    value = settings(config).get("auto_merge")
+    if value is True:
+        return ALWAYS
+    if not value:
+        return OFF
+    text = str(value).strip().lower()
+    return text if text in (OFF, PROTECTED, ALWAYS) else OFF
 
 
 def stem(goal):
@@ -211,6 +227,59 @@ def gate(sdlc_dir, config, goal, run=None, sleep=time.sleep):
     return True, "clean and safe", data
 
 
+def merge_rights(sdlc_dir, config, goal, run=None):
+    """(may_merge, why_not) — PERMISSION, which is never a preference.
+
+    This is the open-source contributor's path, and the reason it needs its own check: on a project
+    you don't have write access to, the PR *is* the deliverable. Attempting a merge there produces a
+    confusing API error rather than an answer, and no config value should be able to try it anyway.
+    Fails CLOSED — if rights can't be determined, we don't merge."""
+    run = run or _run
+    rec = _record(sdlc_dir, goal)
+    if not rec or not rec.get("pr"):
+        return False, "no PR for this goal"
+    try:
+        pr_data = json.loads(run(rec["worktree"], ["gh", "pr", "view", rec["pr"],
+                                                   "--json", "isCrossRepository"]))
+        if pr_data.get("isCrossRepository"):
+            return False, "fork PR — the upstream maintainer merges"
+        perm = run(rec["worktree"], ["gh", "repo", "view", "--json", "viewerPermission",
+                                     "--jq", ".viewerPermission"])
+    except Exception as exc:                # noqa: BLE001 - unknown rights must never merge
+        return False, f"could not determine merge rights ({exc})"
+    if perm not in _CAN_MERGE:
+        return False, f"{(perm or 'no').lower()} access on this repo — a maintainer merges"
+    return True, ""
+
+
+def protection(sdlc_dir, config, goal, run=None):
+    """(enforces_something, detail) — does branch protection actually REQUIRE anything on the base?
+
+    The distinction the first version of this file got wrong: it asked whether a check had RUN, but
+    a repo can run CI on every PR while requiring nothing, and then `mergeStateStatus: CLEAN` means
+    only that GitHub was never asked to object. A 404 from the protection API is the honest signal
+    that nothing but this loop's own verify stands between the branch and the base."""
+    run = run or _run
+    rec = _record(sdlc_dir, goal)
+    base = rec["base"]
+    try:
+        repo = run(rec["worktree"], ["gh", "repo", "view", "--json", "nameWithOwner",
+                                     "--jq", ".nameWithOwner"])
+        data = json.loads(run(rec["worktree"], ["gh", "api",
+                                                f"repos/{repo}/branches/{base}/protection"]) or "{}")
+    except Exception:                       # noqa: BLE001 - 404 "Branch not protected" is the common case
+        return False, f"`{base}` is not protected — nothing is enforced on merge"
+    required = data.get("required_status_checks") or {}
+    checks = required.get("contexts") or required.get("checks") or []
+    reviews = (data.get("required_pull_request_reviews") or {}).get(
+        "required_approving_review_count") or 0
+    bits = ([f"{len(checks)} required check{'' if len(checks) == 1 else 's'}"] if checks else []) + \
+           ([f"{reviews} required review{'' if reviews == 1 else 's'}"] if reviews else [])
+    if not bits:
+        return False, f"`{base}` is protected but requires no checks or reviews"
+    return True, f"`{base}` enforces " + " + ".join(bits)
+
+
 def rebase(sdlc_dir, config, goal, run=None):
     """Replay the branch on the current base — only ever because GitHub said BEHIND. Any failure
     ABORTS: a half-applied rebase would poison every later goal in the run, and an unattended loop
@@ -234,35 +303,44 @@ def rebase(sdlc_dir, config, goal, run=None):
 
 
 def merge(sdlc_dir, config, goal, run=None, sleep=time.sleep):
-    """The whole gate, in order of what it protects. Returns a line starting `PARK:` when a human
-    is needed — the caller records that reason and moves on to the next goal."""
+    """Three questions in the order that matters: may we merge, should we, and is anything actually
+    enforcing the answer.
+
+    A line beginning `PARK:` means a human is needed and the caller records that reason. A line
+    beginning `PR #` is a TERMINAL SUCCESS — the loop did everything it could and the PR is the
+    deliverable — so it records `done`, not a park; nothing about it wants attention."""
     run = run or _run
     rec = _record(sdlc_dir, goal)
     if not rec or not rec.get("pr"):
         return "PARK: no PR for this goal — run `work.py pr` first"
 
-    refusal = state.done_refusal(sdlc_dir, goal)     # local evidence first: CI is not the only leg
+    may, why_not = merge_rights(sdlc_dir, config, goal, run=run)
+    if not may:                                      # permission, before anything it could gate on
+        return f"PR #{rec['pr']} opened — {why_not}"
+
+    refusal = state.done_refusal(sdlc_dir, goal)     # local evidence: CI is not the only leg
     if refusal:
         return f"PARK: no fresh verify evidence for this run ({refusal})"
 
-    ok, verdict, data = gate(sdlc_dir, config, goal, run=run, sleep=sleep)
+    ok, verdict, _ = gate(sdlc_dir, config, goal, run=run, sleep=sleep)
     if verdict == BEHIND:                            # the ONE case a rebase is the right answer
         out = rebase(sdlc_dir, config, goal, run=run)
         if out != "rebased":
             return f"PARK: {out}"
-        ok, verdict, data = gate(sdlc_dir, config, goal, run=run, sleep=sleep)
+        ok, verdict, _ = gate(sdlc_dir, config, goal, run=run, sleep=sleep)
     if not ok:
         return f"PARK: {verdict}"
 
-    s = settings(config)
-    if not s.get("auto_merge"):
+    chosen = policy(config)
+    if chosen == OFF:
         return f"clean and safe — auto_merge is off, leaving PR #{rec['pr']} for a human"
-    # CLEAN only means "GitHub has no objection". On a repo with no required checks it objects to
-    # nothing, so say that plainly rather than let it read as "reviewed and green".
-    warning = "" if (data.get("statusCheckRollup") or []) else \
-        " (warning: no required checks on this repo — local verify was the only gate)"
-    run(rec["worktree"], ["gh", "pr", "merge", rec["pr"], "--auto", f"--{s['merge_method']}"])
-    return f"auto-merge armed on PR #{rec['pr']}{warning}"
+    guarded, detail = protection(sdlc_dir, config, goal, run=run)
+    if chosen == PROTECTED and not guarded:
+        return (f"PR #{rec['pr']} clean and safe, but {detail} — merging it is yours to make "
+                f'(auto_merge: "protected")')
+    run(rec["worktree"], ["gh", "pr", "merge", rec["pr"], "--auto", f"--{settings(config)['merge_method']}"])
+    return f"auto-merge armed on PR #{rec['pr']} — " + (
+        detail if guarded else f"WARNING: {detail}; local verify was the only gate")
 
 
 def finish(sdlc_dir, config, goal, run=None, force=False):

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Merge rights + a protection-aware policy
+- **A fork PR or a read-only repo is never merge-attempted.** Permission is checked before anything
+  it could gate on, and it is not a config question: on a project you lack write access to, the PR
+  *is* the deliverable. The loop opens it, says why it stopped, and records **`done`** — not a park,
+  because nothing about it wants a human. Unknown rights fail **closed**.
+- **`auto_merge` is now `off` | `protected` | `always`** (default `off`; the old booleans still parse,
+  `false`→off and `true`→always). `protected` merges only where the base branch genuinely REQUIRES
+  checks or reviews — autonomy proportional to the guardrails that actually exist.
+- **Fixes a truthfulness bug shipped in the previous entry.** The "no required checks" warning tested
+  whether a check had *run*, not whether one was *required*. A repo can run CI on every PR and require
+  none of it — which is exactly the state this repo was in — so the warning stayed silent in the one
+  case it existed for. Protection is now read from
+  `repos/{owner}/{repo}/branches/{base}/protection` (404 = nothing enforced) and is a real branch in
+  the logic rather than a message.
+- Outcome mapping is explicit in the loop prose: a failing required check records `failed` (needs a
+  fix), a conflict records `parked` (needs a decision), and an opened-but-unmergeable PR records
+  `done`. The review queue only fills with things that actually want attention.
+
 ### Per-goal worktree + the merge gate
 - **One worktree, one branch, one PR per goal** (`work: {"enabled": true}`, default OFF): the loop
   stops sharing your working copy. An in-place `checkout -b` would move the tree out from under

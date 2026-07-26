@@ -101,11 +101,20 @@ Then repeat until the helper says stop:
    `work.py merge .sdlc "$goal"`. The gate is clean **and** safe: it needs THIS run's passing verify
    evidence *and* GitHub's `mergeable` + `mergeStateStatus CLEAN` (required checks and reviews folded
    in), it rebases once if the PR is `BEHIND`, and it arms GitHub's own `--auto` so the last word is
-   an atomic re-check at merge time rather than a stale read. Any line it prints beginning `PARK:` is
-   exactly that: `record parked "<that reason>"` and move on — **never** merge past it by hand. With
-   `work.auto_merge` off (the default) it stops at "clean and safe" and leaves the PR for a human.
-   After a `done`, release the checkout: `work.py finish .sdlc "$goal"` — it deliberately KEEPS a
-   worktree that still holds uncommitted work, so a parked goal stays intact for whoever picks it up.
+   an atomic re-check at merge time rather than a stale read.
+   **Read its first word and record accordingly — never merge past it by hand:**
+   - `PARK: …` → `record parked "<that reason>"` (a conflict, a stale read, no evidence). A **failing
+     required check** is a fix, not a decision → `record failed "<the check>"` instead.
+   - `PR #N opened — …` → **`record done`**. This is the open-source path: a fork PR, or a repo you
+     only have read access to, can never be merged by you, so the PR *is* the deliverable and the loop
+     has done everything it can. It is not a park — nothing about it wants a human here.
+   - `auto-merge armed …` / `clean and safe …` → `record done`.
+
+   `work.auto_merge` is `off` | `protected` | `always`, default **off**. `protected` merges only where
+   the base branch genuinely REQUIRES checks or reviews — autonomy proportional to the guardrails that
+   actually exist. After a `done`, release the checkout: `work.py finish .sdlc "$goal"` — it
+   deliberately KEEPS a worktree that still holds uncommitted work, so a parked goal stays intact for
+   whoever picks it up.
    Declared a pipeline (`.sdlc/pipeline.json`)? Run the
    bidirectional report card between goals — `python3 "${CLAUDE_SKILL_DIR}/scripts/pipeline.py" card
    .sdlc` — and treat its findings as inputs, not gates. `pipeline.py propose .sdlc` turns the card's

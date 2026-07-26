@@ -78,6 +78,20 @@ def _ledger_entries(base):
     return total
 
 
+def _automerge_state(wk):
+    """Mirrors work.policy() without importing it — doctor stays standalone, and a dashboard that
+    lied about which merge policy is live would be worse than no dashboard."""
+    if wk.get("enabled") is not True:
+        return "off (per-goal worktrees are off)"
+    value = wk.get("auto_merge")
+    chosen = "always" if value is True else (str(value).strip().lower() if value else "off")
+    method = wk.get("merge_method") or "squash"
+    return {
+        "always": "ALWAYS (%s) — merges even where nothing is enforced on the base" % method,
+        "protected": "PROTECTED (%s) — merges only where the base REQUIRES checks/reviews" % method,
+    }.get(chosen, "off (a clean, safe PR is left for a human)")
+
+
 def features(sdlc_dir=".sdlc"):
     """The capability dashboard: every optional feature, its CURRENT state, and the one-line
     enable. Informational (never a failure) — the answer to "what is on right now?"."""
@@ -133,10 +147,8 @@ def features(sdlc_dir=".sdlc"):
          if wk.get("enabled") is True else "off (the loop never writes to git)",
          'config: "work": {"enabled": true}'),
         ("auto-merge a clean AND safe PR",
-         ("ARMED (%s) — needs fresh verify + mergeStateStatus CLEAN" % (wk.get("merge_method") or "squash"))
-         if wk.get("enabled") is True and wk.get("auto_merge") is True
-         else "off (a clean, safe PR is left for a human)",
-         'config: "work": {"enabled": true, "auto_merge": true}'),
+         _automerge_state(wk),
+         'config: "work": {"auto_merge": "protected"}  (off | protected | always)'),
     ]
     return rows
 
