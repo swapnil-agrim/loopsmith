@@ -37,8 +37,10 @@
     "remote": "origin",
     "branch_prefix": "sdlc/",
     "worktree_dir": ".sdlc/work",
-    "auto_merge": false,
-    "_auto_merge": "Arm GitHub's own auto-merge once the PR is clean AND safe (mergeable + mergeStateStatus CLEAN) and this run has fresh passing verify evidence. GitHub re-evaluates atomically at merge time, so a stale read can never merge; a BEHIND branch is rebased and re-checked; anything else parks for a human. Your branch protection is what makes CLEAN mean anything - on a repo with no required checks the gate says so out loud rather than passing it off as reviewed.",
+    "auto_merge": "off",
+    "_auto_merge": "off (default, never merges) | protected (merge only where branch protection actually REQUIRES checks or reviews - i.e. delegate the gate to GitHub) | always (merge whenever clean+safe, even on an unprotected branch, where nothing but the local verify gated it). Legacy booleans still parse: false=off, true=always.",
+    "_auto_merge_2": "Whatever the setting, a merge needs BOTH this run's fresh passing verify evidence AND GitHub's mergeable + mergeStateStatus CLEAN, and it then arms GitHub's own --auto so the last word is an atomic re-check at merge time. A BEHIND branch is rebased once and re-checked; anything else parks with the reason.",
+    "_auto_merge_3": "PERMISSION is never a config question: a fork PR, or a repo you only have read/triage access to, opens the PR and stops there - that is the open-source path, where the PR IS the deliverable. It records `done`, not a park.",
     "merge_method": "squash"
   },
   "ledger": {

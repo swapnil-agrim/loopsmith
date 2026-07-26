@@ -43,6 +43,23 @@ def _view(mergeable="MERGEABLE", status="CLEAN", checks=(("ci", "SUCCESS"),)):
                        "statusCheckRollup": [{"name": n, "conclusion": c} for n, c in checks]})
 
 
+# Ordered BEFORE any ("pr view", ...) handler: `gh pr view --json isCrossRepository` would otherwise
+# be swallowed by the gate's handler, since both are `gh pr view`.
+def _rights(cross=False, perm="ADMIN"):
+    return [("isCrossRepository", json.dumps({"isCrossRepository": cross})),
+            ("viewerPermission", perm),
+            ("nameWithOwner", "acme/app")]
+
+
+def _protected(checks=("ci",), reviews=0):
+    return [("branches/main/protection", json.dumps({
+        "required_status_checks": {"contexts": list(checks)},
+        "required_pull_request_reviews": {"required_approving_review_count": reviews}}))]
+
+
+UNPROTECTED = [("branches/main/protection", RuntimeError("HTTP 404: Branch not protected"))]
+
+
 def _sdlc(tmp_path, config=None):
     d = tmp_path / ".sdlc"
     (d / "state").mkdir(parents=True)
@@ -240,17 +257,63 @@ def test_gate_parks_when_review_is_still_required(tmp_path):
     assert not ok and "BLOCKED" in verdict
 
 
+# --- merge rights: permission is never a preference ----------------------------------------------
+
+ALWAYS = {"work": {"enabled": True, "auto_merge": "always"}}
+GUARDED = {"work": {"enabled": True, "auto_merge": "protected"}}
+
+
+def test_a_fork_pr_is_never_merged(tmp_path):
+    """The open-source path: the PR IS the deliverable, and attempting the merge only produces a
+    confusing API error."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    run = _runner(_rights(cross=True) + [("pr view", _view())])
+    out = work.merge(d, ALWAYS, goal, run=run, sleep=NOSLEEP)
+    assert out == "PR #7 opened — fork PR — the upstream maintainer merges"
+    assert not any("pr merge" in c for c in run.calls)
+
+
+def test_read_only_access_opens_the_pr_and_stops(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    run = _runner(_rights(perm="READ") + [("pr view", _view())])
+    out = work.merge(d, ALWAYS, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("PR #7 opened —") and "read access" in out
+    assert not any("pr merge" in c for c in run.calls)
+
+
+def test_unknown_rights_fail_closed(tmp_path):
+    """If we cannot establish that we may merge, we may not merge."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    run = _runner([("viewerPermission", RuntimeError("gh: not authenticated"))]
+                  + _rights() + [("pr view", _view())])
+    out = work.merge(d, ALWAYS, goal, run=run, sleep=NOSLEEP)
+    assert "could not determine merge rights" in out
+    assert not any("pr merge" in c for c in run.calls)
+
+
+def test_a_no_rights_outcome_is_not_a_park(tmp_path):
+    """It records `done`: the loop did everything it could, and nothing about it wants a human."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    run = _runner(_rights(perm="TRIAGE") + [("pr view", _view())])
+    assert not work.merge(d, ALWAYS, goal, run=run, sleep=NOSLEEP).startswith("PARK:")
+
+
 # --- merge: the ordering is the safety -----------------------------------------------------------
-
-AUTO = {"work": {"enabled": True, "auto_merge": True}}
-
 
 def test_merge_refuses_without_fresh_local_evidence(tmp_path):
     """CI is not the only leg. No verify for THIS run means no merge, whatever GitHub says."""
     d = _sdlc(tmp_path)
     goal = _started(d)
-    run = _runner([("pr view", _view())])
-    assert work.merge(d, AUTO, goal, run=run, sleep=NOSLEEP).startswith("PARK: no fresh verify")
+    run = _runner(_rights() + _protected() + [("pr view", _view())])
+    assert work.merge(d, ALWAYS, goal, run=run, sleep=NOSLEEP).startswith("PARK: no fresh verify")
     assert not any("pr merge" in c for c in run.calls)
 
 
@@ -258,25 +321,26 @@ def test_merge_refuses_evidence_from_a_previous_run(tmp_path):
     d = _sdlc(tmp_path)
     goal = _started(d)
     _evidence(d, goal, age=10_000)
-    out = work.merge(d, AUTO, goal, run=_runner([("pr view", _view())]), sleep=NOSLEEP)
-    assert "predates this run" in out
+    run = _runner(_rights() + _protected() + [("pr view", _view())])
+    assert "predates this run" in work.merge(d, ALWAYS, goal, run=run, sleep=NOSLEEP)
 
 
 def test_merge_refuses_a_failing_verify(tmp_path):
     d = _sdlc(tmp_path)
     goal = _started(d)
     _evidence(d, goal, exit_code=1)
-    out = work.merge(d, AUTO, goal, run=_runner([("pr view", _view())]), sleep=NOSLEEP)
-    assert "last verify FAILED" in out
+    run = _runner(_rights() + _protected() + [("pr view", _view())])
+    assert "last verify FAILED" in work.merge(d, ALWAYS, goal, run=run, sleep=NOSLEEP)
 
 
 def test_merge_arms_github_auto_merge_when_clean_and_safe(tmp_path):
     d = _sdlc(tmp_path)
     goal = _started(d)
     _evidence(d, goal)
-    run = _runner([("pr view", _view())])
-    out = work.merge(d, AUTO, goal, run=run, sleep=NOSLEEP)
-    assert out == "auto-merge armed on PR #7"
+    run = _runner(_rights() + _protected(checks=("ci",), reviews=1) + [("pr view", _view())])
+    out = work.merge(d, GUARDED, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("auto-merge armed on PR #7")
+    assert "1 required check" in out and "1 required review" in out
     assert "gh pr merge 7 --auto --squash" in run.calls
 
 
@@ -284,19 +348,10 @@ def test_merge_leaves_the_pr_alone_when_auto_merge_is_off(tmp_path):
     d = _sdlc(tmp_path)
     goal = _started(d)
     _evidence(d, goal)
-    run = _runner([("pr view", _view())])
+    run = _runner(_rights() + _protected() + [("pr view", _view())])
     out = work.merge(d, ON, goal, run=run, sleep=NOSLEEP)
     assert "auto_merge is off" in out and not any("pr merge" in c for c in run.calls)
-
-
-def test_merge_says_so_when_the_repo_has_no_required_checks(tmp_path):
-    """CLEAN on a repo that requires nothing is not the same as reviewed — don't let it read that
-    way just because the string is the same."""
-    d = _sdlc(tmp_path)
-    goal = _started(d)
-    _evidence(d, goal)
-    run = _runner([("pr view", _view(checks=()))])
-    assert "no required checks" in work.merge(d, AUTO, goal, run=run, sleep=NOSLEEP)
+    assert not any("protection" in c for c in run.calls)      # off short-circuits before the API call
 
 
 def test_merge_rebases_a_behind_branch_then_merges(tmp_path):
@@ -309,8 +364,8 @@ def test_merge_rebases_a_behind_branch_then_merges(tmp_path):
         seen.append(1)
         return _view(status="BEHIND") if len(seen) == 1 else _view()
 
-    run = _runner([("pr view", view)])
-    out = work.merge(d, AUTO, goal, run=run, sleep=NOSLEEP)
+    run = _runner(_rights() + _protected() + [("pr view", view)])
+    out = work.merge(d, ALWAYS, goal, run=run, sleep=NOSLEEP)
     assert out.startswith("auto-merge armed")
     assert any("rebase --autostash origin/main" in c for c in run.calls)
     assert any("push --force-with-lease" in c for c in run.calls)
@@ -321,9 +376,9 @@ def test_a_conflicting_rebase_aborts_and_parks(tmp_path):
     d = _sdlc(tmp_path)
     goal = _started(d)
     _evidence(d, goal)
-    run = _runner([("pr view", _view(status="BEHIND")),
-                   ("rebase --autostash", RuntimeError("CONFLICT in a.py"))])
-    out = work.merge(d, AUTO, goal, run=run, sleep=NOSLEEP)
+    run = _runner(_rights() + [("pr view", _view(status="BEHIND")),
+                               ("rebase --autostash", RuntimeError("CONFLICT in a.py"))])
+    out = work.merge(d, ALWAYS, goal, run=run, sleep=NOSLEEP)
     assert out.startswith("PARK: rebase deferred") and "CONFLICT" in out
     assert "git rebase --abort" in run.calls
     assert not any("pr merge" in c for c in run.calls)
@@ -332,7 +387,65 @@ def test_a_conflicting_rebase_aborts_and_parks(tmp_path):
 def test_merge_needs_a_pr(tmp_path):
     d = _sdlc(tmp_path)
     goal = _started(d, pr="")
-    assert work.merge(d, AUTO, goal, run=_runner([]), sleep=NOSLEEP).startswith("PARK: no PR")
+    assert work.merge(d, ALWAYS, goal, run=_runner([]), sleep=NOSLEEP).startswith("PARK: no PR")
+
+
+# --- protection: what actually enforces the answer -----------------------------------------------
+
+def test_protected_policy_will_not_merge_an_unprotected_branch(tmp_path):
+    """The whole point of the tri-state: autonomy proportional to the guardrails that exist."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    run = _runner(_rights() + UNPROTECTED + [("pr view", _view())])
+    out = work.merge(d, GUARDED, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("PR #7 clean and safe, but") and "is not protected" in out
+    assert not any("pr merge" in c for c in run.calls)
+
+
+def test_always_merges_unprotected_but_says_nothing_gated_it(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    run = _runner(_rights() + UNPROTECTED + [("pr view", _view())])
+    out = work.merge(d, ALWAYS, goal, run=run, sleep=NOSLEEP)
+    assert "WARNING" in out and "local verify was the only gate" in out
+    assert "gh pr merge 7 --auto --squash" in run.calls
+
+
+def test_checks_that_run_without_being_required_do_not_count_as_protection(tmp_path):
+    """The bug the first version shipped: a non-empty statusCheckRollup was read as 'checks are
+    required'. A repo can run CI on every PR and require none of it."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    run = _runner(_rights() + UNPROTECTED + [("pr view", _view(checks=(("ci", "SUCCESS"),)))])
+    assert "is not protected" in work.merge(d, GUARDED, goal, run=run, sleep=NOSLEEP)
+
+
+def test_protection_with_no_requirements_is_not_protection(tmp_path):
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    _evidence(d, goal)
+    run = _runner(_rights() + _protected(checks=(), reviews=0) + [("pr view", _view())])
+    out = work.merge(d, GUARDED, goal, run=run, sleep=NOSLEEP)
+    assert "requires no checks or reviews" in out
+    assert not any("pr merge" in c for c in run.calls)
+
+
+# --- the policy knob itself ----------------------------------------------------------------------
+
+def test_policy_parses_the_tri_state_and_the_old_booleans(tmp_path):
+    cases = {"off": work.OFF, "protected": work.PROTECTED, "always": work.ALWAYS,
+             "PROTECTED": work.PROTECTED, True: work.ALWAYS, False: work.OFF,
+             "nonsense": work.OFF, None: work.OFF}
+    for value, expected in cases.items():
+        assert work.policy({"work": {"auto_merge": value}}) == expected, value
+
+
+def test_policy_defaults_to_off_when_unset(tmp_path):
+    assert work.policy({"work": {"enabled": True}}) == work.OFF
+    assert work.policy({}) == work.OFF
 
 
 # --- finish: don't leak a checkout per goal ------------------------------------------------------
