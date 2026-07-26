@@ -46,6 +46,14 @@
   },
   "parallel": { "enabled": false, "max_concurrent": 3 },
   "_parallel": "Run a goal's independent slices concurrently, from the declared manifest .sdlc/plans/<goal-stem>.slices.json: `slices.py plan` groups non-conflicting slices into waves (a slice that declares no files conflicts with everything and runs alone) and the loop dispatches each wave as subagents. Off by default; absent, every goal runs as one unit exactly as before.",
+  "review": {
+    "enabled": false,
+    "_comment": "PR review pipeline (pr.py): pick a PR -> rebase -> the agent's /code-review pass -> CI check -> merge or hold, recording every step to the team ledger. The script never judges code (that is the agent's job); it is the deterministic scaffold. Off by default; absent, nothing runs.",
+    "base": "main",
+    "require_ci": true,
+    "auto_merge": false,
+    "_auto_merge": "A merge is irreversible, so it stays GATED: with auto_merge=false the pipeline reviews + records but leaves the merge for a human. Turn it on only once the base branch is safe to land on directly (its protection relaxed) - and CI must be green (require_ci)."
+  },
 
   "companions": "auto",
   "model_selection": "off",

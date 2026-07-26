@@ -188,6 +188,20 @@ def test_counts_tallies_by_kind():
     assert ledger.counts([{"kind": "done"}, {"kind": "done"}, {"kind": "parked"}])["done"] == 2
 
 
+def test_review_cycle_kinds_are_valid_shared_and_carry_a_pr(tmp_path):
+    # the PR review cycle is first-class and team-visible (who is reviewing/merging what)
+    for kind in ("review", "rebased", "changes-requested", "approved", "merged"):
+        assert kind in ledger.KINDS and kind in ledger.SHARED_KINDS
+    d = tmp_path / ".sdlc"
+    (d / "state").mkdir(parents=True)
+    cfg = {"ledger": {"enabled": True, "actor": "rae"}}
+    (d / "config.json").write_text(json.dumps(cfg))
+    ledger.reset_actor_cache()
+    e = ledger.append(str(d), cfg, "merged", "42", pr=42)
+    assert e["kind"] == "merged" and e["pr"] == 42            # the `pr` field is preserved
+    assert ledger.team([e]) == [e]                            # shown in the team view with no `to`
+
+
 # --------------------------------------------------------------------- render
 
 

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### PR review pipeline
+- **The loop can manage pull requests, not just issues.** New `pr.py` + the `sdlc-review-pr` skill
+  drain the open PRs on a review base: pick the oldest one you did not author, rebase it, run a real
+  `/code-review` pass (the agent's judgement — the script never grades code), check CI, then merge the
+  clean ones or request changes and hold the rest. **Merge is gated** — irreversible, so it only lands
+  when `review.auto_merge` is on (default off) and CI is green; otherwise it records the approval and
+  parks the merge for a human. Every step — `review`, `rebased`, `changes-requested`, `approved`,
+  `merged` — lands on the team ledger tagged with the PR, so the review cycle is as visible as the goal
+  cycle. Opt-in via a `review` block in config.json; absent, nothing runs.
+
 ### Team ledger
 - **`TEAM.md` now shows `claimed`**: the shared team view records WHO started a ticket and WHEN, not
   only outcomes — it pairs with `done` to read a ticket's start→finish at a glance. `note` stays
