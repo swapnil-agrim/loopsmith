@@ -344,6 +344,20 @@ def test_merge_arms_github_auto_merge_when_clean_and_safe(tmp_path):
     assert "gh pr merge 7 --auto --squash" in run.calls
 
 
+def test_merge_logs_a_merged_entry_to_the_ledger(tmp_path):
+    ledger = _load("ledger")
+    cfg = {"work": {"enabled": True, "auto_merge": "always"},
+           "ledger": {"enabled": True, "actor": "rae"}}
+    d = _sdlc(tmp_path, cfg)
+    goal = _started(d)
+    _evidence(d, goal)
+    ledger.reset_actor_cache()
+    run = _runner(_rights() + _protected() + [("pr view", _view())])
+    assert work.merge(d, cfg, goal, run=run, sleep=NOSLEEP).startswith("auto-merge armed on PR #7")
+    entries = [(e["kind"], e.get("pr")) for e in ledger.read_all(d)]
+    assert ("merged", "7") in entries          # the merge action lands on the team ledger, not only `done`
+
+
 def test_merge_leaves_the_pr_alone_when_auto_merge_is_off(tmp_path):
     d = _sdlc(tmp_path)
     goal = _started(d)
