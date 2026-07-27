@@ -19,10 +19,20 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SDLC_DIR="${1:-.sdlc}"
 STATE="$SDLC_DIR/state"
-LOG="$STATE/watch.log"; STOPF="$STATE/watch.stop"
+LOG="$STATE/watch.log"; STOPF="$STATE/watch.stop"; PIDF="$STATE/watch.pid"
 MAX_TICKS="${LOOPSMITH_WATCH_MAX_TICKS:-0}"
 SCALE="${LOOPSMITH_WATCH_SLEEP_SCALE:-1}"
 mkdir -p "$STATE"
+
+# Idempotent: one watcher per ledger. If watch.pid names a LIVE process we are already running here, so
+# a loop trigger can fire this on every run without stacking watchers. A stale pid (dead process) is
+# ignored. Clean the file up on exit.
+if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null; then
+  echo "watch: already running (pid $(cat "$PIDF")) — nothing to do"
+  exit 0
+fi
+echo "$$" > "$PIDF"
+trap 'rm -f "$PIDF"' EXIT
 
 INTERVAL="${LOOPSMITH_WATCH_INTERVAL:-}"
 if [ -z "$INTERVAL" ]; then

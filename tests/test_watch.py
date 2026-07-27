@@ -339,6 +339,32 @@ def test_watch_sh_stops_after_max_ticks(tmp_path):
     assert proc.returncode == 0 and "max ticks (2)" in proc.stdout
     assert (d / "state" / "watch.log").exists()
 
+
+def test_watch_sh_no_ops_when_a_live_watcher_already_holds_the_pid(tmp_path):
+    """Idempotent by design: a loop trigger fires watch.sh on every run, so a second copy over a
+    LIVE pid must exit without ticking and without clobbering the first watcher's pid file."""
+    d = _sdlc(tmp_path)
+    (d / "state" / "watch.pid").write_text(f"{os.getpid()}\n")     # our own pid — guaranteed alive
+    proc = subprocess.run(["bash", str(S / "watch.sh"), str(d)], capture_output=True, text=True,
+                          env={**os.environ, "LOOPSMITH_WATCH_SLEEP_SCALE": "0",
+                               "LOOPSMITH_WATCH_MAX_TICKS": "1"})
+    assert proc.returncode == 0 and "already running" in proc.stdout
+    assert not (d / "state" / "watch.log").exists()                # never ticked
+    assert (d / "state" / "watch.pid").read_text().strip() == str(os.getpid())   # first pid intact
+
+
+def test_watch_sh_ignores_a_stale_pid_and_runs(tmp_path):
+    """A crashed watcher leaves its pid behind. A dead pid must NOT wedge the watcher forever — the
+    next trigger takes over the file and ticks normally, cleaning it up on exit."""
+    d = _sdlc(tmp_path)
+    (d / "state" / "watch.pid").write_text("2147483647\n")         # INT_MAX — no such process
+    proc = subprocess.run(["bash", str(S / "watch.sh"), str(d)], capture_output=True, text=True,
+                          env={**os.environ, "LOOPSMITH_WATCH_SLEEP_SCALE": "0",
+                               "LOOPSMITH_WATCH_MAX_TICKS": "1"})
+    assert proc.returncode == 0 and "max ticks (1)" in proc.stdout
+    assert (d / "state" / "watch.log").exists()                    # it ticked despite the stale pid
+    assert not (d / "state" / "watch.pid").exists()                # cleaned up on exit
+
 def test_worktree_path_is_absolute_even_for_a_relative_sdlc_dir(tmp_path, monkeypatch):
     """Regression: every git call runs with `-C <elsewhere>`, so a relative worktree path made
     `git worktree add` create the worktree under the PROJECT ROOT's own name (a/.sdlc/ledger inside
