@@ -44,6 +44,7 @@ def _load(name):
 
 
 state = _load("state")
+ledger = _load("ledger")
 
 DEFAULTS = {"worktree_dir": ".sdlc/work", "branch_prefix": "sdlc/", "base": "",
             "remote": "origin", "auto_merge": "off", "merge_method": "squash"}
@@ -339,6 +340,10 @@ def merge(sdlc_dir, config, goal, run=None, sleep=time.sleep):
         return (f"PR #{rec['pr']} clean and safe, but {detail} — merging it is yours to make "
                 f'(auto_merge: "protected")')
     run(rec["worktree"], ["gh", "pr", "merge", rec["pr"], "--auto", f"--{settings(config)['merge_method']}"])
+    # Record the merge action so the team ledger shows landed PRs, not only goal outcomes. Fail-open:
+    # a ledger problem must never turn a successful merge into a failure.
+    ledger.safe_append(sdlc_dir, "merged", goal, config=config, pr=rec["pr"],
+                       why=f"auto-merge ({settings(config)['merge_method']}) armed on PR #{rec['pr']}")
     return f"auto-merge armed on PR #{rec['pr']} — " + (
         detail if guarded else f"WARNING: {detail}; local verify was the only gate")
 

@@ -15,6 +15,13 @@
 - An unsized goal resolves to **`medium`**, never `small`: guessing low on an unknown goal skips
   ceremony it might need, which is the one direction where being wrong is expensive.
 
+### The ledger records merges
+- **A landed PR is now a ledger line.** `work.merge` armed GitHub's auto-merge but recorded nothing, so
+  the team view showed goal outcomes (`done`/`parked`) yet never the merges themselves. It now appends a
+  **`merged`** entry (a new shared kind) tagged with the PR number when it arms a merge — fail-open, so a
+  ledger problem can never turn a successful merge into a failure. Off unless the ledger is enabled,
+  exactly like every other entry.
+
 ### The Research phase gets an executor, and `lane: auto` starts meaning something
 - **`/sdlc-research`** — Research was the only one of the seven phases with no executor behind it
   (the README said "agent practice; no dedicated skill"). It now maps a goal's blast radius, **records

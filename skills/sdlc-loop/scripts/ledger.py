@@ -23,20 +23,20 @@ import sys
 import time
 
 #: Every kind a ledger line may carry. Small on purpose — an open vocabulary would make the
-#: team view unreadable within a week.
-KINDS = ("claimed", "done", "parked", "failed", "handoff", "ack", "release", "note")
+#: team view unreadable within a week. `merged` records a PR the loop actually landed.
+KINDS = ("claimed", "done", "parked", "failed", "handoff", "ack", "release", "note", "merged")
 
 #: Lifecycle of a hand-off, from the point of view of the person it is addressed TO.
 STATES = ("open", "accepted", "deferred", "declined", "resolved")
 
 #: Kinds that belong in the shared/team view even with no explicit addressee. `claimed` is shared so
 #: the team view records WHO started a ticket and WHEN (it pairs with `done` to show start→finish);
-#: `note` stays personal unless it names a `to`, so routine annotations don't drown the signal.
-SHARED_KINDS = ("claimed", "done", "parked", "failed", "handoff", "ack", "release")
+#: `merged` is shared because a landed PR is a team event; `note` stays personal unless it names a `to`.
+SHARED_KINDS = ("claimed", "done", "parked", "failed", "handoff", "ack", "release", "merged")
 
 #: Optional fields, all free-form except `state` (validated) — additive by design: an older
-#: reader ignores a field it does not know rather than failing.
-OPTIONAL_FIELDS = ("area", "to", "issue", "priority", "why", "state", "ref")
+#: reader ignores a field it does not know rather than failing. `pr` carries a pull-request number.
+OPTIONAL_FIELDS = ("area", "to", "issue", "priority", "why", "state", "ref", "pr")
 
 _ACTOR_CACHE = {}
 
