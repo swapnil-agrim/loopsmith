@@ -62,6 +62,11 @@ Read what this specific repo offers; skip whatever's absent (never break the run
 - **Standing rule** — a lesson that must gate *every* future plan / review **and isn't mechanically
   enforced** (if a linter / type-checker / CI already catches it, a rule is redundant) → **propose** a
   numbered rule for `.sdlc/project.md` or the governing `CLAUDE.md`. Rare; always parked.
+- **Registered invariant** — the rare standing rule that is *also* a value constraint on a named thing
+  in known files (`timeout ≤ 30`, `verify_ssl == True`). Nothing else catches it, and prose won't stop
+  it recurring — so propose an entry for `.sdlc/decisions.json` via **`/sdlc-decide`**, and the next
+  edit that breaks it is refused rather than reviewed. Rarest of all: if you can't write it as a
+  comparison, it's a standing rule, not an invariant.
 
 Route by test: audit-trail = "worth re-reading"; north-star = "changes our direction or shape"; standing
 rule = "must gate every change and nothing else enforces it". De-duplicate — a lesson seen across

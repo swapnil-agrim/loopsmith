@@ -157,6 +157,7 @@ Every option LoopSmith provides, at a glance:
 | **Context recall** | Pulls the relevant slice of project memory into context before each goal | `/sdlc-context` |
 | **Blast-radius research** | Maps every site a goal touches, records the query so Review can re-run it, inventories the debt already there, and sizes the goal into a lane | `/sdlc-research` |
 | **Ceremony proportional to the work** | Both orchestrators route on that lane — a small goal plans in a few lines, a large one earns design work first. Plan-Review never skips | `discovery.py lane` |
+| **Decisions that actually hold** | Record an architectural invariant once; an edit that breaks it is **denied** by a hook, not discouraged by a prompt. The one guardrail here a model can't talk past | `/sdlc-decide` |
 | **Cumulative-drift audit** | Reads a *window* of shipped goals against your stated bets — catches the drift no single plan or goal reveals | `/sdlc-align` |
 | **Velocity calibration** | Size work from real git throughput, not "this feels like weeks" | `/sdlc-velocity` |
 | **Proactive research scout** | Sweep the backlog for new SOTA, dedup, write a ranked digest (dry-run) | `/sdlc-radar` |

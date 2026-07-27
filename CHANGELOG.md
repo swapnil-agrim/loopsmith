@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### A guardrail that isn't a prompt — the decision gate
+- **`/sdlc-decide` + a `PreToolUse` hook.** Every other gate in this kit is discipline a model is
+  *asked* to follow, and a model can talk itself past discipline — especially unattended, on iteration
+  forty. Record an architectural invariant in `.sdlc/decisions.json` and the edit that breaks it is
+  **denied** by a script that doesn't negotiate. `invariant` denies; `recipe` asks; `caution_on_touch`
+  asks on any edit inside a path that's dangerous to touch at all.
+- **Authoring the registry is the opt-in.** No registry, no behavior — installing the plugin changes
+  nothing. `gates.decision_gate.enabled: false` turns it off without deleting the file, for refactors
+  that intentionally move an invariant.
+- **JSON, not YAML** — this kit takes no dependencies, and the registry is not worth breaking that for.
+- **Precision is the whole product here.** A gate that cries wolf gets clicked through, and then it
+  protects nothing. So: params are scoped to their own decision's paths (a name as common as `timeout`
+  can't trip everywhere); only literal assignments are judged, never expressions; comments are
+  stripped; and a violating value *quoted inside prose* — `doc = "set timeout: 120 here"` — does not
+  fire. That last one was a real false-deny caught in test, and false denies cost more than misses.
+- **`decision_gate.py check`** scans code already on disk, because the hook only ever sees edits going
+  forward and the first question after authoring a registry is "does my code even comply?"
+  **`validate`** catches entries that can never fire — a registry's failure mode is being quietly
+  unenforceable, not loudly broken.
+- **Editing the registry always asks.** Changing a recorded invariant is a supersession the user makes
+  deliberately, never a silent rewrite by the agent about to be bound by it.
+- `/sdlc-doctor` counts **active** decisions, not entries — a registry whose decisions are all
+  superseded enforces nothing, and reporting that as ON would be the false assurance this gate exists
+  to remove. `/sdlc-retro` can now propose an invariant as a fourth learning store.
+- **Stated limits, in the skill:** it reads literal assignments only (`timeout = CONFIG.default` is
+  invisible), it sees edit text rather than the program, and it fails open. It's a seatbelt against the
+  obvious mistake, not a proof of compliance.
+
 ### The lane is routed on, not just recorded
 - **Both orchestrators now branch on the lane** Research measured. Sizing a goal and then ignoring the
   size is the same producer-without-consumer defect `lane: auto` had before it was implemented: the

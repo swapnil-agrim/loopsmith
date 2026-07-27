@@ -149,6 +149,26 @@ def _ledger_entries(base):
     return total
 
 
+def _decision_gate_state(base, cfg):
+    """Count the ACTIVE decisions, not the entries. A registry whose decisions are all superseded
+    enforces nothing, and reporting it as ON would be exactly the false assurance this gate exists
+    to remove."""
+    reg = pathlib.Path(base) / "decisions.json"
+    if not reg.exists():
+        return "off (no registry — nothing is enforced)"
+    if ((cfg.get("gates") or {}).get("decision_gate") or {}).get("enabled") is False:
+        return "DISABLED by config (registry present but not enforced)"
+    try:
+        decisions = json.loads(reg.read_text(encoding="utf-8")).get("decisions") or []
+    except Exception:
+        return "registry present but UNREADABLE — the gate fails open, so nothing is enforced"
+    active = [d for d in decisions if isinstance(d, dict) and d.get("status", "active") == "active"]
+    inv = sum(1 for d in active if d.get("class") == "invariant")
+    if not active:
+        return "registry present but NO active decisions — nothing is enforced"
+    return f"ON — {inv} invariant(s) deny, {len(active) - inv} recipe(s) ask"
+
+
 def _automerge_state(wk):
     """Mirrors work.policy() without importing it — doctor stays standalone, and a dashboard that
     lied about which merge policy is live would be worse than no dashboard."""
@@ -186,6 +206,9 @@ def features(sdlc_dir=".sdlc"):
         ("hard plan-gate (deny source edits w/o fresh plan)",
          f"ON ({gate.get('plan_freshness_hours', 24)}h window)" if gate.get("enabled") is True else "off (prompt-gate reminder only)",
          'config: "gates": {"hard_plan_gate": {"enabled": true}}'),
+        ("decision gate (deny edits that break a registered invariant)",
+         _decision_gate_state(base, cfg),
+         "author .sdlc/decisions.json (see /sdlc-decide) — authoring it IS the opt-in"),
         ("pipeline report card + propose",
          "DECLARED (.sdlc/pipeline.json present)" if (base / "pipeline.json").exists() else "not declared",
          "declare stages in .sdlc/pipeline.json, then: pipeline.py card .sdlc"),
