@@ -241,3 +241,49 @@ def test_discovery_skips_failed_goals():
         src = lp.sources.get_source(base, lp.state.load_config(base))
         kind, goal = lp._next(base, src, lp.state.load_config(base))
         assert kind == "goal" and goal.endswith("0002.md")
+
+
+# ---------------------------------------------------------------- _ensure_watcher
+# A loop trigger starts the ledger watcher itself, so entries actually get published without a
+# separate manual step. `is_worktree` reads `.sdlc/ledger/.git`, so a stub file is enough to fake
+# an initialised worktree — no git needed. `spawn` is injected to observe the launch.
+
+
+def _ledger_sdlc(d, enabled=True, worktree=False):
+    base = pathlib.Path(d) / ".sdlc"; (base / "state").mkdir(parents=True)
+    (base / "config.json").write_text(json.dumps({"ledger": {"enabled": enabled, "actor": "rae"}}))
+    if worktree:
+        (base / "ledger").mkdir(); (base / "ledger" / ".git").write_text("gitdir: elsewhere\n")
+    return str(base)
+
+
+def test_ensure_watcher_starts_the_watcher_when_ledger_on_and_initialised():
+    with tempfile.TemporaryDirectory() as d:
+        base = _ledger_sdlc(d, enabled=True, worktree=True)
+        lp = _loop(); calls = []
+        lp._ensure_watcher(base, lp.state.load_config(base), spawn=lambda: calls.append(1))
+        assert calls == [1]
+
+
+def test_ensure_watcher_is_a_noop_when_the_ledger_is_off():
+    with tempfile.TemporaryDirectory() as d:
+        base = _ledger_sdlc(d, enabled=False, worktree=True)
+        lp = _loop(); calls = []
+        lp._ensure_watcher(base, lp.state.load_config(base), spawn=lambda: calls.append(1))
+        assert calls == []                              # nothing to publish, so don't spawn
+
+
+def test_ensure_watcher_waits_until_sync_init_has_made_the_worktree():
+    with tempfile.TemporaryDirectory() as d:
+        base = _ledger_sdlc(d, enabled=True, worktree=False)     # ledger on, but `sync.py init` not run
+        lp = _loop(); calls = []
+        lp._ensure_watcher(base, lp.state.load_config(base), spawn=lambda: calls.append(1))
+        assert calls == []                              # no worktree = nothing to publish yet
+
+
+def test_ensure_watcher_is_fail_open_when_the_spawn_raises():
+    with tempfile.TemporaryDirectory() as d:
+        base = _ledger_sdlc(d, enabled=True, worktree=True)
+        lp = _loop()
+        def boom(): raise RuntimeError("no bash on this box")
+        lp._ensure_watcher(base, lp.state.load_config(base), spawn=boom)   # must not propagate

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### A loop trigger keeps its own watcher alive
+- **The loop now starts the ledger watcher itself.** Entries were only ever appended locally; nothing
+  pushed them to the ops branch except the watcher, and a team that ran the loop but forgot the watcher
+  saw a silent ledger — claims and hand-offs piled up on one laptop and reached nobody. Every loop
+  trigger (`loop.py next` and the unattended drain) now ensures the watcher is running before it does
+  anything else, so the ledger flows without a separate manual step.
+- **Firing it repeatedly is safe.** `watch.sh` is idempotent — a live `watch.pid` makes a second copy
+  no-op instead of stacking watchers, while a stale pid from a crashed watcher is ignored so the next
+  trigger takes over. The launch is **fail-open**: a watcher that can't start never breaks the run.
+  Off entirely unless the ledger is enabled and initialised (`sync.py init` has made the worktree) —
+  nothing to publish otherwise.
+
 ### A guardrail that isn't a prompt — the decision gate
 - **`/sdlc-decide` + a `PreToolUse` hook.** Every other gate in this kit is discipline a model is
   *asked* to follow, and a model can talk itself past discipline — especially unattended, on iteration

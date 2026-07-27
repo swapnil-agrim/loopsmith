@@ -6,7 +6,7 @@ spend itself; no reports == no enforcement). An absent/zero key enforces nothing
 it behaves exactly as before. The irreversible-action gate is enforced by /sdlc-loop SKILL.md prose.
 Claim and outcome are mirrored to the team ledger (ledger.py) when `ledger.enabled` is on — every
 such call is fail-open, so a ledger problem can never stop a run."""
-import sys, pathlib, importlib.util, time
+import sys, pathlib, importlib.util, time, subprocess
 
 _HERE = pathlib.Path(__file__).resolve().parent
 
@@ -20,6 +20,27 @@ state = _load("state")
 sources = _load("sources")          # backlog source: local files or GitHub issues (config-selected)
 ledger = _load("ledger")            # team record (config-gated, default OFF; every call is fail-open)
 work = _load("work")                # per-goal worktree/branch/PR (config-gated, default OFF)
+
+
+def _ensure_watcher(sdlc_dir, config, spawn=None):
+    """Start the ledger watcher for this repo if it isn't already, so a loop trigger shares its trail
+    without a separate step. Otherwise entries only ever get pushed when someone remembers to run the
+    watcher — the exact way a busy team's ledger goes silent. Safe to call on every trigger: `watch.sh`
+    self-guards against a second copy (a live watch.pid). Only when the ledger is enabled AND actually a
+    worktree (nothing to publish otherwise), and fail-open — a watcher we cannot start must never stop a
+    run. `spawn` is injectable for tests."""
+    try:
+        if not ledger.enabled(config):
+            return
+        sync = _load("sync")
+        if not sync.is_worktree(sdlc_dir):
+            return
+        launch = spawn or (lambda: subprocess.Popen(
+            ["bash", str(_HERE / "watch.sh"), str(sdlc_dir)],
+            start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        launch()
+    except Exception:                # noqa: BLE001 - fail-open by design; the run matters, the watcher is a convenience
+        pass
 
 
 def _budget_spent(cursor, budget):
@@ -139,6 +160,7 @@ def _done_refusal(sdlc_dir, goal):
 def run_loop(sdlc_dir, run_goal):
     state.start_run(sdlc_dir)                       # reset per-run budget (resume-safe)
     config = state.load_config(sdlc_dir)
+    _ensure_watcher(sdlc_dir, config)               # a loop trigger keeps the ledger flowing on its own
     source = sources.get_source(sdlc_dir, config)   # one source per run (e.g. github labels ensured once)
     done = parked = failed = 0
     while True:
@@ -161,6 +183,7 @@ def main(argv):
         state.start_run(argv[2]); return 0
     if len(argv) >= 3 and argv[1] == "next":
         config = state.load_config(argv[2])
+        _ensure_watcher(argv[2], config)            # every loop trigger keeps the watcher (and the ledger) alive
         _surface_inbox(argv[2])                     # stderr; stdout stays exactly the goal/DONE/BUDGET
         kind, goal = _next(argv[2], sources.get_source(argv[2], config), config)
         print(goal if kind == "goal" else kind); return 0
