@@ -3,7 +3,7 @@
 -> gh auth + project scope; KG enabled -> the builder; vision-first -> the north-star; always -> the
 .sdlc layer — and report each check with the exact one-line fix. The command runner is injectable so
 the logic is hermetically testable. Zero-dep."""
-import sys, json, pathlib
+import sys, json, pathlib, re
 
 
 def _real_run(args):
@@ -61,6 +61,77 @@ def check(sdlc_dir=".sdlc", run=None):
             here = comp in plugins
             out.append(_chk(f"{comp}: {'present' if here else 'absent — portable executor used'}", True, ""))
     return out
+
+
+#: A cited path worth checking: backticked, has a separator, and is concrete. Anything with a glob or
+#: a <placeholder> is a pattern, not a reference — flagging those would cry wolf, and a check nobody
+#: trusts gets ignored along with the true positives.
+_CITED = re.compile(r"`([^`\s]*/[^`\s]*)`")
+_MDLINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+_ABSTRACT = re.compile(r"[*?<>{}\[\]]|NNNN|YYYY|\.\.\.")
+
+
+def _standing_docs(base):
+    """The docs that describe the project and therefore rot when the project moves: the north-star
+    tiers and project.md. Goals and plans are transient by design — not scanned."""
+    docs = [base / "project.md"]
+    docs += sorted((base / "context").glob("*.md")) if (base / "context").is_dir() else []
+    return [d for d in docs if d.is_file()]
+
+
+def _stale_paths(text, repo_root):
+    out = []
+    for ref in _CITED.findall(text):
+        if _ABSTRACT.search(ref) or "://" in ref or ref.startswith(("-", "$")):
+            continue
+        if not (repo_root / ref.rstrip("/")).exists():
+            out.append(ref)
+    return out
+
+
+def _dangling_links(text, doc_dir):
+    out = []
+    for target in _MDLINK.findall(text):
+        target = target.split()[0].split("#")[0].strip()      # drop a title and any anchor
+        if not target or "://" in target or target.startswith(("#", "mailto:")):
+            continue
+        if _ABSTRACT.search(target) or not (doc_dir / target).exists():
+            out.append(target)
+    return out
+
+
+def hygiene(sdlc_dir=".sdlc", repo_root="."):
+    """Content-rot over the standing docs: references that no longer resolve. Read-only, binary, and
+    mechanical — the half of context maintenance a script can settle. The judgment half (demoting a
+    rule that CI now enforces, archiving a superseded plan) belongs to `sdlc-retro`, because it
+    changes files and needs approval. Returns [] when there are no standing docs to scan, so a
+    drop-in project sees nothing new."""
+    base, root = pathlib.Path(sdlc_dir), pathlib.Path(repo_root)
+    docs = _standing_docs(base)
+    if not docs:
+        return []
+    stale, dangling = {}, {}
+    for doc in docs:
+        try:
+            text = doc.read_text(encoding="utf-8")
+        except OSError:                                        # fail-open: unreadable != rotten
+            continue
+        if bad := _stale_paths(text, root):
+            stale[doc.name] = bad
+        if bad := _dangling_links(text, doc.parent):
+            dangling[doc.name] = bad
+    return [
+        _chk("standing docs: cited paths resolve", not stale, _detail(stale, "moved or deleted")),
+        _chk("standing docs: links resolve", not dangling, _detail(dangling, "no such file")),
+    ]
+
+
+def _detail(found, why):
+    """One fix line naming the offenders. Capped — a wall of paths is a report nobody reads; the
+    first few are enough to start, and re-running shows the rest."""
+    parts = [f"{doc}: {', '.join(refs[:3])}" + (f" (+{len(refs) - 3} more)" if len(refs) > 3 else "")
+             for doc, refs in sorted(found.items())]
+    return f"{why} — {'; '.join(parts)}. Update the reference or drop it."
 
 
 def _ledger_entries(base):
@@ -168,9 +239,30 @@ def main(argv):
         print("\nfeatures (doctor.py features for the enable one-liners):")
         for name, state, _ in features(argv[2] if len(argv) > 2 else ".sdlc"):
             print(f"  {name}: {state}")
+        _print_hygiene(argv[2] if len(argv) > 2 else ".sdlc")
         return 0
-    print("usage: doctor.py check [sdlc_dir] | features [sdlc_dir]", file=sys.stderr)
+    if len(argv) >= 2 and argv[1] == "hygiene":
+        rows = hygiene(argv[2] if len(argv) > 2 else ".sdlc", argv[3] if len(argv) > 3 else ".")
+        if not rows:
+            print("  no standing docs to scan (.sdlc/project.md, .sdlc/context/*.md)")
+            return 0
+        for c in rows:
+            print(f"  [{'OK  ' if c['ok'] else 'STALE'}] {c['name']}" + ("" if c["ok"] else f"\n      {c['fix']}"))
+        return 0
+    print("usage: doctor.py check [sdlc_dir] | features [sdlc_dir] | hygiene [sdlc_dir] [repo_root]",
+          file=sys.stderr)
     return 2
+
+
+def _print_hygiene(sdlc_dir):
+    """Surfaced inside `check` so the rot scan actually runs — a maintenance command nobody
+    remembers to type is the failure mode this exists to avoid. Kept in its own section: setup
+    readiness and content rot are different questions and must not share a score."""
+    rot = [c for c in hygiene(sdlc_dir) if not c["ok"]]
+    if rot:
+        print("\nstanding-doc hygiene (doctor.py hygiene for detail):")
+        for c in rot:
+            print(f"  [STALE] {c['name']}\n      {c['fix']}")
 
 
 if __name__ == "__main__":

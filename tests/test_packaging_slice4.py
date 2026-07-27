@@ -88,3 +88,17 @@ def test_versions_aligned():
     p = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
     mk = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
     assert p["version"] == "0.7.0" and mk["plugins"][0]["version"] == "0.7.0"
+
+
+def test_plan_review_dispositions_close_the_loop():
+    """A FIX-FIRST that sends the plan back with no record of what happened to each finding is half
+    a gate. Matters most in /sdlc-loop, where no human adjudicates: without this, nothing stops the
+    loop from faithfully implementing a review finding that was simply wrong."""
+    t = (ROOT / "skills" / "sdlc-plan-review" / "SKILL.md").read_text()
+    low = t.lower()
+    for verdict in ("accept", "reject", "partially accept"):
+        assert verdict in low, f"plan-review has no '{verdict}' disposition"
+    assert "file:line" in t                              # every verdict is evidence-bound
+    assert "the review can also be wrong" in low         # findings are hypotheses too
+    assert "regen" in low and "half" in low              # mostly-substantive findings => regenerate
+    assert "structural" in low and "patchwork" in low

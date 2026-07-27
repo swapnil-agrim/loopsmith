@@ -115,3 +115,79 @@ def test_features_reports_the_ledger_and_counts_its_entries(tmp_path):
     (entries / "amy.jsonl").write_text('{"kind":"done"}\n')
     rows = {name: state for name, state, _ in d.features(str(base))}
     assert rows["team ledger"] == "ON — 1 entry in .sdlc/ledger/entries/"
+
+
+# --- standing-doc hygiene: the mechanical half of context maintenance -------------------------
+# Rot that a script can settle (a reference that no longer resolves), NOT the judgment half
+# (demoting a rule CI now enforces) — that's sdlc-retro's, because it changes files.
+
+def _hyg(d, project_md=None, north_star=None):
+    base = pathlib.Path(d) / ".sdlc"
+    (base / "context").mkdir(parents=True)
+    (base / "config.json").write_text("{}")
+    if project_md is not None:
+        (base / "project.md").write_text(project_md)
+    if north_star is not None:
+        (base / "context" / "north-star.md").write_text(north_star)
+    return str(base)
+
+
+def test_hygiene_is_silent_without_standing_docs():
+    """A drop-in project has nothing to rot — it must not gain a new nag."""
+    with tempfile.TemporaryDirectory() as d:
+        assert _doc().hygiene(_hyg(d), d) == []
+
+
+def test_hygiene_flags_a_cited_path_that_no_longer_exists():
+    with tempfile.TemporaryDirectory() as d:
+        (pathlib.Path(d) / "src").mkdir()
+        (pathlib.Path(d) / "src" / "live.py").write_text("x = 1")
+        sdlc = _hyg(d, project_md="Entry point is `src/live.py`; config in `src/gone.py`.")
+        rows = {c["name"]: c for c in _doc().hygiene(sdlc, d)}
+        paths = rows["standing docs: cited paths resolve"]
+        assert not paths["ok"]
+        assert "src/gone.py" in paths["fix"] and "src/live.py" not in paths["fix"]
+
+
+def test_hygiene_ignores_patterns_and_urls():
+    """Globs and <placeholders> are patterns, not references. A check that cries wolf gets
+    ignored along with its true positives."""
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = _hyg(d, project_md=(
+            "Goals live in `.sdlc/goals/NNNN-*.md`, docs at `https://example.com/a/b`, "
+            "research in `.sdlc/research/<slug>.md`."))
+        assert all(c["ok"] for c in _doc().hygiene(sdlc, d))
+
+
+def test_hygiene_flags_a_dangling_relative_link_but_not_external_ones():
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = _hyg(d, north_star=(
+            "See [gone](./missing.md), [site](https://example.com), [here](#anchor)."))
+        rows = {c["name"]: c for c in _doc().hygiene(sdlc, d)}
+        links = rows["standing docs: links resolve"]
+        assert not links["ok"]
+        assert "./missing.md" in links["fix"]
+        assert "example.com" not in links["fix"] and "#anchor" not in links["fix"]
+
+
+def test_hygiene_caps_the_offender_list():
+    """A wall of paths is a report nobody reads."""
+    with tempfile.TemporaryDirectory() as d:
+        cited = " ".join(f"`src/gone{i}.py`" for i in range(7))
+        rows = {c["name"]: c for c in _doc().hygiene(_hyg(d, project_md=cited), d)}
+        fix = rows["standing docs: cited paths resolve"]["fix"]
+        assert "+4 more" in fix and fix.count("src/gone") == 3
+
+
+def test_check_surfaces_rot_without_scoring_it_as_setup(capsys):
+    """Setup readiness and content rot are different questions: the rot must show up in a `check`
+    run (or nobody runs it) but must NOT move the N/M ready score."""
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = _hyg(d, project_md="Broken ref to `src/gone.py`.")
+        m = _doc()
+        m._real_run = lambda args: ""                 # hermetic: no real gh / claude probes
+        n = len(m.check(sdlc, run=_runner()))
+        m.main(["doctor.py", "check", sdlc])
+        out = capsys.readouterr().out
+        assert "standing-doc hygiene" in out and "src/gone.py" in out
+        assert f"{n}/{n} ready" in out                # rot did NOT become a failed setup check

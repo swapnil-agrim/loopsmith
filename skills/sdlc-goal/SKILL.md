@@ -22,8 +22,8 @@ counterpart to the autonomous `/sdlc-loop`).
    `sdlc-plan-review` skill — never skip) → **Implement** (test-first) → **Review** (evidence before
    "done") → **Retrospective** (step 3). Each phase runs via its **executor**: on Claude with the
    companion installed, the `superpowers` / `code-review` skill; otherwise LoopSmith's **portable
-   executor** (`sdlc-brainstorm` → Goal, `sdlc-plan` → Plan, `sdlc-implement` → Implement, `sdlc-review`
-   + `sdlc-verify` → Review, `sdlc-retro` → Retrospective).
+   executor** (`sdlc-brainstorm` → Goal, `sdlc-research` → Research, `sdlc-plan` → Plan,
+   `sdlc-implement` → Implement, `sdlc-review` + `sdlc-verify` → Review, `sdlc-retro` → Retrospective).
    Each executor's resolution header encodes this — so it works on any host.
    Record each phase as you go — `python3 "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/loop.py" note .sdlc
    "<goal>" "<phase>: <findings / decisions>"` (and 🔒 Critical Insights for key decisions) — so the

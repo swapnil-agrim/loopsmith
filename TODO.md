@@ -30,12 +30,15 @@ and the agent follows the spine + runs the portable executors + the `python3` he
 
 ## Other deferred (see the roadmap for context)
 
-- **Periodic cumulative-drift audit** — a *distinct* check from `sdlc-plan-review`'s per-plan alignment
-  gate: audit slow drift over weeks (do recent decisions/goals still match the north-star's bets? has a
-  rule's premise moved? did an implicit new bet emerge?). Genericized from the reference repo's
-  alignment-reflection; deferred to stay lean (per-plan alignment + `sdlc-retro`'s per-goal north-star
-  feedback already cover most of it). Add as a `/sdlc-align` mode only if drift proves to slip past both.
 - **research-radar Phase B/C** — findings → gap log → the loop fills them; opt-in guard-railed GitHub
-  filing. Deferred until the dry-run digest (`/sdlc-radar`) proves useful.
+  filing. Deferred until the dry-run digest (`/sdlc-radar`) proves useful. **Deliberately still
+  deferred** after a second look: filing issues nobody asked for is negative value until the digest
+  earns its keep, and dormant machinery for a feature that may never ship is just carrying cost.
+  When it *is* greenlit, the reference repo has a working, tested implementation of the safety
+  layer — `guardrails.py` (label hygiene, per-run write caps, a bot signature) plus a
+  content-keyed dedup `ledger.py` — under its `.claude/skills/research-radar/lib/`. Port from there
+  rather than re-deriving; the caps and the signature are the part that makes unattended writes
+  defensible. (Its `agenda.py` also scores by priority/recency where `radar.py agenda` rotates by
+  index — a Phase A upgrade, worth taking only if round-robin proves to starve something.)
 - **Second-host adapters beyond Cursor** — once Cursor is verified, a Codex/other adapter can follow
   the same shape (a host rules file + `companions: off`).

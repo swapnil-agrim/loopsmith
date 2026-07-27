@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+### The Research phase gets an executor, and `lane: auto` starts meaning something
+- **`/sdlc-research`** — Research was the only one of the seven phases with no executor behind it
+  (the README said "agent practice; no dedicated skill"). It now maps a goal's blast radius, **records
+  the exact queries** so Review can re-run them — coverage guaranteed by re-scan, not by trusting that
+  one afternoon's list was complete — inventories the debt already in the radius, and sizes the goal
+  into a lane from the footprint it *measured*, never from a guessed duration.
+- **`lane: auto` was a promise nothing kept.** `sdlc-init` has been scaffolding it into every goal with
+  a README saying "auto lets the engine size it"; no code sized anything. Research now writes the lane
+  back, which is what lets small goals skip ceremony they never earned.
+- The dossier lands in `.sdlc/research/`, deliberately **not** `.sdlc/plans/` — the hard plan-gate
+  treats any recent file there as a fresh plan, and a research note is not a plan.
+
+### Plan-review closes its own loop
+- A FIX-FIRST verdict sent a plan back with **no record of what happened to each finding**. Every
+  finding now gets an explicit disposition — accept / reject / partially accept, each with its own
+  `file:line`. This matters most in `/sdlc-loop`, where no human adjudicates and nothing otherwise
+  stopped the loop from faithfully implementing a wrong review finding.
+- **The review is a hypothesis too.** A finding claiming a file or symbol doesn't exist is checked
+  against the filesystem before it's accepted; a plan patched to satisfy a false finding is worse than
+  the plan was. Plus a regen threshold: when most findings are substantive, the plan wants
+  regenerating, not patching.
+
+### Cumulative drift, and a trigger that can actually fire
+- **`/sdlc-align`** — every existing alignment gate reads one unit of work: `sdlc-plan-review` §4 holds
+  one plan to the north-star, `sdlc-retro` asks what one goal taught. Neither can see the shape of
+  twenty goals, which is where strategy actually drifts. Two lenses only — dominant theme vs stated
+  bets, and effort accumulating behind a bet nobody ever declared. No-op without a north-star.
+- **`/sdlc-status` reports when it's due.** The old plan was to add this "only if drift proves to slip
+  past the other two" — a trigger that cannot fire, since undetected drift is exactly what you can't
+  observe without the audit. A count of goals shipped since the last report is something the loop can
+  see. The report is its own bookkeeping; no extra state file.
+
+### Both backlog modes reach the same place
+- **The alignment counter was blind in github mode.** It tallied `.sdlc/goals/*.md` with `status: done`
+  — but when goals are issues that directory stays empty, so the count sat at zero and the audit would
+  never have come due for exactly the teams running a shared board. It now takes the larger of the
+  local tally and the loop's `iteration` cursor, since neither signal covers both modes alone
+  (`iteration` misses interactive `/sdlc-goal` runs; the file tally misses github entirely).
+- **Research recorded the lane into frontmatter an issue doesn't have.** In github mode the lane, the
+  site count, and the blocking questions now go on the issue timeline, where every other phase already
+  records. A research pass that leaves no comment there is invisible to everyone but its author.
+- **Plan-review writes down its rejections.** Accepted findings are visible in the revised plan; the
+  reasoning for *overruling* a reviewer existed nowhere — and it's the first thing anyone asks when the
+  same objection returns a month later.
+- No new board columns: Research sits in the same **In Progress** state as Plan and Implement, and
+  `/sdlc-align` deliberately files nothing — drift is a question about direction, not about any one
+  issue.
+
+### Standing docs stop only ever growing
+- **`/sdlc-doctor` scans for rot** — cited paths and links in `.sdlc/project.md` and
+  `.sdlc/context/*.md` that no longer resolve. A north-star pointing at a deleted file quietly teaches
+  the wrong thing to every phase that reads it. Reported in its own section and kept out of the
+  readiness score: "is my setup working?" and "are my docs rotting?" are different questions.
+- It only reports references that provably don't resolve — globs and `<placeholders>` are skipped,
+  because a check that cries wolf gets ignored along with its true positives.
+- **`/sdlc-retro` proposes the retirements.** Adding a rule has an obvious moment; retiring one never
+  does. Retro now asks what the goal made redundant — a rule CI now enforces mechanically, a rule whose
+  premise moved, a plan whose work shipped — and parks each removal for approval alongside the
+  additions, in the same table.
+
 ### Merge rights + a protection-aware policy
 - **A fork PR or a read-only repo is never merge-attempted.** Permission is checked before anything
   it could gate on, and it is not a config question: on a project you lack write access to, the PR
