@@ -16,10 +16,14 @@ _TERMINAL = {"done", "parked", "failed"}
 _SKIP = _TERMINAL | {"proposed"}
 
 
-def next_pending(goals_dir):
+def next_pending(goals_dir, skip=()):
     """First *.md goal (filename order) whose status is not done/parked/failed/proposed. None if none.
-    Files without frontmatter (e.g. README.md) are not goals."""
+    Files without frontmatter (e.g. README.md) are not goals. `skip` holds goals a claim lease has
+    assigned to another loop this pass — they are passed over so two loops don't start the same one."""
+    skip = {str(s) for s in skip}
     for path in sorted(pathlib.Path(goals_dir).glob("*.md")):
+        if str(path) in skip:
+            continue
         status = frontmatter.get(path.read_text(), "status")
         if status is not None and status not in _SKIP:
             return str(path)

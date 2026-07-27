@@ -30,8 +30,8 @@ class LocalSource:
         self.sdlc_dir = sdlc_dir
         self.goals_dir = str(pathlib.Path(sdlc_dir) / "goals")
 
-    def next_pending(self):
-        return discovery.next_pending(self.goals_dir)
+    def next_pending(self, skip=()):
+        return discovery.next_pending(self.goals_dir, skip)
 
     def mark_in_progress(self, goal):
         state.set_in_progress(self.sdlc_dir, goal)
@@ -143,7 +143,7 @@ class GitHubSource:
                 pass
         self._labels_ready = True
 
-    def next_pending(self):
+    def next_pending(self, skip=()):
         args = ["issue", "list", *self._repo_args(), "--label", self.goal_label,
                 "--state", "open", "--json", "number,labels", "--limit", "200"]     # ponytail: 200-issue cap
         if self.assignee:
@@ -151,8 +151,10 @@ class GitHubSource:
                                                        # on a shared board don't pick the same issue
         out = self._run(args)
         issues = json.loads(out or "[]")
+        skip = {str(s) for s in skip}                 # goals a claim lease says belong to someone else
         pending = [i for i in issues
-                   if self.parked_label not in {l.get("name") for l in (i.get("labels") or [])}]
+                   if self.parked_label not in {l.get("name") for l in (i.get("labels") or [])}
+                   and str(i["number"]) not in skip]
         pending.sort(key=lambda i: i["number"])     # oldest-first, mirrors local filename order
         return str(pending[0]["number"]) if pending else None
 

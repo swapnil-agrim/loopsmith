@@ -63,7 +63,7 @@ def test_run_loop_drives_any_injected_source():    # loop.py is source-agnostic 
 
         class Fake:
             def __init__(s): s.q = ["a", "b", "c"]; s.done = []
-            def next_pending(s): return s.q[0] if s.q else None
+            def next_pending(s, skip=()): return next((g for g in s.q if g not in skip), None)
             def mark_in_progress(s, g): pass
             def complete(s, g): s.done.append(g); s.q.pop(0)
             def park(s, g, r): s.q.pop(0)
@@ -82,7 +82,7 @@ def test_run_loop_builds_source_once():    # one source per run, not per _next/_
 
         class Fake:
             def __init__(s): s.q = ["a", "b", "c"]
-            def next_pending(s): return s.q[0] if s.q else None
+            def next_pending(s, skip=()): return next((g for g in s.q if g not in skip), None)
             def mark_in_progress(s, g): pass
             def complete(s, g): s.q.pop(0)
             def park(s, g, r): s.q.pop(0)
@@ -287,3 +287,75 @@ def test_ensure_watcher_is_fail_open_when_the_spawn_raises():
         lp = _loop()
         def boom(): raise RuntimeError("no bash on this box")
         lp._ensure_watcher(base, lp.state.load_config(base), spawn=boom)   # must not propagate
+
+
+# ---------------------------------------------------------------- claim lease in _next
+# Two loops on one board must not start the same goal. _next reads the ledger claim lease: a goal
+# another actor holds an open claim on is skipped; a goal I hold is still mine to resume. ttl_hours=0
+# disables expiry so these tests are independent of wall-clock (TTL itself is unit-tested in ledger).
+
+
+class _Queue:
+    """Minimal source: hands out the first queued goal not in `skip`, records what it marked."""
+    def __init__(self, items): self.items = list(items); self.marked = []
+    def next_pending(self, skip=()):
+        s = {str(x) for x in skip}
+        return next((g for g in self.items if g not in s), None)
+    def mark_in_progress(self, g): self.marked.append(g)
+
+
+def _lease_base(d, actor="me", claims=(), enabled=True, ttl_hours=0):
+    base = pathlib.Path(d) / ".sdlc"; (base / "state").mkdir(parents=True)
+    (base / "config.json").write_text(json.dumps(
+        {"ledger": {"enabled": enabled, "actor": actor, "lease": {"ttl_hours": ttl_hours}},
+         "budget": {"max_iterations": 10}}))
+    (base / "state" / "STATE.md").write_text("iteration: 0\nrun_iteration: 0\nlast_run: none\n")
+    ent = base / "ledger" / "entries"; ent.mkdir(parents=True)
+    seqs = {}
+    for who, goal, kind in claims:
+        seqs[who] = seqs.get(who, 0) + 1
+        with (ent / f"{who}.jsonl").open("a") as f:
+            f.write(json.dumps({"id": f"{who}:{seqs[who]}", "ts": "2026-07-27T09:00:00Z",
+                                "actor": who, "kind": kind, "goal": str(goal)}) + "\n")
+    return str(base)
+
+
+def test_next_skips_a_goal_another_loop_holds_and_takes_the_next():
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[("other", "a", "claimed")])
+        lp = _loop(); src = _Queue(["a", "b", "c"])
+        kind, goal = lp._next(base, src, lp.state.load_config(base))
+        assert (kind, goal) == ("goal", "b") and src.marked == ["b"]     # "a" is other's; took "b"
+        assert lp.ledger.open_claims(lp.ledger.read_all(base))["b"] == "me"   # and claimed it myself
+
+
+def test_next_resumes_a_goal_this_actor_already_holds():
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[("me", "a", "claimed")])
+        lp = _loop(); src = _Queue(["a", "b"])
+        kind, goal = lp._next(base, src, lp.state.load_config(base))
+        assert (kind, goal) == ("goal", "a")             # my own claim is not a lock against me
+
+
+def test_a_released_claim_no_longer_blocks_selection():
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[("other", "a", "claimed"), ("other", "a", "done")])
+        lp = _loop(); src = _Queue(["a"])
+        kind, goal = lp._next(base, src, lp.state.load_config(base))
+        assert (kind, goal) == ("goal", "a")             # other finished it → free again
+
+
+def test_next_reports_done_when_every_goal_is_held_elsewhere():
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[("o1", "a", "claimed"), ("o2", "b", "claimed")])
+        lp = _loop(); src = _Queue(["a", "b"])
+        kind, goal = lp._next(base, src, lp.state.load_config(base))
+        assert (kind, goal) == ("DONE", None) and src.marked == []       # nothing free for me
+
+
+def test_next_ignores_the_lease_when_the_ledger_is_off():
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[("other", "a", "claimed")], enabled=False)
+        lp = _loop(); src = _Queue(["a", "b"])
+        kind, goal = lp._next(base, src, lp.state.load_config(base))
+        assert (kind, goal) == ("goal", "a")             # no ledger, no lock — byte-identical to before

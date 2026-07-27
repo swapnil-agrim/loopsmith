@@ -38,3 +38,11 @@ One line per entry: `id · ts · actor · kind · goal`, plus any of
 `area · to · issue · priority · why · state · ref`. Kinds are
 `claimed · done · parked · failed · handoff · ack · release · note`.
 An entry with a `to` is addressed to that person and shows up in the team view.
+
+**The claim lease.** A `claimed` with no later `done`/`parked`/`failed` is an
+open lease: the loop won't start a goal another actor holds one on, so two people
+on one board don't do the same work twice (a goal *you* hold is still yours to
+resume). It's advisory — it sees claims already pulled to the ops branch, not a
+distributed lock — so keep per-person assignee routing on too. A crashed
+claimer's hold expires after `ledger.lease.ttl_hours` (default 12) so it can't
+block the team forever.

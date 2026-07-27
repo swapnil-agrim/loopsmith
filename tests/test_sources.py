@@ -58,6 +58,18 @@ def test_github_next_pending_none_when_empty():
     assert gh.next_pending() is None
 
 
+def test_github_next_pending_skips_leased_issues():
+    """`skip` (goals a claim lease says belong to another loop) drops out of the queue, so the loop
+    passes over an issue someone else is already working and takes the next free one."""
+    src = _mod("sources")
+    issues = [{"number": 5, "labels": [{"name": "sdlc:goal"}]},
+              {"number": 7, "labels": [{"name": "sdlc:goal"}]}]
+    run = _recording_runner({"list": json.dumps(issues)})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    assert gh.next_pending(skip={"5"}) == "7"          # 5 leased elsewhere -> next free is 7
+    assert gh.next_pending(skip={"5", "7"}) is None     # both taken -> nothing free
+
+
 # --- GitHubSource transitions ---
 
 def test_github_transitions_issue_correct_gh_commands():

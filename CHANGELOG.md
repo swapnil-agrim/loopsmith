@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### The ledger is a claim lease — two loops stop starting the same goal
+- **A `claimed` line is now a lock, not just a record.** The team ledger already recorded who started
+  what, but nothing read it back, so two people running the loop against one board could both pick the
+  same issue (the assignee filter was the *only* thing keeping work apart). `_next` now consults the
+  ledger before it commits: a goal another actor holds an **open** claim on — `claimed` with no later
+  `done`/`parked`/`failed` — is skipped, and the loop takes the next free one instead.
+- **Your own work is never locked against you.** A claim *you* hold is still returned, so a resumed or
+  restarted run continues its own goal rather than treating it as taken.
+- **A crashed claimer can't freeze a goal forever.** A claim older than `ledger.lease.ttl_hours`
+  (default 12; `0` = never expire) is treated as released — the lock self-heals instead of stranding a
+  goal on a dead run.
+- **Honest about its guarantee.** It's an *advisory* lease over eventually-consistent state (it sees
+  claims already pulled to the ops branch, not a distributed mutex), so per-person assignee routing
+  stays the first line of defence; the lease closes the double-start gap behind it. **Off by default**
+  and **fail-open**: no ledger, or an unreadable one, and selection is byte-identical to before.
+
 ### A loop trigger keeps its own watcher alive
 - **The loop now starts the ledger watcher itself.** Entries were only ever appended locally; nothing
   pushed them to the ops branch except the watcher, and a team that ran the loop but forgot the watcher

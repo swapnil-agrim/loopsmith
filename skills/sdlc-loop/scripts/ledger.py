@@ -15,6 +15,7 @@ on every line, and a hand-off entry names the person who has to act.
 Default OFF: with no `ledger` block in config.json every entry point is a no-op, so a repo
 that has not opted in behaves exactly as it did before this module existed. Zero deps.
 """
+import calendar
 import json
 import os
 import pathlib
@@ -268,6 +269,43 @@ def counts(entries):
         if entry.get("kind") in out:
             out[entry["kind"]] += 1
     return out
+
+
+# --------------------------------------------------------------------------- claim lease
+
+
+def _epoch(ts):
+    """A ledger UTC stamp back to epoch seconds; -1 if unparseable, so a claim with no readable
+    timestamp is treated as ancient (expirable) rather than immortal."""
+    try:
+        return calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, TypeError):
+        return -1
+
+
+def open_claims(entries, now=None, ttl_seconds=None):
+    """{goal: actor} for goals someone has `claimed` and not yet released with a terminal outcome
+    (done/parked/failed). This is the light lease the loop reads so two people running against one
+    board don't start the same goal — the ledger's answer to "who has this right now?".
+
+    The latest lifecycle entry per goal wins, so a re-claim after a failure re-opens the lease under
+    whoever took it last. With `ttl_seconds` set, a claim older than that is treated as EXPIRED — a
+    crashed claimer must never lock a goal for the whole team forever; `now` defaults to wall-clock
+    and is injectable for tests. `entries` must be oldest-first (read_all guarantees it)."""
+    held = {}                                    # goal -> (actor, ts)
+    for entry in entries:
+        goal = entry.get("goal")
+        if not goal:
+            continue
+        kind = entry.get("kind")
+        if kind == "claimed":
+            held[goal] = (entry.get("actor"), entry.get("ts", ""))
+        elif kind in ("done", "parked", "failed"):
+            held.pop(goal, None)                 # the claimer finished (or gave up) — lease released
+    if ttl_seconds:
+        cutoff = (now if now is not None else time.time()) - ttl_seconds
+        held = {g: v for g, v in held.items() if _epoch(v[1]) >= cutoff}
+    return {goal: actor for goal, (actor, _ts) in held.items()}
 
 
 # --------------------------------------------------------------------------- render

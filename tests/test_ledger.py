@@ -271,8 +271,8 @@ def test_loop_records_claim_and_outcome_when_enabled(tmp_path):
     goal.write_text("---\nstatus: pending\n---\nbody\n")
 
     class Source:
-        def next_pending(self):
-            return str(goal)
+        def next_pending(self, skip=()):
+            return None if str(goal) in {str(s) for s in skip} else str(goal)
 
         def mark_in_progress(self, g):
             pass
@@ -312,6 +312,43 @@ def test_loop_maps_any_non_terminal_result_onto_parked(tmp_path):
     loop._record(str(d), Source(), "0001-a.md", "whatever", "some reason")
     entry = ledger.read_all(d)[0]
     assert entry["kind"] == "parked" and entry["why"] == "some reason"
+
+
+# --------------------------------------------------------------------- claim lease
+
+
+def _e(actor, seq, kind, goal, ts="2026-07-27T09:00:00Z"):
+    return {"id": f"{actor}:{seq}", "ts": ts, "actor": actor, "kind": kind, "goal": str(goal)}
+
+
+def test_open_claims_holds_a_claimed_goal_and_names_the_holder():
+    assert ledger.open_claims([_e("amy", 1, "claimed", "42")]) == {"42": "amy"}
+
+
+def test_a_terminal_outcome_releases_the_claim():
+    for outcome in ("done", "parked", "failed"):
+        entries = [_e("amy", 1, "claimed", "42"), _e("amy", 2, outcome, "42")]
+        assert ledger.open_claims(entries) == {}, outcome
+
+
+def test_a_reclaim_after_a_failure_reopens_under_the_new_holder():
+    entries = [_e("amy", 1, "claimed", "42"), _e("amy", 2, "failed", "42"),
+               _e("bo", 1, "claimed", "42")]                       # bo retried it
+    assert ledger.open_claims(entries) == {"42": "bo"}
+
+
+def test_claims_are_tracked_per_goal_independently():
+    entries = [_e("amy", 1, "claimed", "42"), _e("bo", 1, "claimed", "7"),
+               _e("amy", 2, "done", "42")]
+    assert ledger.open_claims(entries) == {"7": "bo"}             # 42 released, 7 still held
+
+
+def test_a_claim_past_its_ttl_is_treated_as_released():
+    entries = [_e("amy", 1, "claimed", "42", ts="2026-07-27T00:00:00Z")]
+    now = ledger._epoch("2026-07-27T13:00:00Z")                   # 13h later
+    assert ledger.open_claims(entries, now=now, ttl_seconds=12 * 3600) == {}       # expired
+    assert ledger.open_claims(entries, now=now, ttl_seconds=24 * 3600) == {"42": "amy"}   # still fresh
+    assert ledger.open_claims(entries, now=now, ttl_seconds=None) == {"42": "amy"}         # no expiry
 
 def test_handoff_states_and_unanswered_separate_stuck_from_in_progress():
     """`outstanding` alone cannot tell a hand-off nobody has looked at from one someone has taken —
