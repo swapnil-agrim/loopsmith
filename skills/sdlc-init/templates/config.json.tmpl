@@ -56,7 +56,9 @@
     "remote": "origin",
     "_branch": "The ops branch the ledger is shared on. .sdlc/ledger/ is a WORKTREE checked out to it (run `sync.py init`), so pulling the ledger never touches your code checkout. It is never merged into the integration branch and never runs CI - keep it unprotected. Gitignore .sdlc/ledger/ on the code branch.",
     "watch": { "interval_seconds": 900 },
-    "_watch": "How often watch.sh pulls the ops branch and refreshes .sdlc/state/inbox.md, which `loop.py next` surfaces between goals."
+    "_watch": "How often watch.sh pulls the ops branch and refreshes .sdlc/state/inbox.md, which `loop.py next` surfaces between goals.",
+    "lease": { "ttl_hours": 12 },
+    "_lease": "Claim lease: the loop skips a goal another actor holds an open `claimed` on (not yet done/parked/failed), so two people on one board don't start the same goal; a goal YOU hold is still yours to resume. Advisory (it sees claims already pulled to the ops branch, not a distributed lock), so keep assignee routing on too. ttl_hours expires a crashed claimer's hold so it can't block the team forever; 0 = never expire."
   },
   "parallel": { "enabled": false, "max_concurrent": 3 },
   "_parallel": "Run a goal's independent slices concurrently, from the declared manifest .sdlc/plans/<goal-stem>.slices.json: `slices.py plan` groups non-conflicting slices into waves (a slice that declares no files conflicts with everything and runs alone) and the loop dispatches each wave as subagents. Off by default; absent, every goal runs as one unit exactly as before.",

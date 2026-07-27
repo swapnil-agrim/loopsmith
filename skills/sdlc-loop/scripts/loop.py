@@ -58,12 +58,43 @@ def _budget_spent(cursor, budget):
     return False
 
 
+_DEFAULT_LEASE_TTL_HOURS = 12       # a crashed claimer's lock auto-expires; goals live hours, not days
+
+
+def _lease(sdlc_dir, config):
+    """(me, {goal: holder}) — who I am, and the claim lease read once per selection. A goal another
+    actor holds an OPEN claim on (claimed, not yet done/parked/failed) belongs to their loop, so this
+    loop skips it instead of starting the same work twice. A goal I hold is still mine to resume.
+
+    (None, {}) when the ledger is off or unreadable — selection is then byte-identical to a repo that
+    never enabled the ledger. Fail-open by design: a lease we cannot read must never stop the loop.
+    A claim older than the TTL (config `ledger.lease.ttl_hours`, default 12h; 0/false = never expire)
+    is treated as released, so one crashed run cannot block a teammate on that goal forever."""
+    try:
+        if not ledger.enabled(config):
+            return (None, {})
+        hours = (ledger.settings(config).get("lease") or {}).get("ttl_hours", _DEFAULT_LEASE_TTL_HOURS)
+        ttl = float(hours) * 3600 if hours else None
+        return (ledger.actor(config), ledger.open_claims(ledger.read_all(sdlc_dir), ttl_seconds=ttl))
+    except Exception:               # noqa: BLE001 - fail-open; an unreadable lease leaves selection unlocked
+        return (None, {})
+
+
 def _next(sdlc_dir, source, config):
     """(kind, goal): 'goal' (+marks in_progress, the commit point), 'DONE' (drained), 'BUDGET'.
-    Drained backlog reports DONE even if budget is also spent (empty wins the tie)."""
-    goal = source.next_pending()
-    if goal is None:
-        return ("DONE", None)
+    Drained backlog reports DONE even if budget is also spent (empty wins the tie). A goal another
+    loop already holds a ledger claim on is skipped (see _lease) so two people don't double-start it."""
+    me, lease = _lease(sdlc_dir, config)
+    skip = set()
+    while True:
+        goal = source.next_pending(skip=skip)
+        if goal is None:
+            return ("DONE", None)               # nothing left that isn't someone else's in-flight work
+        holder = lease.get(str(goal))
+        if holder and holder != me:
+            skip.add(goal)                      # another loop owns this goal's lease — pass it over
+            continue
+        break
     if _budget_spent(state.load_cursor(sdlc_dir), config.get("budget", {})):
         return ("BUDGET", None)
     source.mark_in_progress(goal)

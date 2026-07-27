@@ -35,3 +35,10 @@ def test_ignores_frontmatterless_files():
         (pathlib.Path(d) / "README.md").write_text("# Goals\nno frontmatter\n")
         _goal(d, "0001", "pending")
         assert _disc().next_pending(d).endswith("0001.md")
+
+
+def test_skip_passes_over_a_leased_goal():
+    with tempfile.TemporaryDirectory() as d:
+        _goal(d, "0001", "pending"); _goal(d, "0002", "pending")
+        first = str(pathlib.Path(d) / "0001.md")
+        assert _disc().next_pending(d, skip={first}).endswith("0002.md")   # 0001 leased -> next is 0002
