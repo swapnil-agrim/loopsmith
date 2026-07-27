@@ -21,3 +21,18 @@ It only checks what `.sdlc/config.json` makes relevant — a zero-dep local proj
 
 Present the checklist plainly. Offer to run a fix that's safe to run for the user, but **never run an
 interactive login (`gh auth …`) or a package install on their behalf** — hand them the command.
+
+## Standing-doc hygiene
+
+The same run also scans the standing docs (`.sdlc/project.md`, `.sdlc/context/*.md`) for references
+that no longer resolve — a cited path that moved or was deleted, a markdown link to a missing file.
+Docs rot as the code moves, and a north-star pointing at a file that's gone quietly teaches the wrong
+thing to every phase that reads it.
+
+`python3 "${CLAUDE_SKILL_DIR}/scripts/doctor.py" hygiene .sdlc .` prints the detail on its own.
+
+Report it as a **separate section** from the setup checks and never fold it into the ready score —
+"is my setup working?" and "are my docs rotting?" are different questions with different fixes. This
+half is deliberately mechanical: it only reports references that provably don't resolve. The judgment
+half — demoting a rule that CI now enforces, archiving a superseded plan — belongs to **`sdlc-retro`**,
+which proposes standing-doc changes and parks them for your approval rather than editing them.

@@ -53,3 +53,23 @@ def test_no_source_repo_leakage():
     t = _t()
     for b in banned:
         assert b not in t, f"sdlc-retro leaked '{b}'"
+
+
+def test_proposes_standing_doc_retirements_not_just_additions():
+    """Docs grow by addition and shrink by nobody: adding a rule has an obvious moment, retiring one
+    never does. Retro is that moment — and a demotion is parked for approval like any other standing
+    change, never written unattended."""
+    t = _t()
+    low = t.lower()
+    assert "standing-doc rot" in low
+    assert "mechanically" in low and "demot" in low      # a rule CI now enforces is redundant prose
+    assert "premise moved" in low                        # ...or one the code has outgrown
+    assert "superseded" in low and ".sdlc/plans/" in t   # shipped plans weaken the plan gate
+    assert "nothing rotted" in low                       # the common answer must be allowed
+    assert "archive" in low and "never delete" in low
+
+
+def test_rot_pass_defers_the_mechanical_half_to_doctor():
+    """Split by blast radius: doctor reports references that provably don't resolve and needs no
+    approval; retro changes meaning, so it asks."""
+    assert "sdlc-doctor" in _t()

@@ -78,8 +78,10 @@ LoopSmith's own; no companion ships it.
 1. **Goal** — restate the objective as one concrete, checkable goal. For feature/creative work, this
    is where you explore intent and requirements first.
    → *executor:* `superpowers:brainstorming` · portable `sdlc-brainstorm`.
-2. **Research** — map the blast radius: affected files, existing patterns, constraints, prior art.
-   → *agent practice; no dedicated skill.*
+2. **Research** — map the blast radius: affected files, existing patterns, constraints, prior art —
+   then size the goal into a lane (`small`/`medium`/`large`) from what was actually measured, so small
+   goals skip the ceremony they don't earn.
+   → *executor:* **`sdlc-research`** (always LoopSmith's own — no companion equivalent).
 3. **Plan** — write the plan: steps, files, tests, and a definition-of-done. Size it against real
    throughput with **`/sdlc-velocity`** (measured git pace), not "this feels like weeks."
    → *executor:* `superpowers:writing-plans` · portable `sdlc-plan`.
@@ -153,14 +155,16 @@ Every option LoopSmith provides, at a glance:
 | **Board + audit trail** | Cards flow Backlog → In Progress → QC → Done → Blocked; every phase recorded on the issue | `/sdlc-init --github` |
 | **Self-improving knowledge graph** | Captures research + lessons, **tracks what it doesn't know**, prunes itself, and fills gaps | `/sdlc-kg` |
 | **Context recall** | Pulls the relevant slice of project memory into context before each goal | `/sdlc-context` |
+| **Blast-radius research** | Maps every site a goal touches, records the query so Review can re-run it, inventories the debt already there, and sizes the goal into a lane | `/sdlc-research` |
+| **Cumulative-drift audit** | Reads a *window* of shipped goals against your stated bets — catches the drift no single plan or goal reveals | `/sdlc-align` |
 | **Velocity calibration** | Size work from real git throughput, not "this feels like weeks" | `/sdlc-velocity` |
 | **Proactive research scout** | Sweep the backlog for new SOTA, dedup, write a ranked digest (dry-run) | `/sdlc-radar` |
 | **Model auto-selection** | Predict the tier a goal deserves (haiku/sonnet/opus/fable); the loop runs it there | `/sdlc-model`, `model_selection: auto` |
 | **Quality-drift gate** | A behavioral corpus scored on every change; the build fails if a discipline signal regresses | `evals/run.py` |
 | **Retrospective / learning loop** | After each goal: structural + product debt, intent-vs-shipped, lessons routed to the right store (advisory) | `/sdlc-retro` |
 | **Cursor adapter** *(experimental)* | Scaffolds the SDLC discipline as an always-applied Cursor rule — *not yet verified in a live Cursor session* | `/sdlc-init --cursor` |
-| **Status at a glance** | Backlog counts + whether the review queue needs you | `/sdlc-status` |
-| **Setup check-up** | Audits the setup and hands you the exact fix for anything missing — no silent failures | `/sdlc-doctor` |
+| **Status at a glance** | Backlog counts, whether the review queue needs you, and when an alignment check comes due | `/sdlc-status` |
+| **Setup check-up** | Audits the setup and hands you the exact fix for anything missing — no silent failures. Also flags standing-doc references that no longer resolve | `/sdlc-doctor` |
 
 ---
 
@@ -374,6 +378,13 @@ So your **review queue = open issues labelled `sdlc:parked`**, and **done = clos
 **re-queue** a parked issue by re-adding the `sdlc:goal` label. The three labels are auto-created on
 first run. **Setup:** run `gh auth login` once; leave `repo` empty to auto-detect from the git remote,
 or set it to `owner/name`.
+
+**What lands on the issue instead of a file.** A local goal carries its state in frontmatter; an issue
+has none, so anything a goal file would hold goes on the **issue timeline** as a phase comment — the
+**lane** Research sized it into, the blocking questions it raised, and the plan-review findings that
+were *rejected* and why. Research and plan-review artifacts themselves stay local working files in
+both modes (like the radar digest); the comment is what makes them visible to everyone else on the
+board. No extra columns: Research sits inside the same **In Progress** state as Plan and Implement.
 
 **Sharing one board across a team.** Set `discovery.github.assignee` to `"@me"` (or a username) so
 each person's loop only picks issues **assigned to them** — several people can run the loop on the same

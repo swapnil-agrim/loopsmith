@@ -67,11 +67,37 @@ Route by test: audit-trail = "worth re-reading"; north-star = "changes our direc
 rule = "must gate every change and nothing else enforces it". De-duplicate — a lesson seen across
 multiple goals is higher-confidence and a stronger candidate for the north-star or a rule.
 
+## 4. Standing-doc rot — what this goal made obsolete
+Docs grow by addition and shrink by nobody. Adding a rule has an obvious moment; retiring one never
+does, so this is that moment. Ask what the goal just made redundant, and **propose** each removal the
+same way — parked for approval, never written unattended:
+
+- **A rule now enforced mechanically.** If the work added a linter rule, a type constraint, a schema
+  check, or a CI job that catches what a numbered rule describes in prose, the prose is redundant —
+  propose demoting it. Verify the enforcement is real and covers the whole rule before proposing;
+  a rule half-enforced still needs its prose.
+- **A rule whose premise moved.** The goal changed the shape the rule was written against. Propose
+  the correction, quoting the old line and the code that now contradicts it.
+- **Superseded plans and roadmaps.** A plan under `.sdlc/plans/` whose work just shipped is finished
+  history — propose archiving it. This matters mechanically as well as tidily: the hard plan-gate
+  treats any *recent* file under `.sdlc/plans/` as a fresh plan, so stale plans left lying there
+  weaken the gate.
+- **Nothing rotted** is the common answer and a fine one. Say it in a line and move on — do not
+  manufacture a demotion to look thorough.
+
+Archive, never delete: move superseded files aside so git history stays readable, and leave anything
+append-only (a decision log, the journey trail) untouched — those are dated records, not stale docs.
+
+> The mechanical counterpart runs in `/sdlc-doctor`, which reports standing-doc references that no
+> longer resolve. That one is a script and needs no approval; this one changes meaning, so it asks.
+
 ## Output
 A short retro: the intent grade (achieved / partial / diverged) + residual gaps, the structural +
 product findings, and a **proposals table** (lesson → store → the exact edit), with every standing-doc
 change clearly marked **needs your approval**. Record the audit-trail notes as you go; hand the parked
-proposals to the user.
+proposals to the user. Additions and retirements share the one table — a proposed demotion (§4) is the
+same kind of parked change as a proposed new rule, and listing them together is what keeps the standing
+docs from only ever growing.
 
 **Autonomous (`/sdlc-loop`) mode:** run the reflection and **write only the audit-trail notes**; write
 the proposals into the journey and **park** every north-star / standing-rule change to the review queue
