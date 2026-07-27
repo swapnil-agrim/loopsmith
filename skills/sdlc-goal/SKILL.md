@@ -24,6 +24,9 @@ counterpart to the autonomous `/sdlc-loop`).
    companion installed, the `superpowers` / `code-review` skill; otherwise LoopSmith's **portable
    executor** (`sdlc-brainstorm` → Goal, `sdlc-research` → Research, `sdlc-plan` → Plan,
    `sdlc-implement` → Implement, `sdlc-review` + `sdlc-verify` → Review, `sdlc-retro` → Retrospective).
+   **After Research, route the rest by the lane it measured** — `python3
+   "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/discovery.py" lane "<goal-path>"` in local mode, or read it
+   from Research's note on the issue timeline in github mode — see *Lane routing* below.
    Each executor's resolution header encodes this — so it works on any host.
    Record each phase as you go — `python3 "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/loop.py" note .sdlc
    "<goal>" "<phase>: <findings / decisions>"` (and 🔒 Critical Insights for key decisions) — so the
@@ -38,6 +41,23 @@ counterpart to the autonomous `/sdlc-loop`).
    so it shows as done in `/sdlc-status`. If the user stops early, or it hits an irreversible action
    they don't approve, record `parked "reason"` instead.
 5. Report what shipped + the evidence.
+
+## Lane routing — ceremony proportional to the work
+
+Research sizes each goal into a lane; this is what consumes it. Without this step the lane is a label
+nobody reads, and a typo fix earns the same seven-phase treatment as a schema migration.
+
+- **small** — plan in a few lines rather than a document, and keep the retro to one line unless
+  something real surfaced. Don't open a design discussion for a goal that touches one file.
+- **medium** — the full pass, unchanged. This is the default.
+- **large** — before planning, work the design out explicitly: the new structure, the contract that
+  changes, the callers affected. Then ask whether it should be *several* goals — a large lane is the
+  signal to split, and splitting is usually the better answer.
+
+**Plan-Review runs in full at every lane.** It is the gate that never gets skipped: small goals are
+where an unreviewed plan actually ships, because nobody looks twice at a change that seemed obvious.
+
+An unsized goal resolves to **medium**, so an unknown goal gets more rigour rather than less.
 
 Unlike `/sdlc-loop`, you do NOT auto-proceed past checkpoints — the user approves each gate.
 (The `../sdlc-loop/scripts/loop.py` path reaches the sibling skill's recorder — both ship in one

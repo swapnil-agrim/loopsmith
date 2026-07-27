@@ -37,7 +37,16 @@ Then repeat until the helper says stop:
    implement → review) — each phase via its **executor** (the `superpowers`/`code-review` companion on
    Claude if installed, else LoopSmith's portable `sdlc-brainstorm`/`sdlc-research`/`sdlc-plan`/
    `sdlc-implement`/`sdlc-review`/`sdlc-verify`; each skill's resolution header picks). `$goal` is a **file path** in local mode (read the file) or a **GitHub issue
-   number** in github mode (`gh issue view "$goal"` to read it). **Park instead of forcing through**
+   number** in github mode (`gh issue view "$goal"` to read it).
+   **Match the ceremony to the goal** — after Research, resolve the lane it measured. In **local mode**
+   run `python3 "${CLAUDE_SKILL_DIR}/scripts/discovery.py" lane "$goal"`; in **github mode** the goal is
+   an issue number with no frontmatter, so read the lane from Research's phase note on the issue
+   timeline you already fetched. Either way an unsized goal is **`medium`** — unknown gets more rigour,
+   not less. On **small**, plan in a few lines and keep the retro to one; on **large**, work the design
+   out before planning and consider splitting it into several goals. **Plan-Review runs in full at every lane** — small goals are exactly
+   where an unreviewed plan ships, because nobody looks twice at an obvious-seeming change.
+   The lane is a *starting* call: if implementation shows the goal is bigger, escalate and say so in the
+   phase note. **Park instead of forcing through**
    if you hit any of:
    - a hard checkpoint / a decision only the user can make,
    - an **irreversible or expensive action** (deploy, delete, overwrite, spend, migrate) — NEVER

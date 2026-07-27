@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### The lane is routed on, not just recorded
+- **Both orchestrators now branch on the lane** Research measured. Sizing a goal and then ignoring the
+  size is the same producer-without-consumer defect `lane: auto` had before it was implemented: the
+  value existed, nothing read it, and a typo fix drew the same seven-phase pass as a schema migration.
+  `discovery.py lane <goal>` resolves it in local mode; github mode reads it from Research's note on
+  the issue timeline, because an issue number carries no frontmatter.
+- **small** plans in a few lines and keeps the retro to one; **large** works the design out before
+  planning and asks whether it should be several goals; **medium** is the full pass, unchanged.
+- **Plan-Review runs in full at every lane.** Small goals are exactly where an unreviewed plan ships —
+  nobody looks twice at a change that seemed obvious — so no lane may skip the gate.
+- An unsized goal resolves to **`medium`**, never `small`: guessing low on an unknown goal skips
+  ceremony it might need, which is the one direction where being wrong is expensive.
+
 ### The Research phase gets an executor, and `lane: auto` starts meaning something
 - **`/sdlc-research`** — Research was the only one of the seven phases with no executor behind it
   (the README said "agent practice; no dedicated skill"). It now maps a goal's blast radius, **records

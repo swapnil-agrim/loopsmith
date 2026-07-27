@@ -99,6 +99,11 @@ genuinely wanted, `/sdlc-velocity` derives one from real throughput; do not fabr
 
 The lane is a *starting* call. If implementation reveals the goal is bigger, escalate it and say so.
 
+**Who reads this.** Both orchestrators route on it after Research — `/sdlc-goal` under *Lane routing*,
+`/sdlc-loop` in its per-goal step, each resolving it with `discovery.py lane "<goal>"`. So the lane you
+write here decides how much ceremony the remaining phases apply; it is not a label. Plan-Review is the
+one phase that runs in full at every lane.
+
 ## Output
 Write `.sdlc/research/<goal-slug>.md` (create the directory on first use):
 
