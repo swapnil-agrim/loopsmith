@@ -22,6 +22,17 @@ It only checks what `.sdlc/config.json` makes relevant — a zero-dep local proj
 Present the checklist plainly. Offer to run a fix that's safe to run for the user, but **never run an
 interactive login (`gh auth …`) or a package install on their behalf** — hand them the command.
 
+**One fix IS safe to run for them: `team ledger initialized → MISSING`.** The ledger is switched on
+in config but its shared branch hasn't been created yet. Just run the one-command setup — it creates
+the ops branch, seeds their own entries file + the `TEAM.md` rollup, and pushes, so the branch exists
+for the whole team the moment the ledger is turned on:
+
+`python3 "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/sync.py" bootstrap .sdlc`
+
+It's idempotent (safe to re-run), and each teammate runs it once in their own clone to join. After
+that, claiming/recording is automatic inside `/sdlc-loop`; point them at **`/sdlc-ledger`** to read
+the ledger or hand work off.
+
 ## Standing-doc hygiene
 
 The same run also scans the standing docs (`.sdlc/project.md`, `.sdlc/context/*.md`) for references

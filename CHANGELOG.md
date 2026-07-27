@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### One command turns the ledger on — and a `/sdlc-ledger` slash command
+- **`sync.py bootstrap` (and `/sdlc-ledger`) sets the whole ledger up in one shot.** Standing the
+  ledger up used to be a multi-step dance whose failure mode was silent: `init` created the ops branch
+  *locally* and `publish` only pushed once you owned an entries file — so the branch reached the remote
+  only after your first goal wrote a claim, and a teammate who ran `init` found nothing to fetch.
+  bootstrap does init **+ seeds your (empty) entries file + the `TEAM.md` rollup + pushes**, so the
+  branch exists for the whole team the moment the ledger is switched on. Idempotent; each teammate runs
+  it once per clone to join.
+- **`/sdlc-doctor` sets it up for you.** It now reports `team ledger initialized` as a real setup gap
+  (enabled in config but branch not created) and runs the one-command bootstrap — the ledger comes up
+  the moment you flip the switch and run doctor.
+- **New `/sdlc-ledger` skill** makes every ledger operation a plugin command instead of a raw
+  `python3 <path>/ledger.py …` line — set up, read (`mine`/`summary`/`render`), leave a note, hand a
+  blocker off, answer a hand-off. Sharing a slash command with the team beats sharing a file path.
+  Claiming/recording stays automatic inside `/sdlc-loop`; this is for everything around it.
+
 ### The ledger is a claim lease — two loops stop starting the same goal
 - **A `claimed` line is now a lock, not just a record.** The team ledger already recorded who started
   what, but nothing read it back, so two people running the loop against one board could both pick the

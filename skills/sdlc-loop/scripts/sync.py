@@ -207,20 +207,41 @@ def _write_team(sdlc_dir, path):
     (path / "TEAM.md").write_text(ledger.render(ledger.read_all(sdlc_dir)), encoding="utf-8")
 
 
+def bootstrap(sdlc_dir, config, run=None):
+    """One command to stand the ledger up for the whole team. `init` creates the ops branch LOCALLY,
+    and `publish` only pushes once you own an entries file — so before this, the branch reached the
+    remote only after your first goal wrote a claim, and a teammate who ran `init` saw nothing to
+    fetch. bootstrap = init + seed YOUR (empty) entries file + publish, so the branch, your file, and
+    the rolled-up TEAM.md all land on the remote the moment the ledger is switched on. Idempotent:
+    re-running is a no-op ("already a worktree; nothing to publish"), and each teammate runs it once
+    in their own clone to join."""
+    git = run or _run_git
+    first = init(sdlc_dir, config, run=git)
+    mine = worktree(sdlc_dir) / "entries" / f"{ledger.actor(config)}.jsonl"
+    mine.parent.mkdir(parents=True, exist_ok=True)
+    if not mine.exists():
+        mine.touch()            # an empty file is enough for publish to land your presence + the branch
+    return f"{first}; {publish(sdlc_dir, config, run=git)}"
+
+
+_VERBS = {"init": init, "pull": pull, "publish": publish, "bootstrap": bootstrap}
+
+
 def main(argv):
-    if len(argv) >= 3 and argv[1] in ("init", "pull", "publish"):
+    if len(argv) >= 3 and argv[1] in _VERBS:
         sdlc_dir = argv[2]
         config = ledger._config(sdlc_dir)
         if not ledger.enabled(config):
             print('ledger is off (config: "ledger": {"enabled": true})', file=sys.stderr)
             return 1
         try:
-            print({"init": init, "pull": pull, "publish": publish}[argv[1]](sdlc_dir, config))
+            print(_VERBS[argv[1]](sdlc_dir, config))
         except Exception as exc:                # noqa: BLE001 - report, never traceback at a user
             print(f"sync: {exc}", file=sys.stderr)
             return 1
         return 0
-    print("usage: sync.py init|pull|publish <sdlc-dir>", file=sys.stderr)
+    print("usage: sync.py bootstrap|init|pull|publish <sdlc-dir>   "
+          "(bootstrap = one-shot create+seed+push; run it once per clone)", file=sys.stderr)
     return 2
 
 

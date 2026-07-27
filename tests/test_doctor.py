@@ -117,6 +117,41 @@ def test_features_reports_the_ledger_and_counts_its_entries(tmp_path):
     assert rows["team ledger"] == "ON — 1 entry in .sdlc/ledger/entries/"
 
 
+# --- ledger setup: enabled-but-not-created is a real gap doctor can fix -----------------------
+
+def test_flags_ledger_enabled_but_not_initialised():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"ledger": {"enabled": True}})               # on in config, never created
+        c = _by_name(d.check(base, run=_runner()))
+        assert c["team ledger initialized"]["ok"] is False
+        assert "/sdlc-ledger" in c["team ledger initialized"]["fix"]
+
+
+def test_ledger_check_passes_once_the_worktree_exists():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"ledger": {"enabled": True}})
+        (pathlib.Path(base) / "ledger").mkdir()
+        (pathlib.Path(base) / "ledger" / ".git").write_text("gitdir: elsewhere\n")   # worktree present
+        c = _by_name(d.check(base, run=_runner()))
+        assert c["team ledger initialized"]["ok"] is True
+
+
+def test_no_ledger_check_when_the_ledger_is_off():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"ledger": {"enabled": False}})
+        assert "team ledger initialized" not in _by_name(d.check(base, run=_runner()))
+
+
+def test_features_flags_an_enabled_but_unset_up_ledger(tmp_path):
+    d = _doc()
+    base = _sdlc(tmp_path, {"ledger": {"enabled": True}})            # enabled, nothing created yet
+    rows = {name: state for name, state, _ in d.features(base)}
+    assert "NOT set up" in rows["team ledger"] and "/sdlc-ledger" in rows["team ledger"]
+
+
 # --- standing-doc hygiene: the mechanical half of context maintenance -------------------------
 # Rot that a script can settle (a reference that no longer resolves), NOT the judgment half
 # (demoting a rule CI now enforces) — that's sdlc-retro's, because it changes files.

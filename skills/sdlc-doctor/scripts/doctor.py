@@ -53,6 +53,13 @@ def check(sdlc_dir=".sdlc", run=None):
         filled = "<the change you want" not in ns.read_text(encoding="utf-8")
         out.append(_chk("north-star filled", filled, "run /sdlc-vision to fill the tiers"))
 
+    # The ledger is switched on in config but the ops branch has to be created + pushed once per
+    # clone; before that a teammate's `init` finds nothing to fetch. Flag it as a real setup gap with
+    # the one command that fixes it — `/sdlc-ledger` runs `sync.py bootstrap` (create + seed + push).
+    if (cfg.get("ledger") or {}).get("enabled") is True:
+        out.append(_chk("team ledger initialized", (base / "ledger" / ".git").exists(),
+                        "run /sdlc-ledger — one command creates the ops branch, seeds your file + TEAM.md, and pushes"))
+
     # companions (optional): superpowers + code-review power phases 1/3/5/6 when present; LoopSmith's
     # portable sdlc-* executors are the absent-safe fallback everywhere else — absent is never a failure.
     if (cfg.get("companions") or "auto") != "off":
@@ -149,6 +156,20 @@ def _ledger_entries(base):
     return total
 
 
+def _ledger_feature_state(base, cfg):
+    """Dashboard line for the ledger. 'enabled' alone isn't 'working' — the ops branch still has to be
+    created + pushed once, so an enabled ledger with NOTHING yet (no worktree and no entries) reports
+    the gap and its one-command fix instead of a count that would imply it's live. Once it has a
+    worktree or any entries, it's in use — show the count."""
+    if (cfg.get("ledger") or {}).get("enabled") is not True:
+        return "off (nothing is recorded)"
+    base = pathlib.Path(base)
+    n = _ledger_entries(base)
+    if n == 0 and not (base / "ledger" / ".git").exists():
+        return "ON but NOT set up — run /sdlc-ledger to create + push the ops branch"
+    return "ON — %d entr%s in .sdlc/ledger/entries/" % (n, "y" if n == 1 else "ies")
+
+
 def _decision_gate_state(base, cfg):
     """Count the ACTIVE decisions, not the entries. A registry whose decisions are all superseded
     enforces nothing, and reporting it as ON would be exactly the false assurance this gate exists
@@ -229,9 +250,8 @@ def features(sdlc_dir=".sdlc"):
          (cfg.get("discovery") or {}).get("source") or "local-goals",
          'config: "discovery": {"source": "github"}'),
         ("team ledger",
-         ("ON — %d entr%s in .sdlc/ledger/entries/" % (_ledger_entries(base), "y" if _ledger_entries(base) == 1 else "ies"))
-         if (cfg.get("ledger") or {}).get("enabled") is True else "off (nothing is recorded)",
-         'config: "ledger": {"enabled": true}'),
+         _ledger_feature_state(base, cfg),
+         'config: "ledger": {"enabled": true}, then /sdlc-ledger to create + push it'),
         ("slice parallelism",
          ("ON — up to %s concurrent slices per wave" % par.get("max_concurrent", 3))
          if par.get("enabled") is True else "off (a goal's slices run one after another)",

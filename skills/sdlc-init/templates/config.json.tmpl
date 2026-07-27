@@ -54,7 +54,7 @@
     "_handoff": "A cross-area blocker opens an issue in the owner's area, assigned to them and carrying the goal label, so their own loop picks it up. See handoff.py.",
     "branch": "sdlc-ledger",
     "remote": "origin",
-    "_branch": "The ops branch the ledger is shared on. .sdlc/ledger/ is a WORKTREE checked out to it (run `sync.py init`), so pulling the ledger never touches your code checkout. It is never merged into the integration branch and never runs CI - keep it unprotected. Gitignore .sdlc/ledger/ on the code branch.",
+    "_branch": "The ops branch the ledger is shared on. .sdlc/ledger/ is a WORKTREE checked out to it (turn `enabled` on, then run /sdlc-ledger — or `sync.py bootstrap` — once per clone to create+seed+push it), so pulling the ledger never touches your code checkout. It is never merged into the integration branch and never runs CI - keep it unprotected. Gitignore .sdlc/ledger/ on the code branch.",
     "watch": { "interval_seconds": 900 },
     "_watch": "How often watch.sh pulls the ops branch and refreshes .sdlc/state/inbox.md, which `loop.py next` surfaces between goals.",
     "lease": { "ttl_hours": 12 },

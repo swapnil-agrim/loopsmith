@@ -3,17 +3,19 @@
 The team's shared record of what the loop did.
 
 ```
-ledger/                     a git WORKTREE on the ops branch (run: sync.py init .sdlc)
+ledger/                     a git WORKTREE on the ops branch (created by /sdlc-ledger)
 ├── entries/<actor>.jsonl   one file per person — you only ever write your own
 └── TEAM.md                 generated view; regenerate, never hand-edit
 ```
 
-**Share it once per clone:** `python3 <loop-scripts>/sync.py init .sdlc`, then add `.sdlc/ledger/`
-to `.gitignore` on your code branch. The ledger then lives on its own branch (default
-`sdlc-ledger`), so pulling it never touches your code checkout — and that branch is never merged
-into your integration branch, so it needs no review. `sync.py pull` / `publish` move it;
-`bash <loop-scripts>/watch.sh .sdlc` does both on an interval and writes
-`.sdlc/state/inbox.md`, which `loop.py next` surfaces between goals.
+**Set it up once per clone:** turn `"ledger": {"enabled": true}` on in `.sdlc/config.json`, then run
+**`/sdlc-ledger`** (or `python3 <loop-scripts>/sync.py bootstrap .sdlc`) — one command creates the ops
+branch, seeds your entries file + `TEAM.md`, and **pushes** so the team can see it. Then add
+`.sdlc/ledger/` to `.gitignore` on your code branch. `/sdlc-doctor` runs this for you if it sees the
+ledger enabled but not set up. The ledger lives on its own branch (default `sdlc-ledger`), so pulling
+it never touches your code checkout — and that branch is never merged into your integration branch, so
+it needs no review. `sync.py pull` / `publish` move it; `bash <loop-scripts>/watch.sh .sdlc` does both
+on an interval and writes `.sdlc/state/inbox.md`, which `loop.py next` surfaces between goals.
 
 **Why one file per person.** Concurrent appends to a shared file conflict, in the filesystem
 and again in git. Owning exactly one file each removes the conflict by construction; the team

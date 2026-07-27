@@ -513,7 +513,8 @@ lose work to a surprise rebase. So the ledger lives on its own branch, and **`.s
 worktree checked out to it**:
 
 ```bash
-sync.py init .sdlc      # create the branch (from the EMPTY tree) + the worktree, once per clone
+sync.py bootstrap .sdlc   # one shot: create the branch (from the EMPTY tree) + worktree, seed your
+                          # entries file + TEAM.md, and PUSH — once per clone. Or just run /sdlc-ledger.
 ```
 
 Add `.sdlc/ledger/` to `.gitignore` on your code branch. From then on:
