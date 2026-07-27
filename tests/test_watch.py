@@ -216,6 +216,23 @@ def test_publish_reports_success(tmp_path, monkeypatch):
     assert sync.publish(d, ON, run=lambda c, a: "x" if a[0] == "diff" else "") == "published"
 
 
+def test_bootstrap_seeds_my_file_and_pushes(tmp_path, monkeypatch):
+    """One command stands the ledger up: init, seed MY (empty) entries file, publish — so the branch,
+    my file, and TEAM.md reach the remote the moment the ledger is switched on (not only after the
+    first claim). Here init sees an existing worktree; the point is the seed + the push."""
+    d = _sdlc(tmp_path)
+    monkeypatch.setattr(sync, "is_worktree", lambda _d: True)     # pretend init already made the worktree
+    calls = []
+    def git(cwd, args):
+        calls.append(args[0])
+        return "entries/rae.jsonl" if args[0] == "diff" else ""
+    out = sync.bootstrap(d, ON, run=git)
+    mine = sync.worktree(d) / "entries" / f"{ledger.actor(ON)}.jsonl"
+    assert mine.exists()                                          # my entries file was seeded
+    assert "push" in calls                                        # and the branch pushed
+    assert "already a worktree" in out and "published" in out
+
+
 def test_publish_renders_and_stages_team_md(tmp_path, monkeypatch):
     d = _sdlc(tmp_path)
     ledger.entries_dir(d).mkdir(parents=True)
@@ -318,6 +335,30 @@ def test_init_carries_over_entries_written_before_the_worktree_existed(tmp_path)
 
     sync.init(d, ON, run=git)
     assert ledger.read_all(d)[0]["goal"] == "g.md"        # the pre-existing entry survived
+
+
+def test_bootstrap_e2e_creates_the_worktree_and_seeds_my_file(tmp_path):
+    """End to end against real git: bootstrap makes the ledger worktree and seeds my entries file.
+    No remote is configured, so the push half defers (fail-open) — but the local setup completes,
+    which is the state a teammate needs before they can publish."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "code.py").write_text("x = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init")
+    d = repo / ".sdlc"
+    (d / "state").mkdir(parents=True)
+    (d / "config.json").write_text(json.dumps(ON))
+
+    def git(cwd, args):
+        return subprocess.run(
+            ["git", "-C", str(cwd), "-c", "user.email=t@e", "-c", "user.name=t", *args],
+            capture_output=True, text=True, check=True).stdout.strip()
+
+    sync.bootstrap(d, ON, run=git)
+    assert sync.is_worktree(d)                                    # the ops-branch worktree exists
+    assert (sync.worktree(d) / "entries" / f"{ME}.jsonl").exists()   # my entries file was seeded
 
 
 # ------------------------------------------------------------------ watch.sh
