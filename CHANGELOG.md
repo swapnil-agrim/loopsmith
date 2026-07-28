@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Docs caught up with the 0.9.x features (0.9.2)
+- The **"What you get"** table now lists the two 0.9.x headliners it was missing: **one-command adoption**
+  (`/sdlc-setup`) and the **PR review gate** (`work.require_review`, incl. the `loopsmith:approve`/`:block`
+  comment fallback). The **Feature-flags** table already carried `work.require_review`. `/sdlc-doctor`
+  surfaces every one of these live (ledger setup, ignore mechanism, auto-merge policy, the review gate,
+  the verify-worktree footgun) — verified against its actual output. Docs-only; version → **0.9.2**.
+
 ### The review gate works on a solo account — comment-based approve/block (0.9.1)
 - **`require_review` no longer has a signal that can never fire.** GitHub structurally forbids approving
   or requesting-changes on your *own* PR — so on a repo where one identity both opens and reviews (a solo

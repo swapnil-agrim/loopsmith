@@ -155,6 +155,7 @@ Every option LoopSmith provides, at a glance:
 | **Plan-review gate** | Adversarial review of the plan *before* any edit — the gate `superpowers` doesn't ship | `sdlc-plan-review` |
 | **Strategy-alignment gate** | A plan that contradicts your stated strategy / non-goals is blocked (FIX-FIRST) | `sdlc-plan-review` + north-star |
 | **Two ways to start** | **Drop-in** (existing repo) or **vision-first** (start from a product vision) | `/sdlc-init`, `/sdlc-vision` |
+| **One-command adoption** | Detects the repo + board, scaffolds `.sdlc/`, and writes a safe config (github discovery scoped to `@me`, ledger on, PRs on) — avoiding the verify-trap and never clobbering an ignore rule you already set | `/sdlc-setup` |
 | **Two ways to run** | **Interactive** (approve each gate) or **autonomous** (park-and-continue over a backlog) | `/sdlc-goal`, `/sdlc-loop` |
 | **Hard plan-gate (opt-in)** | With `gates.hard_plan_gate.enabled`, a source edit is mechanically DENIED until a fresh plan exists under `.sdlc/plans/` (`touch .sdlc/.allow-direct-edits` for a deliberate bypass) | `hooks/plan_gate.sh` |
 | **Machine-checked done** | With `verify.enforce`, "done" is refused until the goal's proving command passes THIS run | `loop.py verify` |
@@ -168,6 +169,7 @@ Every option LoopSmith provides, at a glance:
 | **Per-goal worktree (opt-in)** | Each goal gets its own worktree + branch + PR, so the loop never moves your checkout and never rewrites `.sdlc/goals/` under itself; cutting fresh from the base **is** the goal-start rebase, so it can't conflict | `work.py start`, `work.enabled` |
 | **Clean-AND-safe auto-merge (opt-in)** | A PR merges only on THIS run's passing verify evidence **plus** GitHub's `mergeable` + `mergeStateStatus CLEAN`, then via GitHub's own `--auto` so the last check is atomic; anything else parks with the reason | `work.py merge`, `work.auto_merge` |
 | **Open-source safe by default** | A fork PR, or a repo you only have read access to, is never merge-attempted — the loop opens the PR, says why it stopped, and records `done`. `auto_merge: "protected"` further limits merging to branches that genuinely require checks or reviews | `work.py merge_rights` / `protection` |
+| **PR review gate (opt-in)** | A real review *after* the PR, independent of branch protection: parks on a Request-changes, an unresolved thread, or a `loopsmith:block` comment; `"approval"` also needs an approval (formal, or a `loopsmith:approve` comment — GitHub blocks self-approval) | `work.require_review` |
 | **Pluggable backlog** | Local goal files, GitHub issues, or a GitHub **Projects v2 board** | `discovery.source` |
 | **Board + audit trail** | Cards flow Backlog → In Progress → QC → Done → Blocked; every phase recorded on the issue | `/sdlc-init --github` |
 | **Self-improving knowledge graph** | Captures research + lessons, **tracks what it doesn't know**, prunes itself, and fills gaps | `/sdlc-kg` |
