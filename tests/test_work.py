@@ -502,16 +502,18 @@ def test_cli_root_works_with_the_feature_off(tmp_path, capsys):
 # on an unprotected base is invisible to it. review_gate reads the actual review state and parks on it.
 
 
-def _review(decision=None, changes_by=(), unresolved=0):
-    """Handlers for the review gate: the `gh pr view --json reviewDecision,latestReviews` read (ordered
-    BEFORE any generic `pr view` handler, since that substring also matches it) and the GraphQL thread
-    count. Includes nameWithOwner for _unresolved_threads' repo lookup."""
+def _review(decision=None, changes_by=(), unresolved=0, comments=()):
+    """Handlers for the review gate: the `--json comments` marker scan, the `--json reviewDecision,
+    latestReviews` read, and the GraphQL thread count. Ordered so the specific `--json comments` /
+    `reviewDecision` matches win over a generic `pr view` handler that also matches those lines."""
     reviews = json.dumps({"reviewDecision": decision,
                           "latestReviews": [{"state": "CHANGES_REQUESTED", "author": {"login": u}}
                                             for u in changes_by]})
     threads = json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": {
         "nodes": [{"isResolved": False}] * unresolved}}}}})
-    return [("reviewDecision", reviews), ("nameWithOwner", "acme/app"), ("graphql", threads)]
+    comment_json = json.dumps({"comments": [{"body": b} for b in comments]})
+    return [("json comments", comment_json), ("reviewDecision", reviews),
+            ("nameWithOwner", "acme/app"), ("graphql", threads)]
 
 
 def test_review_mode_parses_off_changes_approval_and_true():
@@ -582,3 +584,44 @@ def test_merge_arms_when_the_pr_is_approved(tmp_path):
     run = _runner(_rights() + _review(decision="APPROVED") + [("pr view", _view())])
     out = work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
     assert not out.startswith("PARK") and any("pr merge" in c for c in run.calls)
+
+
+# --- the self-authorship fallback: GitHub forbids approving/blocking your OWN PR, so a solo-account
+# loop uses plain-comment markers (loopsmith:approve / :block / :unblock), which have no such rule.
+
+
+def test_review_gate_parks_on_a_loopsmith_block_comment(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "changes"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    run = _runner(_review(decision=None, comments=["please fix the retry — loopsmith:block"]))
+    ok, why = work.review_gate(d, cfg, g, run=run)
+    assert ok is False and "loopsmith:block" in why
+
+
+def test_a_loopsmith_unblock_clears_the_block(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "changes"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    run = _runner(_review(decision=None, comments=["loopsmith:block", "fixed now — loopsmith:unblock"]))
+    assert work.review_gate(d, cfg, g, run=run) == (True, "")     # latest marker wins
+
+
+def test_a_loopsmith_approve_comment_satisfies_approval_mode(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "approval"}}     # can't self-approve formally
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    run = _runner(_review(decision=None, comments=["ship it — loopsmith:approve"]))
+    assert work.review_gate(d, cfg, g, run=run) == (True, "")
+
+
+def test_approval_mode_parks_and_points_at_the_marker_without_an_approval(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "approval"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    ok, why = work.review_gate(d, cfg, g, run=_runner(_review(decision=None, comments=["just a note"])))
+    assert ok is False and "loopsmith:approve" in why
+
+
+def test_a_later_block_beats_an_earlier_approve_even_when_formally_approved(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "approval"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    run = _runner(_review(decision="APPROVED", comments=["loopsmith:approve", "wait, no — loopsmith:block"]))
+    ok, why = work.review_gate(d, cfg, g, run=run)
+    assert ok is False and "loopsmith:block" in why              # a block overrides even a formal approval

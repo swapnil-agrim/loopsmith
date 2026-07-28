@@ -334,6 +334,29 @@ def _unresolved_threads(rec, run):
         return 0
 
 
+def _comment_directive(rec, run):
+    """The latest `loopsmith:` marker in the PR's PLAIN comments, or None. GitHub structurally forbids
+    approving or requesting-changes on your OWN pull request, so a loop that opens every PR under its own
+    account can never trip the formal review signal — permanently, not just in a test. A plain comment
+    has no such restriction, so it's the self-usable channel: `loopsmith:approve` satisfies an approval,
+    `loopsmith:block` is a hard change-request, `loopsmith:unblock` clears a block. Latest marker wins.
+    Fail-open: unreadable comments -> None (the formal signals still apply)."""
+    try:
+        data = json.loads(run(rec["worktree"], ["gh", "pr", "view", str(rec["pr"]), "--json", "comments"]))
+    except Exception:                           # noqa: BLE001 - can't read comments -> no directive
+        return None
+    directive = None
+    for comment in data.get("comments") or []:  # chronological; the last marker is the current state
+        body = (comment.get("body") or "").lower()
+        if "loopsmith:block" in body:
+            directive = "block"
+        elif "loopsmith:approve" in body:
+            directive = "approve"
+        elif "loopsmith:unblock" in body:
+            directive = None
+    return directive
+
+
 def review_gate(sdlc_dir, config, goal, run=None):
     """(ok, verdict) — the REAL review gate, independent of branch protection.
 
@@ -342,16 +365,25 @@ def review_gate(sdlc_dir, config, goal, run=None):
     is invisible to it, and an unattended `auto_merge` would land straight over it. This reads the
     ACTUAL review state and parks on it. `work.require_review`:
       off      — no gate (default; behaviour unchanged for anyone who hasn't opted in).
-      changes  — park on a CHANGES_REQUESTED review or an unresolved review thread.
-      approval — the above, AND require an APPROVED reviewDecision before merging (park until a human
-                 approves): the "a real review after the PR, not just self-review" gate.
-    Fail-open on a read error: the other gates still hold, but an unreadable review state must not be
-    the thing that blocks a merge."""
+      changes  — park on a CHANGES_REQUESTED review, an unresolved review thread, or a `loopsmith:block`.
+      approval — the above, AND require approval before merging: an APPROVED reviewDecision OR a
+                 `loopsmith:approve` comment (park until then).
+
+    THE SELF-AUTHORSHIP FALLBACK. GitHub structurally forbids approving / requesting-changes on your OWN
+    PR, so on a repo where one identity opens AND reviews (a solo maintainer, or an org that pins all
+    automation to one account), the formal APPROVE / CHANGES_REQUESTED signals can NEVER fire — `approval`
+    would refuse forever. Plain comments have no such restriction, so `loopsmith:block` / `loopsmith:approve`
+    are honoured as a self-usable equivalent. Fail-open on a read error: the other gates still hold, but
+    an unreadable review state must not be the thing that blocks a merge."""
     mode = review_mode(config)
     if mode == REVIEW_OFF:
         return True, ""
     run = run or _run
     rec = _record(sdlc_dir, goal)
+    directive = _comment_directive(rec, run)    # loopsmith:block / :approve / :unblock — self-usable
+    if directive == "block":
+        return False, (f"a `loopsmith:block` comment is on PR #{rec['pr']} — address it, then comment "
+                       "`loopsmith:unblock` or `loopsmith:approve` and re-queue the issue")
     try:
         data = json.loads(run(rec["worktree"], ["gh", "pr", "view", str(rec["pr"]),
                                                 "--json", "reviewDecision,latestReviews"]))
@@ -367,9 +399,9 @@ def review_gate(sdlc_dir, config, goal, run=None):
     if unresolved:
         return False, (f"{unresolved} unresolved review thread(s) on PR #{rec['pr']} — "
                        "resolve them, then re-queue the issue")
-    if mode == REVIEW_APPROVAL and decision != "APPROVED":
+    if mode == REVIEW_APPROVAL and decision != "APPROVED" and directive != "approve":
         return False, (f"PR #{rec['pr']} is not approved yet (reviewDecision={decision or 'none'}) — "
-                       "waiting on a review before it can merge")
+                       "approve it, or comment `loopsmith:approve` (GitHub blocks self-approval), then re-queue")
     return True, ""
 
 

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### The review gate works on a solo account — comment-based approve/block (0.9.1)
+- **`require_review` no longer has a signal that can never fire.** GitHub structurally forbids approving
+  or requesting-changes on your *own* PR — so on a repo where one identity both opens and reviews (a solo
+  maintainer, or an org that pins all automation to one account), the formal `APPROVE`/`CHANGES_REQUESTED`
+  signals are permanently dead, and `approval` mode would refuse *every* merge forever (the same shape as
+  the old empty-`verify.command` trap).
+- **Plain-comment markers are the self-usable channel** (comments have no self-authorship rule): a
+  **`loopsmith:block`** comment is honored as a change-request, a **`loopsmith:approve`** comment satisfies
+  approval, and **`loopsmith:unblock`** clears a block — latest marker wins, and a block overrides even a
+  formal approval. Formal reviews and unresolved threads still count whenever a second real identity is
+  around. `/sdlc-doctor` and the README now spell out the asymmetry. First patch release: **0.9.1**.
+
 ### `/sdlc-doctor` catches the worktree interpreter-path footgun
 - **A relative `.venv`/`node_modules` path in `verify.command` now gets flagged before it bites.** Once
   `work.enabled` is on, verify runs in a *fresh* per-goal worktree that has none of your installed
