@@ -41,7 +41,9 @@
     "_auto_merge": "off (default, never merges) | protected (merge only where branch protection actually REQUIRES checks or reviews - i.e. delegate the gate to GitHub) | always (merge whenever clean+safe, even on an unprotected branch, where nothing but the local verify gated it). Legacy booleans still parse: false=off, true=always.",
     "_auto_merge_2": "Whatever the setting, a merge needs BOTH this run's fresh passing verify evidence AND GitHub's mergeable + mergeStateStatus CLEAN, and it then arms GitHub's own --auto so the last word is an atomic re-check at merge time. A BEHIND branch is rebased once and re-checked; anything else parks with the reason.",
     "_auto_merge_3": "PERMISSION is never a config question: a fork PR, or a repo you only have read/triage access to, opens the PR and stops there - that is the open-source path, where the PR IS the deliverable. It records `done`, not a park.",
-    "merge_method": "squash"
+    "merge_method": "squash",
+    "require_review": "off",
+    "_require_review": "off (default) | changes | approval. A REAL PR-review gate, independent of branch protection. `gate()`'s mergeStateStatus only folds in reviews the base branch PROTECTION requires, so a human 'Request changes' on an unprotected base (a common staging/dev shape) is invisible to auto-merge. `changes` parks on a CHANGES_REQUESTED review or an unresolved review thread; `approval` also requires an APPROVED reviewDecision before merging (parks until a human approves). Self-review before the PR is never enough on its own - this is the review AFTER the PR. Adds a `gh pr view` read per merge; fail-open on a read error."
   },
   "ledger": {
     "enabled": false,

@@ -495,3 +495,90 @@ def test_cli_root_works_with_the_feature_off(tmp_path, capsys):
     d = _sdlc(tmp_path, {"work": {"enabled": False}})
     assert work.main(["work.py", "root", d, "0001-x.md"]) == 0
     assert capsys.readouterr().out.strip() == str(tmp_path.resolve())
+
+
+# --- the REAL PR-review gate (require_review), independent of branch protection -----------------
+# gate()'s "safe" only reflects reviews the base's protection REQUIRES, so a human 'Request changes'
+# on an unprotected base is invisible to it. review_gate reads the actual review state and parks on it.
+
+
+def _review(decision=None, changes_by=(), unresolved=0):
+    """Handlers for the review gate: the `gh pr view --json reviewDecision,latestReviews` read (ordered
+    BEFORE any generic `pr view` handler, since that substring also matches it) and the GraphQL thread
+    count. Includes nameWithOwner for _unresolved_threads' repo lookup."""
+    reviews = json.dumps({"reviewDecision": decision,
+                          "latestReviews": [{"state": "CHANGES_REQUESTED", "author": {"login": u}}
+                                            for u in changes_by]})
+    threads = json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": {
+        "nodes": [{"isResolved": False}] * unresolved}}}}})
+    return [("reviewDecision", reviews), ("nameWithOwner", "acme/app"), ("graphql", threads)]
+
+
+def test_review_mode_parses_off_changes_approval_and_true():
+    assert work.review_mode({}) == "off"
+    assert work.review_mode({"work": {"require_review": True}}) == "approval"
+    assert work.review_mode({"work": {"require_review": "changes"}}) == "changes"
+    assert work.review_mode({"work": {"require_review": "bogus"}}) == "off"          # unknown -> off, never blocks
+
+
+def test_review_gate_is_a_noop_when_off(tmp_path):
+    d = _sdlc(tmp_path); g = _started(d)
+    assert work.review_gate(d, ON, g, run=_runner([])) == (True, "")
+
+
+def test_review_gate_parks_on_changes_requested(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "changes"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    ok, why = work.review_gate(d, cfg, g, run=_runner(_review(decision="CHANGES_REQUESTED", changes_by=["bo"])))
+    assert ok is False and "changes requested by bo" in why
+
+
+def test_review_gate_parks_on_an_unresolved_thread(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "changes"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    ok, why = work.review_gate(d, cfg, g, run=_runner(_review(decision="APPROVED", unresolved=2)))
+    assert ok is False and "2 unresolved review thread" in why
+
+
+def test_review_gate_changes_mode_allows_an_unreviewed_pr(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "changes"}}      # blocks a request, doesn't demand approval
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    assert work.review_gate(d, cfg, g, run=_runner(_review(decision=None))) == (True, "")
+
+
+def test_review_gate_approval_requires_an_approved_decision(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "approval"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    ok, why = work.review_gate(d, cfg, g, run=_runner(_review(decision=None)))
+    assert ok is False and "not approved yet" in why
+
+
+def test_review_gate_approval_passes_on_an_approved_clean_pr(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "approval"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    assert work.review_gate(d, cfg, g, run=_runner(_review(decision="APPROVED"))) == (True, "")
+
+
+def test_review_gate_fails_open_on_a_read_error(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "approval"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    run = _runner([("reviewDecision", RuntimeError("gh boom"))])
+    assert work.review_gate(d, cfg, g, run=run) == (True, "")           # other gates still hold
+
+
+def test_merge_parks_when_a_review_requests_changes(tmp_path):
+    """The whole point: an ad-hoc Request-changes on an unprotected base stops the auto-merge."""
+    cfg = {"work": {"enabled": True, "auto_merge": "always", "require_review": "changes"}}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); _evidence(d, goal)
+    run = _runner(_rights() + _review(decision="CHANGES_REQUESTED", changes_by=["bo"]) + [("pr view", _view())])
+    out = work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("PARK: changes requested by bo")
+    assert not any("pr merge" in c for c in run.calls)                 # never armed the merge
+
+
+def test_merge_arms_when_the_pr_is_approved(tmp_path):
+    cfg = {"work": {"enabled": True, "auto_merge": "always", "require_review": "approval"}}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); _evidence(d, goal)
+    run = _runner(_rights() + _review(decision="APPROVED") + [("pr view", _view())])
+    out = work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
+    assert not out.startswith("PARK") and any("pr merge" in c for c in run.calls)

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### A real PR review gate, not just self-review — `work.require_review`
+- **Auto-merge can now wait for an actual review, independent of branch protection.** Before this, the
+  merge gate's "safe" (`mergeStateStatus`) only folded in reviews the *base branch's protection*
+  required — so a human's ad-hoc **"Request changes" on an unprotected base** (the common `staging`/`dev`
+  shape) was invisible to it, and an unattended `auto_merge` landed straight over it. The kit's "Review"
+  phase is a *self-review* of the agent's own diff before the PR even exists; nothing read real review
+  feedback after the PR. (Confirmed by grep: zero handling of `reviewDecision` / `reviewThreads` anywhere.)
+- **`work.require_review`** adds the gate: `changes` parks on a `CHANGES_REQUESTED` review or an
+  unresolved review thread; `approval` also requires an `APPROVED` `reviewDecision` before merging —
+  parking until a human approves. It reads the PR's real review state (`gh pr view` + GraphQL threads)
+  and parks with a clear reason; a human approves and re-queues. **Off by default**, so existing behavior
+  is unchanged, and **fail-open** — an unreadable review state never blocks (the other gates still hold).
+  `/sdlc-doctor` reports the gate's state. Costs one extra read per merge; the right default for anything
+  unattended on a low-protection base.
+
 ### Hooks survive a broken `python3` on the PATH
 - **A messy multi-python machine no longer breaks the session on first use.** The hooks shell out to a
   bare `python3` — whatever the user's PATH resolves — and on a machine with pyenv/conda that can be a

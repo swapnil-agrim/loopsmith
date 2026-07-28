@@ -55,6 +55,7 @@ _CHECK_OK = ("SUCCESS", "NEUTRAL", "SKIPPED", None)
 _CAN_MERGE = ("ADMIN", "MAINTAIN", "WRITE")
 
 OFF, PROTECTED, ALWAYS = "off", "protected", "always"
+REVIEW_OFF, REVIEW_CHANGES, REVIEW_APPROVAL = "off", "changes", "approval"
 
 
 def settings(config):
@@ -303,6 +304,75 @@ def rebase(sdlc_dir, config, goal, run=None):
     return "rebased"
 
 
+def review_mode(config):
+    """`require_review` as one of off | changes | approval. `true` means the strongest (approval);
+    anything unrecognised falls to off — a review gate you didn't ask for must never block a merge."""
+    value = settings(config).get("require_review")
+    if value is True:
+        return REVIEW_APPROVAL
+    if not value:
+        return REVIEW_OFF
+    text = str(value).strip().lower()
+    return text if text in (REVIEW_OFF, REVIEW_CHANGES, REVIEW_APPROVAL) else REVIEW_OFF
+
+
+def _unresolved_threads(rec, run):
+    """Count unresolved review threads (line-comment conversations) via GraphQL — `gh pr view --json`
+    can't return them. Fail-open: any error returns 0, because a review query we couldn't run must not
+    be the thing that blocks a merge."""
+    try:
+        repo = run(rec["worktree"], ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"])
+        owner, name = repo.split("/", 1)
+        query = ("query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){"
+                 "pullRequest(number:$p){reviewThreads(first:100){nodes{isResolved}}}}}")
+        data = json.loads(run(rec["worktree"], ["gh", "api", "graphql", "-f", "query=" + query,
+                              "-F", "o=" + owner, "-F", "n=" + name, "-F", "p=" + str(rec["pr"])]))
+        nodes = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {}) \
+            .get("reviewThreads", {}).get("nodes") or []
+        return sum(1 for t in nodes if not t.get("isResolved"))
+    except Exception:                           # noqa: BLE001 - unknown thread state must not block a merge
+        return 0
+
+
+def review_gate(sdlc_dir, config, goal, run=None):
+    """(ok, verdict) — the REAL review gate, independent of branch protection.
+
+    `gate()`'s "safe" (mergeStateStatus) only folds in reviews the BASE BRANCH'S protection REQUIRES,
+    so a human 'Request changes' on an unprotected base — the common shape for a staging/dev branch —
+    is invisible to it, and an unattended `auto_merge` would land straight over it. This reads the
+    ACTUAL review state and parks on it. `work.require_review`:
+      off      — no gate (default; behaviour unchanged for anyone who hasn't opted in).
+      changes  — park on a CHANGES_REQUESTED review or an unresolved review thread.
+      approval — the above, AND require an APPROVED reviewDecision before merging (park until a human
+                 approves): the "a real review after the PR, not just self-review" gate.
+    Fail-open on a read error: the other gates still hold, but an unreadable review state must not be
+    the thing that blocks a merge."""
+    mode = review_mode(config)
+    if mode == REVIEW_OFF:
+        return True, ""
+    run = run or _run
+    rec = _record(sdlc_dir, goal)
+    try:
+        data = json.loads(run(rec["worktree"], ["gh", "pr", "view", str(rec["pr"]),
+                                                "--json", "reviewDecision,latestReviews"]))
+    except Exception:                           # noqa: BLE001 - fail-open; don't block on an unreadable state
+        return True, ""
+    decision = data.get("reviewDecision")
+    changed_by = sorted({(r.get("author") or {}).get("login") for r in (data.get("latestReviews") or [])
+                         if r.get("state") == "CHANGES_REQUESTED"} - {None})
+    if decision == "CHANGES_REQUESTED" or changed_by:
+        who = ", ".join(changed_by) or "a reviewer"
+        return False, f"changes requested by {who} on PR #{rec['pr']} — address them, then re-queue the issue"
+    unresolved = _unresolved_threads(rec, run)
+    if unresolved:
+        return False, (f"{unresolved} unresolved review thread(s) on PR #{rec['pr']} — "
+                       "resolve them, then re-queue the issue")
+    if mode == REVIEW_APPROVAL and decision != "APPROVED":
+        return False, (f"PR #{rec['pr']} is not approved yet (reviewDecision={decision or 'none'}) — "
+                       "waiting on a review before it can merge")
+    return True, ""
+
+
 def merge(sdlc_dir, config, goal, run=None, sleep=time.sleep):
     """Three questions in the order that matters: may we merge, should we, and is anything actually
     enforcing the answer.
@@ -335,6 +405,11 @@ def merge(sdlc_dir, config, goal, run=None, sleep=time.sleep):
     chosen = policy(config)
     if chosen == OFF:
         return f"clean and safe — auto_merge is off, leaving PR #{rec['pr']} for a human"
+    # A real review, independent of branch protection — so a human 'Request changes' on an unprotected
+    # base stops the auto-merge instead of being invisible to it. Off unless `require_review` is set.
+    rok, rverdict = review_gate(sdlc_dir, config, goal, run=run)
+    if not rok:
+        return f"PARK: {rverdict}"
     guarded, detail = protection(sdlc_dir, config, goal, run=run)
     if chosen == PROTECTED and not guarded:
         return (f"PR #{rec['pr']} clean and safe, but {detail} — merging it is yours to make "

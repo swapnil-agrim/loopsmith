@@ -204,6 +204,15 @@ def test_features_reports_which_mechanism_ignores_the_runtime_dirs(tmp_path):
     assert "tracked .gitignore" in rows_tracked["runtime dirs ignored via"]
 
 
+def test_features_reports_the_pr_review_gate(tmp_path):
+    d = _doc()
+    row = "PR review gate (independent of branch protection)"
+    off = {n: s for n, s, _ in d.features(_sdlc(tmp_path / "a", {}))}
+    assert off[row].startswith("off")
+    on = {n: s for n, s, _ in d.features(_sdlc(tmp_path / "b", {"work": {"require_review": "approval"}}))}
+    assert "ON (approval)" in on[row]
+
+
 # --- standing-doc hygiene: the mechanical half of context maintenance -------------------------
 # Rot that a script can settle (a reference that no longer resolves), NOT the judgment half
 # (demoting a rule CI now enforces) — that's sdlc-retro's, because it changes files.
