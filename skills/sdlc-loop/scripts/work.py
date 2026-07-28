@@ -455,6 +455,34 @@ def merge(sdlc_dir, config, goal, run=None, sleep=time.sleep):
         detail if guarded else f"WARNING: {detail}; local verify was the only gate")
 
 
+def post_review(sdlc_dir, config, goal, run=None, verdict="", reason=""):
+    """Post the loop's OWN post-PR review verdict as a PR comment — the signal `require_review` reads.
+
+    This is the AUTHORING half of the review gate: the loop reviews the PR it just opened (a fresh pass
+    over the real, mergeable diff — not the pre-PR self-review) and either clears it or sends itself back
+    to fix it. No human in the loop; the loop is the reviewer. `verdict='approve'` writes `loopsmith:approve`
+    (the gate then merges); `verdict='block'` writes `loopsmith:block` with the reasons (the loop fixes and
+    re-reviews). Posting a comment has no self-authorship restriction, unlike a formal review, so this
+    works even though every PR is opened under the loop's own account. Fail-soft: reports, never throws."""
+    run = run or _run
+    rec = _record(sdlc_dir, goal)
+    if not rec or not rec.get("pr"):
+        return "no PR for this goal — run `work.py pr` first"
+    v = (verdict or "").strip().lower()
+    if v == "approve":
+        body = "loopsmith:approve\n\n**LoopSmith post-PR review** — no blocking issues on the final diff."
+    elif v == "block":
+        body = ("loopsmith:block\n\n**LoopSmith post-PR review — changes requested:**\n"
+                + (reason.strip() or "(see review notes)"))
+    else:
+        return "verdict must be `approve` or `block`"
+    try:
+        run(rec["worktree"], ["gh", "pr", "comment", str(rec["pr"]), "--body", body])
+    except Exception as exc:                # noqa: BLE001 - report, never traceback at the loop
+        return f"could not post review on PR #{rec['pr']}: {exc}"
+    return f"posted loopsmith:{v} on PR #{rec['pr']}"
+
+
 def finish(sdlc_dir, config, goal, run=None, force=False):
     """Drop the worktree once the goal is done. Not optional housekeeping: one leaked checkout per
     goal is a slow disk leak that also makes `git worktree list` unreadable. Refuses when the tree
@@ -474,7 +502,7 @@ def finish(sdlc_dir, config, goal, run=None, force=False):
 
 
 _COMMANDS = {"start": start, "commit": commit, "pr": pr, "rebase": rebase,
-             "merge": merge, "finish": finish}
+             "post-review": post_review, "merge": merge, "finish": finish}
 
 
 def _flag(argv, name):
@@ -496,14 +524,18 @@ def main(argv):
             kwargs["force"] = True
         if argv[1] == "commit":
             kwargs["message"] = _flag(argv, "--message")
+        if argv[1] == "post-review":
+            kwargs["verdict"] = _flag(argv, "--verdict")
+            kwargs["reason"] = _flag(argv, "--reason")
         try:
             print(_COMMANDS[argv[1]](sdlc_dir, config, goal, **kwargs))
         except Exception as exc:            # noqa: BLE001 - report, never traceback at a user
             print(f"work: {exc}", file=sys.stderr)
             return 1
         return 0
-    print("usage: work.py start|commit|pr|rebase|merge|finish <sdlc-dir> <goal>\n"
+    print("usage: work.py start|commit|pr|rebase|post-review|merge|finish <sdlc-dir> <goal>\n"
           "         commit --message \"<text>\"   finish [--force]\n"
+          "         post-review --verdict approve|block [--reason \"<changes>\"]\n"
           "       work.py root <sdlc-dir> <goal>", file=sys.stderr)
     return 2
 

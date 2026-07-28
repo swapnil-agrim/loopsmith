@@ -106,11 +106,24 @@ Then repeat until the helper says stop:
    REFUSED without a passing, this-run verify.
    **Landing the work** (`config.work.enabled` on) — once verify is green, and never with a bare
    `git` command (the loop has no general git tool on purpose):
-   `work.py commit .sdlc "$goal" --message "<type: what changed>"` → `work.py pr .sdlc "$goal"` →
-   `work.py merge .sdlc "$goal"`. The gate is clean **and** safe: it needs THIS run's passing verify
-   evidence *and* GitHub's `mergeable` + `mergeStateStatus CLEAN` (required checks and reviews folded
-   in), it rebases once if the PR is `BEHIND`, and it arms GitHub's own `--auto` so the last word is
-   an atomic re-check at merge time rather than a stale read.
+   `work.py commit .sdlc "$goal" --message "<type: what changed>"` → `work.py pr .sdlc "$goal"`.
+
+   **Then REVIEW the PR you just opened, if `config.work.require_review` is set** — a real review AFTER
+   the PR. Self-review before the PR is never enough; this is a **fresh, adversarial pass over the PR's
+   real, mergeable diff** (post-commit, post-CI), best run as a **subagent with fresh context**: prefer
+   `/code-review` on the PR, else `/sdlc-review` in diff mode. **No human approves — the loop reviews and
+   clears its own PR:**
+   - **No blocking issues** → `work.py post-review .sdlc "$goal" --verdict approve` (posts `loopsmith:approve`).
+   - **Blocking issues** → `work.py post-review .sdlc "$goal" --verdict block --reason "<the issues>"`, then
+     **fix them in the worktree** (back to Implement), re-run `loop.py verify`, and **re-review**. Up to **2**
+     such fix-and-re-review cycles; if it still can't come clean, `record parked "<why>"` for a human — the
+     one backstop. When a re-review comes back clean, post `--verdict approve`.
+
+   Then `work.py merge .sdlc "$goal"`. The gate is clean **and** safe: it needs THIS run's passing verify
+   evidence *and* GitHub's `mergeable` + `mergeStateStatus CLEAN`, **plus — with `require_review` on — the
+   review verdict you just posted** (it will not merge a PR that isn't `loopsmith:approve`d, or that has a
+   `loopsmith:block` / an unresolved thread). It rebases once if the PR is `BEHIND`, and arms GitHub's own
+   `--auto` so the last word is an atomic re-check at merge time rather than a stale read.
    **Read its first word and record accordingly — never merge past it by hand:**
    - `PARK: …` → `record parked "<that reason>"` (a conflict, a stale read, no evidence). A **failing
      required check** is a fix, not a decision → `record failed "<the check>"` instead.

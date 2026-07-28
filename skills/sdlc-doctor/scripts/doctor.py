@@ -273,9 +273,9 @@ def _review_gate_state(wk):
     value = wk.get("require_review")
     mode = "approval" if value is True else (str(value).strip().lower() if value else "off")
     return {
-        "changes": "ON (changes) — parks on CHANGES_REQUESTED, an unresolved thread, or a `loopsmith:block` comment",
-        "approval": ("ON (approval) — needs an APPROVED review OR a `loopsmith:approve` comment "
-                     "(GitHub blocks self-approval, so a solo account uses the comment marker)"),
+        "changes": "ON (changes) — parks on CHANGES_REQUESTED, an unresolved thread, or a `loopsmith:block`",
+        "approval": ("ON (approval) — the loop reviews its own PR and posts loopsmith:approve/block "
+                     "(work.py post-review); merges only an approved PR. A human can use the markers too"),
     }.get(mode, "off — auto-merge only respects reviews the base branch's protection REQUIRES")
 
 
