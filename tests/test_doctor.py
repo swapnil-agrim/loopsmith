@@ -186,6 +186,32 @@ def test_no_verify_check_when_enforce_is_off():
         assert "verify command present (enforce is on)" not in _by_name(d.check(base, run=_runner()))
 
 
+# --- worktree footgun: a relative interpreter path fails exit=127 once work.enabled -------------
+
+def test_flags_a_relative_venv_in_verify_command_when_work_on():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"work": {"enabled": True},
+                         "verify": {"command": "cd backend && .venv/bin/python3 -m pytest -q"}})
+        c = _by_name(d.check(base, run=_runner()))["verify.command resolves in the goal worktree"]
+        assert c["ok"] is False and "exit=127" in c["fix"]
+
+
+def test_an_absolute_interpreter_path_is_not_flagged():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"work": {"enabled": True},
+                         "verify": {"command": "/abs/proj/.venv/bin/python3 -m pytest -q"}})
+        assert _by_name(d.check(base, run=_runner()))["verify.command resolves in the goal worktree"]["ok"]
+
+
+def test_no_worktree_dep_check_when_work_is_off():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"verify": {"command": ".venv/bin/python3 -m pytest"}})   # work off -> no worktree
+        assert "verify.command resolves in the goal worktree" not in _by_name(d.check(base, run=_runner()))
+
+
 # --- the dashboard surfaces the two silent-adoption states --------------------------------------
 
 def test_features_work_off_says_nothing_is_written_to_git(tmp_path):

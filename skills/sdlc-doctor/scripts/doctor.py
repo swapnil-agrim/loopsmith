@@ -69,6 +69,17 @@ def check(sdlc_dir=".sdlc", run=None):
                         "verify.enforce is on but no verify.command (and no goal sets verify_command) — "
                         "every `done` is refused. Set verify.command, or turn enforce off."))
 
+    # With work.enabled, verify runs in a FRESH worktree that has none of your installed deps — a
+    # relative interpreter path (.venv/bin/python3, node_modules/.bin) fails exit=127 on the first
+    # real per-goal run. Flag it before it bites.
+    vcmd = verify.get("command") or ""
+    if (cfg.get("work") or {}).get("enabled") is True and vcmd:
+        out.append(_chk("verify.command resolves in the goal worktree",
+                        not _WORKTREE_DEP.search(vcmd),
+                        "verify.command has a RELATIVE .venv/venv/node_modules path — but work.enabled "
+                        "runs it in a fresh worktree with NONE of your installed deps (fails exit=127). "
+                        "Use an absolute interpreter path, a venv activated on PATH, or a wrapper script."))
+
     # companions (optional): superpowers + code-review power phases 1/3/5/6 when present; LoopSmith's
     # portable sdlc-* executors are the absent-safe fallback everywhere else — absent is never a failure.
     if (cfg.get("companions") or "auto") != "off":
@@ -85,6 +96,9 @@ def check(sdlc_dir=".sdlc", run=None):
 _CITED = re.compile(r"`([^`\s]*/[^`\s]*)`")
 _MDLINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 _ABSTRACT = re.compile(r"[*?<>{}\[\]]|NNNN|YYYY|\.\.\.")
+#: A RELATIVE .venv/venv/node_modules path in verify.command — a worktree footgun once work.enabled.
+#: The lookbehind excludes a preceding `/` or `.` so an ABSOLUTE path (/x/.venv/…) is never flagged.
+_WORKTREE_DEP = re.compile(r"(?<![\w./])(?:\.venv|venv|node_modules)/")
 
 
 def _standing_docs(base):
