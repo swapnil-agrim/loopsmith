@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### `/sdlc-setup` — adopt LoopSmith into an existing repo in one pass
+- **One command configures a real repo the way a team actually wants it**, instead of ten manual edits
+  to `config.json`. It detects the repo from the git remote (ssh / https / host-alias forms), finds the
+  board, scaffolds `.sdlc/` if missing, and writes a config with the **safe adoption defaults**: github
+  discovery scoped to **`assignee: @me`**, **ledger on**, **work (a PR per goal) on** (`auto_merge: off`
+  — a clean PR is left for a human). Then it bootstraps the ledger and runs doctor.
+- **It refuses two traps real adoptions hit.** It never sets `verify.enforce: true` without a real
+  `verify.command` — that combination refuses *every* `done` forever — and turns an existing
+  enforce-without-command back off. And it never clobbers or narrows a git-ignore rule a human already
+  set: a blanket `.sdlc/` exclude is left untouched, and a `--scope local` routes runtime-dir ignores to
+  `.git/info/exclude` (nothing the team sees) for a local-only adoption. `/sdlc-ledger` and the
+  `sdlc-init` tip now use the same safe helper instead of a blind `echo >> .gitignore`.
+- The skill also flags the host-hook interaction: if the repo gates source edits behind its own
+  `PreToolUse` hook, LoopSmith's Implement-phase edits go through it too.
+
 ### One command turns the ledger on — and a `/sdlc-ledger` slash command
 - **`sync.py bootstrap` (and `/sdlc-ledger`) sets the whole ledger up in one shot.** Standing the
   ledger up used to be a multi-step dance whose failure mode was silent: `init` created the ops branch

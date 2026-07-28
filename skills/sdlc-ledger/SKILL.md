@@ -27,8 +27,12 @@ LS="${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts"
    ```bash
    python3 "$LS/sync.py" bootstrap .sdlc
    ```
-   Idempotent (safe to re-run). Each teammate runs this once in their own clone to join. Also add
-   `.sdlc/ledger/` to `.gitignore` on the code branch so the worktree never lands in a code PR.
+   Idempotent (safe to re-run). Each teammate runs this once in their own clone to join. The worktree
+   must also be git-ignored so it never lands in a code PR — use the safe helper, which never clobbers
+   or narrows an ignore rule you already set (and can target `.git/info/exclude` instead of the shared
+   `.gitignore` for a local-only adoption): `python3 "${CLAUDE_SKILL_DIR}/../sdlc-setup/scripts/setup.py"
+   ignore . --scope tracked` (or `--scope local`). Do NOT blindly `echo … >> .gitignore` — that has
+   overwritten a repo's existing broader exclude.
 
 `/sdlc-doctor` flags this automatically: if the ledger is enabled but not set up, it runs the same
 bootstrap for you.

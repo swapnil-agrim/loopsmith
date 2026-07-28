@@ -111,6 +111,23 @@ LoopSmith's own; no companion ships it.
 /sdlc-loop            # watch it run Goal → Research → … → Review end-to-end
 ```
 
+### Adopting into an existing repo? One command.
+
+For a real project (existing code, a GitHub board, a team), skip the manual `config.json` edits and run:
+
+```
+/sdlc-setup
+```
+
+It detects the repo + board, scaffolds `.sdlc/` if needed, and writes a config with the defaults a
+team actually wants — **github discovery scoped to `@me`, the ledger on, a PR per goal on** — then
+bootstraps the ledger and runs `/sdlc-doctor`. It deliberately avoids two traps real adoptions hit: it
+never enables `verify.enforce` without a real `verify.command` (that refuses every `done` forever), and
+it never clobbers or narrows a git-ignore rule you already set (use `/sdlc-setup` with a local-only
+scope to keep the repo's tracked files untouched). If your repo already gates source edits behind its
+own `PreToolUse` hook, note that LoopSmith's Implement-phase edits go through it too — make sure
+whatever it expects is satisfied.
+
 That installs the plugin machine-wide, but the hook only speaks in repos that adopt the spine
 (scoped to `.sdlc/` presence); `/sdlc-init` scaffolds
 each repo's `.sdlc/` layer and is safe to re-run. If the `superpowers` + `code-review` companions are
