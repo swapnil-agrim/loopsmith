@@ -662,3 +662,33 @@ def test_post_review_needs_a_pr_first(tmp_path):
 
 def test_post_review_is_a_registered_verb():
     assert "post-review" in work._COMMANDS and work._COMMANDS["post-review"] is work.post_review
+
+
+def test_post_review_block_counts_cycles(tmp_path):
+    d = _sdlc(tmp_path); goal = _started(d); run = _runner([])
+    work.post_review(d, ON, goal, run=run, verdict="block", reason="x")
+    assert work._record(d, goal)["review_cycles"] == 1
+    work.post_review(d, ON, goal, run=run, verdict="block", reason="y")
+    assert work._record(d, goal)["review_cycles"] == 2
+
+
+def test_post_review_approve_does_not_count_a_cycle(tmp_path):
+    d = _sdlc(tmp_path); goal = _started(d); run = _runner([])
+    work.post_review(d, ON, goal, run=run, verdict="approve")
+    assert work._record(d, goal).get("review_cycles", 0) == 0
+
+
+def test_post_review_hard_caps_the_cycles_and_parks(tmp_path):
+    cfg = {"work": {"enabled": True, "max_review_cycles": 2}}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); run = _runner([])
+    assert work.post_review(d, cfg, goal, run=run, verdict="block", reason="a").startswith("posted")
+    out = work.post_review(d, cfg, goal, run=run, verdict="block", reason="b")   # 2nd block hits cap=2
+    assert out.startswith("PARK:") and "did not converge" in out
+    assert "NOT converged" in [c for c in run.calls if "pr comment" in c][-1]    # the final comment says so
+
+
+def test_post_review_default_cap_is_three(tmp_path):
+    d = _sdlc(tmp_path); goal = _started(d); run = _runner([])                   # ON has no cap → default 3
+    for i in range(2):
+        assert work.post_review(d, ON, goal, run=run, verdict="block", reason=str(i)).startswith("posted")
+    assert work.post_review(d, ON, goal, run=run, verdict="block", reason="3rd").startswith("PARK:")

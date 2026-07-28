@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### The loop's review→fix loop is hard-capped (0.9.4)
+- **`work.max_review_cycles` (default 3) caps the autonomous review cycle.** When the loop reviews its own
+  PR and requests changes, it fixes + re-reviews — and if the review kept finding new problems, that could
+  churn until the whole run's budget ran out (the per-goal loop isn't bounded by `max_iterations`, which
+  counts goals, not review passes). Now `work.py post-review` **counts the block cycles in the goal's work
+  record and, at the cap, returns a `PARK:` line** instead of asking for another fix — the review didn't
+  converge, so a human takes it. Enforced in code, not left to the SKILL prose. `0` disables the cap.
+
 ### The loop reviews its own PR and posts the verdict — no human in the loop (0.9.3)
 - **`require_review` had only a READ side.** It parked a merge until a PR was approved, but *nothing in
   the kit posted the approval* — so with `require_review: "approval"` the loop would open a PR and park

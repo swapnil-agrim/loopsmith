@@ -47,7 +47,8 @@ state = _load("state")
 ledger = _load("ledger")
 
 DEFAULTS = {"worktree_dir": ".sdlc/work", "branch_prefix": "sdlc/", "base": "",
-            "remote": "origin", "auto_merge": "off", "merge_method": "squash"}
+            "remote": "origin", "auto_merge": "off", "merge_method": "squash",
+            "max_review_cycles": 3}     # hard cap on the loop's review→fix→re-review loop before it parks
 UNKNOWN_ATTEMPTS = 4        # GitHub computes mergeability lazily — the first read is usually UNKNOWN
 UNKNOWN_BACKOFF = 3         # seconds before the first retry, doubled each time
 BEHIND = "BEHIND"           # the one verdict the caller acts on rather than parks
@@ -463,23 +464,44 @@ def post_review(sdlc_dir, config, goal, run=None, verdict="", reason=""):
     to fix it. No human in the loop; the loop is the reviewer. `verdict='approve'` writes `loopsmith:approve`
     (the gate then merges); `verdict='block'` writes `loopsmith:block` with the reasons (the loop fixes and
     re-reviews). Posting a comment has no self-authorship restriction, unlike a formal review, so this
-    works even though every PR is opened under the loop's own account. Fail-soft: reports, never throws."""
+    works even though every PR is opened under the loop's own account.
+
+    HARD CAP on the review→fix→re-review loop. That loop could otherwise run forever if the review keeps
+    finding new problems — so this COUNTS the block cycles in the goal's work record and, once they hit
+    `work.max_review_cycles` (default 3), stops asking for more and returns a `PARK:` line: the loop has
+    genuinely not converged and a human is needed. This is enforced here, in code — not left to the prose
+    the model is asked to follow. Fail-soft: reports, never throws."""
     run = run or _run
     rec = _record(sdlc_dir, goal)
     if not rec or not rec.get("pr"):
         return "no PR for this goal — run `work.py pr` first"
     v = (verdict or "").strip().lower()
+    if v not in ("approve", "block"):
+        return "verdict must be `approve` or `block`"
+
+    cap = int(settings(config).get("max_review_cycles", 3) or 0)
+    over_cap = False
+    if v == "block":
+        cycles = int(rec.get("review_cycles", 0)) + 1
+        rec["review_cycles"] = cycles
+        _save(sdlc_dir, goal, rec)                       # persist across the fix/re-review cycles
+        over_cap = cap and cycles >= cap
+
     if v == "approve":
         body = "loopsmith:approve\n\n**LoopSmith post-PR review** — no blocking issues on the final diff."
-    elif v == "block":
-        body = ("loopsmith:block\n\n**LoopSmith post-PR review — changes requested:**\n"
-                + (reason.strip() or "(see review notes)"))
+    elif over_cap:
+        body = (f"loopsmith:block\n\n**LoopSmith post-PR review — NOT converged after {rec['review_cycles']} "
+                f"cycles; parking for a human.**\n" + (reason.strip() or "(see prior review notes)"))
     else:
-        return "verdict must be `approve` or `block`"
+        body = ("loopsmith:block\n\n**LoopSmith post-PR review — changes requested "
+                f"(cycle {rec['review_cycles']}/{cap}):**\n" + (reason.strip() or "(see review notes)"))
     try:
         run(rec["worktree"], ["gh", "pr", "comment", str(rec["pr"]), "--body", body])
     except Exception as exc:                # noqa: BLE001 - report, never traceback at the loop
         return f"could not post review on PR #{rec['pr']}: {exc}"
+    if over_cap:
+        return (f"PARK: post-PR review did not converge after {rec['review_cycles']} cycles on PR "
+                f"#{rec['pr']} — a human is needed")
     return f"posted loopsmith:{v} on PR #{rec['pr']}"
 
 

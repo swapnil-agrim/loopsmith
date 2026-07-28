@@ -729,9 +729,10 @@ adversarial pass over the real mergeable diff** (a review *after* the PR, distin
 self-review, best as a subagent with fresh context) and posts the verdict itself with **`work.py
 post-review`**: `--verdict approve` writes `loopsmith:approve` and the gate merges it; `--verdict block`
 writes `loopsmith:block` and sends it back — the loop **fixes the issues in the worktree, re-verifies, and
-re-reviews** until clean (bounded to a couple of cycles, then parks as a backstop). That's the fully
-autonomous *review-after-the-PR* cycle: `require_review` is the READ side of the gate, `post-review` is
-the WRITE side. (`/sdlc-loop` drives this — see its SKILL.)
+re-reviews** until clean. That review→fix→re-review loop can't run forever: `post-review` **counts the
+block cycles and hard-caps them at `work.max_review_cycles` (default 3)** — once hit, it parks the goal
+for a human instead of churning. That's the fully autonomous *review-after-the-PR* cycle: `require_review`
+is the READ side of the gate, `post-review` is the WRITE side. (`/sdlc-loop` drives this — see its SKILL.)
 
 **Why a comment and not the Approve button.** GitHub structurally forbids approving or requesting-changes
 on your *own* PR — and the loop opens every PR under its own account — so the formal review API can never
