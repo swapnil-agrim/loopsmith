@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### The loop reviews its own PR and posts the verdict — no human in the loop (0.9.3)
+- **`require_review` had only a READ side.** It parked a merge until a PR was approved, but *nothing in
+  the kit posted the approval* — so with `require_review: "approval"` the loop would open a PR and park
+  forever waiting for a `loopsmith:approve` that never came (the same permanent-refusal shape). The gate
+  was built for an external reviewer; there was no autonomous author.
+- **`work.py post-review` is the WRITE side.** After it opens the PR, the loop runs a **fresh, adversarial
+  review of the real mergeable diff** (a review *after* the PR — distinct from the pre-PR self-review) and
+  posts the verdict itself: `--verdict approve` → `loopsmith:approve` (the gate merges); `--verdict block
+  --reason …` → `loopsmith:block`, and the loop **fixes the issues in the worktree, re-verifies, and
+  re-reviews** until clean (bounded to a couple of cycles, then parks as a backstop). Fully autonomous —
+  the loop is the reviewer, and a plain comment sidesteps GitHub's block on approving your own PR. A human
+  can still use the same markers on a loop PR. `/sdlc-loop`'s SKILL drives the cycle; docs/config/doctor
+  reframed from "a human approves" to "the loop reviews its own PR."
+
 ### Docs caught up with the 0.9.x features (0.9.2)
 - The **"What you get"** table now lists the two 0.9.x headliners it was missing: **one-command adoption**
   (`/sdlc-setup`) and the **PR review gate** (`work.require_review`, incl. the `loopsmith:approve`/`:block`

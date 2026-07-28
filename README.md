@@ -718,22 +718,27 @@ unprotected base** (the common shape for a `staging`/`dev` branch) is invisible 
 |---|---|
 | `"off"` | **Default.** No review gate — auto-merge only respects reviews branch protection requires. |
 | `"changes"` | **Parks** on a `CHANGES_REQUESTED` review or an unresolved review thread. |
-| `"approval"` | The above, **and** requires an `APPROVED` `reviewDecision` before merging — parks until a human approves. |
+| `"approval"` | The above, **and** requires an approval before merging — parks until the PR is `loopsmith:approve`d (or formally `APPROVED`). |
 
-It reads the PR's actual `reviewDecision` + review threads (`gh pr view`, GraphQL) and **parks** — a
-human approves and re-queues, and nothing auto-merges past unaddressed feedback. Fail-open: an
-unreadable review state never blocks (the other gates still hold). Costs one extra read per merge; the
-right default for anything unattended on a low-protection base.
+It reads the PR's real review state (`reviewDecision`, review threads, and `loopsmith:` comment markers)
+and **parks** if the PR isn't cleared — nothing auto-merges past unaddressed feedback. Fail-open: an
+unreadable review state never blocks (the other gates still hold).
 
-**The self-authorship fallback (solo / single-account repos).** GitHub structurally forbids approving or
-requesting-changes on your *own* PR — so on a repo where one identity both opens and reviews (a solo
-maintainer, or an org that pins all automation to one account), the **formal** `APPROVE`/`CHANGES_REQUESTED`
-signals can never fire, and `approval` mode would refuse forever. Plain comments have no such restriction,
-so they're the self-usable channel: a **`loopsmith:block`** comment is honored as a change-request, a
-**`loopsmith:approve`** comment satisfies approval, and **`loopsmith:unblock`** clears a block (latest marker
-wins; a block overrides even a formal approval). Unresolved review *threads* (inline, line-attached comments)
-also work solo — they have no self-authorship rule either. Formal reviews still count whenever a second real
-identity is around to leave them.
+**The loop reviews its own PR — no human in the loop.** After it opens the PR, the loop runs a **fresh,
+adversarial pass over the real mergeable diff** (a review *after* the PR, distinct from the pre-PR
+self-review, best as a subagent with fresh context) and posts the verdict itself with **`work.py
+post-review`**: `--verdict approve` writes `loopsmith:approve` and the gate merges it; `--verdict block`
+writes `loopsmith:block` and sends it back — the loop **fixes the issues in the worktree, re-verifies, and
+re-reviews** until clean (bounded to a couple of cycles, then parks as a backstop). That's the fully
+autonomous *review-after-the-PR* cycle: `require_review` is the READ side of the gate, `post-review` is
+the WRITE side. (`/sdlc-loop` drives this — see its SKILL.)
+
+**Why a comment and not the Approve button.** GitHub structurally forbids approving or requesting-changes
+on your *own* PR — and the loop opens every PR under its own account — so the formal review API can never
+be the loop's channel. Plain comments have no such restriction: **`loopsmith:approve`** clears a merge,
+**`loopsmith:block`** stops it, **`loopsmith:unblock`** clears a block (latest wins; a block overrides an
+approve). The same markers let a **human** review a loop PR when they want to, and a formal `APPROVE` or an
+unresolved review thread still counts whenever a second identity leaves one.
 
 Two remaining costs. A fresh worktree has no `node_modules`/`.venv`/build cache, so a heavy
 `verify_command` pays that per goal — part of why this ships off. **And because the worktree has none

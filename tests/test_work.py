@@ -625,3 +625,40 @@ def test_a_later_block_beats_an_earlier_approve_even_when_formally_approved(tmp_
     run = _runner(_review(decision="APPROVED", comments=["loopsmith:approve", "wait, no — loopsmith:block"]))
     ok, why = work.review_gate(d, cfg, g, run=run)
     assert ok is False and "loopsmith:block" in why              # a block overrides even a formal approval
+
+
+# --- post_review: the WRITE side — the loop reviews its OWN PR and posts the verdict (no human) ---
+
+
+def test_post_review_approve_posts_the_marker(tmp_path):
+    d = _sdlc(tmp_path); goal = _started(d)
+    run = _runner([])
+    out = work.post_review(d, ON, goal, run=run, verdict="approve")
+    assert "posted loopsmith:approve" in out
+    assert any("pr comment" in c and "loopsmith:approve" in c for c in run.calls)
+
+
+def test_post_review_block_carries_the_reasons(tmp_path):
+    d = _sdlc(tmp_path); goal = _started(d)
+    run = _runner([])
+    work.post_review(d, ON, goal, run=run, verdict="block", reason="missing null check in the parser")
+    posted = next(c for c in run.calls if "pr comment" in c)
+    assert "loopsmith:block" in posted and "missing null check" in posted
+
+
+def test_post_review_rejects_a_bad_verdict(tmp_path):
+    d = _sdlc(tmp_path); goal = _started(d)
+    run = _runner([])
+    assert "approve" in work.post_review(d, ON, goal, run=run, verdict="maybe")
+    assert not any("pr comment" in c for c in run.calls)         # nothing posted on a bad verdict
+
+
+def test_post_review_needs_a_pr_first(tmp_path):
+    d = _sdlc(tmp_path)
+    wt = pathlib.Path(d).parent / ".sdlc" / "work" / "0001-x"; wt.mkdir(parents=True, exist_ok=True)
+    work._save(d, "0001-x.md", {"worktree": str(wt), "branch": "sdlc/0001-x", "base": "main", "remote": "origin"})
+    assert "no PR" in work.post_review(d, ON, "0001-x.md", run=_runner([]), verdict="approve")
+
+
+def test_post_review_is_a_registered_verb():
+    assert "post-review" in work._COMMANDS and work._COMMANDS["post-review"] is work.post_review
