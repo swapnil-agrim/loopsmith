@@ -723,6 +723,16 @@ human approves and re-queues, and nothing auto-merges past unaddressed feedback.
 unreadable review state never blocks (the other gates still hold). Costs one extra read per merge; the
 right default for anything unattended on a low-protection base.
 
+**The self-authorship fallback (solo / single-account repos).** GitHub structurally forbids approving or
+requesting-changes on your *own* PR — so on a repo where one identity both opens and reviews (a solo
+maintainer, or an org that pins all automation to one account), the **formal** `APPROVE`/`CHANGES_REQUESTED`
+signals can never fire, and `approval` mode would refuse forever. Plain comments have no such restriction,
+so they're the self-usable channel: a **`loopsmith:block`** comment is honored as a change-request, a
+**`loopsmith:approve`** comment satisfies approval, and **`loopsmith:unblock`** clears a block (latest marker
+wins; a block overrides even a formal approval). Unresolved review *threads* (inline, line-attached comments)
+also work solo — they have no self-authorship rule either. Formal reviews still count whenever a second real
+identity is around to leave them.
+
 Two remaining costs. A fresh worktree has no `node_modules`/`.venv`/build cache, so a heavy
 `verify_command` pays that per goal — part of why this ships off. **And because the worktree has none
 of your installed dependencies, your `verify_command`'s interpreter/binary path must resolve
