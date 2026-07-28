@@ -171,10 +171,11 @@ def main(argv):
     for s in skipped:
         print(f"  = .sdlc/{s} (exists, kept)")
     if created:
-        print("\nTip: commit .sdlc/goals/, .sdlc/project.md and .sdlc/config.json; add "
-              "'.sdlc/state/', '.sdlc/ledger/' and '.sdlc/work/' to .gitignore so machine-written "
-              "loop state and the two worktree paths aren't committed "
-              "(this script won't edit .gitignore for you).")
+        print("\nTip: commit .sdlc/goals/, .sdlc/project.md and .sdlc/config.json. The machine-written "
+              "dirs ('.sdlc/state/', '.sdlc/ledger/', '.sdlc/work/') must be git-ignored: run "
+              "/sdlc-setup, or `setup.py ignore .` (it never clobbers an ignore rule you already set, "
+              "and can target .git/info/exclude for a local-only adoption). This script edits no "
+              "ignore files itself.")
     if "--github" in flags:
         gcreated, gskipped = scaffold_github(target)
         print(f"\nsdlc-init: GitHub PM scaffolding - {len(gcreated)} created, {len(gskipped)} skipped")
