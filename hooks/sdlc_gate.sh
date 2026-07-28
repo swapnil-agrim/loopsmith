@@ -19,7 +19,11 @@ fi
 
 STD_MSG='GOAL-BASED SDLC — standing policy. For any non-trivial or implementation task, do NOT jump straight to coding; follow the flow and state which step you are on. (1) GOAL — restate the objective as one concrete goal (superpowers:brainstorming for feature/creative work). (2) RESEARCH — blast radius, affected files, existing patterns, constraints. (3) PLAN — write the plan (steps/files/tests/DoD) via superpowers:writing-plans. (4) PLAN-REVIEW — adversarially review the plan BEFORE implementing; never skip. (5) IMPLEMENT — superpowers:test-driven-development + executing-plans. (6) REVIEW — code-review + superpowers:verification-before-completion (evidence before claims). (7) RETROSPECTIVE — capture lessons. Issue hygiene: 1 type + >=1 component/area label; lock critical insights as you make them. Trivial, conversational, or read-only requests may be answered directly — but say so explicitly. Phase skills name the superpowers plugin (recommended companion); without it, the phase names still guide.'
 
-if ! command -v python3 >/dev/null 2>&1; then
+# Preflight the interpreter. `python3` here is whatever the user's PATH resolves — on a multi-python
+# machine that can be a BROKEN shim (a pyenv version that isn't installed, a half-broken conda base),
+# not just an absent binary. Either way, fall back to the static policy and exit 0 rather than letting
+# the hook error on every prompt. `python3 -c ''` is the cheap "does it actually run?" check.
+if ! command -v python3 >/dev/null 2>&1 || ! python3 -c '' >/dev/null 2>&1; then
   printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"%s"}}\n' \
     "GOAL-BASED SDLC — for non-trivial/implementation tasks do not jump to coding; follow Goal->Research->Plan->Plan-Review->Implement->Review->Retrospective and state the phase."
   exit 0
@@ -54,7 +58,10 @@ case "$mode" in
   *)    msg="${STD_MSG}" ;;
 esac
 
+# The preflight above proves python3 runs, so this normally succeeds — but guard it anyway: a hook's
+# LAST command sets its exit code, and a non-zero here would fail the whole UserPromptSubmit hook. If
+# emitting the context ever fails, exit 0 (no context, but never a broken prompt).
 python3 -c '
 import sys, json
 print(json.dumps({"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":sys.argv[1]}}))
-' "$msg"
+' "$msg" || exit 0
