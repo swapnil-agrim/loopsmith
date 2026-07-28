@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Hooks survive a broken `python3` on the PATH
+- **A messy multi-python machine no longer breaks the session on first use.** The hooks shell out to a
+  bare `python3` — whatever the user's PATH resolves — and on a machine with pyenv/conda that can be a
+  *broken* interpreter (a shim pointing at an uninstalled version, a half-broken base), not just an
+  absent one. Since the hooks run on every edit / web-fetch / prompt, that failed the very first tool
+  call, and the only fix a real adopter found was removing a Python version.
+- **Now it degrades to a no-op instead of erroring.** A new `hooks/_py.sh` preflights the interpreter
+  (`python3 -c ''`) and, if it can't run, exits 0 (allow) rather than failing; when it works it execs
+  straight through, so stdin/stdout/exit-code still pass and a hook can still deny. `decision_gate.py`
+  and `research_capture.py` now run through it. `sdlc_gate.sh`'s preflight catches a *broken* (not just
+  missing) `python3`, and its final emit is guarded so a failure there can't fail the prompt hook.
+
 ### Adoption-safety guards — the silent states are now loud
 For repos configured by hand (not via `/sdlc-setup`), the states that surprised real adopters are now
 surfaced instead of silent:

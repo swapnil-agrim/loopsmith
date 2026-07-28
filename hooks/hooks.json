@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/research_capture.py\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/_py.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/research_capture.py\"",
             "statusMessage": "Capturing research to the knowledge graph"
           }
         ]
@@ -34,7 +34,7 @@
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/decision_gate.py\"",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/_py.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/decision_gate.py\"",
             "statusMessage": "Checking the decision registry"
           }
         ]
