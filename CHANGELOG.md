@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Adoption-safety guards — the silent states are now loud
+For repos configured by hand (not via `/sdlc-setup`), the states that surprised real adopters are now
+surfaced instead of silent:
+- **`work.enabled: false` no longer looks like success.** A goal used to close, the ledger say `done`,
+  and *no branch/commit/PR* ever get created — with no signal; you'd only notice on a stray `git status`.
+  Now `loop.py start` prints a heads-up, `record … done` prints a loud note ("changes only in your
+  working tree, no PR"), and `/sdlc-doctor`'s dashboard says it plainly.
+- **The verify permanent-refusal trap is caught before it bites.** `verify.enforce: true` with an empty
+  `verify.command` refuses *every* `done` forever. `/sdlc-doctor` now flags it as a real gap (a per-goal
+  `verify_command` also satisfies it), and `loop.py start` warns up front rather than only failing at the
+  first `record done`.
+- **`/sdlc-doctor` reports which mechanism ignores the runtime dirs** — the tracked `.gitignore`, the
+  local `.git/info/exclude`, or neither — so an adopter catches a mismatch with their intent.
+- README documents both: the no-PR-when-`work`-off behavior, and that a host repo's own `PreToolUse`
+  edit-gate applies to LoopSmith's Implement edits too.
+
 ### `/sdlc-setup` — adopt LoopSmith into an existing repo in one pass
 - **One command configures a real repo the way a team actually wants it**, instead of ten manual edits
   to `config.json`. It detects the repo from the git remote (ssh / https / host-alias forms), finds the

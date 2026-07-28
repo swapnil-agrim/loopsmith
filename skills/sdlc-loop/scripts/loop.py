@@ -120,6 +120,21 @@ def _surface_inbox(sdlc_dir):
         pass
 
 
+def _config_warnings(config):
+    """Loud, once-per-run heads-ups for config states that silently do the wrong thing — found the hard
+    way adopting into real repos. Plain strings so the CLI prints them to stderr, never touching stdout
+    (the goal channel the caller parses)."""
+    out = []
+    if not work.enabled(config):
+        out.append("work.enabled is off — the loop writes NOTHING to git: a completed goal's changes "
+                   "stay in your working tree, no branch/commit/PR. Run /sdlc-setup or set work.enabled.")
+    verify = config.get("verify") or {}
+    if verify.get("enforce") is True and not verify.get("command"):
+        out.append("verify.enforce is on but verify.command is empty — EVERY `done` will be refused. "
+                   "Set verify.command (or a per-goal verify_command), or turn enforce off.")
+    return out
+
+
 def _record(sdlc_dir, source, goal, result, detail=""):
     if result == "done":
         source.complete(goal)
@@ -211,7 +226,10 @@ def run_loop(sdlc_dir, run_goal):
 
 def main(argv):
     if len(argv) >= 3 and argv[1] == "start":
-        state.start_run(argv[2]); return 0
+        state.start_run(argv[2])
+        for warning in _config_warnings(state.load_config(argv[2])):
+            print("loop: " + warning, file=sys.stderr)       # surface the trap up front, not 40 goals in
+        return 0
     if len(argv) >= 3 and argv[1] == "next":
         config = state.load_config(argv[2])
         _ensure_watcher(argv[2], config)            # every loop trigger keeps the watcher (and the ledger) alive
@@ -238,6 +256,9 @@ def main(argv):
                 print(f"REFUSED: {refusal} — run `loop.py verify {argv[2]} <goal>` first "
                       "(config verify.enforce is on)", file=sys.stderr)
                 return 4
+        if argv[4] == "done" and not work.enabled(config):
+            print("loop: work.enabled is off — this goal's change is only in your working tree; no "
+                  "branch/commit/PR was created (run /sdlc-setup or set work.enabled).", file=sys.stderr)
         _record(argv[2], sources.get_source(argv[2], config), argv[3], argv[4],
                 argv[5] if len(argv) > 5 else ""); return 0
     if len(argv) >= 4 and argv[1] == "spend":       # host-reported token spend → budget.max_tokens

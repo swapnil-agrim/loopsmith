@@ -152,6 +152,58 @@ def test_features_flags_an_enabled_but_unset_up_ledger(tmp_path):
     assert "NOT set up" in rows["team ledger"] and "/sdlc-ledger" in rows["team ledger"]
 
 
+# --- the verify permanent-refusal trap: enforce on with no command ---------------------------
+
+def test_flags_verify_enforce_with_empty_command():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"verify": {"enforce": True, "command": ""}})
+        c = _by_name(d.check(base, run=_runner()))["verify command present (enforce is on)"]
+        assert c["ok"] is False and "every `done` is refused" in c["fix"]
+
+
+def test_verify_check_ok_with_a_command():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"verify": {"enforce": True, "command": "pytest -q"}})
+        assert _by_name(d.check(base, run=_runner()))["verify command present (enforce is on)"]["ok"]
+
+
+def test_verify_check_ok_when_a_goal_sets_verify_command():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"verify": {"enforce": True, "command": ""}})
+        (pathlib.Path(base) / "goals").mkdir()
+        (pathlib.Path(base) / "goals" / "0001.md").write_text(
+            "---\nstatus: pending\nverify_command: pytest\n---\nx\n")
+        assert _by_name(d.check(base, run=_runner()))["verify command present (enforce is on)"]["ok"]
+
+
+def test_no_verify_check_when_enforce_is_off():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"verify": {"command": ""}})
+        assert "verify command present (enforce is on)" not in _by_name(d.check(base, run=_runner()))
+
+
+# --- the dashboard surfaces the two silent-adoption states --------------------------------------
+
+def test_features_work_off_says_nothing_is_written_to_git(tmp_path):
+    d = _doc()
+    rows = {n: s for n, s, _ in d.features(_sdlc(tmp_path, {}))}
+    assert "writes NOTHING to git" in rows["per-goal worktree + PR"]
+
+
+def test_features_reports_which_mechanism_ignores_the_runtime_dirs(tmp_path):
+    d = _doc()
+    base = _sdlc(tmp_path, {})                                       # repo root = tmp_path
+    rows_none = {n: s for n, s, _ in d.features(base)}
+    assert "NOT ignored" in rows_none["runtime dirs ignored via"]
+    (tmp_path / ".gitignore").write_text(".sdlc/\n")
+    rows_tracked = {n: s for n, s, _ in d.features(base)}
+    assert "tracked .gitignore" in rows_tracked["runtime dirs ignored via"]
+
+
 # --- standing-doc hygiene: the mechanical half of context maintenance -------------------------
 # Rot that a script can settle (a reference that no longer resolves), NOT the judgment half
 # (demoting a rule CI now enforces) — that's sdlc-retro's, because it changes files.

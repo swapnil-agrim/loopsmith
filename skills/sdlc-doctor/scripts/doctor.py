@@ -60,6 +60,15 @@ def check(sdlc_dir=".sdlc", run=None):
         out.append(_chk("team ledger initialized", (base / "ledger" / ".git").exists(),
                         "run /sdlc-ledger — one command creates the ops branch, seeds your file + TEAM.md, and pushes"))
 
+    # The permanent-refusal trap: verify.enforce on with no command refuses EVERY `done` forever, and
+    # it looks like a working gate, not a misconfig. Flag it (a per-goal `verify_command` also satisfies).
+    verify = cfg.get("verify") or {}
+    if verify.get("enforce") is True:
+        out.append(_chk("verify command present (enforce is on)",
+                        bool(verify.get("command")) or _any_goal_verify_command(base),
+                        "verify.enforce is on but no verify.command (and no goal sets verify_command) — "
+                        "every `done` is refused. Set verify.command, or turn enforce off."))
+
     # companions (optional): superpowers + code-review power phases 1/3/5/6 when present; LoopSmith's
     # portable sdlc-* executors are the absent-safe fallback everywhere else — absent is never a failure.
     if (cfg.get("companions") or "auto") != "off":
@@ -154,6 +163,45 @@ def _ledger_entries(base):
         except OSError:
             continue
     return total
+
+
+def _any_goal_verify_command(base):
+    """True if any local goal declares its own `verify_command` in frontmatter — that satisfies
+    verify.enforce even when the config command is empty, so it isn't the refusal trap."""
+    goals = pathlib.Path(base) / "goals"
+    if not goals.is_dir():
+        return False
+    for path in goals.glob("*.md"):
+        try:
+            if "verify_command:" in path.read_text(encoding="utf-8"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _ignore_mechanism(repo_root):
+    """Which git mechanism ignores the machine-written `.sdlc/` runtime dirs — the shared `.gitignore`,
+    the local `.git/info/exclude`, or neither. Reported so an adopter catches a mismatch with intent
+    (a local-only experiment shouldn't be editing the tracked .gitignore)."""
+    root = pathlib.Path(repo_root)
+
+    def covers(path):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        for raw in text.splitlines():
+            line = raw.strip().strip("/")
+            if line and not line.startswith("#") and (line == ".sdlc" or line.startswith(".sdlc/")):
+                return True
+        return False
+
+    if covers(root / ".gitignore"):
+        return "tracked .gitignore"
+    if covers(root / ".git" / "info" / "exclude"):
+        return "local .git/info/exclude (untracked — nothing the team sees)"
+    return "NOT ignored — runtime dirs may get committed (run /sdlc-setup, or setup.py ignore .)"
 
 
 def _ledger_feature_state(base, cfg):
@@ -258,8 +306,12 @@ def features(sdlc_dir=".sdlc"):
          'config: "parallel": {"enabled": true, "max_concurrent": 3}'),
         ("per-goal worktree + PR",
          "ON — a worktree/branch/PR per goal; verify runs in it"
-         if wk.get("enabled") is True else "off (the loop never writes to git)",
-         'config: "work": {"enabled": true}'),
+         if wk.get("enabled") is True else
+         "off — the loop writes NOTHING to git: a done goal's changes stay in your working tree, no PR",
+         'config: "work": {"enabled": true}  (or run /sdlc-setup)'),
+        ("runtime dirs ignored via",
+         _ignore_mechanism(pathlib.Path(base).parent),
+         "run /sdlc-setup (or setup.py ignore .) — never clobbers an ignore rule you already set"),
         ("auto-merge a clean AND safe PR",
          _automerge_state(wk),
          'config: "work": {"auto_merge": "protected"}  (off | protected | always)'),
