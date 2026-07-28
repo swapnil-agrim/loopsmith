@@ -115,9 +115,11 @@ Then repeat until the helper says stop:
    clears its own PR:**
    - **No blocking issues** → `work.py post-review .sdlc "$goal" --verdict approve` (posts `loopsmith:approve`).
    - **Blocking issues** → `work.py post-review .sdlc "$goal" --verdict block --reason "<the issues>"`, then
-     **fix them in the worktree** (back to Implement), re-run `loop.py verify`, and **re-review**. Up to **2**
-     such fix-and-re-review cycles; if it still can't come clean, `record parked "<why>"` for a human — the
-     one backstop. When a re-review comes back clean, post `--verdict approve`.
+     **fix them in the worktree** (back to Implement), re-run `loop.py verify`, and **re-review**. Repeat
+     until clean, then post `--verdict approve`. **The cycle is hard-capped:** `post-review` counts the
+     block cycles and, once they hit `work.max_review_cycles` (default **3**), returns a `PARK: …` line
+     instead of asking for another fix — the review genuinely didn't converge, so `record parked "<why>"`
+     for a human. You never have to count the cycles yourself; the cap is enforced in code.
 
    Then `work.py merge .sdlc "$goal"`. The gate is clean **and** safe: it needs THIS run's passing verify
    evidence *and* GitHub's `mergeable` + `mergeStateStatus CLEAN`, **plus — with `require_review` on — the
