@@ -252,6 +252,18 @@ def _automerge_state(wk):
     }.get(chosen, "off (a clean, safe PR is left for a human)")
 
 
+def _review_gate_state(wk):
+    """Mirrors work.review_mode() without importing it. A REAL PR-review gate independent of branch
+    protection — worth showing because it's the difference between 'auto-merge respects a human's
+    Request-changes' and 'it merges straight over it' on an unprotected base."""
+    value = wk.get("require_review")
+    mode = "approval" if value is True else (str(value).strip().lower() if value else "off")
+    return {
+        "changes": "ON (changes) — parks on a CHANGES_REQUESTED review or an unresolved thread",
+        "approval": "ON (approval) — merges only a PR that's actually APPROVED, no unresolved threads",
+    }.get(mode, "off — auto-merge only respects reviews the base branch's protection REQUIRES")
+
+
 def features(sdlc_dir=".sdlc"):
     """The capability dashboard: every optional feature, its CURRENT state, and the one-line
     enable. Informational (never a failure) — the answer to "what is on right now?"."""
@@ -315,6 +327,9 @@ def features(sdlc_dir=".sdlc"):
         ("auto-merge a clean AND safe PR",
          _automerge_state(wk),
          'config: "work": {"auto_merge": "protected"}  (off | protected | always)'),
+        ("PR review gate (independent of branch protection)",
+         _review_gate_state(wk),
+         'config: "work": {"require_review": "approval"}  (off | changes | approval)'),
     ]
     return rows
 

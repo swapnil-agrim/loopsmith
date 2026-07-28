@@ -223,6 +223,7 @@ Everything optional ships OFF — `/sdlc-doctor` prints this dashboard live (`do
 | `parallel: {"enabled": true}` | off | a goal's independent slices run concurrently in waves (`max_concurrent`, default 3) from `.sdlc/plans/<goal>.slices.json` |
 | `work: {"enabled": true}` | off | one worktree + branch + PR per goal; your checkout never moves, and `verify_command` runs in the goal's own tree |
 | `work.auto_merge` | `"off"` | `"protected"` merges only where the base *requires* checks/reviews; `"always"` merges any clean+safe PR. A fork or read-only repo never merges — it opens the PR and records `done` |
+| `work.require_review` | `"off"` | a real PR-review gate, independent of branch protection: `"changes"` parks on a Request-changes / unresolved thread; `"approval"` also requires an APPROVED PR before merging |
 | `budget.max_minutes` / `max_tokens` | unset | wall-clock / host-reported token ceilings (iterations always enforce) |
 | `knowledge_graph.enabled` | off | research capture + the self-improving graph |
 | `LOOPSMITH_GATE_GLOBAL=1` (env) | unset | restores the pre-0.6 always-on prompt gate |
@@ -704,6 +705,23 @@ whether a check happened to run.
 
 Then it arms GitHub's own `--auto` rather than merging on what it just read, so the final decision is
 an atomic re-check at merge time.
+
+**A real review, after the PR — `work.require_review` (opt-in).** By default the gate only respects a
+review your *base branch's protection* requires — so a human's ad-hoc **"Request changes" on an
+unprotected base** (the common shape for a `staging`/`dev` branch) is invisible to it, and an unattended
+`auto_merge` lands straight over it. Self-review before the PR is not enough on its own. Set
+`work.require_review` to add a real review gate, **independent of branch protection**:
+
+| Value | Behavior |
+|---|---|
+| `"off"` | **Default.** No review gate — auto-merge only respects reviews branch protection requires. |
+| `"changes"` | **Parks** on a `CHANGES_REQUESTED` review or an unresolved review thread. |
+| `"approval"` | The above, **and** requires an `APPROVED` `reviewDecision` before merging — parks until a human approves. |
+
+It reads the PR's actual `reviewDecision` + review threads (`gh pr view`, GraphQL) and **parks** — a
+human approves and re-queues, and nothing auto-merges past unaddressed feedback. Fail-open: an
+unreadable review state never blocks (the other gates still hold). Costs one extra read per merge; the
+right default for anything unattended on a low-protection base.
 
 Two remaining costs. A fresh worktree has no `node_modules`/`.venv`/build cache, so a heavy
 `verify_command` pays that per goal — part of why this ships off. And `work.py commit` stages with
