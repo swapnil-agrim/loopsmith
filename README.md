@@ -637,6 +637,18 @@ it did before — this is the only feature that lets it commit at all.
 "work": { "enabled": true, "base": "", "remote": "origin", "auto_merge": false }
 ```
 
+> **Adopting into an existing repo? Two things to know.**
+> - **With `work` off, a completed goal produces no branch/commit/PR** — its changes land only in your
+>   working tree. The issue still closes and the ledger still says `done`, so nothing *looks* wrong;
+>   `loop.py start` and `record … done` now print a heads-up, and `/sdlc-doctor` states it plainly, but
+>   if you want a PR per goal, turn `work` on (or run `/sdlc-setup`, which does).
+> - **If your repo already gates source edits with its own `PreToolUse` hook** (e.g. a plan-freshness
+>   check that denies edits to `.py`/`.ts`/… without a recent plan doc), LoopSmith's Implement phase
+>   edits go through the same tool calls a human's would, so that hook applies to them too. LoopSmith
+>   writes its own plan to `.sdlc/plans/` (or an issue comment), not to whatever path your hook checks —
+>   so make sure whatever the hook expects is satisfied, or a source-code goal can be denied
+>   mid-Implement with no LoopSmith-side signal that a *host* hook was the cause.
+
 **Why a worktree and not a branch.** The moment the loop touches git, an in-place `checkout -b`
 breaks two things silently: it moves the working copy out from under whatever you left open, and —
 because `sdlc-init` has you commit `.sdlc/goals/` — every branch switch rewrites the backlog the loop

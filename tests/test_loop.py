@@ -131,6 +131,24 @@ def test_cli_start_next_record_and_budget():
         assert run("next", base).stdout.strip() == "BUDGET"            # per-run budget=1 spent
 
 
+def test_record_done_warns_loudly_when_work_is_off(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1, max_iter=5); lp = _loop()             # _backlog config has no `work` -> off
+        lp.main(["loop.py", "record", base, base + "/goals/0001.md", "done"])
+        err = capsys.readouterr().err
+        assert "work.enabled is off" in err and "no branch/commit/PR" in err   # the silent no-PR is now loud
+
+
+def test_start_surfaces_the_work_off_and_verify_traps(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 0); lp = _loop()
+        (pathlib.Path(base) / "config.json").write_text(json.dumps(
+            {"verify": {"enforce": True, "command": ""}}))            # work off + the verify trap
+        lp.main(["loop.py", "start", base])
+        err = capsys.readouterr().err
+        assert "work.enabled is off" in err and "EVERY `done` will be refused" in err
+
+
 # --- real budgets (0.6): max_minutes / max_tokens enforce when configured ---
 
 def _write_cfg(base, budget):
