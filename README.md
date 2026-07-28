@@ -724,9 +724,13 @@ unreadable review state never blocks (the other gates still hold). Costs one ext
 right default for anything unattended on a low-protection base.
 
 Two remaining costs. A fresh worktree has no `node_modules`/`.venv`/build cache, so a heavy
-`verify_command` pays that per goal — part of why this ships off. And `work.py commit` stages with
-`git add -A`, so **anything your `verify_command` leaves behind must be gitignored** or it rides along
-into the PR (`.coverage`, `.pytest_cache/`, build output).
+`verify_command` pays that per goal — part of why this ships off. **And because the worktree has none
+of your installed dependencies, your `verify_command`'s interpreter/binary path must resolve
+independent of the working directory** — a bare relative `.venv/bin/python3` or `node_modules/.bin/…`
+fails `exit=127` on the first real per-goal run. Use an absolute interpreter path, a venv activated on
+`PATH`, or a wrapper script (`/sdlc-doctor` flags a relative one for you). And `work.py commit` stages
+with `git add -A`, so **anything your `verify_command` leaves behind must be gitignored** or it rides
+along into the PR (`.coverage`, `.pytest_cache/`, build output).
 
 ---
 

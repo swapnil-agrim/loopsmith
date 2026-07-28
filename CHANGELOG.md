@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### `/sdlc-doctor` catches the worktree interpreter-path footgun
+- **A relative `.venv`/`node_modules` path in `verify.command` now gets flagged before it bites.** Once
+  `work.enabled` is on, verify runs in a *fresh* per-goal worktree that has none of your installed
+  dependencies — so a natural `cd backend && .venv/bin/python3 -m pytest` fails `exit=127` on the first
+  real run, even though it worked with `work.enabled: false` (which ran against the main checkout). It's
+  a direct consequence of the 0.9.0 fix that correctly runs verify *in* the worktree. `/sdlc-doctor` now
+  flags a bare relative `.venv`/`venv`/`node_modules` interpreter path (an absolute path is fine), and
+  the README documents the requirement: the command must resolve independent of the working directory.
+
 ### A real PR review gate, not just self-review — `work.require_review`
 - **Auto-merge can now wait for an actual review, independent of branch protection.** Before this, the
   merge gate's "safe" (`mergeStateStatus`) only folded in reviews the *base branch's protection*
