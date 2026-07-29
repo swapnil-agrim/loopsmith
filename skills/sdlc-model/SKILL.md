@@ -41,12 +41,15 @@ The loop resolves the tier with:
 python3 "${CLAUDE_SKILL_DIR}/scripts/predict.py" resolve "<goal>" .sdlc   # prints a tier, or "off"
 ```
 
-**Why a subagent, one tier per goal:** the main session cannot switch its own model mid-run, but work
-run as a **subagent** can take a `model` override. So under `auto`, `/sdlc-loop` runs the whole goal's
-phases inside one subagent at the predicted tier (the design: "the rest of the steps run with that
-model"). `/sdlc-goal` (interactive) only **surfaces** the recommendation — per-gate approval doesn't
-compose with burying the goal in a subagent. Off-Claude, or with `model_selection: off`, `resolve`
-prints `off` and everything runs inline — a clean no-op.
+**Why per-phase subagents, one tier per goal:** the main session cannot switch its own model mid-run,
+but work run as a **subagent** can take a `model` override. So under `auto`, `/sdlc-loop` runs **each of
+the goal's phases as its own subagent** at the predicted tier (the design: "the rest of the steps run
+with that model") — one subagent per phase, **not one for the whole goal**. That granularity is what
+lets a **review phase run as a fresh sibling of the maker phase it checks** (`config.review.independent`
+— the maker is never the checker) instead of inheriting the maker's context, and it lets a mechanical
+step drop to a cheaper tier via `resolve-step`. `/sdlc-goal` (interactive) only **surfaces** the
+recommendation — per-gate approval runs inline, not through a subagent. Off-Claude, or with
+`model_selection: off`, `resolve` prints `off` and everything runs inline — a clean no-op.
 
 ## Two granularities, two axes (0.6)
 

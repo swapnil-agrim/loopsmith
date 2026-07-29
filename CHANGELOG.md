@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### The maker is never the checker — independent, project-informed review across every gate (0.9.5)
+- **Every review gate now runs as a fresh, author-blind subagent.** Plan-review ran *inline in the
+  context that wrote the plan* (zero separation, the highest-leverage gate); code review only got a
+  fresh reviewer on the companion path; the post-PR review was "best run as a subagent" (a suggestion);
+  and `model_selection: auto` **buried the whole goal in one subagent**, so every phase shared one mind.
+  A maker reviewing its own work rationalizes rather than refutes — on a lower tier that amplifies
+  hallucination exactly where the review should catch it.
+- **`review_context.py` assembles the reviewer's brief** (`brief .sdlc <goal> --for
+  plan-review|code-review|pr-review`): the north-star + conventions + contracts + the goal + a pointer
+  to the artifact — the PROJECT, never the maker's transcript. The maker context is excluded *by
+  construction*, so the reviewer re-derives blast radius from the whole repo and can disagree. A
+  diff-only reviewer can't see what a small change breaks two files away; the whole-repo grounding is
+  the point. Fail-open, ASCII-only, zero-dep.
+- **`config.review.independent` (default on).** `/sdlc-loop` dispatches one fresh subagent **per phase**
+  (not one per goal) so a reviewer is a *sibling* of the maker it checks — plan-review, code review, the
+  post-PR review (which MUST run author-blind), and the retrospective grade; `sdlc-model` and `sdlc-goal`
+  reconciled from "whole goal in one subagent" to per-phase. Where the host has no subagents it degrades
+  honestly to an inline reviewer that still loads the brief fresh. `/sdlc-doctor` reports whether
+  independent review is on or the maker is reviewing its own work (INLINE). `plan-review`, `sdlc-review`,
+  and `sdlc-retro` skills now open with the independent-reviewer stance + whole-repo blast-radius rule.
+
 ### The loop's review→fix loop is hard-capped (0.9.4)
 - **`work.max_review_cycles` (default 3) caps the autonomous review cycle.** When the loop reviews its own
   PR and requests changes, it fixes + re-reviews — and if the review kept finding new problems, that could

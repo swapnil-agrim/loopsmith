@@ -7,10 +7,13 @@ allowed-tools: Bash(python3 *), Bash(git *), Bash(gh issue *)
 # sdlc-retro
 
 The **Retrospective (Learn)** phase executor — LoopSmith's backward-learning loop, so a goal doesn't
-just ship, it *teaches*. Runs at the end of a goal, **after Review**. It is **advisory**: it proposes,
-writes only the audit-trail note freely, and **parks** any north-star or standing-rule change for your
-approval — it never rewrites your standing docs unattended (mirrors how `sdlc-kg`'s `maintain` only
-proposes).
+just ship, it *teaches*. Runs at the end of a goal, **after Review**. Grade **intent-vs-shipped as an
+independent, project-informed pass** — under `config.review.independent` (default on) the loop runs it
+as a fresh subagent, so the honest "did we build what the goal asked, and what debt did the narrow fix
+leave?" isn't answered by the same context that just argued the work was done. It is **advisory**: it
+proposes, writes only the audit-trail note freely, and **parks** any north-star or standing-rule change
+for your approval — it never rewrites your standing docs unattended (mirrors how `sdlc-kg`'s `maintain`
+only proposes).
 
 ## Executor resolution (host-aware)
 No `superpowers` / `code-review` companion covers retrospective learning, so this is **always
