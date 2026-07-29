@@ -313,3 +313,16 @@ def test_check_surfaces_rot_without_scoring_it_as_setup(capsys):
         out = capsys.readouterr().out
         assert "standing-doc hygiene" in out and "src/gone.py" in out
         assert f"{n}/{n} ready" in out                # rot did NOT become a failed setup check
+
+
+def test_features_reports_independent_review_states(tmp_path):
+    d = _doc()
+    row = "independent review (maker is never the checker)"
+    # default (no block) reads as ON — separation is the default
+    assert d._review_independence_state({}).startswith("ON")
+    # explicit off is called out as the maker reviewing its own work
+    assert "INLINE" in d._review_independence_state({"review": {"independent": False}})
+    # and it appears in the live dashboard
+    base = _sdlc(tmp_path, {"review": {"independent": True}})
+    rows = {name: state for name, state, _ in d.features(base)}
+    assert rows[row].startswith("ON")

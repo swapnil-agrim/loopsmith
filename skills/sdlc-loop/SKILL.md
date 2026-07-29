@@ -25,9 +25,12 @@ Then repeat until the helper says stop:
    informed by history instead of a flushed window (no-op when the KG is off).
    **Match the model to the goal** — run `python3 "${CLAUDE_SKILL_DIR}/../sdlc-model/scripts/predict.py"
    resolve "$goal" .sdlc`. If it prints a tier (`haiku`/`sonnet`/`opus`/`fable`), that tier is the GOAL's
-   ceiling — run its phases inside a **subagent with that `model`** (the Task tool's model override —
-   the session can't switch its own model); if it prints `off` (the default, or you're off-Claude),
-   run the phases inline as usual. **Per-STEP downgrade:** once the plan exists, resolve each plan
+   ceiling — run **each phase as its own subagent** with that `model` (the Task tool's model override —
+   the session can't switch its own model). One subagent PER PHASE, not one for the whole goal: that is
+   what keeps a reviewer phase a **sibling** of the maker phase it checks (fresh context, no nesting),
+   never a continuation of it — see the maker≠checker rule below. Artifacts pass between phases through
+   the filesystem (`.sdlc/plans/`, the worktree diff, the issue timeline), not shared context. If it
+   prints `off` (the default, or you're off-Claude), run the phases inline as usual. **Per-STEP downgrade:** once the plan exists, resolve each plan
    step too — `python3 "${CLAUDE_SKILL_DIR}/../sdlc-model/scripts/predict.py" resolve-step "<step
    text>" .sdlc` prints `model=<tier> effort=<low|medium|high>` — and run a MECHANICAL step (run the
    tests, a watcher/poll, lint) in a subagent at ITS cheaper tier/effort instead of the goal
@@ -38,6 +41,20 @@ Then repeat until the helper says stop:
    Claude if installed, else LoopSmith's portable `sdlc-brainstorm`/`sdlc-research`/`sdlc-plan`/
    `sdlc-implement`/`sdlc-review`/`sdlc-verify`; each skill's resolution header picks). `$goal` is a **file path** in local mode (read the file) or a **GitHub issue
    number** in github mode (`gh issue view "$goal"` to read it).
+
+   **The maker is never the checker (`config.review.independent`, default on).** Every review gate —
+   plan-review, the pre-PR code review, and the post-PR review at step 6 — runs as a **fresh subagent
+   that never saw the maker's context**. Give it the PROJECT, not the author:
+   `python3 "${CLAUDE_SKILL_DIR}/scripts/review_context.py" brief .sdlc "$goal" --for
+   plan-review|code-review|pr-review [--artifact <path|PR#>]` assembles the pack — north-star +
+   conventions + contracts + the goal + a pointer to the artifact — and you hand the subagent **only
+   that**. So it re-derives blast radius from the whole repo and can *disagree*, instead of
+   rubber-stamping the plan/diff it just wrote (which a lower-tier maker does — that is where a
+   self-review adds nothing). A diff-only reviewer cannot see what a small change breaks two files
+   away; the brief's whole-repo grounding is the point. Where the host has no subagents, degrade
+   honestly: run the review inline but **reload the brief fresh and take the reviewer's stance**. With
+   `review.independent: false` reviews run inline as before (the maker reviews its own work — only for a
+   trivial solo repo where the ceremony isn't worth it).
    **Match the ceremony to the goal** — after Research, resolve the lane it measured. In **local mode**
    run `python3 "${CLAUDE_SKILL_DIR}/scripts/discovery.py" lane "$goal"`; in **github mode** the goal is
    an issue number with no frontmatter, so read the lane from Research's phase note on the issue
@@ -95,9 +112,12 @@ Then repeat until the helper says stop:
 4. Entering the **review** phase? Move the board card to QC:
    `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" qc .sdlc "$goal"` (github-project board only — a no-op for local/issues).
 5. **Retrospective (Learn)** — after Review, run the **`sdlc-retro`** executor (advisory): reflect on
-   the structural + product debt the fix left behind and grade intent-vs-shipped. Autonomous mode →
-   **write only the audit-trail notes**, and **park** any north-star / standing-rule proposal to the
-   review queue for a human; never edit a standing doc unattended. Fail-open — it never breaks the run.
+   the structural + product debt the fix left behind and grade intent-vs-shipped. Under
+   `config.review.independent` this too runs as a **fresh, author-blind subagent**
+   (`python3 "${CLAUDE_SKILL_DIR}/scripts/review_context.py" brief .sdlc "$goal" --for retro`) — the
+   context that just argued the work was done shouldn't also grade whether it met the intent. Autonomous
+   mode → **write only the audit-trail notes**, and **park** any north-star / standing-rule proposal to
+   the review queue for a human; never edit a standing doc unattended. Fail-open — it never breaks the run.
 6. Record the outcome:
    `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" record .sdlc "$goal" done` (or `parked "reason"` / `failed "reason"`).
    With `config.verify.enforce` on, a `done` needs FRESH machine evidence first —
@@ -110,9 +130,11 @@ Then repeat until the helper says stop:
 
    **Then REVIEW the PR you just opened, if `config.work.require_review` is set** — a real review AFTER
    the PR. Self-review before the PR is never enough; this is a **fresh, adversarial pass over the PR's
-   real, mergeable diff** (post-commit, post-CI), best run as a **subagent with fresh context**: prefer
-   `/code-review` on the PR, else `/sdlc-review` in diff mode. **No human approves — the loop reviews and
-   clears its own PR:**
+   real, mergeable diff** (post-commit, post-CI). It **MUST run as a fresh, author-blind subagent** —
+   the maker never clears its own PR — fed the reviewer brief for this gate:
+   `python3 "${CLAUDE_SKILL_DIR}/scripts/review_context.py" brief .sdlc "$goal" --for pr-review
+   --artifact <PR#>` (see the maker≠checker rule above), running `/code-review` on the PR, else
+   `/sdlc-review` in diff mode. That subagent decides the verdict below. **No human approves — the loop reviews and clears its own PR:**
    - **No blocking issues** → `work.py post-review .sdlc "$goal" --verdict approve` (posts `loopsmith:approve`).
    - **Blocking issues** → `work.py post-review .sdlc "$goal" --verdict block --reason "<the issues>"`, then
      **fix them in the worktree** (back to Implement), re-run `loop.py verify`, and **re-review**. Repeat

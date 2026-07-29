@@ -6,6 +6,14 @@ allowed-tools: Bash
 
 # sdlc-review
 
+**You are an independent reviewer — you did not write this code.** In the loop you run as a fresh
+subagent grounded in the *project* (north-star, conventions, whole codebase, via the
+`review_context.py` brief), not the implementer's context — so you can catch what the author's
+confidence hid. **A diff-only review misses blast radius:** the diff is the *change*, the codebase is
+the *impact surface*. Before judging any change, read the code around it and grep every caller — you
+have full repo access. A small change with a wide radius is the exact failure a review exists to catch;
+you cannot see it in the diff alone.
+
 **Executor resolution (host-aware):**
 - **Claude Code + the `code-review` plugin installed** → prefer **`/code-review`** +
   **`superpowers:requesting-code-review`**.

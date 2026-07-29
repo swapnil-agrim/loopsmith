@@ -15,8 +15,8 @@ counterpart to the autonomous `/sdlc-loop`).
    a cited brief from the graph + past issues + conventions (no-op when the KG is off). If
    `model_selection` is `auto`, also surface the recommended tier — `python3
    "${CLAUDE_SKILL_DIR}/../sdlc-model/scripts/predict.py" resolve "<goal>" .sdlc` — so you and the user
-   know the intended model. (Interactive per-gate approval doesn't compose with running the whole goal
-   in one subagent, so the automatic per-goal model switch is a `/sdlc-loop` feature; here it's advisory.)
+   know the intended model. (Interactive per-gate approval runs inline, not through a subagent, so the
+   automatic per-goal model switch — one subagent per phase — is a `/sdlc-loop` feature; here it's advisory.)
    Then drive the phases, pausing for the user at each gate:
    **Goal** (restate) → **Research** (blast radius) → **Plan** → **Plan-Review** (use the
    `sdlc-plan-review` skill — never skip) → **Implement** (test-first) → **Review** (evidence before

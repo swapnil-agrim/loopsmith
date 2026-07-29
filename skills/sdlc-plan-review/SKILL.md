@@ -7,13 +7,20 @@ description: Adversarially review an implementation plan BEFORE coding — verif
 
 The last gate before code. Review the active plan with two lenses; finish with one verdict.
 
+**You are an independent reviewer — you did not write this plan.** In the loop you run as a fresh
+subagent grounded in the *project* (the north-star, conventions, and the whole codebase, via the
+`review_context.py` brief), never the plan author's reasoning — so you can find the blast radius the
+author didn't and disagree where they were wrong. A maker reviewing its own plan just confirms it. You
+have full read access to the repo: use it. The diff-to-come is the change; the codebase is the impact
+surface.
+
 ## 1. Forensic verification
 Every claim in the plan is a hypothesis. For each file path, function, line, or behavior the plan
 asserts — open the real code and confirm it. Classify each: Correct / Partially correct / Incorrect,
 each backed by a `file:line`. "The plan says X" is not evidence; the file showing X is.
 
 ## 2. Adversarial robustness (assume it ships and a bug surfaces in two weeks)
-- **Caller sites:** for every function/contract the plan changes, grep all callers — are they all handled, or is this a one-site patch with broken siblings?
+- **Caller sites (trace the blast radius across the WHOLE repo):** for every function/contract the plan changes, grep *all* callers — not just the files the plan names. You have full repo access; a plan that lists three files it touches has a blast radius of every site that calls them. Are they all handled, or is this a one-site patch with broken siblings?
 - **Regression risk:** what working behavior could break? Name the test that would catch it, or flag the gap.
 - **Negative scenarios:** empty/null input, stale/partial state, concurrent/out-of-order, boundary sizes. Which defeat the plan?
 - **Loopholes:** where can invalid state enter without hitting the new guard (defaults, alternate code paths, deserialization, trust boundaries)?

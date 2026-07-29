@@ -279,6 +279,14 @@ def _review_gate_state(wk):
     }.get(mode, "off — auto-merge only respects reviews the base branch's protection REQUIRES")
 
 
+def _review_independence_state(cfg):
+    """Is the maker kept out of its own review? Worth showing because the failure is silent: a maker
+    that reviews its own plan/diff reads as "reviewed", and on a lower tier it rubber-stamps."""
+    if (cfg.get("review") or {}).get("independent") is False:
+        return "off (INLINE — the maker reviews its own work; a fresh reviewer is not spawned)"
+    return "ON — a fresh, author-blind reviewer per gate, grounded in the north-star + whole repo"
+
+
 def features(sdlc_dir=".sdlc"):
     """The capability dashboard: every optional feature, its CURRENT state, and the one-line
     enable. Informational (never a failure) — the answer to "what is on right now?"."""
@@ -345,6 +353,9 @@ def features(sdlc_dir=".sdlc"):
         ("PR review gate (independent of branch protection)",
          _review_gate_state(wk),
          'config: "work": {"require_review": "approval"}  (off | changes | approval)'),
+        ("independent review (maker is never the checker)",
+         _review_independence_state(cfg),
+         'config: "review": {"independent": true, "context": "project"}'),
     ]
     return rows
 
