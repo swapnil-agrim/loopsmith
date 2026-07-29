@@ -25,6 +25,12 @@ import pathlib
 import subprocess
 import sys
 
+try:                    # portable output: force UTF-8 so the plugin's own non-ASCII (arrows, em-dashes)
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")   # doesn't garble to '?' or
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")   # crash on a non-UTF-8 console
+except Exception:       # (the Windows cp1252 default); a stream without reconfigure is left as-is
+    pass
+
 _HERE = pathlib.Path(__file__).resolve().parent
 
 

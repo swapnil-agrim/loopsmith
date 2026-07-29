@@ -5,6 +5,12 @@
 the logic is hermetically testable. Zero-dep."""
 import sys, json, pathlib, re
 
+try:                    # portable output: force UTF-8 so the plugin's own non-ASCII (arrows, em-dashes)
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")   # doesn't garble to '?' or
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")   # crash on a non-UTF-8 console
+except Exception:       # (the Windows cp1252 default); a stream without reconfigure is left as-is
+    pass
+
 
 def _real_run(args):
     import subprocess
@@ -24,6 +30,37 @@ def _cfg(sdlc_dir):
 
 def _chk(name, ok, fix):
     return {"name": name, "ok": bool(ok), "fix": "" if ok else fix}
+
+
+def _board_dup_risk(gh_cfg, run):
+    """Board mirroring on, but NO `project.number` pinned, and the owner already has board(s): loopsmith
+    resolves the board by TITLE, and if none matches its auto-title it CREATES a new one on first use -
+    silently duplicating a board the loop then manages instead of the adopter's. Returns a one-line fix
+    when that risk is present, else None. NOT gated on `number` (it fires precisely when number is
+    unset); read-only; a can't-read returns None (no false alarm). Catches #9 at setup."""
+    proj = gh_cfg.get("project") or {}
+    if proj.get("number"):                     # a pinned number resolves directly - no create path
+        return None
+    repo = gh_cfg.get("repo") or ""
+    owner = proj.get("owner") or (repo.split("/")[0] if "/" in repo else "@me")   # mirror sources._proj_owner
+    raw = run(["gh", "project", "list", "--owner", owner, "--format", "json", "--limit", "100"])
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    boards = (data.get("projects") if isinstance(data, dict) else data) or []
+    if not boards:                             # nothing to duplicate - a fresh create is safe
+        return None
+    name = repo.split("/")[-1] if "/" in repo else (repo or "project")
+    target = proj.get("title") or f"{name} — SDLC"   # mirror sources._proj_title (em-dash: it byte-matches)
+    if any(b.get("title") == target for b in boards):
+        return None                            # loopsmith's title already resolves - reused, not duplicated
+    titles = ", ".join(b.get("title", "") for b in boards[:4] if b.get("title"))
+    return (f"board mirroring is on with NO project.number, and {owner} already has board(s) "
+            f"({titles}) - loopsmith resolves by title and will CREATE a new board if none matches "
+            "its auto-title, silently duplicating one. Set discovery.github.project.number.")
 
 
 def _unmapped_board_fields(gh_cfg, run):
@@ -71,6 +108,9 @@ def check(sdlc_dir=".sdlc", run=None):
         if ((disc.get("github") or {}).get("project") or {}).get("enabled"):
             out.append(_chk("gh project scope", bool(auth) and "project" in auth,
                             "run: gh auth refresh -s project"))
+            dup = _board_dup_risk(disc.get("github") or {}, run)
+            if dup:
+                out.append(_chk("project.number pinned (no duplicate-board risk)", False, dup))
             unmapped = _unmapped_board_fields(disc.get("github") or {}, run)
             if unmapped is not None:
                 out.append(_chk("board custom fields mapped", not unmapped,

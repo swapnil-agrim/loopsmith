@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Board-adoption safety + portability: four silent traps made loud (0.9.7)
+The theme of the whole 0.9.x adoption series — *an adopter's incomplete config met with a loud warning,
+not silence* — applied to four more real gaps found running loopsmith on a live board.
+- **A misconfigured board no longer spawns a silent DUPLICATE.** `_ensure_board` used to `project create`
+  a new `"<repo> — SDLC"` board whenever it couldn't resolve one — so `project.enabled` on, no
+  `project.number` pinned, and a real board whose title differs from that default meant the loop quietly
+  created a *second* board and managed the wrong one (no error, everything after it "succeeds"). Now it
+  **only auto-creates when the owner has no board at all** (an unambiguous fresh setup); otherwise it warns
+  loudly and leaves mirroring off (fail-open — issues + labels still work). `/sdlc-doctor` flags the risk at
+  setup — **not gated on `number` already being set**, so it catches exactly the manual-config path that hits it.
+- **A missing `project` scope is no longer fail-*silent*.** Board writes still fail open, but the first time
+  one fails for a missing `project` token scope the loop prints a loud one-time note (`gh auth refresh -s
+  project`) instead of silently not moving cards — a transient blip stays silent as before.
+- **`/sdlc-status` counts the real backlog in github mode.** It read the (empty-in-github-mode) `.sdlc/goals`
+  dir, so a github-backed loop reported `0 parked` while N issues sat parked. It now counts open issues by
+  label (`sdlc:parked` / `sdlc:in-progress` / `sdlc:goal`), scoped to the loop's own `assignee`. Fail-open to
+  zeros when `gh` is unreachable; local mode is byte-identical.
+- **Windows / non-UTF-8 consoles stop garbling output.** The plugin's own non-ASCII output (arrows,
+  em-dashes) was mangled to `?` or crashed on a cp1252 console. The main output scripts (`loop`, `work`,
+  `doctor`, `ledger`, `sync`) now force UTF-8 stdout/stderr at import — idempotent, fail-safe, a stream
+  without `reconfigure` is left as-is.
+
 ### Loop-created issues stop being silently blank on a board's custom fields (0.9.6)
 - **The gap:** the only path that autonomously creates an issue mid-run — `handoff.py` opening a
   cross-area dependency — set labels, an assignee, and the built-in `Status` field, and *nothing else*.

@@ -186,8 +186,10 @@ Every option LoopSmith provides, at a glance:
 | **Quality-drift gate** | A behavioral corpus scored on every change; the build fails if a discipline signal regresses | `evals/run.py` |
 | **Retrospective / learning loop** | After each goal: structural + product debt, intent-vs-shipped, lessons routed to the right store (advisory) | `/sdlc-retro` |
 | **Cursor adapter** *(experimental)* | Scaffolds the SDLC discipline as an always-applied Cursor rule — *not yet verified in a live Cursor session* | `/sdlc-init --cursor` |
-| **Status at a glance** | Backlog counts, whether the review queue needs you, and when an alignment check comes due | `/sdlc-status` |
-| **Setup check-up** | Audits the setup and hands you the exact fix for anything missing — no silent failures. Also flags standing-doc references that no longer resolve | `/sdlc-doctor` |
+| **Status at a glance** | Backlog counts, whether the review queue needs you, and when an alignment check comes due — counted from the live board in github mode, so `parked` is every parked issue, not just this run's | `/sdlc-status` |
+| **Setup check-up** | Audits the setup and hands you the exact fix for anything missing — no silent failures: a work-off loop, a verify trap, an unmapped board field, a **duplicate-board risk** (mirroring on with no `project.number` pinned), standing-doc references that no longer resolve | `/sdlc-doctor` |
+| **Board-adoption safety** | Won't silently create a duplicate board when the config is under-specified; a board write that fails for a missing `project` scope says so loudly once, instead of just not moving cards | `sources.py` board layer |
+| **Portable output** | The plugin's own non-ASCII output (arrows, em-dashes) forces UTF-8, so it doesn't garble to `?` or crash on a non-UTF-8 (Windows cp1252) console | `loop`/`work`/`doctor`/`ledger`/`sync` |
 
 ---
 
