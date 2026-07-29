@@ -375,6 +375,89 @@ def test_custom_fields_ignored_when_project_disabled():
     assert not any(c and c[0] == "project" for c in run.calls)
 
 
+# --- #9: don't silently create a DUPLICATE board when the config is under-specified ---
+
+def test_refuses_to_create_a_duplicate_when_owner_already_has_a_board(capsys):
+    """enabled + no project.number + a board that doesn't match our auto-title => loopsmith must NOT
+    create '<repo> - SDLC' as a second board; it warns loudly and leaves mirroring off (fail-open)."""
+    src = _mod("sources")
+    # owner 'acme' has a real board with a title that is NOT loopsmith's default 'widget - SDLC'
+    existing = [{"number": 7, "id": "PVT_human", "title": "Acme Delivery Board"}]
+    run = project_world(projects=existing, fields=[STATUS_FILLED],
+                        issues=[{"number": 5, "labels": [{"name": "sdlc:goal"}]}])
+    gh = src.GitHubSource(_cfg(repo="acme/widget", project={"enabled": True}), run=run)   # number unset
+    gh.mark_in_progress("5")
+    v = _verbs(run)
+    assert not any(c.startswith("project create") for c in v)     # NO duplicate board created
+    assert not _edits(run)                                        # nothing carded — mirroring stayed off
+    assert any("issue edit 5" in c and "sdlc:in-progress" in c for c in v)   # issue label still set
+    err = capsys.readouterr().err
+    assert "will NOT create a new board" in err and "project.number" in err
+
+
+def test_refuse_warning_reaches_a_non_utf8_stderr(tmp_path):
+    """The #9 warning interpolates the em-dash default board title; on a cp1252/C-locale stderr it must
+    still be EMITTED, not swallowed by its own fail-open guard — else the loud warning is silent on
+    exactly the platform the portability fix targets."""
+    import subprocess, os, sys as _sys, textwrap
+    prog = textwrap.dedent(r'''
+        import importlib.util, pathlib, json
+        S = pathlib.Path(%r)
+        spec = importlib.util.spec_from_file_location("sources", S / "sources.py")
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        def run(a):
+            if a[:2] == ["project", "list"]:
+                return json.dumps({"projects": [{"number": 7, "id": "P", "title": "Human Board"}]})
+            if a[:2] == ["issue", "list"]:
+                return "[]"
+            return ""
+        cfg = {"discovery": {"source": "github", "github": {"repo": "acme/widget", "project": {"enabled": True}}}}
+        m.GitHubSource(cfg, run=run).mark_in_progress("5")
+    ''') % str(S)
+    env = dict(os.environ, PYTHONIOENCODING="ascii", LC_ALL="C", LANG="C")
+    p = subprocess.run([_sys.executable, "-c", prog], capture_output=True, text=True, env=env)
+    assert p.returncode == 0, p.stderr
+    assert "will NOT create a new board" in p.stderr        # emitted, not swallowed by the fail-open guard
+
+
+def test_still_creates_a_board_when_the_owner_has_none():
+    """The fresh-setup path is preserved: owner with ZERO boards + no number => auto-create is safe."""
+    src = _mod("sources")
+    run = project_world(projects=[], issues=[{"number": 5, "labels": [{"name": "sdlc:goal"}]}])
+    gh = src.GitHubSource(_cfg(repo="acme/widget", project={"enabled": True}), run=run)
+    gh.mark_in_progress("5")
+    assert any(c.startswith("project create") for c in _verbs(run))   # created (nothing to duplicate)
+    assert any(x["item"] == "PVTI_5" and x["option"] == "s_in_progress" for x in _edits(run))
+
+
+# --- missing `project` scope: warn LOUDLY once instead of silently no-op'ing board writes ---
+
+def test_missing_project_scope_warns_once_and_keeps_issue_transitions(capsys):
+    src = _mod("sources")
+    def run(a):
+        if a and a[0] == "project":
+            raise RuntimeError("error: your token is missing the required scopes. missing: 'project'. "
+                               "run: gh auth refresh -s project")
+        if a[:2] == ["issue", "list"]:
+            return "[]"
+        return ""
+    run.calls = []
+    real = run
+    def rec(a):
+        rec.calls.append(list(a)); return real(a)
+    rec.calls = []
+    gh = src.GitHubSource(_cfg(repo="acme/widget", project={"enabled": True}), run=rec)
+    gh._RETRY_BASE = 0
+    gh.mark_in_progress("5")     # first board write fails on scope -> warns
+    gh.complete("5")             # must NOT warn a second time
+    err = capsys.readouterr().err
+    assert "gh auth refresh -s project" in err
+    assert err.count("board updates OFF") == 1                     # one-time, not per-call spam
+    v = [" ".join(c) for c in rec.calls]
+    assert any("issue edit 5" in c and "sdlc:in-progress" in c for c in v)   # issue work still happened
+    assert any("issue close 5" in c for c in v)
+
+
 def test_custom_field_write_failure_does_not_break_the_handoff():
     """Fail-open: if the board edit throws, the issue was still created and its number returned."""
     src = _mod("sources")

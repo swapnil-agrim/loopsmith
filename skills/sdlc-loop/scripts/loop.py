@@ -8,6 +8,13 @@ Claim and outcome are mirrored to the team ledger (ledger.py) when `ledger.enabl
 such call is fail-open, so a ledger problem can never stop a run."""
 import sys, pathlib, importlib.util, time, subprocess
 
+try:                    # portable output: force UTF-8 so the plugin's own non-ASCII (arrows, em-dashes)
+    import sys as _sys  # doesn't garble to '?' or crash on a non-UTF-8 console (the Windows cp1252
+    _sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")   # default); a stream without
+    _sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")   # reconfigure is left as-is
+except Exception:
+    pass
+
 _HERE = pathlib.Path(__file__).resolve().parent
 
 

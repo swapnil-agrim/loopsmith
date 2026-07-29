@@ -19,6 +19,13 @@ import calendar
 import json
 import os
 import pathlib
+
+try:                    # portable output: force UTF-8 so the plugin's own non-ASCII (arrows, em-dashes)
+    import sys as _sys  # doesn't garble to '?' or crash on a non-UTF-8 console (the Windows cp1252
+    _sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")   # default); a stream without
+    _sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")   # reconfigure is left as-is
+except Exception:
+    pass
 import subprocess
 import sys
 import time

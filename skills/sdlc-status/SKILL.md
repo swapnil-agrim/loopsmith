@@ -9,6 +9,11 @@ allowed-tools: Bash(python3 *)
 Run `python3 "${CLAUDE_SKILL_DIR}/scripts/status.py" .sdlc` and relay the one-line summary. If the
 review queue needs attention, offer to walk the user through `.sdlc/state/review-queue.md`.
 
+In **github mode** the counts come from the live board — open issues by label (`sdlc:parked` /
+`sdlc:in-progress` / `sdlc:goal`), scoped to your `assignee` — not the (empty-in-github-mode) local
+goals dir, so `parked` reflects every parked issue, not just the current run's. Needs `gh`; fail-open
+to zeros if it's unreachable. Local mode counts `.sdlc/goals/` exactly as before.
+
 If the line reports an **alignment check due**, offer to run `/sdlc-align` — enough goals have shipped
 since the last cumulative-drift audit for a trajectory to be readable. It's advisory, so declining is
 fine; the count keeps rising and the offer returns. (Silent on projects with no north-star.)

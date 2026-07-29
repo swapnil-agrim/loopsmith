@@ -25,6 +25,49 @@ def test_summary_counts_quoted_status():   # parity with frontmatter.parse (stri
         assert _status().summary(str(base))["done"] == 1
 
 
+def _gh_sdlc(d, **gh):
+    import json
+    base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True); (base / "state").mkdir()
+    (base / "config.json").write_text(json.dumps(
+        {"discovery": {"source": "github", "github": {"repo": "acme/widget", **gh}}}))
+    return base
+
+
+def test_summary_github_mode_counts_the_board_not_the_empty_goals_dir():
+    """The retro bug: a github-backed loop reported '0 parked' while 8 sat parked, because status read
+    the (empty) .sdlc/goals dir. In github mode it must count open issues by label."""
+    import json
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_sdlc(d, assignee="@me")
+        seen = []
+
+        # A parked issue KEEPS sdlc:in-progress but drops sdlc:goal, so active-in-progress is the
+        # AND of both labels — bare sdlc:in-progress would count the 8 parked as active.
+        def run(args):
+            seen.append(args)
+            labels = tuple(a for i, a in enumerate(args) if i and args[i - 1] == "--label")
+            table = {
+                ("sdlc:goal",): 5,                       # open goals = 3 pending + 2 active in-progress
+                ("sdlc:goal", "sdlc:in-progress"): 2,    # active in-progress (still a goal)
+                ("sdlc:parked",): 8,                     # each ALSO still carries sdlc:in-progress
+                ("sdlc:in-progress",): 10,               # the trap: 2 active + 8 parked
+            }
+            return json.dumps([{"number": i} for i in range(table.get(labels, 0))])
+        out = _status().summary(str(base), run=run)
+        assert out["parked"] == 8                    # the fix: all open sdlc:parked, not 0
+        assert out["in_progress"] == 2               # ACTIVE only — not the 10 that carry the label
+        assert out["pending"] == 3                   # 5 open sdlc:goal minus 2 active in-progress
+        assert out["done"] == 0                      # not a single open-issue label in github mode
+        assert all("--assignee" in a and "@me" in a for a in seen)   # scoped to the loop's own queue
+
+
+def test_summary_github_mode_fail_open_when_gh_unavailable():
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_sdlc(d)
+        out = _status().summary(str(base), run=lambda a: "")   # gh down -> zeros, never raises
+        assert out["parked"] == 0 and out["pending"] == 0 and out["in_progress"] == 0
+
+
 def _bare(d):
     base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True); (base / "state").mkdir()
     return base

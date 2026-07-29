@@ -338,6 +338,59 @@ def test_unmapped_board_fields_flags_only_unmapped_single_selects():
     assert "Priority" not in d._unmapped_board_fields(cfg2, run)
 
 
+def test_doctor_output_survives_a_non_utf8_locale(tmp_path):
+    """Windows cp1252 / C locale: the em-dash-heavy dashboard must not crash with UnicodeEncodeError
+    or garble to '?'. The UTF-8 output guard reconfigures the streams so non-ASCII is emitted cleanly."""
+    import subprocess, os, sys, json, pathlib as _pl
+    base = tmp_path / ".sdlc"; base.mkdir()
+    base.joinpath("config.json").write_text(json.dumps({}))   # default features incl. an em-dash row
+    D = _pl.Path(__file__).resolve().parent.parent / "skills" / "sdlc-doctor" / "scripts" / "doctor.py"
+    env = dict(os.environ, LC_ALL="C", LANG="C", PYTHONIOENCODING="ascii")
+    p = subprocess.run([sys.executable, str(D), "features", str(base)],
+                       capture_output=True, text=True, env=env)
+    assert p.returncode == 0, p.stderr                        # no UnicodeEncodeError crash
+    assert "per-goal worktree + PR" in p.stdout               # output actually came through
+
+
+def test_board_dup_risk_flags_unpinned_number_with_existing_boards():
+    import json as _json
+    d = _doc()
+    boards = {"projects": [{"number": 7, "title": "Acme Delivery Board"}]}
+    run = (lambda a: _json.dumps(boards) if a[:3] == ["gh", "project", "list"] else "")
+    # no number pinned + owner already has a board => duplicate-board risk
+    cfg = {"repo": "acme/widget", "project": {"enabled": True, "owner": "acme"}}
+    fix = d._board_dup_risk(cfg, run)
+    assert fix and "project.number" in fix and "Acme Delivery Board" in fix
+    # pinning a number removes the risk (resolves directly, no create path)
+    cfg["project"]["number"] = 7
+    assert d._board_dup_risk(cfg, run) is None
+    # owner with ZERO boards => a fresh create is safe, not flagged
+    run0 = (lambda a: _json.dumps({"projects": []}) if a[:3] == ["gh", "project", "list"] else "")
+    assert d._board_dup_risk({"repo": "acme/widget", "project": {"enabled": True}}, run0) is None
+    # a board already titled loopsmith's default `<repo> — SDLC` resolves by title => NO false alarm
+    match = (lambda a: _json.dumps({"projects": [{"number": 3, "title": "widget — SDLC"}]})
+             if a[:3] == ["gh", "project", "list"] else "")
+    assert d._board_dup_risk({"repo": "acme/widget", "project": {"enabled": True}}, match) is None
+    # can't read the board list => None (no false alarm)
+    assert d._board_dup_risk({"repo": "acme/widget", "project": {"enabled": True}}, lambda a: "") is None
+
+
+def test_check_surfaces_board_dup_risk(tmp_path):
+    import json as _json
+    d = _doc()
+    base = _sdlc(tmp_path, {"discovery": {"source": "github",
+                 "github": {"repo": "acme/widget", "project": {"enabled": True, "owner": "acme"}}}})
+
+    def run(a):
+        if a[:3] == ["gh", "auth", "status"]:
+            return "Logged in ... token scopes: project"
+        if a[:3] == ["gh", "project", "list"]:
+            return _json.dumps({"projects": [{"number": 7, "title": "Acme Delivery Board"}]})
+        return ""
+    checks = {c["name"]: c for c in d.check(base, run=run)}
+    assert checks["project.number pinned (no duplicate-board risk)"]["ok"] is False
+
+
 def test_unmapped_board_fields_survives_a_malformed_custom_fields():
     """A non-dict custom_fields (e.g. a list) must NOT crash the doctor run — the helper treats it as
     'nothing mapped' and still reports the fields, staying fail-open like the rest of doctor."""

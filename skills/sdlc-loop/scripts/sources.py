@@ -9,8 +9,14 @@ status transitions are recorded, behind four ops: next_pending / mark_in_progres
 GitHubSource reaches GitHub only through an injectable `run` callable, so it is unit-testable
 without the network or `gh`.
 """
-import json, pathlib, importlib.util, time
+import json, pathlib, importlib.util, sys, time
 from datetime import datetime, timezone
+
+try:                    # portable output: force UTF-8 so the board warnings (which embed the em-dash
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")   # default board title) reach a
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")   # non-UTF-8 stderr instead of
+except Exception:       # being swallowed by their fail-open guard (the Windows cp1252 default)
+    pass
 
 _HERE = pathlib.Path(__file__).resolve().parent
 
@@ -111,6 +117,8 @@ class GitHubSource:
         self._status_options = {}               # {option name -> single-select option id} for Status
         self._all_fields = {}                   # {field name -> {"id", "options": {opt name -> id}}} all single-selects
         self._items = None                      # {issue number -> board item id}, lazily loaded
+        self._owner_had_boards = False          # did the owner already have project board(s)? (dup-guard)
+        self._scope_warned = False              # emitted the missing-`project`-scope note yet? (once/run)
 
     def _run(self, args):
         """Single chokepoint for every `gh` call. `project` subcommands are retried with bounded
@@ -250,8 +258,8 @@ class GitHubSource:
             if item_id and opt and self._field_id:
                 self._run(["project", "item-edit", "--project-id", self._project_id, "--id", item_id,
                            "--field-id", self._field_id, "--single-select-option-id", opt])
-        except Exception:
-            pass   # the board is a convenience mirror; issue labels remain the source of truth
+        except Exception as exc:
+            self._note_scope(exc)   # the board is a mirror; issue labels remain the source of truth
 
     def _apply_custom_fields(self, goal):
         """Set the adopter's configured custom single-select board fields on an issue the loop itself
@@ -281,8 +289,40 @@ class GitHubSource:
                 if fld.get("id") and opt:
                     self._run(["project", "item-edit", "--project-id", self._project_id, "--id", item_id,
                                "--field-id", fld["id"], "--single-select-option-id", opt])
+        except Exception as exc:
+            self._note_scope(exc)   # the issue is already created + assigned; the board is a mirror
+
+    def _warn_board_unresolved(self, owner, title):
+        """Loud one-time note: board mirroring is on but the config doesn't identify an existing board,
+        and the owner already has one — so loopsmith is NOT creating a (possibly duplicate) board. The
+        opposite of the silent-create bug this guards. Printed to stderr; never raises."""
+        pinned = self._project_cfg.get("number")
+        why = (f"project.number={pinned} was not found under {owner}" if pinned is not None
+               else f"no project.number is set and none of {owner}'s boards is titled {title!r}")
+        try:
+            sys.stderr.write(
+                f"loopsmith: board mirroring OFF this run - {why}, so it will NOT create a new board "
+                f"(that would risk a duplicate the loop then manages instead of yours). Set "
+                f"discovery.github.project.number to the board you mean. Issues + labels still work.\n")
         except Exception:
-            pass   # the board is a convenience mirror; the issue is already created + assigned
+            pass
+
+    def _note_scope(self, exc):
+        """A board write failed. If it's the missing-`project`-scope error (permanent, actionable),
+        say so LOUDLY once - the board silently no-op'ing on a missing scope is a real trap. A
+        transient blip (already retried in _run) stays silent: fail-open as before."""
+        if self._scope_warned:
+            return
+        msg = str(exc).lower()
+        if "project" in msg and ("scope" in msg or "auth refresh" in msg or "required scopes" in msg):
+            self._scope_warned = True
+            try:
+                sys.stderr.write(
+                    "loopsmith: board updates OFF this run - the gh token lacks the `project` scope, "
+                    "so cards are not being moved. Run: gh auth refresh -s project. Issues + labels "
+                    "still work (the board is a mirror, not the source of truth).\n")
+            except Exception:
+                pass
 
     def _proj_owner(self):
         return self._project_cfg.get("owner") or (self.repo.split("/")[0] if "/" in self.repo else "@me")
@@ -300,6 +340,13 @@ class GitHubSource:
         owner, title = self._proj_owner(), self._proj_title()
         number, pid, created_now = self._find_project(owner, title)
         if number is None:
+            # Auto-create ONLY when the owner has NO board at all (an unambiguous fresh setup). If the
+            # owner already has board(s) but none matched our number/title, creating "{repo} - SDLC"
+            # would silently spawn a DUPLICATE and quietly manage the wrong one — the config is
+            # under-specified, so refuse and say so loudly (fail-open: issues + labels still work).
+            if self._owner_had_boards:
+                self._warn_board_unresolved(owner, title)
+                return False
             data = self._gh_json(["project", "create", "--owner", owner, "--title", title, "--format", "json"])
             number, pid, created_now = data.get("number"), data.get("id"), True
         if number is None or pid is None:
@@ -319,14 +366,18 @@ class GitHubSource:
 
     def _find_project(self, owner, title):
         """(number, id, created_now=False) for an existing board matching the configured number or
-        the title, else (None, None, False) so the caller creates one."""
+        the title, else (None, None, False) so the caller creates one. Also records whether the owner
+        had ANY boards, so _ensure_board can refuse to create a duplicate into an owner that already
+        has one (the config just didn't point at it)."""
         want_num = self._project_cfg.get("number")
         try:                                              # config may author the number as a string
             want_num = int(want_num) if want_num is not None else None
         except (TypeError, ValueError):
             want_num = None
         data = self._gh_json(["project", "list", "--owner", owner, "--format", "json", "--limit", "100"])
-        for p in (data.get("projects") if isinstance(data, dict) else data) or []:
+        projects = (data.get("projects") if isinstance(data, dict) else data) or []
+        self._owner_had_boards = len(projects) > 0
+        for p in projects:
             if (want_num and p.get("number") == want_num) or p.get("title") == title:
                 return p.get("number"), p.get("id"), False
         return None, None, False
