@@ -26,6 +26,36 @@ def _chk(name, ok, fix):
     return {"name": name, "ok": bool(ok), "fix": "" if ok else fix}
 
 
+def _unmapped_board_fields(gh_cfg, run):
+    """Single-select board fields — beyond the Status field loopsmith drives, and beyond what
+    project.custom_fields already maps — that an issue the loop CREATES (a hand-off) would be left
+    blank on while every human-made issue carries them. Returns the unmapped names, [] when every
+    field is covered, or None when the board can't be read (no number yet, no `project` scope, an API
+    error) — so a can't-tell never reports a false all-clear. The one silent-data-loss trap doctor
+    can catch before it fires."""
+    proj = gh_cfg.get("project") or {}
+    repo = gh_cfg.get("repo") or ""
+    owner = proj.get("owner") or (repo.split("/")[0] if "/" in repo else "")
+    number = proj.get("number")
+    if not owner or not number:
+        return None
+    raw = run(["gh", "project", "field-list", str(number), "--owner", owner, "--format", "json", "--limit", "100"])
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    fields = (data.get("fields") if isinstance(data, dict) else data) or []
+    status_field = proj.get("status_field") or "Status"
+    cf = proj.get("custom_fields")                    # a malformed (non-dict) value must not crash the run
+    mapped = set(cf.keys()) if isinstance(cf, dict) else set()
+    return [f.get("name") for f in fields
+            if f.get("options")                       # single-select fields are the ones that carry options
+            and f.get("name") != status_field
+            and f.get("name") not in mapped]
+
+
 def check(sdlc_dir=".sdlc", run=None):
     """Return the setup checks relevant to this project's config; each is {name, ok, fix}."""
     run = run or _real_run
@@ -41,6 +71,13 @@ def check(sdlc_dir=".sdlc", run=None):
         if ((disc.get("github") or {}).get("project") or {}).get("enabled"):
             out.append(_chk("gh project scope", bool(auth) and "project" in auth,
                             "run: gh auth refresh -s project"))
+            unmapped = _unmapped_board_fields(disc.get("github") or {}, run)
+            if unmapped is not None:
+                out.append(_chk("board custom fields mapped", not unmapped,
+                                "the board has single-select field(s) loopsmith won't set on issues it "
+                                "creates: " + ", ".join(n for n in unmapped if n) + " - map them in "
+                                "discovery.github.project.custom_fields (field -> option), or backfill by "
+                                "hand, else a loop-created (hand-off) issue is left blank on them."))
 
     if kg.get("enabled") is True:
         builder = kg.get("builder", "graphify")

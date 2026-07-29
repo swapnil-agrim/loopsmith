@@ -315,6 +315,65 @@ def test_check_surfaces_rot_without_scoring_it_as_setup(capsys):
         assert f"{n}/{n} ready" in out                # rot did NOT become a failed setup check
 
 
+_BOARD_FIELDS = {"fields": [
+    {"id": "F_status", "name": "Status", "options": [{"id": "s1", "name": "Todo"}]},
+    {"id": "F_pri", "name": "Priority", "options": [{"id": "p1", "name": "High"}]},
+    {"id": "F_sec", "name": "Section", "options": [{"id": "x1", "name": "Task"}]},
+    {"id": "F_due", "name": "Due date", "type": "ProjectV2Field"},   # text/date -> no options -> not flaggable
+]}
+
+
+def test_unmapped_board_fields_flags_only_unmapped_single_selects():
+    import json as _json
+    d = _doc()
+    run = (lambda a: _json.dumps(_BOARD_FIELDS) if a[:3] == ["gh", "project", "field-list"] else "")
+    cfg = {"repo": "acme/widget", "project": {"enabled": True, "number": 8}}
+    # Status (driven) is excluded; the two custom single-selects are flagged; the date field isn't
+    assert d._unmapped_board_fields(cfg, run) == ["Priority", "Section"]
+    # mapping one leaves only the other
+    cfg["project"]["custom_fields"] = {"Priority": "High"}
+    assert d._unmapped_board_fields(cfg, run) == ["Section"]
+    # a custom status_field name is the one excluded instead of "Status"
+    cfg2 = {"repo": "acme/widget", "project": {"enabled": True, "number": 8, "status_field": "Priority"}}
+    assert "Priority" not in d._unmapped_board_fields(cfg2, run)
+
+
+def test_unmapped_board_fields_survives_a_malformed_custom_fields():
+    """A non-dict custom_fields (e.g. a list) must NOT crash the doctor run — the helper treats it as
+    'nothing mapped' and still reports the fields, staying fail-open like the rest of doctor."""
+    import json as _json
+    d = _doc()
+    run = (lambda a: _json.dumps(_BOARD_FIELDS) if a[:3] == ["gh", "project", "field-list"] else "")
+    cfg = {"repo": "acme/widget", "project": {"enabled": True, "number": 8, "custom_fields": ["Priority"]}}
+    assert d._unmapped_board_fields(cfg, run) == ["Priority", "Section"]      # no crash; list => nothing mapped
+
+
+def test_unmapped_board_fields_none_when_board_unreadable():
+    d = _doc()
+    # no project number yet -> can't enumerate -> None (never a false all-clear)
+    assert d._unmapped_board_fields({"project": {"enabled": True, "owner": "acme"}}, lambda a: "") is None
+    # number present but the call returns nothing (e.g. missing `project` scope) -> None
+    cfg = {"repo": "acme/widget", "project": {"enabled": True, "number": 8}}
+    assert d._unmapped_board_fields(cfg, lambda a: "") is None
+
+
+def test_check_surfaces_unmapped_board_fields(tmp_path):
+    import json as _json
+    d = _doc()
+    base = _sdlc(tmp_path, {"discovery": {"source": "github",
+                 "github": {"repo": "acme/widget", "project": {"enabled": True, "number": 8}}}})
+
+    def run(a):
+        if a[:3] == ["gh", "auth", "status"]:
+            return "Logged in to github.com ... token scopes: project"
+        if a[:3] == ["gh", "project", "field-list"]:
+            return _json.dumps(_BOARD_FIELDS)
+        return ""
+    checks = {c["name"]: c for c in d.check(base, run=run)}
+    assert checks["board custom fields mapped"]["ok"] is False
+    assert "Priority" in checks["board custom fields mapped"]["fix"] and "Section" in checks["board custom fields mapped"]["fix"]
+
+
 def test_features_reports_independent_review_states(tmp_path):
     d = _doc()
     row = "independent review (maker is never the checker)"

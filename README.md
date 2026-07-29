@@ -173,6 +173,7 @@ Every option LoopSmith provides, at a glance:
 | **Independent review (maker ≠ checker)** | Every review gate — plan-review, code review, the post-PR review — runs as a *fresh, author-blind* subagent grounded in the project (north-star + conventions + whole repo), never the maker's context, so it judges blast radius instead of rubber-stamping its own work. On by default | `review_context.py`, `review.independent` |
 | **Pluggable backlog** | Local goal files, GitHub issues, or a GitHub **Projects v2 board** | `discovery.source` |
 | **Board + audit trail** | Cards flow Backlog → In Progress → QC → Done → Blocked; every phase recorded on the issue | `/sdlc-init --github` |
+| **Custom board fields on loop-made issues** | An issue the loop opens itself (a hand-off) gets your board's custom single-select fields (Priority, Section, …) stamped too — not just labels + Status — so it isn't silently blank next to human-made cards; `/sdlc-doctor` flags any field you left unmapped | `project.custom_fields` |
 | **Self-improving knowledge graph** | Captures research + lessons, **tracks what it doesn't know**, prunes itself, and fills gaps | `/sdlc-kg` |
 | **Context recall** | Pulls the relevant slice of project memory into context before each goal | `/sdlc-context` |
 | **Blast-radius research** | Maps every site a goal touches, records the query so Review can re-run it, inventories the debt already there, and sizes the goal into a lane | `/sdlc-research` |

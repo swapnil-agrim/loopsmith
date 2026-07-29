@@ -99,12 +99,17 @@ class GitHubSource:
         self.col = {k: _cols.get(k, d) for k, d in
                     (("backlog", "Backlog"), ("in_progress", "In Progress"),
                      ("qc", "QC"), ("done", "Done"), ("blocked", "Blocked"))}
+        # Static values for the adopter's CUSTOM single-select board fields (name -> option name),
+        # applied to issues the loop itself creates so a loop-made card isn't blank on a field like
+        # Priority that every human-made card carries. Empty {} => historical behavior (Status only).
+        self._custom_fields = self._project_cfg.get("custom_fields") or {}
         self._board_attempted = False           # tried to ensure the board this run (success or hard-fail)
         self._board_ready = False               # board fully wired (project + status field + item cache)
         self._project_number = None
         self._project_id = None
         self._field_id = None
-        self._status_options = {}               # {option name -> single-select option id}
+        self._status_options = {}               # {option name -> single-select option id} for Status
+        self._all_fields = {}                   # {field name -> {"id", "options": {opt name -> id}}} all single-selects
         self._items = None                      # {issue number -> board item id}, lazily loaded
 
     def _run(self, args):
@@ -205,7 +210,11 @@ class GitHubSource:
         It carries the GOAL label deliberately: an assigned goal issue is picked up by that person's
         OWN loop through the `assignee` filter, so a hand-off routes itself over the backlog the team
         already shares — no new transport and no daemon. This is the only place the kit ever SETS an
-        assignee, and it is the point: parking told nobody, this tells exactly one person."""
+        assignee, and it is the point: parking told nobody, this tells exactly one person.
+
+        It also stamps the adopter's configured custom board fields (project.custom_fields) on the new
+        issue, so an issue the loop creates isn't blank on Priority/Section/… while every human-made
+        one carries them — the one board field-write beyond the built-in Status."""
         self._ensure_labels()
         for label in labels:
             try:
@@ -221,7 +230,10 @@ class GitHubSource:
             args += ["--label", label]
         out = (self._run(args) or "").strip().splitlines()
         number = out[-1].rstrip("/").rsplit("/", 1)[-1] if out else ""
-        return number if number.isdigit() else None
+        if not number.isdigit():
+            return None
+        self._apply_custom_fields(number)      # stamp Priority/Section/… so the loop-made issue matches the board
+        return number
 
     # ----- Projects-v2 board (best-effort mirror of issue status onto a kanban board) -----
     # SDLC status -> GitHub's built-in "Status" single-select. The whole layer is fail-open: a missing
@@ -240,6 +252,37 @@ class GitHubSource:
                            "--field-id", self._field_id, "--single-select-option-id", opt])
         except Exception:
             pass   # the board is a convenience mirror; issue labels remain the source of truth
+
+    def _apply_custom_fields(self, goal):
+        """Set the adopter's configured custom single-select board fields on an issue the loop itself
+        created — so a loop-made issue isn't silently blank on a field like Priority/Section while
+        every human-made issue on the board carries it. Only single-select fields are settable this
+        way (like the built-in Status); a configured field the board doesn't have, or a value that
+        isn't one of its options, is SKIPPED rather than guessed (/sdlc-doctor flags those at setup).
+        Fully fail-open: a board write never breaks the hand-off that already created the issue."""
+        if not self.project_enabled or not self._custom_fields:
+            return
+        try:
+            if not self._ensure_board(exclude=goal):
+                return
+            item_id = self._item_id(int(goal))
+            if not item_id:
+                return
+            # Carding the issue here to stamp its custom fields means _sync_backlog will now SKIP it as
+            # "already on the board", so seed its Status here too or the card sits blank. A brand-new
+            # hand-off belongs in Backlog — exactly where _sync_backlog would have placed it.
+            backlog = self._status_options.get(self.col["backlog"])
+            if backlog and self._field_id:
+                self._run(["project", "item-edit", "--project-id", self._project_id, "--id", item_id,
+                           "--field-id", self._field_id, "--single-select-option-id", backlog])
+            for fname, value in self._custom_fields.items():
+                fld = self._all_fields.get(fname) or {}
+                opt = (fld.get("options") or {}).get(value)
+                if fld.get("id") and opt:
+                    self._run(["project", "item-edit", "--project-id", self._project_id, "--id", item_id,
+                               "--field-id", fld["id"], "--single-select-option-id", opt])
+        except Exception:
+            pass   # the board is a convenience mirror; the issue is already created + assigned
 
     def _proj_owner(self):
         return self._project_cfg.get("owner") or (self.repo.split("/")[0] if "/" in self.repo else "@me")
@@ -313,6 +356,12 @@ class GitHubSource:
         if fld:
             self._field_id = fld.get("id")
             self._status_options = {o.get("name"): o.get("id") for o in (fld.get("options") or [])}
+        # Cache EVERY single-select field's options (Status plus any custom Priority/Section/…), so a
+        # custom-field write can resolve a field id + option id by name. Single-select fields are the
+        # ones that carry `options`; a text/number/date field has none and isn't settable this way.
+        self._all_fields = {f.get("name"): {"id": f.get("id"),
+                                            "options": {o.get("name"): o.get("id") for o in (f.get("options") or [])}}
+                            for f in fields if f.get("options")}
 
     @staticmethod
     def _options_mutation(field_id, names):
