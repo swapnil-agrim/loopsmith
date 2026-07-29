@@ -18,7 +18,9 @@
         "title": "",
         "number": null,
         "status_field": "Status",
-        "columns": { "backlog": "Backlog", "in_progress": "In Progress", "qc": "QC", "done": "Done", "blocked": "Blocked" }
+        "columns": { "backlog": "Backlog", "in_progress": "In Progress", "qc": "QC", "done": "Done", "blocked": "Blocked" },
+        "custom_fields": {},
+        "_custom_fields": "Values loopsmith stamps on your board's CUSTOM single-select fields for any issue IT creates (today: cross-area hand-offs), so a loop-made issue isn't silently blank on a field like Priority/Section while every human-made issue carries it. Map field NAME -> option NAME, e.g. {\"Priority\": \"Medium\", \"Section\": \"Task\"}. ONLY single-select fields are settable (like the built-in Status); a field the board lacks, or a value that isn't one of its options, is skipped - not guessed. Empty {} = the historical behavior (loopsmith sets only labels + assignee + the built-in Status). NOTE a `priority:<n>` LABEL is a different mechanism from a Projects-v2 Priority FIELD; this maps the field. /sdlc-doctor lists any single-select field you left unmapped."
       }
     }
   },

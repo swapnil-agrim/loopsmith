@@ -45,6 +45,10 @@ def project_world(projects=None, fields=None, items=None, issues=None):
         v0, v1 = a[0], (a[1] if len(a) > 1 else "")
         if v0 == "issue" and v1 == "list":
             return json.dumps(state["issues"])
+        if v0 == "issue" and v1 == "create":
+            num = state.get("next_issue", 500)
+            state["next_issue"] = num + 1
+            return "https://github.com/acme/widget/issues/%d" % num      # gh prints the new issue URL
         if v0 in ("issue", "label"):
             return ""
         if v0 == "api" and v1 == "graphql":          # the GraphQL option-set for the built-in Status field
@@ -297,3 +301,90 @@ def test_existing_board_matched_by_string_number():
     gh = src.GitHubSource(_cfg(project={"enabled": True, "number": "4", "title": "won't match by title"}), run=run)
     gh.mark_in_progress("5")
     assert not any(c[:2] == ["project", "create"] for c in run.calls)   # reused via number, not recreated
+
+
+# --- custom board fields on loop-created (hand-off) issues (issue #8: no silent-blank fields) ---
+
+# An adopter's own custom single-select field, alongside the built-in Status — the shape that used to
+# be invisible to loopsmith (it set labels + assignee + Status and nothing else).
+PRIORITY_FIELD = {"id": "F_priority", "name": "Priority", "type": "ProjectV2SingleSelectField",
+                  "options": [{"id": "p_crit", "name": "Critical"}, {"id": "p_high", "name": "High"},
+                              {"id": "p_med", "name": "Medium"}, {"id": "p_low", "name": "Low"}]}
+
+
+def _board(project=None, **kw):
+    """A board-enabled config on a neutral repo, with an existing project #4."""
+    p = {"enabled": True, "number": 4, "owner": "acme"}
+    p.update(project or {})
+    return _cfg(repo="acme/widget", project=p, **kw)
+
+
+def test_custom_fields_stamped_on_a_loop_created_issue():
+    """The fix: an issue the loop CREATES (a hand-off) gets the adopter's custom single-select field
+    set, not just labels + assignee — so it isn't blank on Priority while every human-made card has it."""
+    src = _mod("sources")
+    run = project_world(projects=[{"number": 4, "id": "PVT_x", "title": "widget — SDLC"}],
+                        fields=[STATUS_FILLED, PRIORITY_FIELD], issues=[])
+    gh = src.GitHubSource(_board(project={"custom_fields": {"Priority": "Medium"}}), run=run)
+    num = gh.create_dependency("[engine] dep", "body", "eng-owner",
+                               labels=["sdlc:dependency", "priority:P1"])
+    assert num == "500"
+    # the new issue's board item got Priority=Medium (the custom single-select field)
+    assert any(x["item"] == "PVTI_500" and x["field"] == "F_priority" and x["option"] == "p_med"
+               for x in _edits(run))
+    # ...AND its Status is seeded to Backlog: carding it to set custom fields makes _sync_backlog skip
+    # it as "already on the board", so it must not be left blank on Status.
+    assert any(x["item"] == "PVTI_500" and x["field"] == "F_status" and x["option"] == "s_backlog"
+               for x in _edits(run))
+    # and the label path is unchanged — `priority:P1` is still a LABEL on the issue (a different thing)
+    assert any(c[:2] == ["issue", "create"] and "priority:P1" in c for c in run.calls)
+
+
+def test_no_custom_fields_configured_sets_only_labels_and_assignee():
+    """Backward-compat: with no custom_fields mapping, create_dependency makes NO custom-field edit."""
+    src = _mod("sources")
+    run = project_world(projects=[{"number": 4, "id": "PVT_x", "title": "widget — SDLC"}],
+                        fields=[STATUS_FILLED, PRIORITY_FIELD], issues=[])
+    gh = src.GitHubSource(_board(), run=run)
+    assert gh.create_dependency("t", "b", "who", labels=["sdlc:dependency"]) == "500"
+    assert not any(x["field"] == "F_priority" for x in _edits(run))     # Priority never touched
+
+
+def test_custom_fields_skip_unknown_field_and_non_option_value():
+    """A configured field the board doesn't have, or a value that isn't one of its options, is
+    SKIPPED — never guessed, never a crash."""
+    src = _mod("sources")
+    run = project_world(projects=[{"number": 4, "id": "PVT_x", "title": "widget — SDLC"}],
+                        fields=[STATUS_FILLED, PRIORITY_FIELD], issues=[])
+    gh = src.GitHubSource(_board(project={"custom_fields":
+                          {"Priority": "Nope", "Nonexistent": "X"}}), run=run)
+    assert gh.create_dependency("t", "b", "who") == "500"
+    assert not any(x["field"] == "F_priority" for x in _edits(run))     # bad option -> that field skipped
+    # the issue is still carded with Backlog status; ONLY the invalid custom fields are skipped
+    p500 = [x for x in _edits(run) if x["item"] == "PVTI_500"]
+    assert p500 and all(x["field"] == "F_status" and x["option"] == "s_backlog" for x in p500)
+
+
+def test_custom_fields_ignored_when_project_disabled():
+    """Board off => custom_fields is inert; a hand-off still opens the issue, makes zero project calls."""
+    src = _mod("sources")
+    run = project_world()
+    gh = src.GitHubSource(_cfg(repo="acme/widget",
+                          project={"enabled": False, "custom_fields": {"Priority": "Medium"}}), run=run)
+    assert gh.create_dependency("t", "b", "who", labels=["sdlc:dependency"]) == "500"
+    assert not any(c and c[0] == "project" for c in run.calls)
+
+
+def test_custom_field_write_failure_does_not_break_the_handoff():
+    """Fail-open: if the board edit throws, the issue was still created and its number returned."""
+    src = _mod("sources")
+    base = project_world(projects=[{"number": 4, "id": "PVT_x", "title": "widget — SDLC"}],
+                         fields=[STATUS_FILLED, PRIORITY_FIELD], issues=[])
+    def boom(a):
+        if a[:2] == ["project", "item-edit"]:
+            raise RuntimeError("missing `project` scope")
+        return base(a)
+    boom.calls = base.calls
+    gh = src.GitHubSource(_board(project={"custom_fields": {"Priority": "Medium"}}), run=boom)
+    gh._RETRY_BASE = 0
+    assert gh.create_dependency("t", "b", "who") == "500"               # issue still created, no raise

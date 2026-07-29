@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Loop-created issues stop being silently blank on a board's custom fields (0.9.6)
+- **The gap:** the only path that autonomously creates an issue mid-run — `handoff.py` opening a
+  cross-area dependency — set labels, an assignee, and the built-in `Status` field, and *nothing else*.
+  On a board with any custom Projects-v2 single-select field (a `Priority`, a `Section`, an effort
+  estimate), a loop-created issue came out **quietly inconsistent with every human-made issue** — no
+  error, no park, just wrong data a team eventually stops trusting the board over. (And a `priority:<n>`
+  *label* is a different mechanism from a Projects-v2 `Priority` *field* — easy to think it's covered.)
+- **`discovery.github.project.custom_fields`** (default `{}`) maps a custom single-select field name to
+  an option name, e.g. `{"Priority": "Medium", "Section": "Task"}`; `create_dependency` stamps them on
+  the issue it opens (mirrors how `project.columns` maps `Status`). A field the board lacks or a value
+  that isn't one of its options is skipped, never guessed. Fail-open; empty `{}` = the prior behavior.
+- **`/sdlc-doctor` enumerates the board's real fields** and flags any single-select field beyond `Status`
+  that isn't mapped — turning a silent, discovered-months-later data-quality bug into a one-time setup
+  warning (the pattern the ledger/verify-trap checks already use). Reads the board fields live; a
+  can't-read (no `project` scope, no board yet) reports nothing rather than a false all-clear.
+
 ### The maker is never the checker — independent, project-informed review across every gate (0.9.5)
 - **Every review gate now runs as a fresh, author-blind subagent.** Plan-review ran *inline in the
   context that wrote the plan* (zero separation, the highest-leverage gate); code review only got a
