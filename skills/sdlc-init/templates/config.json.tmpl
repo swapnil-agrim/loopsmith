@@ -34,6 +34,8 @@
     "on_block": "park"
   },
   "verify": { "command": "", "enforce": false },
+  "session_start": { "enabled": false },
+  "_session_start": "OPT-IN SessionStart hook (session_start.sh). When enabled:true, injects a short SDLC policy brief + a doctor-lite install self-check as additionalContext at the start of every session, so LoopSmith's conventions are in context before the first prompt (the UserPromptSubmit gate only fires once you type). Advisory only — never blocks; the self-check warns. Off by default: silent unless a .sdlc/ exists AND this is true. Fail-open on no python3/config.",
   "work": {
     "enabled": false,
     "_comment": "One git worktree + branch + PR per goal, so the loop never moves your checkout - and never rewrites .sdlc/goals/ underneath itself by switching branches. The worktree is cut fresh from <remote>/<base>, which IS the goal-start rebase: nothing to replay, so it cannot conflict or strand a half-applied tree. verify_command then runs IN that worktree, because the main checkout does not contain the change. Off by default; absent, the loop writes to git exactly as little as before. Gitignore .sdlc/work/.",
