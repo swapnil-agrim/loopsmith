@@ -50,6 +50,17 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.sh\"",
+            "statusMessage": "Injecting the SDLC policy brief (opt-in)"
+          }
+        ]
+      }
     ]
   }
 }

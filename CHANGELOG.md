@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### SessionStart policy brief (0.9.13, opt-in)
+An OPT-IN SessionStart hook (`hooks/session_start.sh`) that injects a short SDLC policy brief — the loop's
+phases, `/sdlc-loop` vs `/sdlc-goal`, ground-in-the-north-star, plan-before-source, reviewer-≠-author — as
+`additionalContext` at the start of a session, so the conventions are in context before the first prompt
+(the UserPromptSubmit gate only fires once the user types). It also runs a **doctor-lite install
+self-check** that warns (never blocks) on a half-set-up adoption — e.g. a missing north-star points at
+`/sdlc-vision`. **Off by default:** silent unless `.sdlc/` exists AND `session_start.enabled: true`; a repo
+that never adopted LoopSmith is completely untouched. Fail-open on no python3 / no config; strict
+`enabled is true` (a string `"true"` does not enable). jq-free.
+
 ### Interactive Stop gate — don't end a session with unplanned source changes (0.9.12, opt-in)
 An OPT-IN Stop hook (`hooks/completion_gate.sh`), the Stop-time counterpart to the PreToolUse
 `hard_plan_gate`. When enabled, it refuses to let the agent stop while SOURCE files changed in the working
