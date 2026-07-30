@@ -24,6 +24,11 @@ jobs:
       - name: quality gate (Tier-1 behavioral drift vs baseline)
         run: python3 evals/run.py
 
+  # NOT a required status check yet — branch protection lists only test (3.10)/(3.12), so this job
+  # is advisory and `work.auto_merge: protected` would merge a PR whose insight tests failed.
+  # Tracked as issue #167, which cannot land inside this change: protection is out-of-band repo
+  # config that cannot be committed atomically with a diff, and requiring a check before the job
+  # exists on main would strand main if this PR were ever closed unmerged.
   insight:
     # Separate job, separate coverage gate (spec §1.1 rule 2 / issue #96, E0.S3): insight/ has its
     # own deps (duckdb) that the plugin job above must never need, and an insight/ test failure
