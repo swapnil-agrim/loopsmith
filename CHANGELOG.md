@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### The decision gate was invisible to the people it shipped for (0.9.16)
+`gates.decision_gate` was read by the hook, reported by `/sdlc-doctor`, and documented in
+`/sdlc-decide` — and absent from `.sdlc/config.json`, the one file every adopter opens to learn what
+this kit does. A feature you have to already know about in order to find is a feature that didn't ship.
+- The template now carries a `_decision_gate` entry, and it explains the thing that would otherwise
+  read as broken: **there is no `enabled: true` to set.** Authoring `.sdlc/decisions.json` *is* the
+  opt-in. Sitting between two gates that do take that flag, silence invites the natural guess — add
+  `enabled: true`, watch nothing happen, conclude the gate doesn't work. It also documents the **off**
+  switch, because "how do I turn this off" is what you search for while it's blocking you, and the
+  config file is where you'll be looking.
+- **A guard for the whole bug family, not just this instance.** Every `gates.*` key read anywhere under
+  `skills/*/scripts/` or `hooks/` must appear in the scaffolded template. This is the third time the
+  two halves of a feature were built by different changes and nothing checked they met: `lane: auto`
+  (scaffolded, nothing read it), the plan file (`hard_plan_gate` gated on a path the Plan phase was
+  never told to write), and now this. The guard also fails if its own detection idiom goes stale, so it
+  can't quietly pass forever after a refactor changes how gates are read.
+
 ### discovery-scan: propose backlog goals from the debt already in the repo (0.9.15)
 The radar surfaces what's new *outside*; this surfaces the debt already *inside*. `discovery-scan.sh` is a
 read-only, jq-free, deterministic collector that greps tracked source for two mechanical signals —
