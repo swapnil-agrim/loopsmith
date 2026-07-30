@@ -10,7 +10,9 @@
 # whose SKILL prose surfaces the matching /sdlc-<risk>-check when a category matches.
 #
 # Three principles:
-#   1. READ-ONLY & DETERMINISTIC. Only reads the repo; never mutates.
+#   1. READ-ONLY & DETERMINISTIC. Never mutates the repo tree it scans. (The one
+#      exception is sourcing the optional `.sdlc/risk-detect.conf` for glob
+#      overrides — trusted repo-local config, like direnv, inside the harness dir.)
 #   2. FAIL-OPEN. Missing dep / non-git tree -> valid empty JSON, exit 0.
 #   3. SECRET SAFETY. The content scan reads diff bodies to classify lines. For
 #      any hit it emits ONLY {category,file,line,pattern_id} — never the matched
@@ -66,6 +68,8 @@ git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { emit_
 MIGRATION_GLOBS='*migration* *migrate* *alembic* *.sql *schema.prisma *liquibase* *flyway*'
 CONTRACT_GLOBS='*openapi* *swagger* *.proto *.graphql *api/* *routes/* *controllers/* *.d.ts *.thrift'
 SENSITIVE_GLOBS='*auth* *login* *session* *permission* *rbac* *payment* *billing* .env* *.env *secret* *credential*'
+# Optional glob overrides. Sourcing executes trusted repo-local bash — it lives in the harness-owned,
+# scan-excluded .sdlc/ dir (same trust as a .envrc), not the source tree this collector reports on.
 # shellcheck disable=SC1091
 [ -f "$PROJECT_DIR/.sdlc/risk-detect.conf" ] && . "$PROJECT_DIR/.sdlc/risk-detect.conf" 2>/dev/null
 
