@@ -28,6 +28,8 @@
   "budget": { "max_iterations": 20, "max_tokens": 500000, "max_minutes": 480 },
   "gates": {
     "hard_plan_gate": { "enabled": false, "plan_freshness_hours": 24 },
+    "stop_gate": { "enabled": false, "plan_freshness_hours": 24 },
+    "_stop_gate": "OPT-IN Stop hook (completion_gate.sh). When enabled:true, refuses to let the agent STOP with unplanned SOURCE changes in the working tree (no fresh plan under .sdlc/plans/ within plan_freshness_hours) — the Stop-time counterpart to hard_plan_gate. Catches an interactive /sdlc-goal session ending early; the loop's own record step is already guarded. Off by default (installing changes nothing). Escape hatch: touch .sdlc/.allow-direct-edits. Fail-open on no python3/git/config.",
     "irreversible_actions": ["deploy", "delete", "overwrite", "spend", "migrate"],
     "on_block": "park"
   },
