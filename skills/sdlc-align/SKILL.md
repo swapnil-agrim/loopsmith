@@ -1,7 +1,7 @@
 ---
 name: sdlc-align
 description: Periodic cumulative-drift audit — look at the last stretch of shipped goals as a whole and ask whether the work still matches the north-star's stated bets, or whether the strategy has been quietly rewritten by accumulation. Use when the user runs /sdlc-align, when /sdlc-status reports an alignment check is due, or after a north-star revision.
-allowed-tools: Bash(python3 *), Bash(git *), Bash(gh issue *)
+allowed-tools: Bash(python3 *), Bash(bash *), Bash(git *), Bash(gh issue *)
 ---
 
 # sdlc-align
@@ -33,6 +33,22 @@ Gather what actually shipped in it:
 - **The work itself** — `git log` over the window: which areas of the tree absorbed the commits.
 - **The journey** — `.sdlc/journey/` notes or issue timelines, for the decisions behind the diffs.
 - **The stated direction** — the north-star's priorities, bets, and **non-goals**.
+
+**Ground it on evidence, not recall.** Before judging, run the read-only collector for a deterministic,
+secret-safe factual pack over the window — so the lenses reason from measured facts, not a re-derived
+impression of the git log:
+
+```bash
+bash "${CLAUDE_SKILL_DIR}/scripts/alignment-collect.sh" --since-days <N>
+```
+
+It emits `{"schema":"alignment-collect/v1", window, commits[], degraded[], dimensions:{d1..d7}}`: per-commit
+source/test/doc classification (d1/d3/d4), plan-adherence and churn hotspots, whether the project even
+documents how it verifies (d2, from `verify.command`), review-artifact presence (d5), decision-registry
+changes (d7), and **location-only** hard-stop flags — secrets/destructive-SQL/auth/contract touches, each
+`{commit,file,line,pattern_id}`, never the matched text (d6). It **renders no verdict** — that is your job
+below. Honour its `degraded[]` codes (`no_git`, `no_recognized_source`, `no_test_command`): a thin window
+is a thin finding, not a manufactured one.
 
 ## Lens A — cumulative direction
 Cluster the window's goals into themes and name the dominant two or three. Then compare against the

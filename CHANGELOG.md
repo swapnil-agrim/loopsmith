@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### alignment-collect: the cumulative-drift audit runs on evidence, not recall (0.9.17)
+`sdlc-align` (the window-level drift check) was judgment-only prose — the model re-derived the facts from
+the git log each time. `skills/sdlc-align/scripts/alignment-collect.sh` grounds it: a read-only, jq-free,
+deterministic collector that gathers FACTS over an N-day window (`--since-days N`) into one evidence pack
+(`schema:"alignment-collect/v1"`) — `window`, `commits[]`, `degraded[]`, and seven dimensions (per-commit
+source/test/doc classification, plan-adherence + churn hotspots, whether the project documents how it
+verifies, review-artifact presence, decision-registry changes, and hard-stop flags). It **renders no
+verdict** — `sdlc-align` still judges; it just reasons from measured facts now.
+- **Secret-safe:** the hard-stop scan reads diff bodies but emits ONLY `{commit,file,line,pattern_id}` —
+  never the matched substring (a committed `password = "…"` surfaces as a location, never the value).
+- **Fail-open:** missing dep / non-git / unparseable → a valid **minimal** pack with a machine-readable
+  `degraded[]` code (`no_git` / `no_recognized_source` / `no_test_command`), exit 0.
+- Retargeted to LoopSmith conventions: `.sdlc/plans/`, `verify.command`, `.sdlc/reviews/`,
+  `.sdlc/decisions.json`; excludes `.sdlc/knowledge/**` (machine-accumulated) from the commit walk.
+
 ### The decision gate was invisible to the people it shipped for (0.9.16)
 `gates.decision_gate` was read by the hook, reported by `/sdlc-doctor`, and documented in
 `/sdlc-decide` — and absent from `.sdlc/config.json`, the one file every adopter opens to learn what
@@ -18,7 +33,6 @@ this kit does. A feature you have to already know about in order to find is a fe
   (scaffolded, nothing read it), the plan file (`hard_plan_gate` gated on a path the Plan phase was
   never told to write), and now this. The guard also fails if its own detection idiom goes stale, so it
   can't quietly pass forever after a refactor changes how gates are read.
-
 ### discovery-scan: propose backlog goals from the debt already in the repo (0.9.15)
 The radar surfaces what's new *outside*; this surfaces the debt already *inside*. `discovery-scan.sh` is a
 read-only, jq-free, deterministic collector that greps tracked source for two mechanical signals —
