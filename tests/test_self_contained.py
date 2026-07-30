@@ -33,7 +33,13 @@ def test_no_onshot_specifics_in_shipped_files():
     scan_suffixes = (".py", ".md", ".json", ".sh", ".toml", ".yml", ".yaml", ".txt", ".cfg", ".tmpl")
     # Exclude tests/ + caches: test files legitimately NAME the banned words as leakage guards
     # (test_hook.py, test_packaging_slice4.py) — that's not host-project coupling in shipped logic.
-    skip_dirs = {"tests", "__pycache__", ".pytest_cache"}
+    # A virtualenv or egg-info tree is NOT shipped surface — it is third-party code sitting in the
+    # working directory. Excluding it does not weaken this guard, which is about what THIS REPO
+    # ships. It became necessary the moment insight/ turned pip-installable (#95): `pip install -e
+    # insight/` materialises duckdb and pygments, both of which contain the banned substring
+    # "Temporal" in unrelated contexts, so without this the documented install command reddens an
+    # unrelated test. `*.egg-info` is matched by suffix because its name carries the package name.
+    skip_dirs = {"tests", "__pycache__", ".pytest_cache", ".venv", "venv", "build", "dist"}
     offenders = []
     for p in ROOT.rglob("*"):
         if not p.is_file() or p.suffix not in scan_suffixes:
@@ -43,7 +49,7 @@ def test_no_onshot_specifics_in_shipped_files():
         # examples/**/.sdlc/ (the committed worked example) is still scanned.
         if rel.parts and rel.parts[0] == ".sdlc":
             continue
-        if skip_dirs & set(rel.parts):
+        if skip_dirs & set(rel.parts) or any(q.endswith(".egg-info") for q in rel.parts):
             continue
         text = p.read_text(errors="ignore")
         offenders += [f"{p.relative_to(ROOT)}: {b}" for b in banned if b in text]

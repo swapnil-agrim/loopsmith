@@ -34,5 +34,6 @@ The plugin and this product communicate through **file formats, never imports** 
 Nothing under `skills/` or `hooks/` may import `insight`, and nothing here may import them as
 Python modules — reading their output files by path is the entire contract. `insight/` will also
 get its own dependencies, CI job, and version, none of which the plugin installs — that is
-[issue #96 (E0.S2)](https://github.com/swapnil-agrim/loopsmith/issues/96) and
-[#97 (E0.S3)](https://github.com/swapnil-agrim/loopsmith/issues/97); none of it exists yet.
+[issue #95 (E0.S2)](https://github.com/swapnil-agrim/loopsmith/issues/95) for the package and its
+dependencies, and [#96 (E0.S3)](https://github.com/swapnil-agrim/loopsmith/issues/96) for the
+separate CI job and coverage gate.

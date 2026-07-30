@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "insight"
+dynamic = ["version"]
+description = "LoopSmith Insight: the analytics platform and configuration UI for LoopSmith."
+readme = "README.md"
+license = "BUSL-1.1"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+dependencies = [
+    # Compatible-release clause: a lower bound (1.4) and an upper bound at the next
+    # major (<2.0) in one token, so a breaking major bump can't slip in silently.
+    "duckdb~=1.4",
+]
+
+[project.scripts]
+insight = "insight.__main__:main"
+
+[tool.setuptools]
+# insight/ is both the pip project root (this file) and the "insight" import root —
+# there is no separate src/ or nested insight/insight/. package-dir reroutes the
+# "insight" package (and everything under it) to ".", i.e. this directory, so
+# insight/ingest/ resolves as insight.ingest instead of a stray top-level "ingest".
+packages = ["insight", "insight.ingest", "insight.metrics", "insight.gaps", "insight.dash"]
+package-dir = { "insight" = "." }
+
+[tool.setuptools.dynamic]
+# The single source of truth is the VERSION file, not this file — see VERSION.
+version = { file = "VERSION" }
