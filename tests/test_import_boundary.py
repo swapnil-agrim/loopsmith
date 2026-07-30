@@ -7,12 +7,15 @@ spec's §1.1 and ledger.py's own "an older reader ignores a field it does not kn
 reading a path is fine, `import insight` / `import skills` / `import hooks` is not.
 
 WHY AST, NOT TEXT. Grepping for the substring "import insight" would false-positive on this very
-sentence, and on test_self_contained.py's legitimate comment mentioning "insight" in prose (the
-brief for this file calls that out by name) — and would false-negative on `import insight as ins`
-or `import os, insight, sys`. So this checker parses every file with `ast` and inspects only
-`ast.Import`/`ast.ImportFrom` nodes: real import statements, never comments or docstrings. Verified
-empirically (not assumed): a docstring plus a commented-out `# from insight import x` produces zero
-Import/ImportFrom nodes — see test_ignores_comment_and_docstring_mentions.
+sentence — this docstring is prose, never an import statement — and would false-negative on `import
+insight as ins` or `import os, insight, sys`. (A repo-wide grep, unlike this checker, would also
+trip on test_self_contained.py's legitimate comment mentioning "insight" in prose — the brief for
+this file calls that out by name — but this guard itself never walks tests/, only skills/, hooks/,
+and insight/, so that file was never actually at risk from THIS checker specifically.) So this
+checker parses every file with `ast` and inspects only `ast.Import`/`ast.ImportFrom` nodes: real
+import statements, never comments or docstrings. Verified empirically (not assumed): a docstring
+plus a commented-out `# from insight import x` produces zero Import/ImportFrom nodes — see
+test_ignores_comment_and_docstring_mentions.
 
 WHAT COUNTS AS A MATCH. `import insight`, `import insight.ingest`, `import insight.ingest as ii`
 (Import) and `from insight import x`, `from insight.ingest import y` (ImportFrom) are all caught by
@@ -26,11 +29,11 @@ ONLY ABSOLUTE IMPORTS COUNT (`ImportFrom.level == 0`). `from . import x` and eve
 import x` (level=1, module=="insight", confirmed via ast.dump) resolve a name INSIDE the current
 package, never the top-level package of the same name, so they can never cross this boundary no
 matter what text follows the dots — see test_ignores_relative_import_named_like_the_banned_module.
-This is also why this checker needs no name-based directory skip, and so cannot reopen
-tests/test_licence_boundary.py's `env`/`build`/`dist` hole (where a directory-name skip couldn't
-tell a build artifact from a real module of the same name): this checker never excludes a directory
-by what it is called, and never matches a module by name unless that name is the actual absolute
-target of a real import statement.
+An import is matched only by the actual absolute target of a real import statement, first segment,
+exact — never a substring, and never a directory name. (The directory SKIP is a separate mechanism
+from import matching; see THE DIRECTORY SKIP below for exactly what it does and does not exclude by
+name — it is not all structural, and saying otherwise would be the exact false claim
+tests/test_licence_boundary.py's own docstring records shipping and having to correct.)
 
 DYNAMIC IMPORTS — `importlib.import_module("insight")`, `__import__("insight")` — ARE DELIBERATELY
 NOT COVERED. Both take an arbitrary expression as their argument in the general case (a variable, a
@@ -46,15 +49,32 @@ call produces no Import/ImportFrom node at all, so it is never a special case th
 carve out; see test_ignores_the_spec_from_file_location_sibling_loading_pattern, and, against the
 real tree, test_skills_and_hooks_do_not_import_insight passing today.
 
-STRUCTURAL SKIP, THE SAME APPROACH AS tests/test_licence_boundary.py. That file's module docstring
-records two holes a near-identical guard shipped: a name-based skip (`env`/`build`/`dist`, at any
-depth — also plausible module names) and a `.gitignore`-based skip (which only relocated the same
-name heuristic). Its fix is structural: a directory is excluded only if it IS a virtualenv
-(`pyvenv.cfg` AND a `bin/`/`Scripts/` launcher dir — both required, so one planted `pyvenv.cfg`
-can't veto a real module), or is named `__pycache__`, or ends `.egg-info`. That logic is
-reimplemented here (`_is_virtualenv`, `_owned_py_files`) rather than imported: every guard test file
-in this repo defines its own scan helpers rather than sharing a module (test_self_contained.py and
-test_licence_boundary.py both do), and this file follows that convention.
+THE DIRECTORY SKIP, THE SAME APPROACH AS tests/test_licence_boundary.py — worth being exact about
+which part is which. That file's module docstring records two holes a near-identical guard shipped:
+a name-based skip (`env`/`build`/`dist`, at any depth — also plausible module names) and a
+`.gitignore`-based skip (which only relocated the same name heuristic). Its fix, mirrored here, is
+exactly ONE structural (content-based) exclusion — a directory IS a virtualenv only if it carries
+BOTH `pyvenv.cfg` and a `bin/`/`Scripts/` launcher dir, both required, so one planted `pyvenv.cfg`
+can't veto a real module (`_is_virtualenv`) — plus TWO exclusions that ARE by name: `__pycache__`
+and anything ending `.egg-info`. Those two are safe to match by name, unlike `env`/`build`/`dist`,
+because neither is a plausible module name: `__pycache__` is RESERVED by CPython (PEP 3147 writes
+bytecode there) and the dot in `*.egg-info` makes it unimportable as a Python package — and both are
+gitignored at the repo root, so their contents cannot be committed without `git add -f`. Do not
+extend this by-name list to a merely conventional name (`node_modules`, `.tox`) without checking
+both halves first — reserved-or-unimportable, AND gitignored.
+
+This logic is reimplemented here (`_is_virtualenv`, `_owned_py_files`) rather than imported from
+tests/test_licence_boundary.py, and the real reason is narrower than "every guard file defines its
+own helpers": this repo has no shared test-helper module to import from (no conftest.py, and no
+test file imports another's functions — checked directly, not assumed). tests/test_licence_boundary.py
+factors its scan into named helpers the same way this file does; tests/test_self_contained.py does
+NOT — it inlines its scan directly in the test bodies and deliberately shares a module-level
+SKIP_DIRS constant instead, precisely so its own pinning test reads the SAME object the scan uses
+(see that file's comment: a private copy in an earlier version "pinned nothing at all"). So
+test_self_contained.py is not a second example of "defines its own scan helpers" — it demonstrates
+the opposite convention, inlining the scan and sharing a constant — and citing it as such would
+misstate the very convention it demonstrates.
+
 test_modules_named_like_build_trees_are_still_checked and
 test_a_lone_pyvenv_cfg_cannot_hide_a_module below pin the same two holes shut for THIS checker, on
 planted fixtures, so the coverage does not depend on skills/hooks/insight happening to contain a
@@ -71,12 +91,26 @@ test_skills_and_hooks_do_not_import_insight has live coverage; insight/ has few 
 (#95's package skeleton), so — matching the pattern test_licence_boundary.py settled on — the
 checker is factored into a pure function (`_boundary_violations`) and proven against planted
 tmp_path fixtures for BOTH directions, so its correctness never depends on what either tree
-currently contains.
+currently contains. The tree tests themselves also assert `_owned_py_files` is non-empty for every
+root they scan, so a renamed or emptied skills/, hooks/, or insight/ fails loudly instead of passing
+with zero signal — `_boundary_violations(Path("/does/not/exist"), ...)` returns `[]`, not an error.
 
 KNOWN RESIDUE, stated so nobody mistakes this for airtight (mirrors test_licence_boundary.py's own
 note — checked directly for this file, not assumed true by similarity): `rglob` does not follow
-symlinked directories on this repo's Python 3.9 baseline, so `insight/core -> ../src` would hide
-that tree from this guard.
+symlinked directories, so `insight/core -> ../src` would hide that tree from this guard; and
+planting BOTH a `pyvenv.cfg` and a `bin/` inside a real module still silences it — the same
+mechanism that makes the legitimate case work at all (test_a_real_virtualenv_is_skipped below),
+verified directly against this file's own `_boundary_violations` rather than assumed from
+tests/test_licence_boundary.py's note. Both are two-artifact, diff-visible moves — the veto this
+guard closed was a one-file one.
+
+A further residue specific to this checker: `importlib.util.spec_from_file_location` (see DYNAMIC
+IMPORTS above) is out of scope everywhere, including ACROSS the plugin/product boundary itself. That
+paragraph credits the call as legitimate sibling-loading inside skills/sdlc-loop/scripts/ — true
+there — but a future insight/ingest/*.py could use the identical call to load, say,
+skills/sdlc-loop/scripts/frontmatter.py by file path, and this guard would not flag it: the call
+produces no Import/ImportFrom node regardless of which side of the boundary its target file sits on.
+That IS the code coupling spec §1.1 rule 1 forbids. This guard does not attempt to detect it.
 """
 import ast
 import os
@@ -103,12 +137,16 @@ def _is_virtualenv(directory):
 
 
 def _owned_py_files(root):
-    """Every .py file under `root` this repo owns: structural skip only (virtualenv by content,
-    `__pycache__`/`*.egg-info` by name — both gitignored and unimportable/reserved, never a
-    plausible module name) — no git, no ignore rules, no by-name directory skip. Mirrors
-    tests/test_licence_boundary.py's `_owned_py_files`.
+    """Every .py file under `root` this repo owns. ONE exclusion is structural — a virtualenv, by
+    content, see `_is_virtualenv` — and TWO are by name, `__pycache__` and `*.egg-info`, safe to
+    match by name only because neither is a plausible module name (reserved/unimportable, and both
+    gitignored — see the module docstring for the full argument). No git, no ignore rules, and no
+    skip for a name a real module COULD plausibly have (`env`, `build`, `dist` are still walked).
+    Mirrors tests/test_licence_boundary.py's `_owned_py_files`.
     """
     out = []
+    # "*.[pP][yY]": pathlib's glob is case-sensitive on POSIX regardless of the
+    # filesystem, so a plain "*.py" misses LOUD.PY on the Linux CI runner too.
     for path in sorted(root.rglob("*.[pP][yY]")):
         rel = path.relative_to(root)
         if "__pycache__" in rel.parts or any(part.endswith(".egg-info") for part in rel.parts):
@@ -138,15 +176,22 @@ def _imported_root_modules(source, filename):
 
 def _boundary_violations(root, banned):
     """The guard, as a pure function tested against planted fixtures (see module docstring) rather
-    than only against whatever `root` currently contains. Returns one sorted
-    "relpath: imports x, y" entry per offending file, relative to `root`.
+    than only against whatever `root` currently contains. Returns one sorted entry per offending
+    file, relative to `root`: "relpath: imports x, y", or "relpath: unparseable" when `ast.parse`
+    itself cannot read the file (invalid syntax, an embedded NUL byte, ...) — reported as a normal
+    violation rather than an uncaught traceback, because failing loud beats a raw exception, and
+    silently skipping the file would be exactly the kind of hole this file exists to close.
     """
     violations = []
     for path in _owned_py_files(root):
+        rel = path.relative_to(root)
         text = path.read_text(encoding="utf-8-sig", errors="replace")
-        hits = _imported_root_modules(text, str(path)) & banned
+        try:
+            hits = _imported_root_modules(text, str(path)) & banned
+        except (SyntaxError, ValueError):
+            violations.append(f"{rel}: unparseable")
+            continue
         if hits:
-            rel = path.relative_to(root)
             violations.append(f"{rel}: imports {', '.join(sorted(hits))}")
     return sorted(violations)
 
@@ -159,6 +204,15 @@ def test_skills_and_hooks_do_not_import_insight():
     package. The ALLOWED coupling is reading insight/'s output files by path (there are none yet —
     insight/ingest is still a stub, issue #98); `import insight` / `from insight import x` /
     `from insight.<anything> import y` is not."""
+    for name in ("skills", "hooks"):
+        assert name in _PLUGIN_DIRS, (
+            f"{name}/ was dropped from _PLUGIN_DIRS — it would silently stop being scanned at all"
+        )
+        assert _owned_py_files(ROOT / name), (
+            f"{name}/ has no owned .py files today — if it was renamed or emptied this test would "
+            "otherwise pass with zero real coverage (_boundary_violations on a missing/empty "
+            "directory returns [] with no error)"
+        )
     violations = []
     for name in _PLUGIN_DIRS:
         violations += [f"{name}/{v}" for v in _boundary_violations(ROOT / name, _BANNED_INSIGHT)]
@@ -173,6 +227,11 @@ def test_insight_does_not_import_skills_or_hooks():
     package. The ALLOWED coupling is insight/ reading ledger/*/*.jsonl, goal frontmatter,
     config.json, state/* straight off disk; `import skills` / `import hooks` (or a submodule of
     either) is not."""
+    assert _owned_py_files(ROOT / "insight"), (
+        "insight/ has no owned .py files today — if it was renamed or emptied this test would "
+        "otherwise pass with zero real coverage (_boundary_violations on a missing/empty "
+        "directory returns [] with no error)"
+    )
     violations = [f"insight/{v}" for v in _boundary_violations(ROOT / "insight", _BANNED_PLUGIN)]
     assert not violations, (
         "insight/ must never `import skills` or `import hooks` — the contract with the plugin is "
@@ -211,6 +270,29 @@ def test_flags_from_submodule_import(tmp_path):
 
 def test_flags_multiple_names_on_one_import_line(tmp_path):
     (tmp_path / "leak.py").write_text("import os, insight, sys\n", encoding="utf-8")
+    assert _boundary_violations(tmp_path, _BANNED_INSIGHT) == ["leak.py: imports insight"]
+
+
+def test_flags_import_inside_a_function(tmp_path):
+    """`ast.walk` descends into every nested node; `for node in tree.body` would only look at
+    top-level statements and silently stop catching a lazy import like this one — the most likely
+    real-world form of accidental coupling (a function that imports insight only when called)."""
+    (tmp_path / "leak.py").write_text(
+        "def load():\n    import insight\n    return insight\n",
+        encoding="utf-8",
+    )
+    assert _boundary_violations(tmp_path, _BANNED_INSIGHT) == ["leak.py: imports insight"]
+
+
+def test_flags_import_under_type_checking(tmp_path):
+    """Same reason as above: an import nested under `if TYPE_CHECKING:` is still a real ast.Import
+    node, just not at module top level, so `tree.body` alone would miss it too."""
+    (tmp_path / "leak.py").write_text(
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    import insight\n",
+        encoding="utf-8",
+    )
     assert _boundary_violations(tmp_path, _BANNED_INSIGHT) == ["leak.py: imports insight"]
 
 
@@ -267,6 +349,21 @@ def test_a_file_with_a_bom_still_parses(tmp_path):
     assert _boundary_violations(tmp_path, _BANNED_INSIGHT) == ["leak.py: imports insight"]
 
 
+def test_flags_an_unparseable_file(tmp_path):
+    """ast.parse raises SyntaxError on invalid syntax (Python-2-only `print` statements, a
+    too-new-for-the-running-interpreter construct, ...). That must surface as a normal violation,
+    not an uncaught traceback that aborts the whole scan."""
+    (tmp_path / "broken.py").write_text("print 'not valid python 3'\n", encoding="utf-8")
+    assert _boundary_violations(tmp_path, _BANNED_INSIGHT) == ["broken.py: unparseable"]
+
+
+def test_flags_a_file_with_a_null_byte(tmp_path):
+    """An embedded NUL byte makes ast.parse raise ValueError, not SyntaxError — both must be
+    caught, or this one crashes the scan instead of reporting a violation."""
+    (tmp_path / "nul.py").write_bytes(b"import insight\x00\n")
+    assert _boundary_violations(tmp_path, _BANNED_INSIGHT) == ["nul.py: unparseable"]
+
+
 def test_flags_reverse_direction_plain_import(tmp_path):
     (tmp_path / "leak.py").write_text("import hooks\n", encoding="utf-8")
     assert _boundary_violations(tmp_path, _BANNED_PLUGIN) == ["leak.py: imports hooks"]
@@ -320,6 +417,13 @@ def test_a_lone_pyvenv_cfg_cannot_hide_a_module(tmp_path):
     (mod / "leak.py").write_text("import insight\n", encoding="utf-8")
     assert _boundary_violations(tmp_path, _BANNED_INSIGHT) == [
         os.path.join("realmod", "leak.py") + ": imports insight"]
+
+
+def test_case_variant_extensions_are_checked(tmp_path):
+    """Mirrors test_licence_boundary.py's own pin for the identical glob: `rglob("*.py")` would
+    miss this file's uppercase extension on a case-sensitive filesystem (every Linux CI runner)."""
+    (tmp_path / "LOUD.PY").write_text("import insight\n", encoding="utf-8")
+    assert _boundary_violations(tmp_path, _BANNED_INSIGHT) == ["LOUD.PY: imports insight"]
 
 
 def test_pycache_is_skipped(tmp_path):
