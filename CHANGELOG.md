@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Skill-selection guidance vs platform built-ins (0.9.14)
+Documents, honestly, how LoopSmith's skills win selection against platform built-ins — and what a plugin
+*can't* do. A spike against the current Claude Code docs confirmed: **a marketplace plugin cannot disable
+or de-prioritize another skill** (no manifest field), `skillOverrides` explicitly does **not** affect
+plugin skills, and there is **no runtime API** to detect which skills are active. So there's no mechanism
+to build — the deliverable is guidance:
+- **`/sdlc-doctor`** gains a `skill selection vs platform built-ins` advisory row: LoopSmith prefers its
+  own skills via sharp descriptions + per-skill resolution headers, and if a built-in shadows one, the fix
+  is user-side — `skillOverrides` for a standalone built-in, `/plugin disable` for a plugin one. (It's an
+  advisory, not a detected conflict — no API exists to detect one.)
+- The dashboard also now lists the **Stop gate** and **SessionStart** opt-ins added in 0.9.12–0.9.13.
+- README gains a "Skill selection vs platform built-ins" section with the same guidance.
+
 ### SessionStart policy brief (0.9.13, opt-in)
 An OPT-IN SessionStart hook (`hooks/session_start.sh`) that injects a short SDLC policy brief — the loop's
 phases, `/sdlc-loop` vs `/sdlc-goal`, ground-in-the-north-star, plan-before-source, reviewer-≠-author — as

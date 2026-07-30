@@ -852,6 +852,24 @@ reported as "portable executor used" — never an error).
 *If you happen to want the companions and don't have them,* they live in the official
 `claude-plugins-official` marketplace — but this is a preference, never a setup step.
 
+### Skill selection vs platform built-ins
+
+LoopSmith's skills compete with any platform built-ins or other plugins for the model's
+description-based selection. **A plugin cannot disable or de-prioritize another skill** — Claude Code
+has no manifest field for it, and no runtime API to detect which skills are active. So LoopSmith wins
+selection the only ways a plugin can: **sharp, task-specific descriptions** and a **per-skill
+resolution header** (Phases 1/3/5/6 explicitly defer to their `superpowers` / `code-review` companion
+when present, and own the phase otherwise).
+
+If a built-in ever shadows a LoopSmith skill you want, the fix is **on your side, not the plugin's**:
+- a **standalone / project built-in** (a skill in `.claude/skills/`): set
+  `"skillOverrides": {"<name>": "off"}` in `.claude/settings.json`. *(Note: `skillOverrides` does **not**
+  affect plugin skills — that's a documented Claude Code limitation.)*
+- **another plugin's** skill: `/plugin disable <plugin>`.
+
+`/sdlc-doctor` surfaces this as an advisory (it can't detect a live conflict — no API exists — so it
+points you at these remedies rather than guessing).
+
 ## Status (honest)
 
 LoopSmith is **built on and validated only on Claude Code** — the always-on hook, one-command plugin
