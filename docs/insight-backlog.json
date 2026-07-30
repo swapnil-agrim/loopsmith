@@ -1,0 +1,626 @@
+{
+  "_comment": "LoopSmith Insight — the complete project backlog, defined upfront. Source of truth for the GitHub Project board; `docs/insight-backlog.py sync` creates/updates issues from it. Epics are TRACKING issues (label: epic) and are never run by the loop. Stories carry `sdlc:goal` and ARE the loop's unit of work — one story = one worktree/branch/PR. Tasks are the checklist inside a story body; they become that goal's done_when, and LoopSmith's Plan phase expands them into real steps. Deliberately NOT separate issues: the loop ignores non-goal issues, so 200 task issues would be noise.",
+  "project": {
+    "title": "LoopSmith Insight",
+    "spec": "docs/superpowers/specs/2026-07-30-loopsmith-insight-data-platform-design.md"
+  },
+  "priorities": {
+    "P0": "blocks everything else",
+    "P1": "the shippable v1 product",
+    "P2": "completes v1",
+    "P3": "tranche 2 — needs the emitter",
+    "P4": "config UI + packaging"
+  },
+  "epics": [
+    {
+      "id": "E0",
+      "title": "Foundation — insight/ package, licence, CI boundary",
+      "priority": "P0",
+      "why": "The licence must be the first commit (spec §1.1 rule 4), and the plugin/product boundary must be test-enforced before any code can blur it.",
+      "stories": [
+        {
+          "id": "E0.S1",
+          "title": "BUSL licence + boundary marking",
+          "done_when": "insight/LICENSE exists (BUSL-style, source-available); root README states the two-licence boundary; insight/ file headers carry the marker; the plugin's MIT LICENSE is untouched",
+          "tasks": [
+            "Write insight/LICENSE with change-date and additional-use grant",
+            "Add a 'Licensing' section to the root README naming both licences and the folder boundary",
+            "Add the licence header line to a template used by all insight/ source files",
+            "Test: any .py under insight/ without the header fails"
+          ]
+        },
+        {
+          "id": "E0.S2",
+          "title": "insight/ package skeleton + pyproject",
+          "done_when": "insight/ has pyproject.toml declaring duckdb; `pip install -e insight/` works; `python -m insight --help` prints usage; VERSION file independent of plugin.json",
+          "tasks": [
+            "Create insight/{ingest,metrics,gaps,dash,tests}/ with __init__ where needed",
+            "pyproject.toml with duckdb pinned, console_script entry point",
+            "insight/VERSION starting at 0.1.0",
+            "__main__.py with an argparse skeleton (ingest | dash | gaps)"
+          ]
+        },
+        {
+          "id": "E0.S3",
+          "title": "Separate CI job and coverage gate",
+          "done_when": "CI has an insight job; insight/ is EXCLUDED from the plugin's --cov-fail-under=85 denominator; an insight test failure fails only the insight job",
+          "tasks": [
+            "Add an insight job to .github/workflows/ci.yml with its own deps install",
+            "Confirm the plugin's pytest invocation ignores insight/ (--ignore or testpaths)",
+            "Set insight's own coverage floor",
+            "Verify by mutation: break an insight test, confirm the plugin job still passes"
+          ]
+        },
+        {
+          "id": "E0.S4",
+          "title": "Import-boundary guard, both directions",
+          "done_when": "A test fails if anything under skills/ or hooks/ imports insight, OR anything under insight/ imports from skills/hooks as a Python module; the contract is file formats only (spec §1.1 rule 1)",
+          "tasks": [
+            "Write the AST/grep-based boundary scan, modelled on tests/test_self_contained.py",
+            "Assert both directions independently with distinct messages",
+            "Prove by mutation: add a violating import in each direction, confirm each fails",
+            "Document the allowed coupling (reading files by path) in the test docstring"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E1",
+      "title": "Ingest — collectors, readers, store bootstrap",
+      "priority": "P1",
+      "why": "Everything downstream reads the store. The collector adapter (spec §B.3.1) is the primary Class-1 interface and the reason 25 metrics need no instrumentation.",
+      "stories": [
+        {
+          "id": "E1.S1",
+          "title": "DuckDB store bootstrap and schema",
+          "done_when": "`insight ingest` creates the 5-table star schema (dim_project, dim_actor, fact_goal, fact_event, fact_handoff) idempotently; reliability_class and phase_trace_completeness columns exist; re-running never duplicates rows",
+          "tasks": [
+            "DDL for the five tables per spec §B.3",
+            "Idempotent create-or-migrate on open",
+            "Test: open twice, assert no duplicate schema objects"
+          ]
+        },
+        {
+          "id": "E1.S2",
+          "title": "Collector adapter keyed on schema string",
+          "done_when": "One adapter ingests alignment-collect/v1, pipeline card JSON, and discovery-scan output, routed by their `schema` field; an unknown schema is recorded and skipped, never fatal; degraded[] codes land in the store",
+          "tasks": [
+            "Adapter registry keyed on the schema string",
+            "Run each collector as a subprocess, capture stdout JSON",
+            "Persist the pack with its window and degraded[] codes",
+            "Test: an unknown schema is skipped with a recorded reason",
+            "Test: a collector that exits non-zero degrades, never crashes ingest"
+          ]
+        },
+        {
+          "id": "E1.S3",
+          "title": "Ledger reader — entries and events streams",
+          "done_when": "Reads the union of ledger/entries/*.jsonl and ledger/events/*.jsonl oldest-first; a malformed line is skipped not fatal; also reads .sdlc/events/*.jsonl when telemetry.share is off",
+          "tasks": [
+            "Read both streams, union, sort by (ts, actor, seq)",
+            "Tolerate malformed lines exactly as ledger.read_all does",
+            "Fall back to the local .sdlc/events/ path",
+            "Test with a fixture ledger containing a corrupt line"
+          ]
+        },
+        {
+          "id": "E1.S4",
+          "title": "Artifact reader — goals, plans, slices, config",
+          "done_when": "Goal frontmatter (id/title/lane/done_when/status/source/verify_command), *.slices.json, and config.json land in the store; a goal missing a field records the absence rather than guessing",
+          "tasks": [
+            "Frontmatter parse reusing the kit's field names",
+            "slices.json parse for declared files and sizes",
+            "config.json snapshot into dim_project for the adoption metric",
+            "Test: a goal with no done_when is recorded as absent, not defaulted"
+          ]
+        },
+        {
+          "id": "E1.S5",
+          "title": "Git facts reader",
+          "done_when": "Commits, merges, first-commit-to-merge lead time land in the store for a configurable window; matches velocity.py's measurement for the same window",
+          "tasks": [
+            "git log readers for commits and merges",
+            "Lead-time derivation per branch/PR",
+            "Cross-check against velocity.py measure for the same window in a test"
+          ]
+        },
+        {
+          "id": "E1.S6",
+          "title": "GitHub reader (optional, degrades)",
+          "done_when": "With gh available, PR review timings and check outcomes land; without gh or without auth, ingest completes and records the degradation — never fails",
+          "tasks": [
+            "gh pr list/view readers for review + check data",
+            "Degradation path recording a machine-readable code",
+            "Test: PATH without gh still completes ingest",
+            "Note issue #78 — gh may fail in remote sessions; the degradation path is the mitigation"
+          ]
+        },
+        {
+          "id": "E1.S7",
+          "title": "Incremental resume and idempotence",
+          "done_when": "Ingest stores max(seq) per (project, actor, stream) reusing the ledger's own cursor; running ingest twice produces identical row counts; a partial run resumes without gaps or duplicates",
+          "tasks": [
+            "Watermark table keyed on (project, actor, stream)",
+            "Resume from watermark on the next run",
+            "Test: ingest twice, assert identical counts",
+            "Test: interrupt mid-run, resume, assert no gap and no duplicate"
+          ]
+        },
+        {
+          "id": "E1.S8",
+          "title": "insight ingest CLI with multi-repo glob",
+          "done_when": "`insight ingest [--repos <glob>]` ingests one or many repos into one store; project_id is stable across runs; a repo without .sdlc is skipped with a reason",
+          "tasks": [
+            "CLI arg parsing and glob expansion",
+            "Stable project_id derivation (remote url hash, per spec)",
+            "Skip-with-reason for non-adopted repos",
+            "Test over a two-repo fixture"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E2",
+      "title": "Metric layer — SQL semantic layer and the 25 NOW metrics",
+      "priority": "P1",
+      "why": "The dashboard must never compute a number. One definition per metric, testable with a fixture stream.",
+      "stories": [
+        {
+          "id": "E2.S1",
+          "title": "Metric file format, loader, and test harness",
+          "done_when": "metrics/<id>.sql with a header carrying name/question/personas/reliability_class/guardrail; a loader registers them; a fixture stream plus expected value tests any metric; a metric missing a guardrail header fails the loader",
+          "tasks": [
+            "Header format and parser",
+            "Loader that registers each .sql as a named view",
+            "Test harness: fixture jsonl in, expected scalar/table out",
+            "Test: a metric with no guardrail header is rejected"
+          ]
+        },
+        {
+          "id": "E2.S2",
+          "title": "Layer 0 delivery metrics (1,2,3,4,5,7,9,10,11)",
+          "done_when": "Throughput, cycle-time p50/p85, lead time, merge frequency, change-failure proxy, WIP, flow distribution, aging WIP, and the Monte Carlo forecast each return correct values on fixtures; percentiles never rendered as means",
+          "tasks": [
+            "One .sql + fixture per metric",
+            "Cycle time as percentiles plus the raw scatter series",
+            "Change-failure from alignment-collect d7 repeated_revert_or_fixup_count, labelled proxy",
+            "Monte Carlo over the trailing throughput distribution returning an 80% band",
+            "Test: a fixture with a known skew proves p85 != mean"
+          ]
+        },
+        {
+          "id": "E2.S3",
+          "title": "Layer 1 loop-economics NOW subset (12,13,14,20)",
+          "done_when": "Autonomy rate, interventions per goal, park rate, and the churn-based rework proxy return correct values; each is labelled with its reliability class",
+          "tasks": [
+            "One .sql + fixture per metric",
+            "Rework proxy from alignment-collect d3 churn_hotspots",
+            "Label proxies distinctly from exact metrics in the header"
+          ]
+        },
+        {
+          "id": "E2.S4",
+          "title": "Layer 2 gate metrics NOW subset (24,26,30)",
+          "done_when": "Gate coverage (from d1 plan_existed_pct + d5 commits_with_review_pct), verify current-state, and debt inventory return correct values; ABSENT is a distinct value everywhere, never folded into pass",
+          "tasks": [
+            "One .sql + fixture per metric",
+            "Adopt pipeline.py's PASS/WARN/FAIL/ABSENT and its severity order",
+            "Test: a fixture with an absent gate must not report a pass"
+          ]
+        },
+        {
+          "id": "E2.S5",
+          "title": "Layer 3 team metrics (31,32,33,34,35,37,38)",
+          "done_when": "Handoff graph, response-time percentiles, unanswered, deferred age, lease contention, ownership concentration, and cross-area coupling return correct values; unanswered stays distinct from deferred",
+          "tasks": [
+            "One .sql + fixture per metric",
+            "Mirror ledger.unanswered() and handoff_states() semantics exactly",
+            "Test: deferred does NOT settle a handoff"
+          ]
+        },
+        {
+          "id": "E2.S6",
+          "title": "Layer 4 leadership metrics (41,42)",
+          "done_when": "Portfolio table and adoption/flag correlation return correct values across a two-project fixture",
+          "tasks": [
+            "Portfolio rollup .sql",
+            "Adoption from the config.json snapshot",
+            "Two-project fixture test"
+          ]
+        },
+        {
+          "id": "E2.S7",
+          "title": "Reliability-class enforcement",
+          "done_when": "A metric declaring reliability_class 1 that reads any class-2 row fails its test; every class-2 metric exposes a coverage denominator alongside its value",
+          "tasks": [
+            "Static check of each .sql against the classes of tables it reads",
+            "Coverage-denominator helper view",
+            "Test by mutation: point a class-1 metric at class-2 data, confirm failure"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E3",
+      "title": "Gap engine — five typed classes, no LLM in the finding path",
+      "priority": "P2",
+      "why": "Gaps are what turn metrics into action. Typed rules keep them testable and defensible.",
+      "stories": [
+        {
+          "id": "E3.S1",
+          "title": "Gap rule format and severity vocabulary",
+          "done_when": "A gap rule is a .sql plus metadata returning {class, severity, evidence rows, metric moved, action}; severity uses pipeline.py's PASS/WARN/FAIL/ABSENT ordering; a rule with no evidence query is rejected",
+          "tasks": [
+            "Rule format and loader",
+            "Severity vocabulary shared with the metric layer",
+            "Test: a rule returning a finding with no evidence rows fails"
+          ]
+        },
+        {
+          "id": "E3.S2",
+          "title": "Coverage gap class",
+          "done_when": "Fires on an ABSENT applicable gate, a NO-COMMAND verify, a missing review input, and any collector degraded[] code; each finding names which code and which goals",
+          "tasks": [
+            "Rules for each coverage source",
+            "Consume degraded[] codes directly per spec §B.3.1",
+            "Regression test phrased as the invariant: absent must never render as pass"
+          ]
+        },
+        {
+          "id": "E3.S3",
+          "title": "Definition gap class",
+          "done_when": "Fires on a goal with no done_when, no plan artifact, or no verify command; evidence names the goals and the missing field",
+          "tasks": ["Rules per missing field", "Fixture with each defect", "Assert no false positive on a complete goal"]
+        },
+        {
+          "id": "E3.S4",
+          "title": "Threshold gap class with derived baselines",
+          "done_when": "Fires when a metric crosses its OWN trailing p85; no hardcoded constants anywhere in the rules; evidence shows the series, the baseline, and the breach",
+          "tasks": [
+            "Trailing-baseline helper",
+            "Rules referencing it, never a literal",
+            "Test: a project with a slow-but-stable series produces no gap",
+            "Grep test: no numeric literal thresholds in gaps/"
+          ]
+        },
+        {
+          "id": "E3.S5",
+          "title": "Consistency gap class",
+          "done_when": "Fires on ledger-done vs PR-open, verify-passed-but-no-test-changed (alignment-collect d2), and slices-declared vs files-touched (d1); evidence shows both records side by side",
+          "tasks": ["Rule per disagreement pair", "Source both sides in the evidence output", "Fixture per rule"]
+        },
+        {
+          "id": "E3.S6",
+          "title": "Debt gap class",
+          "done_when": "Fires on rising discovery-scan inventory and unanswered knowledge/gaps.md queries; evidence carries file, count, and trend",
+          "tasks": ["Rules over the scan snapshots", "Trend derivation", "Fixture with a rising and a flat series"]
+        },
+        {
+          "id": "E3.S7",
+          "title": "Run-over-run comparison",
+          "done_when": "`insight gaps --compare <prior>` classifies each finding regressed / improved / still-failing, mirroring pipeline.py --compare; still-failing is flagged as the recurrence signal routed to the backlog",
+          "tasks": [
+            "Signal-by-signal diff",
+            "Still-failing recurrence flag with the routing note",
+            "Test across two fixture runs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E4",
+      "title": "Dashboard — shell, chart primitives, IC and manager views",
+      "priority": "P1",
+      "why": "The first thing anyone sees. Local-first, one command, reads the store only.",
+      "stories": [
+        {
+          "id": "E4.S1",
+          "title": "Static site shell and one-command UX",
+          "done_when": "`insight dash` builds and serves locally from the DuckDB file with no daemon and no network; output is self-contained files",
+          "tasks": ["Generator choice recorded with rationale", "Build + serve command", "Assert no external network fetches at render"]
+        },
+        {
+          "id": "E4.S2",
+          "title": "Chart primitives",
+          "done_when": "Percentile scatter, CFD, burndown with the Monte Carlo band overlaid, aging-WIP, and a stat tile exist as reusable components with consistent colour semantics; ABSENT has its own distinct colour",
+          "tasks": [
+            "Component per primitive",
+            "Shared colour/scale system; ABSENT visually distinct from PASS and FAIL",
+            "Burndown and MC band on the same axes",
+            "Accessibility: colour is never the only channel"
+          ]
+        },
+        {
+          "id": "E4.S3",
+          "title": "IC view",
+          "done_when": "Shows my queue, what is blocked on me, my parks by class, my gate verdicts, and my cost — own data only; another actor's individual data is unreachable from this view",
+          "tasks": ["Route + queries scoped to the resolved actor", "Test: no cross-actor row leaks into the IC view"]
+        },
+        {
+          "id": "E4.S4",
+          "title": "Manager view",
+          "done_when": "Burndown + MC band, WIP and aging, handoff graph, park taxonomy, and review-cycle distribution render; no individual-grain metric appears except aging WIP and handoff response",
+          "tasks": [
+            "Route + panels",
+            "Handoff graph rendering",
+            "Test enforcing the individual-grain guardrail"
+          ]
+        },
+        {
+          "id": "E4.S5",
+          "title": "Cold-start onboarding state",
+          "done_when": "A repo with no ledger shows what IS available (the 8 collector-derived metrics) plus the concrete enablement steps — never a zero where the truth is not-measured",
+          "tasks": [
+            "Detect which sources are present",
+            "Render the enablement path",
+            "Test: a fixture with no ledger renders onboarding, asserts no '0' for an unmeasured metric"
+          ]
+        },
+        {
+          "id": "E4.S6",
+          "title": "Coverage-qualified rendering",
+          "done_when": "Every class-2 metric renders its coverage denominator adjacent; a class-2 value with no denominator fails a test",
+          "tasks": ["Rendering rule in the component layer", "Test asserting the invariant across all views"]
+        }
+      ]
+    },
+    {
+      "id": "E5",
+      "title": "Dashboard — leadership, cross-functional, gap cards",
+      "priority": "P2",
+      "why": "The buying personas, plus the surface that turns a gap into an action.",
+      "stories": [
+        {
+          "id": "E5.S1",
+          "title": "Leadership view",
+          "done_when": "DX Core-4 four-tile rollup renders with Effectiveness explicitly labelled a proxy and never as a DXI; speed/quality/impact tiles carry their counterweights",
+          "tasks": [
+            "Four tiles + counterweight pairing",
+            "Effectiveness proxy labelling",
+            "Test: the string DXI never renders for a computed value"
+          ]
+        },
+        {
+          "id": "E5.S2",
+          "title": "Portfolio and multi-repo rollup",
+          "done_when": "One row per project with throughput, park rate, and gate coverage; drill-through to that project's manager view",
+          "tasks": ["Portfolio table", "Drill-through routing", "Two-project fixture test"]
+        },
+        {
+          "id": "E5.S3",
+          "title": "Cross-functional gate-coverage matrix",
+          "done_when": "Goals x applicable gates with pass/warn/block/absent distinct; risk-review hit rate and alignment drift render alongside",
+          "tasks": ["Matrix component", "Risk-review + alignment panels", "Test: absent cell is visually and semantically distinct"]
+        },
+        {
+          "id": "E5.S4",
+          "title": "Gap cards with evidence and deep links",
+          "done_when": "Each gap renders as what / evidence rows / metric moved / one action; a config-fixable gap deep-links to the config UI with the field pre-selected (link target defined even before E8 ships)",
+          "tasks": [
+            "Card component with the four required parts",
+            "Deep-link URL scheme agreed with E8",
+            "Test: a card missing any of the four parts fails"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E6",
+      "title": "Emitter — telemetry stream in sdlc-kit",
+      "priority": "P3",
+      "why": "Unlocks the wedge metrics. Must not disturb the plugin's zero-dep, fail-open, default-off invariant.",
+      "stories": [
+        {
+          "id": "E6.S1",
+          "title": "ledger.py stream parameter and event vocabulary",
+          "done_when": "append/read_all take stream=entries|events; EVENT_KINDS and controlled vocabularies exist; render()/TEAM.md output is byte-identical with an events stream present; ids stay monotonic per (actor, stream)",
+          "tasks": [
+            "Add the stream parameter without changing existing call signatures",
+            "EVENT_KINDS, verdict/phase/gate/reason_class vocabularies",
+            "Test: TEAM.md byte-identical with and without events",
+            "Test: unknown kind or verdict raises"
+          ]
+        },
+        {
+          "id": "E6.S2",
+          "title": "sync.py publishes the events stream",
+          "done_when": "publish commits events/<actor>.jsonl when present; the gitattributes seed gains events/*.jsonl merge=union; pull and watch cursors key on (actor, stream); a fixture ledger with events left uncommitted by publish FAILS a test",
+          "tasks": [
+            "Extend publish beyond the entries-only path",
+            "Add the union-merge attribute for events",
+            "Key the watch cursor on (actor, stream)",
+            "Mutation test proving the uncommitted-events failure is caught"
+          ]
+        },
+        {
+          "id": "E6.S3",
+          "title": "telemetry config block and doctor reporting",
+          "done_when": "config.json.tmpl carries telemetry {enabled:false, share:true, sample_phases:true} with prose keys; /sdlc-doctor reports whether telemetry is on and where events land; enabled:false changes nothing",
+          "tasks": [
+            "Template entry plus _prose keys explaining the off switch",
+            "Doctor detection and reporting line",
+            "Test: absent telemetry block behaves exactly as before"
+          ]
+        },
+        {
+          "id": "E6.S4",
+          "title": "Deterministic instrumentation sites",
+          "done_when": "verify, record/park, work.py post_review + gate + review_gate, decision_gate, slices.plan, and discovery-scan all emit; every call is fail-open and a telemetry failure never stops a run",
+          "tasks": [
+            "One emitting call per site, guarded like safe_append",
+            "Park reason_class derivation at loop.py record",
+            "Persist work.py's review CYCLE count, which is currently discarded",
+            "Test per site, plus a test that a raising emitter does not break the run"
+          ]
+        },
+        {
+          "id": "E6.S5",
+          "title": "loop.py emit verb and agent-emitted sites",
+          "done_when": "`loop.py emit <dir> <goal> <kind> [--k v]` exists and validates against the vocabulary; sdlc-loop/goal/plan-review/align/retro prose instructs the emissions; an invalid flag is refused with a usable message",
+          "tasks": [
+            "CLI verb with vocabulary validation",
+            "Prose instructions in each orchestrator and gate skill",
+            "Test: an out-of-vocabulary value is refused, not silently written"
+          ]
+        },
+        {
+          "id": "E6.S6",
+          "title": "Privacy caps and scrubbing",
+          "done_when": "why is capped at 200 chars and scrubbed; verify commands are stored as command_sha256 only; files_declared is a count in the shared stream; a payload containing a newline is rejected; no event field ever carries code or diff text",
+          "tasks": [
+            "Cap + scrub reusing the existing scrubber",
+            "Hash the verify command",
+            "Test: a secret-shaped substring never survives into an event",
+            "Test: newline injection is refused"
+          ]
+        },
+        {
+          "id": "E6.S7",
+          "title": "Vocabulary-versus-call-site guard",
+          "done_when": "A kind with no emitting call site fails; a loop.py emit flag absent from the vocabulary fails; the guard fails if its own detection idiom goes stale",
+          "tasks": [
+            "Scan skills/, hooks/, and SKILL.md for emitting sites",
+            "Cross-check both directions",
+            "Self-staleness assertion, modelled on test_config_discoverability",
+            "Prove by mutation in both directions"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "E7",
+      "title": "Tranche-2 metrics — the wedge",
+      "priority": "P3",
+      "why": "Prevented rework is the thing no competitor can sell. It needs E6 first.",
+      "stories": [
+        {
+          "id": "E7.S1",
+          "title": "Prevented rework with a self-derived multiplier",
+          "done_when": "Renders blocked-plan count times the project's OWN measured cost delta between looped and non-looped goals; no industry constant appears anywhere; a project with too little history shows insufficient-data, not a guess",
+          "tasks": [
+            "Derive the multiplier from the project's own goals",
+            "Insufficient-data path",
+            "Test: no hardcoded multiplier constant exists in the rule",
+            "Test: a thin-history fixture returns insufficient-data"
+          ]
+        },
+        {
+          "id": "E7.S2",
+          "title": "Park taxonomy and review-cycle distribution",
+          "done_when": "Park share by reason_class and max-cycle-per-goal render; mass at max_review_cycles is flagged as the cap masking a problem",
+          "tasks": ["Two .sql + fixtures", "Cap-proximity flag", "Test the flag fires only at the cap"]
+        },
+        {
+          "id": "E7.S3",
+          "title": "Cost and budget metrics",
+          "done_when": "Cost per landed goal by lane and model, tokens per phase, and budget-exhaustion rate render; Claude Code Analytics ingest is optional and degrades silently",
+          "tasks": [
+            "Three .sql + fixtures",
+            "Analytics API reader behind a flag with a degradation path",
+            "Test: absent API key still renders the emitter-derived cost"
+          ]
+        },
+        {
+          "id": "E7.S4",
+          "title": "Gate catch rate, decision denials, retro grades",
+          "done_when": "Catch rate by gate with a late-catch indicator, denials by decision id, and the retro grade trend render",
+          "tasks": ["Three .sql + fixtures", "Late-catch derivation", "Per-metric tests"]
+        },
+        {
+          "id": "E7.S5",
+          "title": "Proxy-to-exact upgrade",
+          "done_when": "Change-failure, rework, gate coverage, and the consistency rules switch from the collector proxies to emitter-exact sources; each shows a labelled break in series rather than silently changing meaning",
+          "tasks": [
+            "Switch each source",
+            "Series-break annotation at the switchover date",
+            "Test: the annotation renders and the pre-switch history is preserved"
+          ]
+        },
+        {
+          "id": "E7.S6",
+          "title": "Flow efficiency with a coverage denominator",
+          "done_when": "Renders active-phase time over total, always beside its trace-completeness percentage; never rendered when completeness is below a stated floor",
+          "tasks": ["The .sql + fixture", "Completeness floor with a stated value", "Test: below-floor renders insufficient-coverage, not a number"]
+        }
+      ]
+    },
+    {
+      "id": "E8",
+      "title": "Configuration UI",
+      "priority": "P4",
+      "why": "Closes the loop from a gap card to a fix. Git stays the source of truth.",
+      "stories": [
+        {
+          "id": "E8.S1",
+          "title": "Schema generation from config.json.tmpl prose keys",
+          "done_when": "The form schema is GENERATED from config.json.tmpl including its _-prefixed prose as field help; a new config key appears in the UI with no UI code change; a key whose prose is missing is flagged",
+          "tasks": [
+            "Parser for the template and its _prose siblings",
+            "Schema emission with types inferred from defaults",
+            "Test: adding a template key surfaces it in the generated schema",
+            "Test: a key with no _prose is reported"
+          ]
+        },
+        {
+          "id": "E8.S2",
+          "title": "Form rendering and validation",
+          "done_when": "Every config type renders with an appropriate control; invalid values are refused before write; the decision-gate special case (no enabled flag — authoring the registry is the opt-in) is explained inline",
+          "tasks": ["Controls per type", "Client + server validation against the schema", "Inline explanation for non-boolean opt-ins"]
+        },
+        {
+          "id": "E8.S3",
+          "title": "Write path — local file or PR",
+          "done_when": "Local mode writes .sdlc/config.json directly; hosted mode opens a PR; neither writes to a database LoopSmith reads; a write that would produce invalid JSON is refused",
+          "tasks": ["Local write with backup", "PR path via gh", "Refuse-invalid guard", "Test both paths"]
+        },
+        {
+          "id": "E8.S4",
+          "title": "Doctor traps surfaced at the field",
+          "done_when": "The traps /sdlc-doctor detects (relative verify.command in a worktree, unpinned board number, work off, unmapped custom fields) appear as warnings ON the relevant field, not in a separate report",
+          "tasks": ["Map each doctor check to its field", "Inline warning rendering", "Test: each trap surfaces at the right field"]
+        },
+        {
+          "id": "E8.S5",
+          "title": "Gap-card deep links",
+          "done_when": "A deep link from a gap card opens the config UI with the target field selected and the suggested value pre-filled but NOT applied",
+          "tasks": ["Implement the URL scheme agreed in E5.S4", "Pre-fill without auto-apply", "Round-trip test from card to field"]
+        }
+      ]
+    },
+    {
+      "id": "E9",
+      "title": "Packaging, docs, and the dogfood proof",
+      "priority": "P4",
+      "why": "The spec's §11 open question — the agent-emitted coverage rate — can only be answered by running it.",
+      "stories": [
+        {
+          "id": "E9.S1",
+          "title": "One-command install and run",
+          "done_when": "A fresh clone can install insight and render a dashboard for this repo in one documented command; the command is tested in CI",
+          "tasks": ["Entry point + docs", "CI smoke test of the documented command"]
+        },
+        {
+          "id": "E9.S2",
+          "title": "Documentation",
+          "done_when": "insight/README covers install, ingest, dash, the metric catalog with each metric's reliability class, and the licence boundary; no capability is claimed that is not verified",
+          "tasks": [
+            "README with the catalog table",
+            "Reliability class stated per metric",
+            "Audit every claim against a test that proves it"
+          ]
+        },
+        {
+          "id": "E9.S3",
+          "title": "Dogfood proof and coverage measurement",
+          "done_when": "Insight runs against this repo's own history; the agent-emitted trace completeness is MEASURED and recorded in the spec's §11; any metric whose real coverage is too low is demoted or removed",
+          "tasks": [
+            "Full ingest over this repo",
+            "Measure and record trace completeness",
+            "Update spec §11 with the measured number",
+            "Demote or remove metrics that the real coverage cannot support"
+          ]
+        }
+      ]
+    }
+  ]
+}
