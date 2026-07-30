@@ -314,6 +314,36 @@ Two columns carry the honesty contract into the store itself:
 `fact_handoff` is its own table rather than a view over `fact_event` because the questions asked of it are
 graph-shaped (who blocks whom, transitively) and it is small.
 
+### B.3.1 The collector interface — ingest's primary Class-1 source
+
+**Revised 2026-07-30 after rebasing onto 0.9.17.** This repo has converged on a repeated pattern that ingest
+should consume as *one interface*, not as N bespoke readers:
+
+| Collector | Emits |
+|---|---|
+| `skills/sdlc-align/scripts/alignment-collect.sh` | `{schema:"alignment-collect/v1", window, degraded[], commits[], dimensions{d1..d7}}` |
+| `skills/sdlc-loop/scripts/pipeline.py card --json` | stage card with `PASS/WARN/FAIL/ABSENT` |
+| `skills/sdlc-loop/scripts/discovery-scan.sh` | debt / test-gap candidates per file |
+
+Every one of them is **read-only, deterministic (same state + window ⇒ byte-identical output), fail-open with
+a machine-readable `degraded[]` rather than a crash, and secret-safe** (`alignment-collect` emits only
+`{commit,file,line,pattern_id}` for a pattern hit, never the matched substring — its own docstring notes
+stdout "is LLM-facing and may be committed").
+
+Three consequences, all simplifications:
+
+1. **Ingest has one adapter, keyed on `schema`.** New collectors are additive: drop a JSON pack in, ingest
+   routes by its schema string. No per-collector code in the metric layer.
+2. **`degraded[]` IS the ABSENT signal.** A pack reporting `degraded:["no_git"]` or `["no_test_command"]`
+   means *not measured*, and the gap engine's Coverage class consumes those codes directly instead of the
+   dashboard re-deriving absence. The vocabulary already exists; §7 adopts it.
+3. **The collectors are the reason so much is derivable with no emitter.** They are already running the
+   deterministic half of the measurement — LoopSmith just throws the output away after the skill reads it.
+   Ingest's job for Class 1 is largely *to stop discarding it*.
+
+**Ingest therefore runs the collectors on a schedule** (they are cheap, read-only, and deterministic) and
+snapshots each pack with its `window`, rather than requiring instrumentation for facts git already holds.
+
 ### B.4 Metrics are SQL, not application code
 
 One file per metric under `metrics/<id>.sql`, with a header comment carrying `name`, `question`, `personas`,
@@ -341,7 +371,7 @@ emitter · `AGT` needs the agent emitter, renders coverage-qualified · `CONV` n
 | 2 | Cycle time p50/p85 | How long does a goal take? | `terminal_ts − claimed_ts`, **percentiles + scatterplot, never a mean** — the distribution is right-skewed | NOW |
 | 3 | Lead time for change | First commit → merge | git / `gh` | NOW |
 | 4 | Merge frequency | Deploy proxy | `git log --merges` — `velocity.py` already computes it | NOW |
-| 5 | Change failure rate | Did shipping break things? | goals whose merge was reverted, or that a later goal declares it fixes | CONV |
+| 5 | Change failure rate | Did shipping break things? | **`alignment-collect` d7 `repeated_revert_or_fixup_count`** is a real proxy available today; a `fixes:` convention upgrades it to exact | NOW (proxy) → CONV |
 | 6 | MTTR proxy | Time to recover | `failed` → `done` of the fixing goal | CONV |
 | 7 | Flow load (WIP) | How much is in flight? | replay `open_claims()` over time | NOW |
 | 8 | Flow efficiency | **Where does the time go?** | `Σ phase.ms / (terminal_ts − claimed_ts)` | AGT |
@@ -365,7 +395,7 @@ precision the data does not have.
 | 17 | Cost per landed goal | Unit economics | `Σ cost_cents ÷ done`, by lane and model | AGT |
 | 18 | Tokens per phase | Where does budget go? | `spend` grouped by phase | AGT |
 | 19 | Budget-exhaustion rate | Are budgets mis-set? | runs stopping on budget vs empty backlog | DET |
-| 20 | Rework ratio | How much building is re-building? | implement re-entries per goal | AGT |
+| 20 | Rework ratio | How much building is re-building? | **`alignment-collect` d3 `churn_hotspots`** gives a file-level rework proxy now; exact implement-re-entry count needs the emitter | NOW (proxy) → AGT |
 | 21 | Model-tier effectiveness | Is the expensive tier worth it? | outcome × cost by predicted tier | AGT |
 
 #15 is the highest-value cheap metric in the catalog. A bare park rate says "the loop stopped 30% of the
@@ -382,7 +412,7 @@ different action.
 |---|---|---|---|---|
 | 22 | **Prevented rework** | What did the gates save? | `count(gate.verdict='block' and gate='plan_review')` × **your own measured** cost delta between goals that looped implement→review→implement and those that did not | AGT |
 | 23 | Gate catch rate by gate | Where are defects actually caught? | blocks by `gate`; late-catch share is the leading indicator | AGT/DET |
-| 24 | Gate coverage | Which gates actually ran? | per goal × applicable gate → `pass·warn·block·**absent**` | AGT/DET |
+| 24 | Gate coverage | Which gates actually ran? | per goal × applicable gate → `pass·warn·block·**absent**`. **`alignment-collect` d1 `plan_existed_pct` + d5 `commits_with_review_pct` already measure plan- and review-gate coverage against real commits today**; the emitter adds the rest and makes it per-goal rather than per-commit | NOW (partial) → AGT/DET |
 | 25 | Escape rate | The gates' true score | defects found post-merge ÷ total found | CONV+ |
 | 26 | Verify reliability | Is the proving command trustworthy? | **Current state is NOW; the trend is not**: `state/verify/<goal>.json` is overwritten on every run (verified — `verify_goal` writes latest-only), so history does not exist until the emitter records each run. Pass-rate and **flake** (same `command_sha256`, same commit, different `exit`) are DET | NOW (state) · DET (trend) |
 | 27 | Decision-gate denials | Are the invariants earning their keep? | denials by decision id | DET |
@@ -448,10 +478,17 @@ therefore which to keep.
 
 ### v1 cut
 
-Everything marked `NOW` — metrics **1,2,3,4,7,9,10,11,12,13,14,26,30,31,32,33,34,35,37,38,41,42**. That is 22
-metrics with **zero new instrumentation**, and it is a real product on its own: burndown, forecast, WIP and
-aging, the handoff graph, debt trend, adoption. (#26 ships as the current-state tile only; its trend is
-tranche 2.) Tranche 2 lands the emitter and adds the wedge (#15,16,17,22,23,24,27,29).
+Everything marked `NOW` — metrics **1,2,3,4,5,7,9,10,11,12,13,14,20,24,26,30,31,32,33,34,35,37,38,41,42**.
+That is **25** metrics with **zero new instrumentation** — a real product on its own: burndown, forecast, WIP
+and aging, the handoff graph, debt trend, change-failure, gate coverage, adoption.
+
+Four of those (#5, #20, #24, and the Consistency gap class) only became `NOW` on the 0.9.17 rebase, because
+`alignment-collect.sh` already measures them deterministically against real commits. They ship **labelled as
+proxies** — `plan_existed_pct` is per-commit, not per-goal, and `repeated_revert_or_fixup_count` infers
+failure from git shape rather than from a declared link. The emitter upgrades each from proxy to exact; it
+does not *create* them. (#26 ships as the current-state tile only; its trend is tranche 2.)
+
+Tranche 2 lands the emitter and adds the wedge (#15,16,17,22,23,27,29) plus exactness for the four proxies.
 
 **#40 (cost per project/week) is deliberately held back** despite being partly `NOW`: its only v1 source is the
 Claude Code Analytics API, which needs an org Admin key and is unavailable on Bedrock / Foundry / Vertex / AWS
@@ -465,9 +502,11 @@ deliver value with no change to `sdlc-kit` at all — worth doing first for that
 ### Cold start — stated plainly
 
 `ledger.enabled` is **false** by default and `.sdlc/state/` is gitignored. So on day zero a fresh adopter has:
-goal frontmatter, committed plans/slices, `config.json`, git, and GitHub. That yields metrics **3, 4, 9, 30, 42**
-and nothing else. (#37 needs the ledger's `area` field to attribute goals to actors — CODEOWNERS alone gives the
-roster, not the concentration.)
+goal frontmatter, committed plans/slices, `config.json`, git, GitHub — **and every deterministic collector,
+which needs nothing turned on** (§B.3.1). That yields metrics **3, 4, 5, 9, 20, 24, 30, 42** plus the
+Consistency and Coverage gap classes. Materially better than the pre-rebase answer of five, and it means a
+drop-in repo sees real gate-coverage and change-failure numbers before adopting anything. (#37 needs the
+ledger's `area` field to attribute goals to actors — CODEOWNERS alone gives the roster, not the concentration.)
 
 The dashboard's empty state must therefore be an **onboarding surface, not a zero**: "Throughput, cycle time
 and WIP need the team ledger — turn it on with one config change and one `sync.py bootstrap`. Here is what you
@@ -484,10 +523,10 @@ and severity order rather than a parallel one:
 
 | Class | Rule | Evidence rendered |
 |---|---|---|
-| **Coverage** | an applicable gate is `ABSENT` (never `PASS`); verify reports `NO-COMMAND`; a required review input was missing | which goals, which gate, which input was absent |
+| **Coverage** | an applicable gate is `ABSENT` (never `PASS`); verify reports `NO-COMMAND`; a required review input was missing; **any collector pack carries a `degraded[]` code** (§B.3.1) | which goals, which gate, which input was absent, which degradation code |
 | **Definition** | goal lacks `done_when`; no plan artifact under `.sdlc/plans/`; no `verify_command` and no `verify.command` | the goals, the missing field |
 | **Threshold** | a metric crosses **its own trailing p85**, not a hardcoded constant | the series, the derived baseline, the breach |
-| **Consistency** | two sources disagree: ledger `done` vs PR still open; verify passed but no test file in the diff; slices declared vs files touched | both records, side by side |
+| **Consistency** | two sources disagree: ledger `done` vs PR still open; **verify passed but no test file in the diff — `alignment-collect` d2 `tests_touched_with_source_pct` measures exactly this today**; slices declared vs files touched — **d1 `files_changed_outside_any_plan`** | both records, side by side |
 | **Debt** | `discovery-scan` / radar inventory rising; `knowledge/gaps.md` queries unanswered | file, count, trend |
 
 Three properties inherited deliberately from `pipeline.py`:
