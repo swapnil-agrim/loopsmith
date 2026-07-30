@@ -957,4 +957,21 @@ Both companion plugins are optional and install from the official **`claude-plug
 
 ## License
 
-MIT. The companion plugins are each under their own licenses (superpowers and code-review are both MIT at the time of writing).
+**Two licences, split on a folder boundary.**
+
+| Path | Licence | |
+|---|---|---|
+| everything except `insight/` | **MIT** — [`LICENSE`](LICENSE) | the LoopSmith plugin: skills, hooks, docs |
+| `insight/` | **BUSL 1.1** — [`insight/LICENSE`](insight/LICENSE) | LoopSmith Insight, the analytics platform |
+
+`insight/` is **source-available, not open source**: read it, modify it, run it against your own
+projects — but not offered to third parties as a hosted service until its Change Date
+(2030-07-30), when it converts to MIT.
+
+**This matters for one install path.** A marketplace install (`/plugin install loopsmith`) clones
+the whole repository, so it puts `insight/` on your disk too, and *those files are not MIT.* The
+`plugin.json` manifest declares MIT because it describes the plugin — whose own files genuinely are
+MIT — not the repository. Installing via [`install.sh`](install.sh) is unaffected either way: it
+copies only `hooks/`, `skills/`, and `commands/`.
+
+The companion plugins are each under their own licenses (superpowers and code-review are both MIT at the time of writing).
