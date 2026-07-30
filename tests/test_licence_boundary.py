@@ -25,15 +25,19 @@ and the second failure is the instructive one:
      GLOBAL `core.excludesFile`, and let any subtree be un-guarded by dropping a `.gitignore`
      containing `*` into it.
 
-So the skip is now structural. A directory is excluded only when it *is* one of three things,
-each identified by what it CONTAINS rather than what it is called:
+So the skip is now three narrow exclusions, and it is worth being exact about which is which:
 
-  * a virtualenv — it holds a `pyvenv.cfg` (this is the marker `venv` itself writes),
-  * a bytecode cache — `__pycache__`,
-  * package metadata — `*.egg-info`.
+  * a virtualenv — STRUCTURAL: the directory holds a `pyvenv.cfg` AND a `bin/` or `Scripts/`.
+    Both halves are required. `pyvenv.cfg` alone is a one-file veto anyone could drop into a real
+    module to silence it; `venv` always creates the launcher directory too, so requiring both costs
+    nothing and closes that.
+  * `__pycache__` and `*.egg-info` — BY NAME. Neither is a legal Python module name (a dunder cache
+    directory is never imported; a dot makes `*.egg-info` unimportable), so unlike `env`/`build`/
+    `dist` there is no plausible module they could collide with.
 
-A module can be named anything; none of those three can be faked by naming, none depends on git,
-and the fixture tests exercise the exact function the tree scan uses.
+The distinction matters because an earlier docstring claimed all three were structural, which was
+false and would have told the next reader the wrong thing. What is true of all three: none depends
+on git or on ignore rules, and the fixture tests exercise the exact function the tree scan uses.
 
 WHY THE MARKER IS READ, NEVER RETYPED. `insight/HEADER.txt` is the single source of the marker
 string. Restating it here would let the two drift while this test kept passing against the wrong
@@ -64,20 +68,27 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 INSIGHT = ROOT / "insight"
 HEADER_FILE = INSIGHT / "HEADER.txt"
 
-_CODING_COOKIE = re.compile(r"^#.*\bcoding[:=]")
+#: PEP 263 / CPython's tokenizer. Deliberately NOT `\bcoding` — that rejects
+#: `# encoding: utf-8`, the commonest cookie form, on a correctly-marked file.
+_CODING_COOKIE = re.compile(r"^[ \t\f]*#.*coding[:=][ \t]*[-\w.]+")
 
 
 def _is_virtualenv(directory):
-    """A virtualenv announces itself with pyvenv.cfg — written by `venv` itself and by every tool
-    that wraps it. Structural, so a module called `env` is never mistaken for one."""
-    return (directory / "pyvenv.cfg").is_file()
+    """A virtualenv announces itself with pyvenv.cfg AND a launcher directory — `python -m venv`
+    produces exactly `bin/ include/ lib/ pyvenv.cfg` (`Scripts/` on Windows). Both halves are
+    required: pyvenv.cfg alone would be a one-file veto that anyone could drop into a real module
+    to hide its sources from this guard."""
+    return ((directory / "pyvenv.cfg").is_file()
+            and ((directory / "bin").is_dir() or (directory / "Scripts").is_dir()))
 
 
 def _owned_py_files(root):
     """Every .py file under `root` that this repo owns (see the module docstring for why the skip
     is structural). No git, no ignore rules, no name list."""
     out = []
-    for path in sorted(root.rglob("*.py")):
+    # "*.[pP][yY]": pathlib's glob is case-sensitive on POSIX regardless of the
+    # filesystem, so a plain "*.py" misses LEAK.PY on the Linux CI runner too.
+    for path in sorted(root.rglob("*.[pP][yY]")):
         rel = path.relative_to(root)
         if "__pycache__" in rel.parts or any(q.endswith(".egg-info") for q in rel.parts):
             continue
@@ -181,12 +192,14 @@ def test_checker_allows_the_marker_below_a_shebang(tmp_path):
     (tmp_path / "both.py").write_text(
         f"#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n{marker}\nx = 1\n", encoding="utf-8")
     (tmp_path / "cookie.py").write_text(f"# -*- coding: utf-8 -*-\n{marker}\nx = 1\n", encoding="utf-8")
-    # "decoding:" must NOT count as an encoding cookie
-    (tmp_path / "decode.py").write_text(f"# decoding: rot13\n{marker}\nx = 1\n", encoding="utf-8")
+    # `# encoding: utf-8` is a legal cookie and must be accepted; CPython also treats
+    # `# decoding: rot13` as one (it raises "encoding problem: rot13"), so we match its rule
+    # rather than invent a stricter one.
+    (tmp_path / "enc.py").write_text(f"# encoding: utf-8\n{marker}\nx = 1\n", encoding="utf-8")
     (tmp_path / "late.py").write_text(f"x = 1\n{marker}\n", encoding="utf-8")
-    assert _files_missing_header(tmp_path, marker) == ["decode.py", "late.py"], (
-        "the marker may sit below a shebang and/or a PEP 263 cookie, but not behind a line that "
-        "merely contains 'decoding:', and not buried further down"
+    assert _files_missing_header(tmp_path, marker) == ["late.py"], (
+        "the marker may sit below a shebang and/or a PEP 263 encoding cookie (either form), "
+        "but not buried further down the file"
     )
 
 
@@ -210,11 +223,26 @@ def test_modules_named_like_build_trees_are_still_checked(tmp_path):
     assert len(missing) == 6, f"a module must never be skipped for its NAME; got {missing}"
 
 
+def test_a_lone_pyvenv_cfg_cannot_hide_a_module(tmp_path):
+    """A one-file veto: dropping pyvenv.cfg into a real module must NOT silence its sources."""
+    mod = tmp_path / "realmod"
+    mod.mkdir()
+    (mod / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
+    (mod / "leak.py").write_text("x = 1\n", encoding="utf-8")
+    assert _files_missing_header(tmp_path, _marker()) == [os.path.join("realmod", "leak.py")]
+
+
+def test_case_variant_extensions_are_checked(tmp_path):
+    (tmp_path / "LEAK.PY").write_text("x = 1\n", encoding="utf-8")
+    assert _files_missing_header(tmp_path, _marker()) == ["LEAK.PY"]
+
+
 def test_a_real_virtualenv_is_skipped(tmp_path):
     """The legitimate exclusion, identified by what the directory CONTAINS. The venv here is called
     `env` — the same name the test above insists must be checked when it is a module."""
     venv = tmp_path / "env"
     (venv / "lib").mkdir(parents=True)
+    (venv / "bin").mkdir()
     (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
     (venv / "lib" / "vendored.py").write_text("x = 1\n", encoding="utf-8")
     (tmp_path / "mine.py").write_text("x = 1\n", encoding="utf-8")
@@ -268,12 +296,13 @@ def test_insight_licence_says_how_to_buy_one():
     """The Terms require a non-compliant user to purchase a commercial licence. A licence that
     demands that without giving any way to make contact is unusable."""
     params = (INSIGHT / "LICENSE").read_text(encoding="utf-8").split("Terms", 1)[0]
-    assert "Licensing Contact:" in params, (
-        "insight/LICENSE must carry a LABELLED contact for alternative licensing arrangements — "
-        "unlabelled, it reads as a continuation of the Change License parameter"
+    licensor = params.split("Licensor:", 1)[1].split("\n\n", 1)[0]
+    assert "@" in licensor, (
+        "the Licensor parameter must carry a contact for alternative licensing arrangements — the "
+        "Terms require a non-compliant user to purchase a commercial licence, which is unusable "
+        "without one. It rides on Licensor rather than a new label so the Parameters block keeps "
+        "exactly the five slots BUSL defines (see insight/LICENSE-NOTES.md)."
     )
-    contact = params.split("Licensing Contact:", 1)[1]
-    assert "@" in contact.split("---")[0], "the Licensing Contact must name an actual address"
 
 
 def test_readme_states_the_boundary():

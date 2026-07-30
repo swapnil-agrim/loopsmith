@@ -7,6 +7,11 @@ filled in, and covenants 2 and 3 explicitly direct the licensor to supply those 
 the repository, the Additional Use Grant, and a licensing contact there is conforming use, not
 modification. Commentary that is not a parameter lives here.
 
+The licensing contact rides on the `Licensor` value rather than a new `Licensing Contact:` label,
+so the Parameters block keeps exactly the five slots BUSL defines. Inventing a sixth label would be
+added text, which is the thing covenant 4 speaks to — the same argument that moved these notes out
+of the licence in the first place.
+
 ## The five parameters are a product decision, not legal advice
 
 `Licensor`, `Licensed Work`, `Additional Use Grant`, `Change Date`, and `Change License` are the
