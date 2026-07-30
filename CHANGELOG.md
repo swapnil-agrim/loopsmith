@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Research-capture scrub hardening — follow-ups from the 0.9.8 review (0.9.9)
+Two refinements to the 0.9.8 secret scrub, from the independent review of that PR:
+- **The subject is scrubbed too, not just the excerpt.** A credential in a URL query param (a pre-signed
+  S3 URL's `?X-Amz-Credential=AKIA…`) or pasted into a WebSearch query used to land verbatim in the
+  breadcrumb's `subject:` frontmatter, its `# heading`, and the slugified filename. The subject now runs
+  through the same redactor before any of those are built.
+- **`token` no longer over-redacts prose.** It was in the auth-keyword rule, so ordinary phrases in the
+  captured research ("token management", "token economics") collapsed to `[REDACTED:auth]`. Bare `token`
+  moved to the `key: value` rule, so a real `token: <value>` assignment is still redacted while the word
+  itself survives.
+
 ### Research capture no longer dumps raw web bodies to a git-tracked dir (0.9.8)
 A security fix in the opt-in knowledge-graph capture path. The `research_capture` PostToolUse hook wrote
 the **raw** WebSearch/WebFetch response — the first 4000 verbatim chars — into
