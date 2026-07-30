@@ -33,9 +33,12 @@ _SECRET_PATTERNS = (
     (re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), "[REDACTED:jwt]"),
     # Auth material by keyword — runs BEFORE the key:value rule so a "Basic <base64>" value can't be
     # orphaned by the key rule redacting only the keyword. base64 padding (+/=) is in the value class.
-    (re.compile(r"(?i)\b(?:bearer|basic|digest|token)\s+[A-Za-z0-9+/=._\-]{8,}"), "[REDACTED:auth]"),
+    # NOTE: bare "token" is deliberately NOT here — it's the single most common word in the research this
+    # feature captures ("token management", "token economics"), so keywording it here over-redacts prose.
+    # A real assignment `token: <value>` / `token=<value>` is caught by the key:value rule below instead.
+    (re.compile(r"(?i)\b(?:bearer|basic|digest)\s+[A-Za-z0-9+/=._\-]{8,}"), "[REDACTED:auth]"),
     (re.compile(r"(?i)\b(api[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|"
-                r"access[_-]?token|authorization|secret|password|passwd|pwd)\b[\"']?\s*[:=]\s*"
+                r"access[_-]?token|authorization|token|secret|password|passwd|pwd)\b[\"']?\s*[:=]\s*"
                 r"[\"']?[^\s\"'<>&]{4,}"),
      r"\1: [REDACTED]"),
 )
@@ -76,6 +79,8 @@ def build_breadcrumb(tool_name, tool_input, tool_response):
     subject = (raw or "").strip()
     if not subject:
         return None                                     # skip failed/empty web calls — no junk breadcrumbs
+    subject = _scrub(subject)                            # a credential in a URL query param / pasted query
+                                                         # must not land verbatim in frontmatter/heading/slug
     now = datetime.now(timezone.utc)
     ts = now.isoformat(timespec="microseconds")
     stamp = now.strftime("%Y-%m-%dT%H%M%S-%f")          # collision-safe to the microsecond

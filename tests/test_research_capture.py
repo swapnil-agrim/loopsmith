@@ -79,11 +79,30 @@ def test_authorization_basic_header_is_redacted():
 
 
 def test_secret_straddling_the_excerpt_boundary_is_redacted():
-    # scrub runs on the 4000-char region BEFORE the 400-char cap, so a secret near char 400 is redacted
-    # (not truncated into a non-matching partial) — this ordering is the load-bearing part
-    body = "x" * 388 + " AKIAIOSFODNN7EXAMPLE and more"
+    # the secret sits fully inside the first 400 chars, so the cap alone would KEEP it — only
+    # scrub-before-cap removes it. Proves the scrub (not the truncation) is doing the work here.
+    body = "x" * 380 + "AKIAIOSFODNN7EXAMPLE" + " and more text after the key"  # key at chars 380-399
     _, md = _mod().build_breadcrumb("WebSearch", {"query": "q"}, body)
     assert "AKIAIOSFODNN7EXAMPLE" not in md
+
+
+def test_common_word_token_is_not_over_redacted():
+    # "token" is the most common word in captured research — it must survive as prose, and only a real
+    # assignment (token: <value>) gets redacted
+    _, md = _mod().build_breadcrumb("WebSearch", {"query": "q"},
+                                    "token management and token economics are hard topics")
+    assert "token management" in md and "token economics" in md and "[REDACTED" not in md
+    _, md2 = _mod().build_breadcrumb("WebSearch", {"query": "q"}, "config has token: s3cretValue123 inside")
+    assert "s3cretValue123" not in md2 and "[REDACTED" in md2
+
+
+def test_credential_in_url_subject_is_scrubbed():
+    # a pre-signed URL / query param carries the secret in the SUBJECT, which lands in the frontmatter,
+    # the heading, AND the slugified filename — all three must be scrubbed
+    path, md = _mod().build_breadcrumb(
+        "WebFetch", {"url": "https://s3.amazonaws.com/b/o?X-Amz-Credential=AKIAIOSFODNN7EXAMPLE&sig=x"}, "body")
+    assert "AKIAIOSFODNN7EXAMPLE" not in md
+    assert "akiaiosfodnn7example" not in path.lower()   # not smuggled through the filename slug either
 
 
 def test_secret_inside_json_response_is_redacted():
