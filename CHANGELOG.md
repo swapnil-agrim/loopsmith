@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Conditional-risk review skills (0.9.10)
+The 7-phase spine reviews code *quality* (`sdlc-review`), but never asks "does this touch auth/PII, break
+a public contract, need a migration rollback, is it safe to ship." Five new skills fill that orthogonal
+gap — each LoopSmith's own (no platform companion), invoked only when a change trips its risk, so there's
+zero cost until one runs:
+- **`/sdlc-security-review`** — threat-model a change to auth / user data / external inputs / a public
+  endpoint (eight-point checklist, severities + remediations).
+- **`/sdlc-contract-check`** — detect breaking changes to public APIs / event shapes / exported types
+  before consumers hit them (classify + name every affected consumer by grep).
+- **`/sdlc-migration-check`** — forward path, backfill, rollback, and canary for any DB schema/data change.
+- **`/sdlc-release-check`** — the eleven-point pre-flight checklist + go/no-go (the loop still never ships;
+  this produces the artifact a human release captain reads).
+- **`/sdlc-debug`** — hypothesis-first, reproduce-as-a-test-first bug diagnosis before any fix.
+
+Each renders a structured report and persists to `.sdlc/reviews/` — deliberately NOT under the
+`.sdlc/knowledge/` tree gitignored in 0.9.8, so a review stays visible to its PR. (Auto-surfacing these
+from a diff-risk detector lands next.)
+
 ### Research-capture scrub hardening — follow-ups from the 0.9.8 review (0.9.9)
 Two refinements to the 0.9.8 secret scrub, from the independent review of that PR:
 - **The subject is scrubbed too, not just the excerpt.** A credential in a URL query param (a pre-signed

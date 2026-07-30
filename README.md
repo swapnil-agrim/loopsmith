@@ -184,6 +184,7 @@ Every option LoopSmith provides, at a glance:
 | **Proactive research scout** | Sweep the backlog for new SOTA, dedup, write a ranked digest (dry-run) | `/sdlc-radar` |
 | **Model auto-selection** | Predict the tier a goal deserves (haiku/sonnet/opus/fable); the loop runs it there | `/sdlc-model`, `model_selection: auto` |
 | **Quality-drift gate** | A behavioral corpus scored on every change; the build fails if a discipline signal regresses | `evals/run.py` |
+| **Conditional-risk reviews** | Beyond code quality: threat-model auth/PII, catch breaking contracts, plan a migration's rollback, pre-flight a release, or diagnose a bug test-first — each fires only when a change trips that risk, so nothing costs until it runs | `/sdlc-security-review`, `/sdlc-contract-check`, `/sdlc-migration-check`, `/sdlc-release-check`, `/sdlc-debug` |
 | **Retrospective / learning loop** | After each goal: structural + product debt, intent-vs-shipped, lessons routed to the right store (advisory) | `/sdlc-retro` |
 | **Cursor adapter** *(experimental)* | Scaffolds the SDLC discipline as an always-applied Cursor rule — *not yet verified in a live Cursor session* | `/sdlc-init --cursor` |
 | **Status at a glance** | Backlog counts, whether the review queue needs you, and when an alignment check comes due — counted from the live board in github mode, so `parked` is every parked issue, not just this run's | `/sdlc-status` |
