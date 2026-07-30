@@ -54,6 +54,12 @@ One row per site, each with a disposition:
 (`git log --all --oneline -- <path>`, `git log -S"<symbol>"`). Deleted code is both a reference for the
 real contract and a constraint — the reason it was removed usually still applies.
 
+**Anticipate conditional risk.** If the radius touches a surface that earns a dedicated review beyond
+code quality — auth/PII, a public API or exported contract, or a DB migration — record in the dossier
+that Review must run the matching skill: `sensitive` → `/sdlc-security-review`, `contract` →
+`/sdlc-contract-check`, `migration` → `/sdlc-migration-check`. The `risk-detect.sh` collector confirms it
+against the real diff at Review (§Review wires it); here you flag it so the Plan budgets for it.
+
 ## 3. Tech debt already in the radius
 Within the blast radius only — this is not a whole-repo audit — find the debt the goal is about to
 build on: duplicated sources of truth that disagree, hard-coded assumptions, dead branches, swallowed

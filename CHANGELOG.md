@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### risk-detect: auto-surface the right risk review from the diff (0.9.11)
+The 0.9.10 risk skills only help if someone remembers to run the right one. `risk-detect.sh` closes that
+gap — a read-only, jq-free, deterministic collector that scans the current change (working tree + staged +
+untracked) and names which conditional-risk categories it touches: `migration` / `contract` / `sensitive`,
+each mapping to a Slice-2 skill.
+- **Wired into the loop's Review phase** (`sdlc-review` SKILL prose): a matched category auto-surfaces "run
+  `/sdlc-<risk>-check`". **Anticipated at Research** (`sdlc-research`): if the blast radius touches a risk
+  surface, the dossier flags it so the Plan budgets for the review. It's a bash trigger (zero LLM cost); it
+  names the risk, the skill judges it.
+- **Secret-safe by construction:** the content scan reads diff bodies to classify lines but emits ONLY
+  `{category,file,line,pattern_id}` — never the matched substring. **Fail-open:** no git / non-repo →
+  `{"schema":"risk-detect/v1","matched":[],"hits":[]}`, exit 0. Excludes `.sdlc/**` and `docs/**` (the
+  harness, not the engineer's source). Optional glob overrides via `.sdlc/risk-detect.conf`.
+
 ### Conditional-risk review skills (0.9.10)
 The 7-phase spine reviews code *quality* (`sdlc-review`), but never asks "does this touch auth/PII, break
 a public contract, need a migration rollback, is it safe to ship." Five new skills fill that orthogonal
