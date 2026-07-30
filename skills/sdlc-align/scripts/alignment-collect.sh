@@ -183,7 +183,10 @@ REVIEWS_DIR_PRESENT=false
 # detect PRESENCE of a non-empty command (jq-free heuristic grep); we NEVER run
 # anything derived from it.
 TEST_COMMAND_KNOWN=false
+# Heuristic (jq-free): the config declares a "verify" block AND carries a non-empty "command". Requiring
+# "verify" present avoids a false-positive on some unrelated "command" key. Advisory FACT, not a gate.
 if [ -f "$PROJECT_DIR/.sdlc/config.json" ] \
+   && grep -q '"verify"' "$PROJECT_DIR/.sdlc/config.json" 2>/dev/null \
    && grep -Eq '"command"[[:space:]]*:[[:space:]]*"[^"]+' "$PROJECT_DIR/.sdlc/config.json" 2>/dev/null; then
   TEST_COMMAND_KNOWN=true
 fi
@@ -222,9 +225,15 @@ scan_hardstops() {
       -- . "$PATHSPEC_EXCLUDE" 2>/dev/null \
     | awk -v sha="$sha" '
       function jesc(s){ gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); return s }
-      /^\+\+\+ / { f=$0; sub(/^\+\+\+ [ab]\//,"",f); sub(/\t.*$/,"",f); file=f; next }
-      /^@@ /     { h=$0; sub(/^@@ -[0-9,]+ \+/,"",h); sub(/[, ].*$/,"",h); newln=h+0; next }
-      /^\+/ && $0 !~ /^\+\+\+/ {
+      # A real "--- "/"+++ " file header only appears OUTSIDE a hunk (before the first @@). Once inside
+      # a hunk, a line rendered "+++ ..." is added CONTENT whose source began "++ " — treating it as a
+      # header would capture the line (secret and all) into `file` and emit it. Track hunk state, so an
+      # in-hunk "+++ " line is scanned as content (location-only) and never becomes the `file` value.
+      /^diff --git / { inhunk=0; file=""; next }
+      !inhunk && /^--- / { next }
+      !inhunk && /^\+\+\+ / { f=$0; sub(/^\+\+\+ [ab]\//,"",f); sub(/\t.*$/,"",f); file=f; next }
+      /^@@ / { inhunk=1; h=$0; sub(/^@@ -[0-9,]+ \+/,"",h); sub(/[, ].*$/,"",h); newln=h+0; next }
+      inhunk && /^\+/ {
         line=$0; sub(/^\+/,"",line)
         if (line ~ /(AWS_SECRET_ACCESS_KEY|aws_secret_access_key|api[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|password)[ \t]*[:=]/)
           emit("secret","secret_key")
@@ -240,7 +249,7 @@ scan_hardstops() {
         newln++
         next
       }
-      /^ / { newln++ }
+      inhunk && /^ / { newln++; next }
       function emit(cat,pid,  loc) {
         loc = (newln>0 ? newln : 0)
         printf "{\"commit\":\"%s\",\"file\":\"%s\",\"line\":%d,\"pattern_id\":\"%s\",\"category\":\"%s\"}\n",

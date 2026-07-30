@@ -66,6 +66,21 @@ def test_secret_in_a_committed_diff_is_location_only(tmp_path):
     assert "hunter2SUPERSECRET" not in blob and "AKIA00001111EXAMPLE" not in blob   # value never emitted
 
 
+def test_content_line_that_renders_as_a_diff_header_never_leaks(tmp_path):
+    # a committed line beginning "++ " renders as "+++ " in the outer diff; the scanner must treat it
+    # as CONTENT (location-only), NOT misparse it as a "+++ b/path" header that captures the value
+    repo = _repo(tmp_path)
+    _commit(repo, "NOTES.md", '++ token = "ghp_REALSECRETTOKENLEAK01"\nplain line\n', "add notes")
+    out = _run(repo)
+    blob = json.dumps(out)
+    assert "ghp_REALSECRETTOKENLEAK01" not in blob            # value never in the pack
+    for h in out["dimensions"]["d6"]["hits"]:
+        assert "SECRET" not in h["file"].upper() and h["file"] == "NOTES.md"   # real filename, not the line
+    # and a committed .patch whose +lines become ++ in the outer diff must not leak either
+    _commit(repo, "fix.patch", '--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+password = "PATCHSECRETLEAK42"\n', "patch")
+    assert "PATCHSECRETLEAK42" not in json.dumps(_run(repo))
+
+
 def test_test_command_known_reads_verify_command(tmp_path):
     repo = _repo(tmp_path)
     (repo / ".sdlc").mkdir()
@@ -78,6 +93,10 @@ def test_test_command_known_reads_verify_command(tmp_path):
     out = _run(repo)
     assert out["dimensions"]["d2"]["test_command_known"] is False
     assert "no_test_command" in out["degraded"]
+    # an unrelated "command" key with NO verify block must not false-positive
+    (repo / ".sdlc" / "config.json").write_text('{"hooks":{"command":"echo hi"}}')
+    _commit(repo, "c.py", "z = 3\n", "add c")
+    assert _run(repo)["dimensions"]["d2"]["test_command_known"] is False
 
 
 def test_reviews_dir_and_decisions_are_retargeted_to_sdlc(tmp_path):
