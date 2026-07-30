@@ -29,3 +29,18 @@ records what it surfaced, but never files issues or touches GitHub.**
 Optionally seed the gap log with a finding worth chasing — `kg.py gap log "<...>" .sdlc` — so the
 self-improving loop can fill it later: that's where the radar's *supply* meets the loop's *demand*.
 Keep `.sdlc/knowledge/radar/` out of git (machine-accumulated, like `research/`).
+
+## Internal debt scan (the *other* supply side)
+
+The SOTA sweep above surfaces what's new outside; the debt already **inside** the repo is the other
+thing you didn't schedule. Run the read-only collector and let it propose backlog items:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/pipeline.py" discover .sdlc .
+```
+
+It runs `discovery-scan.sh` (secret-safe — location + count only, never the marker text) over tracked
+source and writes one **`proposed`** goal file per (category, file) for `TODO/FIXME/HACK/XXX` clusters
+(tech-debt) and skipped/xfail tests (test-gap). Proposing is safe and idempotent: the loop **never runs
+a `proposed` goal** until a human edits it to `status: pending`, and the per-(category, file) id means a
+re-scan never spawns a duplicate. A quiet, non-git, or unreadable tree proposes nothing (fail-open).

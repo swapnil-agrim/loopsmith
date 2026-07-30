@@ -341,3 +341,56 @@ def test_e2e_feedback_circle_break_detect_propose_fix_verify_clean(tmp_path):
     assert healed["verdict"]["failing_stages"] == []
     delta = pl.compare_cards(prior, healed)
     assert delta["improved"] and delta["recurrence_count"] == 0
+
+
+# ---- discovery-scan -> proposed goals (Slice 6) --------------------------------------------------
+
+def _read_goal(base, name):
+    return (pathlib.Path(base) / "goals" / name).read_text()
+
+
+def test_propose_from_discovery_writes_inert_proposed_goals():
+    pl = _mod("pipeline")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True)
+        cands = [{"title": "Resolve 2 TODO/FIXME marker(s) in a.py", "category": "tech-debt",
+                  "source": "discovery", "priority": "low", "evidence": ["a.py:2", "a.py:3"]}]
+        created = pl.propose_from_discovery(str(base), cands)
+        assert len(created) == 1
+        body = pathlib.Path(created[0]).read_text()
+        assert "status: proposed" in body and "source: discovery" in body
+        assert "a.py:2" in body and "a.py:3" in body     # locations preserved
+        # dedup: re-proposing the same (category, file) writes nothing new, even with a changed count
+        cands2 = [dict(cands[0], title="Resolve 5 TODO/FIXME marker(s) in a.py",
+                       evidence=["a.py:2", "a.py:3", "a.py:9"])]
+        assert pl.propose_from_discovery(str(base), cands2) == []
+
+
+def test_propose_from_discovery_never_writes_the_marker_text():
+    pl = _mod("pipeline")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True)
+        # a real collector never puts marker text in the candidate; the title/evidence are location-only
+        cands = [{"title": "Resolve 1 TODO/FIXME marker(s) in a.py", "category": "tech-debt",
+                  "source": "discovery", "priority": "low", "evidence": ["a.py:1"]}]
+        created = pl.propose_from_discovery(str(base), cands)
+        assert "a.py:1" in pathlib.Path(created[0]).read_text()
+
+
+def test_discover_end_to_end_and_fail_open():
+    pl = _mod("pipeline")
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, capture_output=True)
+        (root / "a.py").write_text("# TODO: rotate AKIALEAK00000000000 soon\n")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
+        base = root / ".sdlc"; (base / "goals").mkdir(parents=True)
+        created = pl.discover(str(base), str(root))
+        assert len(created) == 1
+        body = pathlib.Path(created[0]).read_text()
+        assert "status: proposed" in body and "AKIALEAK00000000000" not in body   # secret-safe end to end
+        assert pl.discover(str(base), str(root)) == []                            # dedup
+
+    with tempfile.TemporaryDirectory() as d2:      # non-git tree -> fail-open, proposes nothing
+        base2 = pathlib.Path(d2) / ".sdlc"; (base2 / "goals").mkdir(parents=True)
+        assert pl.discover(str(base2), str(d2)) == []

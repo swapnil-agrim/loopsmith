@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### discovery-scan: propose backlog goals from the debt already in the repo (0.9.15)
+The radar surfaces what's new *outside*; this surfaces the debt already *inside*. `discovery-scan.sh` is a
+read-only, jq-free, deterministic collector that greps tracked source for two mechanical signals —
+`TODO/FIXME/HACK/XXX` clusters (tech-debt) and skipped/xfail tests (test-gap) — aggregated per file.
+- **`pipeline.py discover <sdlc_dir> [repo_root]`** turns each candidate into a **`proposed`** goal file
+  (`status: proposed`, `source: discovery`), the same inert contract as `pipeline propose`: the loop
+  **never runs a `proposed` goal** until a human promotes it to `pending`. The dedup id is per
+  (category, file) — a changed marker count never spawns a duplicate. Surfaced from `/sdlc-radar` as its
+  internal-supply step.
+- **Secret-safe:** a candidate carries the marker **location + count**, never the comment text (a `TODO`
+  can contain a secret). **Fail-open:** no git / non-repo → no candidates, exit 0. Excludes `.sdlc/**`,
+  `docs/**`, and common vendor dirs.
+
 ### Skill-selection guidance vs platform built-ins (0.9.14)
 Documents, honestly, how LoopSmith's skills win selection against platform built-ins — and what a plugin
 *can't* do. A spike against the current Claude Code docs confirmed: **a marketplace plugin cannot disable
