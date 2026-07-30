@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Interactive Stop gate — don't end a session with unplanned source changes (0.9.12, opt-in)
+An OPT-IN Stop hook (`hooks/completion_gate.sh`), the Stop-time counterpart to the PreToolUse
+`hard_plan_gate`. When enabled, it refuses to let the agent stop while SOURCE files changed in the working
+tree but no fresh plan sits under `.sdlc/plans/` — so an interactive `/sdlc-goal` session can't quietly end
+with unplanned work (the loop's own record step is already guarded by `state.done_refusal()`; a hand-driven
+session was not). **Off by default** — absent/omitted config = allow, so installing it changes nothing until:
+`.sdlc/config.json → {"gates": {"stop_gate": {"enabled": true, "plan_freshness_hours": 24}}}`.
+- **Fail-open** on no python3 / no git / unreadable input / missing config → allow (exit 0). Escape hatch:
+  `touch .sdlc/.allow-direct-edits`. Excludes `.sdlc/**` and `docs/**` (harness, not source).
+- **Loop-safe:** the guard honors both the classic `stop_hook_active` flag and the newer `recursive_state`
+  shape, so a block can never fire twice in a row regardless of host runtime. jq-free (config via python3).
+
 ### risk-detect: auto-surface the right risk review from the diff (0.9.11)
 The 0.9.10 risk skills only help if someone remembers to run the right one. `risk-detect.sh` closes that
 gap — a read-only, jq-free, deterministic collector that scans the current change (working tree + staged +
