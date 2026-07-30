@@ -43,6 +43,12 @@ For the diff (or the scanned files), each finding with `file:line` evidence:
 - **Async correctness** — unawaited work, races, swallowed exceptions.
 - **Project-rule violations** — anything breaking the project's rules: the **north-star Architecture
   Rules** (`.sdlc/context/north-star.md`) + governing **`CLAUDE.md`** conventions. Quote the rule.
+- **Conditional-risk surfaces** — run `bash "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/risk-detect.sh"`
+  (read-only, fail-open, secret-safe — it emits location only, never a matched value) over the change.
+  For each category in its `matched`, ALSO run the dedicated review it names — `migration` →
+  `/sdlc-migration-check`, `contract` → `/sdlc-contract-check`, `sensitive` → `/sdlc-security-review`.
+  The detector is a bash trigger (zero LLM cost); it names the risk, the skill judges it. A code-quality
+  pass alone will not catch a broken public contract or an unsafe migration.
 
 ## 3. Verdict + findings
 Open with an **overall verdict**, then findings by category, most-severe first:
