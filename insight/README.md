@@ -33,8 +33,9 @@ Only `.py` is enforced today. Subsystems D and E bring TypeScript and SQL into t
 The plugin and this product communicate through **file formats, never imports** (spec §1.1 rule 1).
 Nothing under `skills/` or `hooks/` may import `insight`, and nothing here may import them as
 Python modules — reading their output files by path is the entire contract. `insight/` has its own
-dependencies and version (`pyproject.toml`, `VERSION`), neither of which the plugin installs; the
-separate CI job and coverage gate are
-[issue #96 (E0.S3)](https://github.com/swapnil-agrim/loopsmith/issues/96), and the distribution
-name still has to change because `insight` is taken on PyPI
-([#165](https://github.com/swapnil-agrim/loopsmith/issues/165)).
+dependencies and version (`pyproject.toml`, `VERSION`), neither of which the plugin installs, and
+its own CI job and coverage gate ([#166](https://github.com/swapnil-agrim/loopsmith/pull/166)).
+
+It is distributed as **`loopsmith-insight`** — the bare name `insight` is taken on PyPI by an
+unrelated package ([#165](https://github.com/swapnil-agrim/loopsmith/issues/165)). The *import*
+name is still `insight`; only the distribution name differs.
