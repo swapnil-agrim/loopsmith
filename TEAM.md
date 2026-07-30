@@ -9,4 +9,6 @@ _Nothing is blocked on another person._
 
 ## Recent activity
 
-_No entries yet._
+| when | who | did | goal | detail |
+|---|---|---|---|---|
+| 2026-07-30T16:13:24Z | swapnil-agrim | claimed | 94 |  |
