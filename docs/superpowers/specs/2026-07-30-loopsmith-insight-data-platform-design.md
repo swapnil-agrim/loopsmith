@@ -55,11 +55,10 @@ sdlc-kit/
 3. **Plugin installs clone the folder.** Marketplace `source` is `"./"`, so every `/plugin install
    loopsmith` pulls `insight/` as dead weight. Accepted while it is small; if it bloats, marketplace
    entries support subdirectory sources and the repo can be re-scoped — **unverified until tried** (§11).
-4. **License carve-out — an open decision the monorepo forces.** This repo is **public under MIT**. The day
-   `insight/` is committed without its own license, the sellable product is MIT open source. Options are
-   open-core (insight stays MIT, sell hosting/support), a per-folder source-available license
-   (`insight/LICENSE`, e.g. BUSL — legally fine, must be clearly marked), or reverting insight to a private
-   repo after all. §10 carries it; nothing lands in `insight/` before it is decided.
+4. **License carve-out — decided.** This repo is **public under MIT**, so `insight/` carries its own
+   source-available license (`insight/LICENSE`, BUSL-style), clearly marked in the repo README and in
+   `insight/` file headers. The plugin stays MIT. **The LICENSE file is the first commit into `insight/`** —
+   nothing else lands before it. (§10 q0 records the decision.)
 
 ### The property that makes local-first work
 
@@ -567,9 +566,11 @@ header says *"this file wins on conflict"*. So the UI must not become a second s
 
 ## 10. Open questions for the next spec
 
-0. **License for `insight/` — decides before any code lands.** The repo is public MIT; §1.1 rule 4 names the
-   three options (open-core · per-folder source-available · private repo after all). Business call, not an
-   engineering one.
+0. ~~License for `insight/`~~ **Decided 2026-07-30: per-folder source-available (BUSL-style).**
+   `insight/LICENSE` carries its own license; the plugin stays MIT; the repo README and `insight/` headers
+   mark the boundary clearly. First file into `insight/` is the LICENSE. (Exact BUSL parameters — change
+   date, additional-use grant — are a one-time legal wording pass at that moment, not an engineering
+   blocker.)
 1. **Change-failure linkage (#5, #6, #25).** Needs a convention — a `fixes: <goal-id>` frontmatter field, or
    revert detection from git, or both. Cheap to add, and three metrics depend on it.
 2. **Survey surface for DXI (#39).** Real gap. Build a survey, buy DXI, or ship the labelled proxy
