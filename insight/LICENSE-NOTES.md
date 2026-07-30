@@ -1,8 +1,11 @@
 # Notes on `insight/LICENSE`
 
-These notes are deliberately **not** in `LICENSE` itself: BUSL 1.1 covenant 4 commits the licensor
-"not to modify this License in any other way", and appending a section to the licence text is in
-tension with that. They live here instead.
+These notes are deliberately **not** in `LICENSE` itself. BUSL 1.1 covenant 4 commits the licensor
+"not to modify this License in any other way", and appending a free-text section after the Notice
+is in tension with that. Filling in the **Parameters** block is different — that block exists to be
+filled in, and covenants 2 and 3 explicitly direct the licensor to supply those values — so naming
+the repository, the Additional Use Grant, and a licensing contact there is conforming use, not
+modification. Commentary that is not a parameter lives here.
 
 ## The five parameters are a product decision, not legal advice
 
@@ -23,4 +26,6 @@ the grant is written as a single permissive sentence with the limit inside it.
 
 The repository root `LICENSE` grants MIT over "the Software" without excluding `insight/`. The
 carve-out is stated in the root `README.md` and in `insight/LICENSE`. A root `NOTICE` file is the
-standard way to make it unmissable; tracked as a follow-up on the foundation epic.
+standard way to make it unmissable. Tracked as **issue #162**, which also has to relax
+`test_plugin_licence_is_still_mit` — as written, that assertion would reject the very carve-out
+sentence the fix needs.

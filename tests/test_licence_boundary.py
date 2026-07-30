@@ -13,16 +13,27 @@ the vacuity it existed to prevent. So the guard is `_files_missing_header()`, a 
 against planted fixtures: it has real coverage TODAY at zero `.py`, and the tree scan is then belt
 and braces rather than the whole guard.
 
-WHY THE TREE IS ENUMERATED BY GIT, NOT BY A NAME HEURISTIC. An earlier version skipped directories
-called `env`, `build`, `dist`, `.venv` so that a pip-installed tree would not drown the guard in
-third-party sources. A review demonstrated the hole: those are also plausible module names for this
-product (`insight/metrics/dist/`, `insight/ingest/env/`), and planting unmarked sources in them
-kept the suite green. Anchoring the skip to the top level only narrows the hole, it does not close
-it — `insight/env/` is still both a plausible virtualenv and a plausible module.
+WHY THE SKIP IS STRUCTURAL, NOT BY NAME AND NOT BY IGNORE STATUS. Two earlier versions failed here,
+and the second failure is the instructive one:
 
-So there is no name heuristic. `_tracked_py_files()` asks git. Build output and virtualenvs are
-gitignored; a real module is tracked. "Tracked" is therefore *exactly* "ours", it needs no skip set
-at all, and no directory name can fool it.
+  1. A name set (`env`, `build`, `dist`, `.venv`) skipped at any depth. Those are also plausible
+     module names for this product, so planting unmarked sources in `insight/metrics/dist/` kept
+     the suite green.
+  2. Enumerating via `git ls-files --exclude-standard` instead. This only MOVED the name heuristic
+     into `.gitignore`: the same change added `/insight/build/` and `/insight/dist/`, so unmarked
+     sources there were still invisible. It also made guard coverage depend on a contributor's
+     GLOBAL `core.excludesFile`, and let any subtree be un-guarded by dropping a `.gitignore`
+     containing `*` into it.
+
+So the skip is now structural. A directory is excluded only when it *is* one of three things,
+each identified by what it CONTAINS rather than what it is called:
+
+  * a virtualenv — it holds a `pyvenv.cfg` (this is the marker `venv` itself writes),
+  * a bytecode cache — `__pycache__`,
+  * package metadata — `*.egg-info`.
+
+A module can be named anything; none of those three can be faked by naming, none depends on git,
+and the fixture tests exercise the exact function the tree scan uses.
 
 WHY THE MARKER IS READ, NEVER RETYPED. `insight/HEADER.txt` is the single source of the marker
 string. Restating it here would let the two drift while this test kept passing against the wrong
@@ -46,7 +57,6 @@ import json
 import os
 import pathlib
 import re
-import subprocess
 
 import pytest
 
@@ -57,18 +67,24 @@ HEADER_FILE = INSIGHT / "HEADER.txt"
 _CODING_COOKIE = re.compile(r"^#.*\bcoding[:=]")
 
 
-def _tracked_py_files(root):
-    """Every .py file under `root` that git tracks — exact, not heuristic (see module docstring).
-    `--cached --others --exclude-standard` is tracked files PLUS new files that are not gitignored,
-    so a source added but not yet staged is still caught — waiting for `git add` would let CI be the
-    first thing that notices. Returns [] when git is unavailable or `root` is not in a work tree,
-    which is honest: the tree scan is belt-and-braces over the fixture-tested checker, never the
-    whole guard."""
-    proc = subprocess.run(["git", "-C", str(root), "ls-files", "--cached", "--others",
-                           "--exclude-standard", "--", "*.py"], capture_output=True, text=True)
-    if proc.returncode != 0:
-        return []
-    return [root / line for line in proc.stdout.splitlines() if line.strip()]
+def _is_virtualenv(directory):
+    """A virtualenv announces itself with pyvenv.cfg — written by `venv` itself and by every tool
+    that wraps it. Structural, so a module called `env` is never mistaken for one."""
+    return (directory / "pyvenv.cfg").is_file()
+
+
+def _owned_py_files(root):
+    """Every .py file under `root` that this repo owns (see the module docstring for why the skip
+    is structural). No git, no ignore rules, no name list."""
+    out = []
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root)
+        if "__pycache__" in rel.parts or any(q.endswith(".egg-info") for q in rel.parts):
+            continue
+        if any(_is_virtualenv(root.joinpath(*rel.parts[:i + 1])) for i in range(len(rel.parts) - 1)):
+            continue
+        out.append(path)
+    return out
 
 
 def _carries_marker(text, marker):
@@ -79,42 +95,36 @@ def _carries_marker(text, marker):
     Line 2 is therefore allowed, but ONLY behind a shebang/coding line, so the marker cannot drift
     arbitrarily far down the file.
     """
-    lines = text.splitlines()
+    lines = [l.strip() for l in text.splitlines()]
     if not lines:
         return False
-    if lines[0].strip() == marker:
-        return True
-    first = lines[0].strip()
-    if first.startswith("#!") or _CODING_COOKIE.match(first):
-        return len(lines) > 1 and lines[1].strip() == marker
-    return False
+    # Skip a shebang, then an encoding cookie: PEP 263 permits the cookie on line 2 when line 1 is
+    # a shebang, so the canonical Python preamble legitimately pushes the marker to line 3.
+    i = 0
+    if i < len(lines) and lines[i].startswith("#!"):
+        i += 1
+    if i < len(lines) and _CODING_COOKIE.match(lines[i]):
+        i += 1
+    return i < len(lines) and lines[i] == marker
 
 
-def _files_missing_header(root, marker, paths=None):
-    """The guard, as a pure function over an explicit file list, so it can be tested against
-    planted files rather than only against a tree that happens to be empty today. Returns paths
-    relative to `root`. `paths` defaults to everything git tracks under `root`.
+def _files_missing_header(root, marker):
+    """The guard, as a pure function so it can be tested against planted files rather than only
+    against a tree that happens to be empty today. Returns paths relative to `root`.
 
     `utf-8-sig` strips a BOM: a Windows editor can write one, `str.strip()` does not remove it
     (U+FEFF is not whitespace), and without this a correctly-marked file is reported as unmarked
     with a message that contradicts what its author sees on screen.
     """
-    if paths is None:
-        paths = _tracked_py_files(root)
     return sorted(
         str(p.relative_to(root))
-        for p in paths
+        for p in _owned_py_files(root)
         if not _carries_marker(p.read_text(encoding="utf-8-sig", errors="replace"), marker)
     )
 
 
 def _marker():
     return HEADER_FILE.read_text(encoding="utf-8-sig").strip()
-
-
-def _plant_list(root):
-    """Every .py planted under a tmp_path fixture — the fixture analogue of `git ls-files`."""
-    return sorted(root.rglob("*.py"))
 
 
 def _licence_section():
@@ -153,22 +163,30 @@ def test_checker_flags_a_headerless_file(tmp_path):
     marker = _marker()
     (tmp_path / "good.py").write_text(marker + "\nx = 1\n", encoding="utf-8")
     (tmp_path / "bad.py").write_text("x = 1\n", encoding="utf-8")
-    assert _files_missing_header(tmp_path, marker, _plant_list(tmp_path)) == ["bad.py"]
+    assert _files_missing_header(tmp_path, marker) == ["bad.py"]
 
 
 def test_checker_flags_everything_when_the_marker_is_empty(tmp_path):
     """Equality, not startswith. An empty marker must fail LOUD (flag every file), never silently
     pass every file — which is what `startswith("")` would do."""
     (tmp_path / "good.py").write_text(_marker() + "\nx = 1\n", encoding="utf-8")
-    assert _files_missing_header(tmp_path, "", _plant_list(tmp_path)) == ["good.py"]
+    assert _files_missing_header(tmp_path, "") == ["good.py"]
 
 
 def test_checker_allows_the_marker_below_a_shebang(tmp_path):
     marker = _marker()
     (tmp_path / "cli.py").write_text(f"#!/usr/bin/env python3\n{marker}\nx = 1\n", encoding="utf-8")
+    # PEP 263: the cookie is honoured on line 2 when line 1 is a shebang, so the canonical preamble
+    # legitimately pushes the marker to line 3.
+    (tmp_path / "both.py").write_text(
+        f"#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n{marker}\nx = 1\n", encoding="utf-8")
+    (tmp_path / "cookie.py").write_text(f"# -*- coding: utf-8 -*-\n{marker}\nx = 1\n", encoding="utf-8")
+    # "decoding:" must NOT count as an encoding cookie
+    (tmp_path / "decode.py").write_text(f"# decoding: rot13\n{marker}\nx = 1\n", encoding="utf-8")
     (tmp_path / "late.py").write_text(f"x = 1\n{marker}\n", encoding="utf-8")
-    assert _files_missing_header(tmp_path, marker, _plant_list(tmp_path)) == ["late.py"], (
-        "the marker is allowed on line 2 behind a shebang, but not buried further down"
+    assert _files_missing_header(tmp_path, marker) == ["decode.py", "late.py"], (
+        "the marker may sit below a shebang and/or a PEP 263 cookie, but not behind a line that "
+        "merely contains 'decoding:', and not buried further down"
     )
 
 
@@ -176,25 +194,31 @@ def test_checker_accepts_a_file_with_a_bom(tmp_path):
     """A BOM must not make a correctly-marked file read as unmarked."""
     marker = _marker()
     (tmp_path / "bom.py").write_bytes(b"\xef\xbb\xbf" + (marker + "\nx = 1\n").encode("utf-8"))
-    assert _files_missing_header(tmp_path, marker, _plant_list(tmp_path)) == []
+    assert _files_missing_header(tmp_path, marker) == []
 
 
-def test_git_enumeration_takes_tracked_files_and_ignores_the_rest(tmp_path):
-    """The hole a review found and demonstrated: `env`, `build` and `dist` are plausible MODULE
-    names as well as build-tree names, so any name-based skip either misses real sources or drowns
-    in vendored ones. Git already knows the difference — a module is tracked, build output is
-    gitignored — so this asserts the enumeration follows git and nothing else."""
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / ".gitignore").write_text("build/\n", encoding="utf-8")
-    for rel in ("ingest/env/detect.py", "metrics/dist/percentile.py", "build/generated.py"):
-        p = tmp_path / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("x = 1\n", encoding="utf-8")
-    found = sorted(str(p.relative_to(tmp_path)) for p in _tracked_py_files(tmp_path))
-    assert found == [os.path.join("ingest", "env", "detect.py"),
-                     os.path.join("metrics", "dist", "percentile.py")], (
-        f"modules named env/dist must be enumerated and gitignored build output must not; got {found}")
-    assert len(_files_missing_header(tmp_path, _marker())) == 2
+def test_modules_named_like_build_trees_are_still_checked(tmp_path):
+    """The hole two prior versions shipped. `env`, `build`, `dist` are plausible MODULE names as
+    well as build-tree names, so neither a name set nor a .gitignore-based skip can tell them
+    apart. Every one of these must be caught."""
+    for rel in ("env/settings.py", "build/gen.py", "dist/hist.py",
+                "ingest/env/detect.py", "metrics/dist/percentile.py", "dash/build/render.py"):
+        q = tmp_path / rel
+        q.parent.mkdir(parents=True, exist_ok=True)
+        q.write_text("x = 1\n", encoding="utf-8")
+    missing = _files_missing_header(tmp_path, _marker())
+    assert len(missing) == 6, f"a module must never be skipped for its NAME; got {missing}"
+
+
+def test_a_real_virtualenv_is_skipped(tmp_path):
+    """The legitimate exclusion, identified by what the directory CONTAINS. The venv here is called
+    `env` — the same name the test above insists must be checked when it is a module."""
+    venv = tmp_path / "env"
+    (venv / "lib").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
+    (venv / "lib" / "vendored.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "mine.py").write_text("x = 1\n", encoding="utf-8")
+    assert _files_missing_header(tmp_path, _marker()) == ["mine.py"]
 
 
 def test_checker_finds_nested_files(tmp_path):
@@ -203,7 +227,7 @@ def test_checker_finds_nested_files(tmp_path):
     nested = tmp_path / "ingest" / "readers"
     nested.mkdir(parents=True)
     (nested / "ledger.py").write_text("x = 1\n", encoding="utf-8")
-    assert _files_missing_header(tmp_path, marker, _plant_list(tmp_path)) == [
+    assert _files_missing_header(tmp_path, marker) == [
         os.path.join("ingest", "readers", "ledger.py")]
 
 
@@ -243,9 +267,13 @@ def test_insight_licence_names_its_parameters():
 def test_insight_licence_says_how_to_buy_one():
     """The Terms require a non-compliant user to purchase a commercial licence. A licence that
     demands that without giving any way to make contact is unusable."""
-    assert "@" in (INSIGHT / "LICENSE").read_text(encoding="utf-8").split("Terms", 1)[0], (
-        "insight/LICENSE must carry a contact for alternative licensing arrangements"
+    params = (INSIGHT / "LICENSE").read_text(encoding="utf-8").split("Terms", 1)[0]
+    assert "Licensing Contact:" in params, (
+        "insight/LICENSE must carry a LABELLED contact for alternative licensing arrangements — "
+        "unlabelled, it reads as a continuation of the Change License parameter"
     )
+    contact = params.split("Licensing Contact:", 1)[1]
+    assert "@" in contact.split("---")[0], "the Licensing Contact must name an actual address"
 
 
 def test_readme_states_the_boundary():

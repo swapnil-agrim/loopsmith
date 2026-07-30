@@ -26,7 +26,7 @@ cookie, so `#!/usr/bin/env python3` keeps working.
 This is enforced by [`tests/test_licence_boundary.py`](../tests/test_licence_boundary.py), which
 reads the marker from `HEADER.txt` rather than restating it, so the two cannot drift.
 
-Only `.py` is enforced today. Subsystems D and E bring TypeScript and SQL into this folder; extending the enforced extension set is tracked on the foundation epic.
+Only `.py` is enforced today. Subsystems D and E bring TypeScript and SQL into this folder; extending the enforced extension set is tracked as **issue #163**.
 
 ## The boundary with the plugin
 

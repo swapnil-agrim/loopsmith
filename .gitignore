@@ -6,10 +6,11 @@ __pycache__/
 # dogfood loop scratch (the kit runs its own SDLC locally; not part of the plugin)
 .sdlc/
 
-# python build/venv trees (insight/ becomes pip-installable in E0.S2).
-# ANCHORED on purpose: a bare `dist/` or `build/` matches at ANY depth, which would silently
-# untrack — and therefore un-guard — real modules like insight/metrics/dist/. Only the two places
-# build output actually lands are ignored.
+# Python build/venv trees (insight/ becomes pip-installable in E0.S2). The build/dist entries are
+# path-anchored so a bare `dist/` cannot untrack a real module like insight/metrics/dist/; .venv,
+# venv and *.egg-info are deliberately NOT anchored, because those names are never modules.
+# NOTE: tests/test_licence_boundary.py does not read these rules — its skip is structural
+# (pyvenv.cfg / __pycache__ / *.egg-info), so guard coverage never depends on ignore config.
 .venv/
 venv/
 /build/
