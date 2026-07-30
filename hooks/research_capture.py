@@ -14,10 +14,37 @@ from pathlib import Path
 
 _WEB_TOOLS = {"WebSearch", "WebFetch"}
 
+#: How much of the (scrubbed) response we keep — a provenance summary, never the raw page.
+_EXCERPT_CHARS = 400
+
+#: Secret-shaped substrings, redacted before anything reaches disk. Same rule the location-only risk
+#: collectors follow: NEVER write the matched substring — each match becomes a typed placeholder, not
+#: the value. Token-shape patterns are quote-insensitive so they fire inside JSON bodies too. This is
+#: best-effort (pattern-based, not a guarantee), which is why `.sdlc/knowledge/` is also gitignored.
+_SECRET_PATTERNS = (
+    (re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----.*?-----END[ A-Z]*PRIVATE KEY-----", re.DOTALL),
+     "[REDACTED:private-key]"),
+    (re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----"), "[REDACTED:private-key]"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[REDACTED:aws-key]"),
+    (re.compile(r"\bgh[pousr]_[0-9A-Za-z]{20,}\b"), "[REDACTED:gh-token]"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"), "[REDACTED:jwt]"),
+    (re.compile(r"(?i)\b(?:bearer|token)\s+[A-Za-z0-9._\-]{12,}"), "[REDACTED:bearer]"),
+    (re.compile(r"(?i)\b(api[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|"
+                r"access[_-]?token|secret|password|passwd|pwd)\b[\"']?\s*[:=]\s*[\"']?[^\s\"'<>&]{4,}"),
+     r"\1: [REDACTED]"),
+)
+
 
 def _slug(text, n=48):
     s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
     return (s[:n] or "untitled").strip("-")
+
+
+def _scrub(text):
+    """Redact secret-shaped substrings, never emitting the matched value (location-only capture rule)."""
+    for pat, repl in _SECRET_PATTERNS:
+        text = pat.sub(repl, text)
+    return text
 
 
 def _kg_enabled(project_dir):
@@ -30,7 +57,13 @@ def _kg_enabled(project_dir):
 
 
 def build_breadcrumb(tool_name, tool_input, tool_response):
-    """Pure: (relative_path, markdown) for a web tool with a subject, else None."""
+    """Pure: (relative_path, markdown) for a web tool with a subject, else None.
+
+    Security: we persist a provenance breadcrumb — source, subject, and a SHORT, scrubbed excerpt —
+    never the raw response body. Raw web bodies can carry tokens/PII; dumping 4000 verbatim chars into
+    a git-tracked dir is the leak this closes. The excerpt is scrubbed of secret-shaped substrings and
+    capped at `_EXCERPT_CHARS`; `.sdlc/knowledge/` is also gitignored by /sdlc-setup, so even a scrubbed
+    breadcrumb stays local unless the adopter deliberately commits it (defense in depth)."""
     if tool_name not in _WEB_TOOLS:
         return None
     raw = tool_input.get("query", "") if tool_name == "WebSearch" else tool_input.get("url", "")
@@ -42,6 +75,7 @@ def build_breadcrumb(tool_name, tool_input, tool_response):
     stamp = now.strftime("%Y-%m-%dT%H%M%S-%f")          # collision-safe to the microsecond
     heading = subject.replace("\n", " ").replace("\r", " ")[:200]  # one-line, can't break the markdown
     body = tool_response if isinstance(tool_response, str) else json.dumps(tool_response, ensure_ascii=False)
+    excerpt = _scrub(body[:4000])[:_EXCERPT_CHARS].strip()   # scrub the source region, THEN cap short
     md = ("---\n"
           f"source: {tool_name.lower()}\n"
           f"subject: {json.dumps(subject, ensure_ascii=False)}\n"
@@ -49,7 +83,7 @@ def build_breadcrumb(tool_name, tool_input, tool_response):
           "contributor: loopsmith\n"
           "---\n\n"
           f"# {tool_name}: {heading}\n\n"
-          f"{body[:4000]}\n")
+          f"{excerpt}\n")
     return f".sdlc/knowledge/research/web/{stamp}-{_slug(subject)}.md", md
 
 

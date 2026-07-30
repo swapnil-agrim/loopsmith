@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Research capture no longer dumps raw web bodies to a git-tracked dir (0.9.8)
+A security fix in the opt-in knowledge-graph capture path. The `research_capture` PostToolUse hook wrote
+the **raw** WebSearch/WebFetch response — the first 4000 verbatim chars — into
+`.sdlc/knowledge/research/web/`, a directory nothing gitignored. A page carrying an API key, token, or
+PII therefore landed on disk and could ride into a commit. Two defenses, both additive (the feature is
+off unless `knowledge_graph.enabled`):
+- **The breadcrumb is now a scrubbed summary, not the page.** The hook keeps source + subject + a SHORT
+  excerpt (`_EXCERPT_CHARS`, 400) that is first run through a secret-shaped-substring redactor modelled on
+  the risk-detect collector's rule — *never write the matched substring*. AWS keys, `gh*_` tokens, JWTs,
+  PEM private-key blocks, `Bearer` tokens, and `key: value` secret assignments become typed `[REDACTED:*]`
+  placeholders (quote-insensitive, so they fire inside JSON responses too). Best-effort by design, which
+  is why —
+- **`.sdlc/knowledge/` is now a runtime-ignored dir.** `/sdlc-setup` (and `setup.py ignore`) add it to the
+  same never-clobber ignore set as `state/`, `ledger/`, `work/`, so even a scrubbed breadcrumb stays local
+  unless the adopter deliberately commits it. `/sdlc-doctor` and `setup.py ignore-status` report it.
+
 ### Board-adoption safety + portability: four silent traps made loud (0.9.7)
 The theme of the whole 0.9.x adoption series — *an adopter's incomplete config met with a loud warning,
 not silence* — applied to four more real gaps found running loopsmith on a live board.

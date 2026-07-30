@@ -767,6 +767,8 @@ across runs instead of evaporating — and it gets *sharper* over time, not nois
 around the code*):
 - **External research** — every `WebSearch` / `WebFetch` is auto-captured to
   `.sdlc/knowledge/research/web/` by a fail-open hook (only when KG is enabled; a hard no-op otherwise).
+  The breadcrumb is a *scrubbed summary* — source + subject + a short excerpt with secret-shaped
+  substrings redacted, never the raw page — and `.sdlc/knowledge/` is gitignored, so captures stay local.
 - **Internal analysis** — durable findings and Retrospective **lessons** you write to
   `.sdlc/knowledge/analysis/`.
 - **The code** — graphed too, but only at `scope: full`.

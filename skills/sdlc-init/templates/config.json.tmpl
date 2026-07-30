@@ -80,6 +80,7 @@
   "_model_selection_options": "off (phases run at the session model) | auto (predict a tier per goal via /sdlc-model, run that goal's phases as subagents at it)",
   "knowledge_graph": {
     "enabled": false,
+    "_comment": "Opt-in research corpus. When enabled, the research-capture hook writes a provenance breadcrumb per WebSearch/WebFetch under .sdlc/knowledge/research/web/ — source + subject + a SHORT excerpt scrubbed of secret-shaped substrings, never the raw page. .sdlc/knowledge/ is gitignored by /sdlc-setup so captures stay local unless you deliberately commit them.",
     "scope": "full",
     "_scope_options": "full (code + external research + internal analysis) | research (skip code; internal analysis + external research only)",
     "builder": "graphify",
