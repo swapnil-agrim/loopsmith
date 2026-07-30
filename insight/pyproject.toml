@@ -7,7 +7,11 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "insight"
+# The DISTRIBUTION name. Not "insight": that is already taken on PyPI (0.8/0.9/1.0
+# exist), so publishing under it is impossible and `pip install insight` would fetch an
+# unrelated package. The IMPORT name stays `insight` via [tool.setuptools] package-dir
+# below — only this string moves. Verified free: pypi.org/pypi/loopsmith-insight -> 404.
+name = "loopsmith-insight"
 dynamic = ["version"]
 description = "LoopSmith Insight: the analytics platform and configuration UI for LoopSmith."
 readme = "README.md"

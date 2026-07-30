@@ -73,7 +73,13 @@ def test_toml_actually_parses_with_the_expected_shape():
     tomllib = pytest.importorskip("tomllib")  # stdlib on 3.11+; skip cleanly on 3.9/3.10
     data = tomllib.loads(_pyproject_text())
     project = data["project"]
-    assert project["name"] == "insight"
+    # The DISTRIBUTION name must NOT be the bare "insight" — that is taken on PyPI (#165), so
+    # publishing would be impossible and `pip install insight` would fetch an unrelated package.
+    # The IMPORT name is a different thing and stays "insight"; test_cli.py covers that.
+    assert project["name"] == "loopsmith-insight"
+    assert project["name"] != "insight", (
+        "the distribution name regressed to a name that is already taken on PyPI — see #165"
+    )
     assert "version" in project["dynamic"]
     assert "version" not in project
     assert any("duckdb" in dep for dep in project["dependencies"])
