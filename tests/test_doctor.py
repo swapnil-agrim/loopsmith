@@ -239,6 +239,34 @@ def test_features_reports_the_pr_review_gate(tmp_path):
     assert "ON (approval)" in on[row]
 
 
+def test_features_reports_the_stop_gate(tmp_path):
+    d = _doc()
+    row = "Stop gate (refuse to end a session with unplanned source)"
+    off = {n: s for n, s, _ in d.features(_sdlc(tmp_path / "a", {}))}
+    assert off[row] == "off"
+    on = {n: s for n, s, _ in d.features(_sdlc(tmp_path / "b", {"gates": {"stop_gate": {"enabled": True}}}))}
+    assert "ON" in on[row]
+
+
+def test_features_reports_session_start(tmp_path):
+    d = _doc()
+    row = "SessionStart policy brief"
+    off = {n: s for n, s, _ in d.features(_sdlc(tmp_path / "a", {}))}
+    assert off[row] == "off"
+    on = {n: s for n, s, _ in d.features(_sdlc(tmp_path / "b", {"session_start": {"enabled": True}}))}
+    assert on[row].startswith("ON")
+
+
+def test_features_surfaces_skill_selection_advisory(tmp_path):
+    # a plugin can't disable a built-in, so this row is a static advisory (not a toggle) pointing at
+    # the user-side remedies — it must always be present so adopters learn the limitation
+    d = _doc()
+    rows = {n: (s, e) for n, s, e in d.features(_sdlc(tmp_path, {}))}
+    state, enable = rows["skill selection vs platform built-ins"]
+    assert "can't disable a built-in" in state
+    assert "skillOverrides" in enable and "/plugin disable" in enable
+
+
 # --- standing-doc hygiene: the mechanical half of context maintenance -------------------------
 # Rot that a script can settle (a reference that no longer resolves), NOT the judgment half
 # (demoting a rule CI now enforces) — that's sdlc-retro's, because it changes files.

@@ -373,6 +373,7 @@ def features(sdlc_dir=".sdlc"):
     budget = cfg.get("budget") or {}
     verify = cfg.get("verify") or {}
     gate = (cfg.get("gates") or {}).get("hard_plan_gate") or {}
+    sg = (cfg.get("gates") or {}).get("stop_gate") or {}
     par = cfg.get("parallel") or {}
     wk = cfg.get("work") or {}
     rows = [
@@ -387,6 +388,9 @@ def features(sdlc_dir=".sdlc"):
         ("hard plan-gate (deny source edits w/o fresh plan)",
          f"ON ({gate.get('plan_freshness_hours', 24)}h window)" if gate.get("enabled") is True else "off (prompt-gate reminder only)",
          'config: "gates": {"hard_plan_gate": {"enabled": true}}'),
+        ("Stop gate (refuse to end a session with unplanned source)",
+         f"ON ({sg.get('plan_freshness_hours', 24)}h window)" if sg.get("enabled") is True else "off",
+         'config: "gates": {"stop_gate": {"enabled": true}}'),
         ("decision gate (deny edits that break a registered invariant)",
          _decision_gate_state(base, cfg),
          "author .sdlc/decisions.json (see /sdlc-decide) — authoring it IS the opt-in"),
@@ -403,6 +407,10 @@ def features(sdlc_dir=".sdlc"):
          "GLOBAL (env override)" if os.environ.get("LOOPSMITH_GATE_GLOBAL") == "1"
          else "repo-scoped (speaks only where .sdlc/ exists)",
          "env LOOPSMITH_GATE_GLOBAL=1 restores always-on"),
+        ("SessionStart policy brief",
+         "ON — injects the SDLC brief + install self-check at session start"
+         if (cfg.get("session_start") or {}).get("enabled") is True else "off",
+         'config: "session_start": {"enabled": true}'),
         ("knowledge graph",
          "enabled" if (cfg.get("knowledge_graph") or {}).get("enabled") is True else "off",
          'config: "knowledge_graph": {"enabled": true}'),
@@ -433,6 +441,11 @@ def features(sdlc_dir=".sdlc"):
         ("independent review (maker is never the checker)",
          _review_independence_state(cfg),
          'config: "review": {"independent": true, "context": "project"}'),
+        ("skill selection vs platform built-ins",
+         "advisory — a plugin can't disable a built-in; LoopSmith prefers its own skills via sharp "
+         "descriptions + per-skill resolution headers (no runtime API to detect a live conflict)",
+         'if a standalone built-in shadows a LoopSmith skill: settings.json "skillOverrides": '
+         '{"<name>": "off"}; if it is a plugin: /plugin disable <plugin>'),
     ]
     return rows
 
