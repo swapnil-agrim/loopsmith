@@ -23,9 +23,43 @@ platform needs an **emitter** and not just a **reader**.
 
 | Decision | Choice | Consequence |
 |---|---|---|
-| Repo boundary | **Separate product repo** (`loopsmith-insight`) | `sdlc-kit` gains only a zero-dep emitter. The plugin's stdlib-only / fail-open / default-off invariant survives; the commercial product is separable from the give-away. |
+| Repo boundary | **Monorepo — a dedicated `insight/` folder in this repo** (revised 2026-07-30, user's call; supersedes the earlier separate-repo choice) | The plugin surface (`skills/`, `hooks/`) stays stdlib-only / fail-open / default-off — unchanged and still test-guarded. `insight/` is a separate package with its own deps, CI job, and version; see §1.1 for the boundary rules that keep the product separable inside one repo. |
 | v1 deployment | **Local-first, one command** | No auth, no hosting, no privacy review before first value. Same event schema promotes to hosted without a rewrite. |
 | Personas in scope | **IC, manager, leadership, cross-functional** | Four distinct views, not four filters on one. |
+
+Why the monorepo flip is the right call here: **the dogfooding loop already lives in this repo.** The team
+ledger, the board, and `/sdlc-loop` all run against this clone — building `insight/` through the loop makes
+the construction of the analytics product the analytics product's own first dataset, with zero cross-repo
+plumbing. And `discovery-scan.sh`, `velocity.py`, and the ledger readers are in-repo, so ingest shells into
+sibling paths instead of requiring a second checkout.
+
+### 1.1 Monorepo boundary rules
+
+```
+sdlc-kit/
+├── skills/ hooks/ …        # the plugin — stdlib-only, fail-open, default-off (unchanged)
+├── insight/                # the product
+│   ├── ingest/  metrics/  gaps/  dash/  tests/
+│   ├── pyproject.toml      # its own deps (DuckDB, …) — never installed by the plugin
+│   └── VERSION             # versioned independently of plugin.json
+└── .claude-plugin/         # marketplace source stays "./" for now
+```
+
+1. **The contract between the two halves is file formats, never imports.** `insight/` reads
+   `ledger/*/ *.jsonl`, goal frontmatter, `config.json`, `state/*` — the same additive-fields contract
+   `ledger.py` already documents ("an older reader ignores a field it does not know"). Nothing under
+   `skills/` or `hooks/` may import from `insight/`, and vice versa; a test enforces both directions, the
+   same shape as the existing self-containment guard.
+2. **Separate CI job, separate coverage gate.** The plugin's `--cov-fail-under=85` gate must not gain
+   `insight/` in its denominator, and an `insight/` test failure fails its own job, not the plugin's.
+3. **Plugin installs clone the folder.** Marketplace `source` is `"./"`, so every `/plugin install
+   loopsmith` pulls `insight/` as dead weight. Accepted while it is small; if it bloats, marketplace
+   entries support subdirectory sources and the repo can be re-scoped — **unverified until tried** (§11).
+4. **License carve-out — an open decision the monorepo forces.** This repo is **public under MIT**. The day
+   `insight/` is committed without its own license, the sellable product is MIT open source. Options are
+   open-core (insight stays MIT, sell hosting/support), a per-folder source-available license
+   (`insight/LICENSE`, e.g. BUSL — legally fine, must be clearly marked), or reverting insight to a private
+   repo after all. §10 carries it; nothing lands in `insight/` before it is decided.
 
 ### The property that makes local-first work
 
@@ -123,6 +157,15 @@ def entries_dir(sdlc_dir, stream=ENTRIES):
   cannot be drowned by telemetry *by construction*. This is the property that makes the shared transport safe;
   the ledger's docstring is explicit that an open vocabulary would make the team view unreadable within a week.
 * Sequence ids stay per-`(actor, stream)`, so `watch.sh`'s resume cursor keeps working unchanged.
+
+**The transport half is a real change, not an assumption.** Verified against the code:
+[`sync.py publish`](../../../skills/sdlc-loop/scripts/sync.py) commits **only** `entries/<actor>.jsonl` +
+`TEAM.md`, and its `GITATTRIBUTES` union-merge rule covers `entries/*.jsonl` only. As written today, an
+events stream would be created locally and **never published** — the fourth instance of two halves built
+separately and nothing checking they meet. So the emitter change explicitly includes: `publish` also commits
+`events/<actor>.jsonl` when present; the gitattributes seed gains `events/*.jsonl merge=union`; `pull`/`watch`
+cursors key on `(actor, stream)`. The §A.6 guard grows a case for it: if an `events/` directory exists in a
+fixture ledger, a `publish` that leaves it uncommitted fails the test.
 
 **Deliberate non-duplication.** The events stream carries **only** what the entries stream structurally cannot.
 Lifecycle (`claimed·done·parked·failed·merged·handoff·ack`) stays in `entries` and is never re-emitted. No
@@ -236,7 +279,8 @@ will silently read zero forever — the fourth instance of the same bug class, p
 `loopsmith-insight ingest [--repos <glob>]`, idempotent and incremental:
 
 1. `git fetch` the ops branch worktree (already exists when the ledger is on).
-2. `read_json_auto` over `ledger/entries/*.jsonl` and `ledger/events/*.jsonl` into raw tables.
+2. `read_json_auto` over `ledger/entries/*.jsonl` and `ledger/events/*.jsonl` into raw tables — **and over
+   `.sdlc/events/*.jsonl` when `telemetry.share` is off**, so a local-only repo still feeds its own dashboard.
 3. Read committed artifacts: goal frontmatter, `*.slices.json`, `config.json`, `journey/*.md` timestamps.
 4. Read local-only artifacts when present: `state/verify/*.json`, `state/work/*.json`, `STATE.md`.
 5. Shell out for git facts (`git log` — reuse `velocity.py`'s measurement), and optionally `gh` for PR review
@@ -341,7 +385,7 @@ different action.
 | 23 | Gate catch rate by gate | Where are defects actually caught? | blocks by `gate`; late-catch share is the leading indicator | AGT/DET |
 | 24 | Gate coverage | Which gates actually ran? | per goal × applicable gate → `pass·warn·block·**absent**` | AGT/DET |
 | 25 | Escape rate | The gates' true score | defects found post-merge ÷ total found | CONV+ |
-| 26 | Verify reliability | Is the proving command trustworthy? | pass rate; **flake** = same `command_sha256`, same commit, different `exit` | NOW (local) → DET |
+| 26 | Verify reliability | Is the proving command trustworthy? | **Current state is NOW; the trend is not**: `state/verify/<goal>.json` is overwritten on every run (verified — `verify_goal` writes latest-only), so history does not exist until the emitter records each run. Pass-rate and **flake** (same `command_sha256`, same commit, different `exit`) are DET | NOW (state) · DET (trend) |
 | 27 | Decision-gate denials | Are the invariants earning their keep? | denials by decision id | DET |
 | 28 | Alignment drift | Are we still building the right thing? | `/sdlc-align` verdicts over time | AGT |
 | 29 | Retro grade mix | Intent vs shipped | `achieved / partial / diverged` trend | AGT |
@@ -407,8 +451,8 @@ therefore which to keep.
 
 Everything marked `NOW` — metrics **1,2,3,4,7,9,10,11,12,13,14,26,30,31,32,33,34,35,37,38,41,42**. That is 22
 metrics with **zero new instrumentation**, and it is a real product on its own: burndown, forecast, WIP and
-aging, the handoff graph, debt trend, adoption. Tranche 2 lands the emitter and adds the wedge (#15,16,17,22,
-23,24,27,29).
+aging, the handoff graph, debt trend, adoption. (#26 ships as the current-state tile only; its trend is
+tranche 2.) Tranche 2 lands the emitter and adds the wedge (#15,16,17,22,23,24,27,29).
 
 **#40 (cost per project/week) is deliberately held back** despite being partly `NOW`: its only v1 source is the
 Claude Code Analytics API, which needs an org Admin key and is unavailable on Bedrock / Foundry / Vertex / AWS
@@ -523,6 +567,9 @@ header says *"this file wins on conflict"*. So the UI must not become a second s
 
 ## 10. Open questions for the next spec
 
+0. **License for `insight/` — decides before any code lands.** The repo is public MIT; §1.1 rule 4 names the
+   three options (open-core · per-folder source-available · private repo after all). Business call, not an
+   engineering one.
 1. **Change-failure linkage (#5, #6, #25).** Needs a convention — a `fixes: <goal-id>` frontmatter field, or
    revert detection from git, or both. Cheap to add, and three metrics depend on it.
 2. **Survey surface for DXI (#39).** Real gap. Build a survey, buy DXI, or ship the labelled proxy
@@ -544,3 +591,5 @@ and must not be documented as working until run in a real target environment:
   Foundry, Vertex, and Claude Platform on AWS, so it must be optional and degrade silently.
 * The agent-emitted event path's real-world coverage rate. The whole coverage-denominator design exists
   *because* this number is unknown; the first dogfood run measures it.
+* Marketplace subdirectory `source` scoping (§1.1 rule 3's mitigation if install weight bloats) — supported
+  per the marketplace schema, never exercised by this repo.
