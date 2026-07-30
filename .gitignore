@@ -8,8 +8,9 @@ __pycache__/
 
 # Python build/venv trees (insight/ becomes pip-installable in E0.S2). /build/ and /dist/ are
 # anchored to the repo root: unanchored they would match at any depth and untrack a real module
-# like insight/metrics/dist/, and nothing under insight/ is reserved at all. .venv, venv and
-# *.egg-info are unanchored on purpose — those are never module names in this tree.
+# like insight/metrics/dist/. .venv, venv and *.egg-info ARE unanchored on purpose and therefore
+# do still reserve those three names under insight/ — accepted, because none of them is a module
+# name anyone would choose, unlike build/ and dist/.
 # NOTE: tests/test_licence_boundary.py does NOT read these rules. Its skip is its own
 # (pyvenv.cfg + bin|Scripts, __pycache__, *.egg-info), so guard coverage never depends on
 # ignore configuration, local or global.

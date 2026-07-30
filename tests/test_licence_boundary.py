@@ -31,13 +31,23 @@ So the skip is now three narrow exclusions, and it is worth being exact about wh
     Both halves are required. `pyvenv.cfg` alone is a one-file veto anyone could drop into a real
     module to silence it; `venv` always creates the launcher directory too, so requiring both costs
     nothing and closes that.
-  * `__pycache__` and `*.egg-info` — BY NAME. Neither is a legal Python module name (a dunder cache
-    directory is never imported; a dot makes `*.egg-info` unimportable), so unlike `env`/`build`/
-    `dist` there is no plausible module they could collide with.
+  * `__pycache__` and `*.egg-info` — BY NAME, and the justification has to be exact because a
+    wrong rule here is how the first two holes got written. It is NOT that they are illegal module
+    names: `import __pycache__` genuinely works if you create one. It is that `__pycache__` is
+    RESERVED by CPython (PEP 3147 writes bytecode there, so no sane package claims it) and a dot
+    makes `*.egg-info` unimportable — and both are gitignored at the repo root, so their contents
+    cannot be committed without `git add -f`. That pair of reasons is what makes the name match
+    safe here and is exactly what `env`/`build`/`dist` lacked. Do not extend this list to a name
+    that is merely conventional (`node_modules`, `.tox`): check both halves first.
 
 The distinction matters because an earlier docstring claimed all three were structural, which was
 false and would have told the next reader the wrong thing. What is true of all three: none depends
 on git or on ignore rules, and the fixture tests exercise the exact function the tree scan uses.
+
+KNOWN RESIDUE, stated so nobody mistakes this for airtight: `rglob` does not follow symlinked
+directories, so `insight/core -> ../src` hides that tree; and planting BOTH a `pyvenv.cfg` and a
+`bin/` in a real module still silences it. Both are two-artifact, diff-visible moves — the veto
+this guard closed was a one-file one. Tracked with the extension work in issue #163.
 
 WHY THE MARKER IS READ, NEVER RETYPED. `insight/HEADER.txt` is the single source of the marker
 string. Restating it here would let the two drift while this test kept passing against the wrong
@@ -75,7 +85,7 @@ _CODING_COOKIE = re.compile(r"^[ \t\f]*#.*coding[:=][ \t]*[-\w.]+")
 
 def _is_virtualenv(directory):
     """A virtualenv announces itself with pyvenv.cfg AND a launcher directory — `python -m venv`
-    produces exactly `bin/ include/ lib/ pyvenv.cfg` (`Scripts/` on Windows). Both halves are
+    always creates a launcher directory beside it — `bin/` on POSIX, `Scripts/` on Windows. Both halves are
     required: pyvenv.cfg alone would be a one-file veto that anyone could drop into a real module
     to hide its sources from this guard."""
     return ((directory / "pyvenv.cfg").is_file()
