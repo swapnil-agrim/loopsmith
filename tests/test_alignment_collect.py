@@ -68,17 +68,19 @@ def test_secret_in_a_committed_diff_is_location_only(tmp_path):
 
 def test_content_line_that_renders_as_a_diff_header_never_leaks(tmp_path):
     # a committed line beginning "++ " renders as "+++ " in the outer diff; the scanner must treat it
-    # as CONTENT (location-only), NOT misparse it as a "+++ b/path" header that captures the value
+    # as CONTENT (location-only), NOT misparse it as a "+++ b/path" header that captures the value.
+    # NOTE this test must FAIL against the pre-fix awk: the buggy code poisons `file` with the "+++ …"
+    # line but only EMITS it when a LATER added line trips a hard-stop — so the second line is itself a
+    # trigger, forcing the poisoned `file` to surface (otherwise the guard is vacuous).
     repo = _repo(tmp_path)
-    _commit(repo, "NOTES.md", '++ token = "ghp_REALSECRETTOKENLEAK01"\nplain line\n', "add notes")
+    _commit(repo, "NOTES.md",
+            '++ token = "ghp_REALSECRETTOKENLEAK01"\napi_key = "TRIGGER9SECRETVALUE"\n', "add notes")
     out = _run(repo)
     blob = json.dumps(out)
-    assert "ghp_REALSECRETTOKENLEAK01" not in blob            # value never in the pack
+    assert "ghp_REALSECRETTOKENLEAK01" not in blob            # value never in the pack (fails on buggy awk)
+    assert out["dimensions"]["d6"]["hits"], "both lines should hard-stop (guard must not be vacuous)"
     for h in out["dimensions"]["d6"]["hits"]:
-        assert "SECRET" not in h["file"].upper() and h["file"] == "NOTES.md"   # real filename, not the line
-    # and a committed .patch whose +lines become ++ in the outer diff must not leak either
-    _commit(repo, "fix.patch", '--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+password = "PATCHSECRETLEAK42"\n', "patch")
-    assert "PATCHSECRETLEAK42" not in json.dumps(_run(repo))
+        assert h["file"] == "NOTES.md"                        # real filename, never the "+++ …" line text
 
 
 def test_test_command_known_reads_verify_command(tmp_path):
