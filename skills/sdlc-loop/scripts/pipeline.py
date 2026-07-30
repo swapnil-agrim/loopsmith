@@ -29,7 +29,7 @@ or an LLM, and it NEVER gates the run it examines (it reports; the loop decides)
 still-failing (still-failing across runs is the recurrence signal — systemic,
 not incidental; feed it to the backlog, not to a one-off fix).
 """
-import glob, json, pathlib, subprocess, sys
+import glob, json, os, pathlib, subprocess, sys
 
 PASS, WARN, FAIL, ABSENT = "PASS", "WARN", "FAIL", "ABSENT"
 _ORDER = {PASS: 0, ABSENT: 1, WARN: 2, FAIL: 3}
@@ -201,7 +201,54 @@ def propose_goals(sdlc_dir, card):
     return created
 
 
+def propose_from_discovery(sdlc_dir, candidates):
+    """Turn discovery-scan candidates (tech-debt / test-gap) into `proposed` goal files — the same inert,
+    human-promotes-to-`pending` contract as propose_goals (discovery.py skips `proposed`). The dedup id
+    is per (category, file), NOT per marker count, so a changed count never spawns a duplicate; an
+    existing file with that id — whatever its status — is never overwritten. Returns the created paths."""
+    import hashlib
+    goals_dir = pathlib.Path(sdlc_dir) / "goals"
+    goals_dir.mkdir(parents=True, exist_ok=True)
+    created = []
+    for c in candidates or []:
+        ev = c.get("evidence") or []
+        first = ev[0] if ev else ""
+        f = first.rsplit(":", 1)[0] if ":" in first else first   # strip the trailing :line
+        cat = c.get("category", "")
+        gid = "disc-" + hashlib.sha256((cat + "/" + f).encode()).hexdigest()[:10]
+        path = goals_dir / f"{gid}.md"
+        if path.exists():
+            continue
+        title = c.get("title") or (f"address {cat} in {f}")
+        locs = "".join("\n- " + e for e in ev)
+        path.write_text("---\n"
+                        f"id: {gid}\ntitle: {title}\nstatus: proposed\nsource: discovery\n"
+                        f"done_when: the {cat} in {f} is resolved\n---\n"
+                        f"Detected by the discovery scan (category: {cat}, priority: "
+                        f"{c.get('priority', '')}). Locations:{locs}\n"
+                        "Promote to `status: pending` to let the loop work it.\n")
+        created.append(str(path))
+    return created
+
+
+def discover(sdlc_dir, repo_root="."):
+    """Run the read-only discovery-scan collector over `repo_root` and propose goals from its candidates.
+    Fail-open: a missing script / bad JSON / non-git tree yields no proposals (never raises)."""
+    script = pathlib.Path(__file__).resolve().parent / "discovery-scan.sh"
+    try:
+        proc = subprocess.run(["bash", str(script)], capture_output=True, text=True,
+                              env={**os.environ, "CLAUDE_PROJECT_DIR": str(repo_root)})
+        data = json.loads(proc.stdout or "{}")
+    except Exception:
+        return []
+    return propose_from_discovery(sdlc_dir, data.get("candidates") or [])
+
+
 def main(argv):
+    if len(argv) >= 3 and argv[1] == "discover":
+        created = discover(argv[2], argv[3] if len(argv) > 3 else ".")
+        print(f"proposed {len(created)} discovery goal(s)" + ("".join("\n  " + c for c in created)))
+        return 0
     if len(argv) >= 3 and argv[1] == "propose":
         card = build_card(argv[2])
         if card is None:
@@ -230,7 +277,7 @@ def main(argv):
             print(f"wrote {out}")
         return 0 if not card["verdict"]["failing_stages"] else 1
     print("usage: pipeline.py card <sdlc_dir> [--json out.json] [--compare prior.json] | "
-          "propose <sdlc_dir>", file=sys.stderr)
+          "propose <sdlc_dir> | discover <sdlc_dir> [repo_root]", file=sys.stderr)
     return 2
 
 
