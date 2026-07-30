@@ -33,13 +33,20 @@ def test_no_onshot_specifics_in_shipped_files():
     scan_suffixes = (".py", ".md", ".json", ".sh", ".toml", ".yml", ".yaml", ".txt", ".cfg", ".tmpl")
     # Exclude tests/ + caches: test files legitimately NAME the banned words as leakage guards
     # (test_hook.py, test_packaging_slice4.py) — that's not host-project coupling in shipped logic.
-    # A virtualenv or egg-info tree is NOT shipped surface — it is third-party code sitting in the
-    # working directory. Excluding it does not weaken this guard, which is about what THIS REPO
-    # ships. It became necessary the moment insight/ turned pip-installable (#95): `pip install -e
-    # insight/` materialises duckdb and pygments, both of which contain the banned substring
-    # "Temporal" in unrelated contexts, so without this the documented install command reddens an
-    # unrelated test. `*.egg-info` is matched by suffix because its name carries the package name.
-    skip_dirs = {"tests", "__pycache__", ".pytest_cache", ".venv", "venv", "build", "dist"}
+    # A virtualenv is NOT shipped surface — it is third-party code sitting in the working
+    # directory. It became excludable the moment insight/ turned pip-installable (#95): an in-repo
+    # .venv plus `pip install -e insight/` materialises duckdb, which contains the banned substring
+    # "Temporal" in an unrelated context, so without this the documented install command reddens an
+    # unrelated test. (Verified: duckdb 1.4.5 only. Nothing else that command installs trips it.)
+    #
+    # ONLY those two names. NOT `build`/`dist`/`*.egg-info`: this set matches at ANY depth, so
+    # adding them would silently stop scanning skills/<x>/build/ — and skills/ is shipped twice
+    # over, by install.sh and by marketplace.json's `source: "./"`. That is the same any-depth name
+    # heuristic .gitignore rejects for /build/ and /dist/, and that test_licence_boundary.py's
+    # docstring records as the first hole it had to close. Build residue is untracked and rare;
+    # a missed leak in shipped surface is neither. test_leak_under_a_build_dir_is_still_caught pins
+    # this — the exclusion must never grow without a test proving the guard still bites.
+    skip_dirs = {"tests", "__pycache__", ".pytest_cache", ".venv", "venv"}
     offenders = []
     for p in ROOT.rglob("*"):
         if not p.is_file() or p.suffix not in scan_suffixes:
@@ -49,8 +56,34 @@ def test_no_onshot_specifics_in_shipped_files():
         # examples/**/.sdlc/ (the committed worked example) is still scanned.
         if rel.parts and rel.parts[0] == ".sdlc":
             continue
-        if skip_dirs & set(rel.parts) or any(q.endswith(".egg-info") for q in rel.parts):
+        if skip_dirs & set(rel.parts):
             continue
         text = p.read_text(errors="ignore")
         offenders += [f"{p.relative_to(ROOT)}: {b}" for b in banned if b in text]
     assert not offenders, "host-project leakage in shipped files:\n" + "\n".join(offenders)
+
+
+def test_leak_under_a_build_dir_is_still_caught(tmp_path):
+    """The exclusion above must never grow to a name that can appear inside shipped surface.
+
+    `skills/` ships via install.sh AND via marketplace.json's `source: "./"`, so a directory named
+    `build` or `dist` under it is shipped surface, not residue. An earlier version of this change
+    skipped both at any depth and hid a planted leak; this pins the fix. Regression-only — it
+    re-implements the scan's matching rule against a fixture tree rather than importing it, because
+    the real scan is hard-wired to ROOT.
+    """
+    skip_dirs = {"tests", "__pycache__", ".pytest_cache", ".venv", "venv"}
+    banned = ("media-orch", "OnShot", "Temporal", "RunPod", "/services/", "onshot")
+    leak = tmp_path / "skills" / "sdlc-loop" / "build" / "leak.md"
+    leak.parent.mkdir(parents=True)
+    leak.write_text("see OnShot media-orch\n", encoding="utf-8")
+
+    offenders = []
+    for p in tmp_path.rglob("*"):
+        if not p.is_file() or p.suffix not in (".py", ".md", ".json"):
+            continue
+        if skip_dirs & set(p.relative_to(tmp_path).parts):
+            continue
+        text = p.read_text(errors="ignore")
+        offenders += [b for b in banned if b in text]
+    assert offenders, "a leak under skills/<x>/build/ must still be caught — that is shipped surface"

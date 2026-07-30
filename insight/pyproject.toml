@@ -1,5 +1,9 @@
 [build-system]
-requires = ["setuptools>=61"]
+# >=77, not 61: PEP 639 (`license` as an SPDX string + `license-files`) is only
+# accepted from setuptools 77. Build isolation hides this by fetching the newest,
+# but --no-build-isolation or a pinned/distro setuptools fails with a confusing
+# "project.license must be valid exactly by one definition" error.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
