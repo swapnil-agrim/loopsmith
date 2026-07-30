@@ -12,9 +12,9 @@ Run this **after** `sdlc-review` and any risk reviews the change tripped (`sdlc-
 `sdlc-contract-check`, `sdlc-security-review`). Ground yourself in the plan and the review artifacts in
 `.sdlc/reviews/` before judging readiness.
 
-> **Note for the autonomous loop:** LoopSmith never deploys or releases on its own — shipping is a parked,
-> human action (`gates.irreversible_actions`). This skill produces the go/no-go artifact a human release
-> captain reads; it does not perform the release.
+> **Note for the autonomous loop:** LoopSmith never deploys or releases on its own — the loop parks an
+> irreversible action (deploy/release) for a human rather than running it (enforced by `/sdlc-loop`). This
+> skill produces the go/no-go artifact a human release captain reads; it does not perform the release.
 
 ## Goal
 Confirm a change is genuinely ready to ship, and produce the artifact a release captain reads.
