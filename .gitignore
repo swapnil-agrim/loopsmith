@@ -19,3 +19,14 @@ venv/
 /build/
 /dist/
 *.egg-info/
+
+# insight/ is ALSO its own pip project root (package-dir = {"insight" = "."}), so a plain
+# `pip install insight/` — which verify.command (E0.S3, issue #96) now runs on every goal —
+# does setuptools' normal in-place `bdist_wheel`, scratch-building into insight/build/ exactly
+# the way it would at the repo root. /build/ and /dist/ above do NOT catch this: they are
+# anchored to the repo root only (on purpose, see above), so without these two lines
+# insight/build/ would sit untracked-but-not-ignored after every local verify run — one
+# `git add -A` away from being committed. Anchored the same specific way, one level deeper, for
+# the same reason: unanchored would also swallow a real insight/metrics/dist/ or similar.
+/insight/build/
+/insight/dist/
