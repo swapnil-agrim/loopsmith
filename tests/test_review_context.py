@@ -85,13 +85,19 @@ def test_unknown_phase_is_a_loud_error():
 
 
 def test_fail_open_when_project_docs_absent():
-    """A repo with no north-star/project.md/CLAUDE.md still yields a usable brief — the missing lines
-    just drop, and the reviewer instruction + artifact pointer are always present."""
+    """A repo with no north-star/project.md/CLAUDE.md still yields a usable brief — the missing
+    section drops (never fabricated, never a crash) and the reviewer instruction + artifact pointer
+    are always present.
+
+    The absence is now DECLARED rather than silent: fail-open keeps the review running, but a
+    reviewer that doesn't know what it was denied returns a confident verdict on partial inputs,
+    which reads exactly like a real pass."""
     with tempfile.TemporaryDirectory() as d:
         base = pathlib.Path(d) / ".sdlc"; base.mkdir(parents=True)
         out = _rc().brief(str(base), "some goal", "code-review", repo_root=d)
         assert "did NOT write this" in out and "blast radius" in out.lower()
-        assert "north-star" not in out           # absent -> its line dropped, no crash
+        assert "## north-star" not in out              # no fabricated section, no crash
+        assert "alignment cannot be judged" in out     # ...but the gap is stated, not hidden
 
 
 def test_cli_ascii_safe_under_c_locale():
@@ -133,3 +139,104 @@ def test_cli_unknown_verb_and_bad_phase():
         p2 = subprocess.run([sys.executable, str(S / "review_context.py"), "brief", base, "g",
                             "--for", "sign-off"], capture_output=True, text=True)
         assert p2.returncode == 2 and "unknown --for" in p2.stderr
+
+
+# --- the dossier: closing the blast-radius gap the module docstring names ------------------------
+# A fresh reviewer "cannot see BLAST RADIUS". Research already measured it and stored the sweep
+# commands verbatim — handing those over turns "trace the callers yourself" into a checkable start.
+
+def _dossier_at(base, name, body="| BR-1 | src/pay.py:42 | charge() | caller | in-scope |"):
+    research = pathlib.Path(base) / "research"; research.mkdir(parents=True, exist_ok=True)
+    (research / (name + ".md")).write_text(
+        "# Research\n**Queries (re-run these at Review):**\n- `grep -rn charge src/`\n" + body,
+        encoding="utf-8")
+
+
+def test_dossier_is_included_and_its_queries_are_flagged_for_rerun():
+    with tempfile.TemporaryDirectory() as d:
+        base, root = _repo(d)
+        goals = pathlib.Path(base) / "goals"; goals.mkdir(exist_ok=True)
+        goal = goals / "0007-fix-retry.md"; goal.write_text("---\nstatus: pending\n---\nfix it\n")
+        _dossier_at(base, "0007-fix-retry")
+        out = _rc().brief(base, str(goal), "plan-review", repo_root=root)
+        assert "src/pay.py:42" in out and "grep -rn charge src/" in out
+        assert "landed" in out and "AFTER research" in out       # told WHY to re-run them
+
+
+def test_dossier_found_under_the_bare_slug_too():
+    """Goals are `NNNN-slug.md`; Research may file the dossier under either form."""
+    with tempfile.TemporaryDirectory() as d:
+        base, root = _repo(d)
+        goals = pathlib.Path(base) / "goals"; goals.mkdir(exist_ok=True)
+        goal = goals / "0007-fix-retry.md"; goal.write_text("---\nstatus: pending\n---\nfix it\n")
+        _dossier_at(base, "fix-retry")
+        assert "src/pay.py:42" in _rc().brief(base, str(goal), "plan-review", repo_root=root)
+
+
+def test_dossier_is_project_evidence_not_the_makers_reasoning():
+    """It records what the code IS, never why the author chose what they chose — so including it
+    cannot reintroduce the anchoring this module exists to remove."""
+    with tempfile.TemporaryDirectory() as d:
+        base, root = _repo(d)
+        out = _rc().brief(base, "a goal", "plan-review", repo_root=root)
+        assert "author's reasoning" in out and "did NOT write this" in out
+
+
+# --- ABSENT never PASS: fail-open must not mean fail-silent --------------------------------------
+
+def test_a_missing_dossier_is_stated_not_hidden():
+    """An under-briefed reviewer returning a confident 'no issues' is worse than a biased one: the
+    verdict is indistinguishable from a real pass."""
+    with tempfile.TemporaryDirectory() as d:
+        base, root = _repo(d)
+        out = _rc().brief(base, "a goal", "plan-review", repo_root=root)
+        assert "Inputs NOT available" in out
+        assert "blast radius was never measured" in out
+        assert "ABSENT, never PASS" in out
+
+
+def test_a_nonexistent_artifact_tells_the_reviewer_to_stop():
+    """The exact failure the plan-persistence gap produced: an independent reviewer pointed at a plan
+    file the Plan phase never wrote, reviewing from the goal text and calling it clean."""
+    with tempfile.TemporaryDirectory() as d:
+        base, root = _repo(d)
+        out = _rc().brief(base, "a goal", "plan-review",
+                          artifact=str(pathlib.Path(d) / ".sdlc" / "plans" / "gone.md"), repo_root=root)
+        assert "does not exist" in out and "nothing to review" in out
+
+
+def test_a_complete_brief_carries_no_gap_notice():
+    """The notice must stay rare, or it stops being read."""
+    with tempfile.TemporaryDirectory() as d:
+        base, root = _repo(d)
+        goals = pathlib.Path(base) / "goals"; goals.mkdir(exist_ok=True)
+        goal = goals / "0001-g.md"; goal.write_text("---\nstatus: pending\n---\ndo it\n")
+        _dossier_at(base, "0001-g")
+        plan = pathlib.Path(base) / "plans" / "0001-g.md"; plan.write_text("the plan\n")
+        out = _rc().brief(base, str(goal), "plan-review", artifact=str(plan), repo_root=root)
+        assert "Inputs NOT available" not in out
+
+
+def test_pr_review_artifact_is_a_number_not_a_path():
+    """A PR number must never be probed as a filesystem path and reported missing."""
+    with tempfile.TemporaryDirectory() as d:
+        base, root = _repo(d)
+        out = _rc().brief(base, "a goal", "pr-review", artifact="42", repo_root=root)
+        assert "does not exist" not in out
+
+
+def test_a_drop_in_repo_is_told_what_it_cannot_judge():
+    """No north-star is legitimate — but the reviewer must know alignment is out of scope rather
+    than silently reporting a clean strategic review it never performed."""
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; base.mkdir()
+        out = _rc().brief(str(base), "a goal", "plan-review", repo_root=d)
+        assert "alignment cannot be judged" in out
+
+
+def test_plan_phase_persists_the_plan_the_reviewer_is_pointed_at():
+    """review_context points plan-review at `.sdlc/plans/`; the Plan phase must actually write there
+    or the independent reviewer arrives with nothing, and hard_plan_gate denies every edit."""
+    t = (pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-plan" / "SKILL.md").read_text()
+    assert ".sdlc/plans/" in t
+    assert "hard_plan_gate" in t and "review.independent" in t

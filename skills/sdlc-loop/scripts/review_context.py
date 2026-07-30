@@ -78,6 +78,30 @@ def _project_context(sdlc_dir, repo_root):
     return "\n\n".join(lines)
 
 
+def _dossier(sdlc_dir, goal):
+    """The Research phase's dossier for this goal, if it wrote one.
+
+    This is the richest grounding available to an author-blind reviewer and the one thing that closes
+    the gap the module docstring names: a fresh reviewer "cannot see BLAST RADIUS". Research already
+    measured it — every affected site with `file:line`, the debt sitting in the radius, and the exact
+    sweep commands, stored verbatim so they can be RE-RUN. Handing those over turns "trace the callers
+    yourself" from an instruction into a checkable starting point, and lets the reviewer catch what
+    landed *after* research by re-running the query rather than trusting the list.
+
+    It is a project artifact, not the maker's reasoning — it records what the code IS, never why the
+    author chose what they chose, so it does not reintroduce the bias this module exists to remove."""
+    research = pathlib.Path(sdlc_dir) / "research"
+    if not (goal and research.is_dir()):
+        return ""
+    stem = pathlib.Path(goal).stem
+    # Goals are `NNNN-slug.md`; a dossier may be filed under either the full stem or the bare slug.
+    slug = stem.split("-", 1)[1] if "-" in stem and stem.split("-", 1)[0].isdigit() else stem
+    for name in dict.fromkeys([stem, slug]):          # ordered, de-duplicated
+        if name and (research / (name + ".md")).is_file():
+            return _read(research / (name + ".md"))
+    return ""
+
+
 def _artifact_pointer(phase, artifact):
     """Where the reviewer finds the thing under review — a path, a PR number, or the phase default.
     NOT the artifact's content and NEVER the maker's reasoning about it: the reviewer opens it fresh."""
@@ -123,7 +147,42 @@ def brief(sdlc_dir, goal, phase, artifact="", repo_root="."):
         parts.append("## What the project is for (judge the change against this)\n%s" % project)
     if goal_text:
         parts.append("## The goal this change serves\n%s" % goal_text)
+
+    dossier = _dossier(sdlc_dir, goal)
+    if dossier:
+        parts.append("## Blast radius already measured (Research phase)\nThis is the project's own "
+                     "survey, not the author's argument. Re-run its stored queries: a site that landed "
+                     "AFTER research is exactly what a diff-only review misses.\n%s" % dossier)
+
+    gaps = _missing(project, goal_text, dossier, phase, artifact)
+    if gaps:
+        # Fail-open keeps the review RUNNING on a partial brief; this keeps it HONEST about it. An
+        # under-briefed reviewer returning a confident "no issues" is worse than a biased one - the
+        # verdict is indistinguishable from a real pass. Same rule pipeline.py states for stages:
+        # no instrument reads ABSENT, never PASS.
+        parts.append("## Inputs NOT available to you\n%s\n\nDo not imply coverage you did not have. "
+                     "Read them yourself from the repo where they exist; where they do not, say so in "
+                     "your verdict. A review missing a required input reads ABSENT, never PASS."
+                     % "\n".join("- %s" % g for g in gaps))
     return "\n\n".join(parts)
+
+
+def _missing(project, goal_text, dossier, phase, artifact):
+    """What the reviewer was NOT given, stated as fact. Only genuine gaps - a drop-in repo with no
+    north-star must not be nagged every run, or the notice stops being read."""
+    gaps = []
+    if not goal_text:
+        gaps.append("The goal / acceptance criteria - you cannot judge fitness without it.")
+    if not project:
+        gaps.append("No north-star or project.md: strategy, non-goals and architecture rules are "
+                    "unavailable, so alignment cannot be judged - only correctness.")
+    if not dossier and phase in ("plan-review", "code-review", "pr-review"):
+        gaps.append("No Research dossier: blast radius was never measured for this goal. Trace "
+                    "callers from the code yourself before concluding the change is contained.")
+    if artifact and phase != "pr-review" and not pathlib.Path(artifact).exists():
+        gaps.append("The artifact `%s` does not exist - you have nothing to review. Stop and say so; "
+                    "do not review from the goal text alone." % artifact)
+    return gaps
 
 
 def main(argv):

@@ -32,6 +32,18 @@ codebase's existing patterns** — don't unilaterally restructure.
 State, per task and for the whole plan, the **checkable condition** that proves it's finished (the
 command + expected output). This is what `sdlc-verify` checks and what the goal's `done_when` maps to.
 
+## 5. Write it to disk — `.sdlc/plans/<goal-stem>.md`
+The plan is an **artifact**, not a message. Save it under `.sdlc/plans/`, named for the goal
+(`0007-fix-retry.md` → `.sdlc/plans/0007-fix-retry.md`). Three things downstream read the file, not the
+conversation:
+
+- **`sdlc-plan-review` runs author-blind** (`review.independent`) — a fresh reviewer that never saw
+  this session opens the plan from disk. A plan that exists only in chat cannot be independently
+  reviewed at all; the reviewer arrives with nothing to read.
+- **The hard plan-gate** (`gates.hard_plan_gate`) unblocks source edits only when a fresh plan exists
+  under `.sdlc/plans/`. Skip this step with the gate on and every edit you were about to make is denied.
+- **Implement** works from the written steps, so a flushed context window doesn't lose the plan.
+
 ## Hand off
 The finished plan goes to **`sdlc-plan-review`** (never skipped) before any edit — it verifies each
 claim against real code, stress-tests what breaks after it ships, and (vision-first) checks it against
