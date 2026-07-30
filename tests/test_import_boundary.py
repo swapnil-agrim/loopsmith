@@ -358,8 +358,15 @@ def test_flags_an_unparseable_file(tmp_path):
 
 
 def test_flags_a_file_with_a_null_byte(tmp_path):
-    """An embedded NUL byte makes ast.parse raise ValueError, not SyntaxError — both must be
-    caught, or this one crashes the scan instead of reporting a violation."""
+    """A NUL byte is unparseable, and WHICH exception it raises is version-dependent.
+
+    Measured: ValueError on 3.9-3.11, SyntaxError on 3.12+ (the tokenizer rewrite). CI runs 3.10
+    and 3.12, so both arms are reached across the matrix and catching both is required — but note
+    that ON 3.12+ THIS FIXTURE EXERCISES THE SyntaxError ARM, the same one
+    test_flags_an_unparseable_file covers, so it does not pin the ValueError arm there. Do not
+    read a green 3.12 run as proof that narrowing the except clause is safe: it is not, and on
+    3.10 it breaks.
+    """
     (tmp_path / "nul.py").write_bytes(b"import insight\x00\n")
     assert _boundary_violations(tmp_path, _BANNED_INSIGHT) == ["nul.py: unparseable"]
 
