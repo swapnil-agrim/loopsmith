@@ -8,12 +8,12 @@ The analytics platform and configuration UI that sits on top of LoopSmith. Desig
 Everything under `insight/` is licensed under the **Business Source License 1.1** — see
 [`insight/LICENSE`](LICENSE). It is source-available, not open source: you may read it, modify it,
 and run it against your own projects, but you may not offer it to third parties as a hosted service
-until the Change Date (2030-07-30), when it converts to MIT.
+until the Change Date (2030-07-30), when it converts to MIT. Parameter rationale and the standing caveats are in [`LICENSE-NOTES.md`](LICENSE-NOTES.md).
 
 **Everything outside `insight/` — the LoopSmith plugin — stays MIT**, under the repository root
 [`LICENSE`](../LICENSE). The folder boundary is the licence boundary.
 
-## Every source file here carries the licence marker
+## Every Python source file here carries the licence marker
 
 Each `.py` file in this directory must begin with the exact line in
 [`HEADER.txt`](HEADER.txt), on line 1 — or on line 2 when line 1 is a shebang or an encoding
@@ -25,6 +25,8 @@ cookie, so `#!/usr/bin/env python3` keeps working.
 
 This is enforced by [`tests/test_licence_boundary.py`](../tests/test_licence_boundary.py), which
 reads the marker from `HEADER.txt` rather than restating it, so the two cannot drift.
+
+Only `.py` is enforced today. Subsystems D and E bring TypeScript and SQL into this folder; extending the enforced extension set is tracked on the foundation epic.
 
 ## The boundary with the plugin
 

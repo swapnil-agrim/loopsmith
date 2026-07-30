@@ -11,24 +11,26 @@ Licensor:             Swapnil Dubey
 
 Licensed Work:        LoopSmith Insight
                       The Licensed Work is (c) 2026 Swapnil Dubey.
-                      It is the contents of the `insight/` directory of this
-                      repository, and ONLY that directory. Everything outside
-                      `insight/` — the LoopSmith plugin itself — remains under
-                      the MIT License in the repository root LICENSE file.
+                      It is the contents of the `insight/` directory of the
+                      repository github.com/swapnil-agrim/loopsmith, and ONLY
+                      that directory. Everything outside `insight/` - the
+                      LoopSmith plugin itself - remains under the MIT License
+                      in that repository's root LICENSE file.
 
 Additional Use Grant: You may make production use of the Licensed Work to
                       analyse software projects that you or your organisation
                       control, including internally hosting it for your own
-                      teams.
-
-                      You may not provide the Licensed Work to third parties
-                      as a hosted or managed service where the service's value
-                      derives substantially from the Licensed Work's
-                      functionality.
+                      teams, provided that such use does not include offering
+                      the Licensed Work to third parties as a hosted or managed
+                      service whose value derives substantially from the
+                      Licensed Work's functionality.
 
 Change Date:          2030-07-30
 
 Change License:       MIT
+
+                      For information about alternative licensing arrangements
+                      for the Licensed Work, please contact swapnil@agrim.ai.
 
 -----------------------------------------------------------------------------
 
@@ -108,14 +110,3 @@ Notice
 The Business Source License (this document, or the "License") is not an Open
 Source license. However, the Licensed Work will eventually be made available
 under an Open Source License, as stated in this License.
-
------------------------------------------------------------------------------
-
-NOTE ON THESE PARAMETERS
-
-The four parameters above (Licensor, Licensed Work, Additional Use Grant,
-Change Date, Change License) are the author's stated intent, recorded as a
-product decision. They have NOT been reviewed by a lawyer. See
-`docs/superpowers/specs/2026-07-30-loopsmith-insight-data-platform-design.md`
-section 10, question 0. Finalising the wording is a one-time legal pass and
-does not block engineering work.
