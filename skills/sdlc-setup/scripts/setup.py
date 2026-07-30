@@ -13,8 +13,10 @@ Two field-tested traps this refuses to walk into:
 """
 import sys, json, pathlib, subprocess
 
-#: The machine-written dirs that should never land in a code PR.
-RUNTIME_IGNORES = (".sdlc/state/", ".sdlc/ledger/", ".sdlc/work/")
+#: The machine-written dirs that should never land in a code PR. `.sdlc/knowledge/` holds
+#: research-capture breadcrumbs (raw external web content, opt-in KG feature) — kept out of git so
+#: captured web bodies never ride into a commit even after they're scrubbed (defense in depth).
+RUNTIME_IGNORES = (".sdlc/state/", ".sdlc/ledger/", ".sdlc/work/", ".sdlc/knowledge/")
 
 
 def _run_git(repo_root, args):
