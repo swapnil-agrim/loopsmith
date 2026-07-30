@@ -102,6 +102,37 @@ def test_non_git_dir_allows(tmp_path):
     assert _run(tmp_path) == ""
 
 
+def test_enabled_must_be_strict_true(tmp_path):
+    # a truthy non-True value (string "true", int 1) must NOT enable — mirrors plan_gate's strict check
+    for i, bad in enumerate(('"true"', "1")):
+        d = tmp_path / ("cfg%d" % i)
+        d.mkdir(); _git(d, "init", "-q"); (d / ".sdlc").mkdir()
+        (d / ".sdlc" / "config.json").write_text('{"gates":{"stop_gate":{"enabled":%s}}}' % bad)
+        (d / "a.py").write_text("x = 1\n")
+        assert _run(d) == "", "enabled:%s must not enable the gate" % bad
+
+
+def test_stale_plan_still_blocks(tmp_path):
+    repo = _enabled_repo(tmp_path)
+    plans = repo / ".sdlc" / "plans"; plans.mkdir()
+    old = plans / "p.md"; old.write_text("# old plan\n")
+    os.utime(old, (0, 0))                       # epoch mtime — far older than plan_freshness_hours
+    assert _is_block(_run(repo))                # a stale plan does not satisfy the freshness gate
+
+
+def test_non_numeric_freshness_does_not_error(tmp_path):
+    # a hand-misconfigured non-numeric freshness must still fail safe: valid JSON block, clean stderr
+    _git(tmp_path, "init", "-q")
+    (tmp_path / ".sdlc").mkdir()
+    (tmp_path / ".sdlc" / "config.json").write_text(
+        '{"gates":{"stop_gate":{"enabled":true,"plan_freshness_hours":"lots"}}}')
+    (tmp_path / "a.py").write_text("x = 1\n")
+    p = subprocess.run(["bash", str(GATE)], input="{}", capture_output=True, text=True,
+                       env={**os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path)})
+    assert p.returncode == 0 and p.stderr == ""     # no "unbound variable" leak
+    assert _is_block(p.stdout.strip())              # still fails safe toward blocking
+
+
 def test_wired_into_hooks_json():
     hooks = json.loads((GATE.parent / "hooks.json").read_text())
     stop = hooks["hooks"].get("Stop", [])

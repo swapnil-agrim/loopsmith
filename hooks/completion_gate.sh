@@ -29,16 +29,22 @@ input="$(cat 2>/dev/null || true)"
 command -v python3 >/dev/null 2>&1 || allow
 cfg_out="$(python3 -c '
 import json, sys
+mode, hours = "off", 24
 try:
     cfg = json.load(open(sys.argv[1]))
     g = (cfg.get("gates") or {}).get("stop_gate") or {}
-    print("on" if g.get("enabled") is True else "off")
-    print(int(g.get("plan_freshness_hours") or 24))
+    mode = "on" if g.get("enabled") is True else "off"
+    try:              # a bad freshness value must NOT corrupt the mode line — parse it independently
+        hours = int(g.get("plan_freshness_hours") or 24)
+    except Exception:
+        hours = 24
 except Exception:
-    print("off"); print(24)
+    mode, hours = "off", 24
+print(mode); print(hours)
 ' "$CFG" 2>/dev/null || printf 'off\n24\n')"
 mode="$(printf '%s' "$cfg_out" | sed -n 1p)"
 fresh_hours="$(printf '%s' "$cfg_out" | sed -n 2p)"
+case "$fresh_hours" in ''|*[!0-9]*) fresh_hours=24 ;; esac   # defensive: never let a non-numeric reach $(( ))
 [ "$mode" = "on" ] || allow
 
 # Loop guard: if this Stop fired because a hook already blocked, let the agent stop. Accept BOTH the
