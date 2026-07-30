@@ -64,6 +64,25 @@ def test_pyproject_pins_duckdb_with_a_lower_and_an_upper_bound():
     assert has_lower and has_upper, f"duckdb spec {spec!r} needs both a lower and an upper bound"
 
 
+def test_distribution_name_is_not_the_one_taken_on_pypi():
+    """Text-based on purpose, so it pins on EVERY leg.
+
+    The tomllib-gated test below also asserts this, but `importorskip("tomllib")` skips it on 3.9
+    and 3.10 — and CI's matrix is 3.10 and 3.12, so on half the matrix, and on this repo's own
+    local verify gate, that assertion never runs. A regression to the bare name would then be
+    caught only by the 3.12 leg. This one has no such gate.
+
+    `insight` is taken on PyPI by an unrelated package (0.8/0.9/1.0), so the bare name is
+    unpublishable and `pip install insight` fetches something else entirely. The IMPORT name is a
+    different thing and is deliberately still `insight` — see package-dir in pyproject.toml.
+    """
+    text = (INSIGHT / "pyproject.toml").read_text(encoding="utf-8")
+    assert re.search(r'(?m)^name = "loopsmith-insight"$', text), (
+        "the distribution name is not loopsmith-insight — if it regressed to the bare `insight`, "
+        "that name is already taken on PyPI and the package cannot be published (see #165)"
+    )
+
+
 def test_console_script_points_at_insight_dunder_main_colon_main():
     text = _pyproject_text()
     assert re.search(r'insight\s*=\s*"insight\.__main__:main"', text)
@@ -73,7 +92,10 @@ def test_toml_actually_parses_with_the_expected_shape():
     tomllib = pytest.importorskip("tomllib")  # stdlib on 3.11+; skip cleanly on 3.9/3.10
     data = tomllib.loads(_pyproject_text())
     project = data["project"]
-    assert project["name"] == "insight"
+    # The DISTRIBUTION name must NOT be the bare "insight" — that is taken on PyPI (#165), so
+    # publishing would be impossible and `pip install insight` would fetch an unrelated package.
+    # The IMPORT name is a different thing and stays "insight"; test_cli.py covers that.
+    assert project["name"] == "loopsmith-insight"
     assert "version" in project["dynamic"]
     assert "version" not in project
     assert any("duckdb" in dep for dep in project["dependencies"])
