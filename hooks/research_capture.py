@@ -25,12 +25,18 @@ _SECRET_PATTERNS = (
     (re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----.*?-----END[ A-Z]*PRIVATE KEY-----", re.DOTALL),
      "[REDACTED:private-key]"),
     (re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----"), "[REDACTED:private-key]"),
-    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[REDACTED:aws-key]"),
-    (re.compile(r"\bgh[pousr]_[0-9A-Za-z]{20,}\b"), "[REDACTED:gh-token]"),
-    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"), "[REDACTED:jwt]"),
-    (re.compile(r"(?i)\b(?:bearer|token)\s+[A-Za-z0-9._\-]{12,}"), "[REDACTED:bearer]"),
+    # Distinctive-shape tokens: NO \b anchors — the prefixes (AKIA / gh[pousr]_ / eyJ...) are specific
+    # enough to stand alone, and a leading \b would let a secret GLUED to a preceding word char
+    # (e.g. "id=AKIA...", "x-ghp_...") slip through unredacted. Shape alone must catch it.
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:aws-key]"),
+    (re.compile(r"gh[pousr]_[0-9A-Za-z]{20,}"), "[REDACTED:gh-token]"),
+    (re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), "[REDACTED:jwt]"),
+    # Auth material by keyword — runs BEFORE the key:value rule so a "Basic <base64>" value can't be
+    # orphaned by the key rule redacting only the keyword. base64 padding (+/=) is in the value class.
+    (re.compile(r"(?i)\b(?:bearer|basic|digest|token)\s+[A-Za-z0-9+/=._\-]{8,}"), "[REDACTED:auth]"),
     (re.compile(r"(?i)\b(api[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|"
-                r"access[_-]?token|secret|password|passwd|pwd)\b[\"']?\s*[:=]\s*[\"']?[^\s\"'<>&]{4,}"),
+                r"access[_-]?token|authorization|secret|password|passwd|pwd)\b[\"']?\s*[:=]\s*"
+                r"[\"']?[^\s\"'<>&]{4,}"),
      r"\1: [REDACTED]"),
 )
 

@@ -63,6 +63,29 @@ def test_secret_shaped_body_is_redacted():
     assert "[REDACTED" in md              # something was actually redacted, not just dropped by the cap
 
 
+def test_secret_glued_to_preceding_word_char_is_redacted():
+    # a secret with NO delimiter before it must still be caught — a leading \b would let it slip through
+    for glued, secret in [("requestid=AKIAIOSFODNN7EXAMPLE&next", "AKIAIOSFODNN7EXAMPLE"),
+                          ("prefix-ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"),
+                          ("x" + _SECRETS["jwt"], _SECRETS["jwt"])]:
+        _, md = _mod().build_breadcrumb("WebFetch", {"url": "https://example.com"}, glued)
+        assert secret not in md, "glued secret leaked: %s" % secret
+
+
+def test_authorization_basic_header_is_redacted():
+    _, md = _mod().build_breadcrumb("WebFetch", {"url": "https://example.com"},
+                                    "Authorization: Basic dXNlcjpwYXNzd29yZA== rest of page")
+    assert "dXNlcjpwYXNzd29yZA==" not in md and "[REDACTED" in md
+
+
+def test_secret_straddling_the_excerpt_boundary_is_redacted():
+    # scrub runs on the 4000-char region BEFORE the 400-char cap, so a secret near char 400 is redacted
+    # (not truncated into a non-matching partial) — this ordering is the load-bearing part
+    body = "x" * 388 + " AKIAIOSFODNN7EXAMPLE and more"
+    _, md = _mod().build_breadcrumb("WebSearch", {"query": "q"}, body)
+    assert "AKIAIOSFODNN7EXAMPLE" not in md
+
+
 def test_secret_inside_json_response_is_redacted():
     # WebFetch often returns a dict; it gets json.dumps'd, so redaction must survive that serialization
     _, md = _mod().build_breadcrumb("WebFetch", {"url": "https://example.com"},

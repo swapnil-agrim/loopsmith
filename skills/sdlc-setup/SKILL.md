@@ -44,8 +44,8 @@ enable enforce without a command. `setup.py configure` guarantees this, but choo
 
 ## 4. Choose the ignore scope (respect an existing choice)
 
-The runtime dirs (`.sdlc/state/`, `.sdlc/ledger/`, `.sdlc/work/`) must be git-ignored. Check what's
-already there: `python3 "$SETUP" ignore-status .`.
+The runtime dirs (`.sdlc/state/`, `.sdlc/ledger/`, `.sdlc/work/`, `.sdlc/knowledge/`) must be
+git-ignored. Check what's already there: `python3 "$SETUP" ignore-status .`.
 - **Default `tracked`** — add them to the shared `.gitignore`. Right for a repo adopting LoopSmith as
   its real workflow.
 - **`local`** — add them to `.git/info/exclude` instead, touching nothing the team sees. Use this when

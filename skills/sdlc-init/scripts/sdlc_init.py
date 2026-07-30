@@ -172,7 +172,8 @@ def main(argv):
         print(f"  = .sdlc/{s} (exists, kept)")
     if created:
         print("\nTip: commit .sdlc/goals/, .sdlc/project.md and .sdlc/config.json. The machine-written "
-              "dirs ('.sdlc/state/', '.sdlc/ledger/', '.sdlc/work/') must be git-ignored: run "
+              "dirs ('.sdlc/state/', '.sdlc/ledger/', '.sdlc/work/', '.sdlc/knowledge/') must be "
+              "git-ignored: run "
               "/sdlc-setup, or `setup.py ignore .` (it never clobbers an ignore rule you already set, "
               "and can target .git/info/exclude for a local-only adoption). This script edits no "
               "ignore files itself.")
