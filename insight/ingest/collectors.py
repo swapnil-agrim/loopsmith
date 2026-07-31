@@ -97,7 +97,11 @@ def run_source(source, project_root, collectors_root, timeout=_TIMEOUT_SECS):
         argv = source.build_argv(script, project_root, json_path)
         try:
             proc = subprocess.run(
-                argv, cwd=str(project_root), capture_output=True, text=True, timeout=timeout,
+                # errors="replace": a collector emitting non-UTF-8 bytes would otherwise raise
+                # UnicodeDecodeError out of subprocess.run itself, before any guard here. Garbage
+                # bytes should fail as "not JSON", which is a recorded degradation.
+                argv, cwd=str(project_root), capture_output=True, text=True, errors="replace",
+                timeout=timeout,
                 env={**os.environ, "CLAUDE_PROJECT_DIR": str(project_root)},
             )
         except subprocess.TimeoutExpired:

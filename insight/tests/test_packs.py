@@ -166,6 +166,26 @@ def test_malformed_non_schema_field_is_recorded_not_crashed(conn, tmp_path):
     assert count == 3  # the failed INSERT wrote nothing, so the fallback did not duplicate
 
 
+def test_degraded_as_a_string_is_not_exploded_into_per_character_codes(conn, tmp_path):
+    root = tmp_path / "skills"
+    _write_script(root / "sdlc-align" / "scripts" / "alignment-collect.sh",
+                  '#!/bin/sh\necho \'{"schema":"alignment-collect/v1","degraded":"oops"}\'\n')
+    results = ingest_collectors(conn, tmp_path, collectors_root=str(root))
+    align = [r for r in results if r["schema"] == "alignment-collect/v1"][0]
+    assert align["degraded_collector"] == []  # not ['o', 'o', 'p', 's']
+
+
+def test_non_utf8_collector_output_degrades_as_not_json(conn, tmp_path):
+    root = tmp_path / "skills"
+    _write_script(root / "sdlc-loop" / "scripts" / "discovery-scan.sh",
+                  "#!/bin/sh\nprintf '\\377\\376bad'\n")
+    results = ingest_collectors(conn, tmp_path, collectors_root=str(root))
+    scan = [r for r in results if r["schema"] == "discovery-scan/v1"][0]
+    # Decoded with replacement, so it fails as unparseable JSON — a recorded degradation, not
+    # a UnicodeDecodeError escaping run_source into the outer catch-all.
+    assert scan["degraded_adapter"] == ["adapter_output_not_json"]
+
+
 def test_null_schema_is_invalid_not_missing(conn, tmp_path):
     root = tmp_path / "skills"
     _write_script(root / "sdlc-loop" / "scripts" / "discovery-scan.sh",

@@ -22,6 +22,10 @@ _EMPTY_WINDOW = {
 }
 
 
+def _as_list(value):
+    return value if isinstance(value, list) else []
+
+
 def _normalize_alignment_collect(payload):
     window = payload.get("window") or {}
     oldest = window.get("oldest") or {}
@@ -33,7 +37,10 @@ def _normalize_alignment_collect(payload):
         "window_newest_sha": newest.get("sha") or None,
         "window_newest_date": newest.get("date") or None,
         "window_commit_count": window.get("commit_count"),
-        "degraded_collector": list(payload.get("degraded") or []),
+        # list() on a string explodes it per-character, so a collector regressing to
+        # "degraded": "oops" would store four codes named o, o, p, s — no crash, silent
+        # garbage. Only a real list is trusted; anything else reads as no codes.
+        "degraded_collector": [str(c) for c in _as_list(payload.get("degraded"))],
     }
 
 
