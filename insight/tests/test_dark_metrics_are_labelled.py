@@ -30,8 +30,8 @@ duckdb = pytest.importorskip("duckdb")
 from insight.ingest.store import ensure_schema  # noqa: E402
 from insight.metrics.loader import load_metrics  # noqa: E402
 
-DARK_METRIC_IDS = {"2", "7", "10", "11", "12", "13", "14"}
-PROXY_METRIC_IDS = {"5", "20"}
+DARK_METRIC_IDS = {"2", "7", "10", "11", "12", "13", "14", "26"}
+PROXY_METRIC_IDS = {"5", "20", "24"}
 
 
 @pytest.fixture
