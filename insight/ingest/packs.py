@@ -19,6 +19,7 @@ ADAPTER_INTERNAL_ERROR = "adapter_internal_error"
 _EMPTY_WINDOW = {
     "window_since_days": None, "window_oldest_sha": None, "window_oldest_date": None,
     "window_newest_sha": None, "window_newest_date": None, "window_commit_count": None,
+    "window_merge_count": None,  # issue #103 -- only git-facts/v1 ever populates this
 }
 
 
@@ -37,9 +38,29 @@ def _normalize_alignment_collect(payload):
         "window_newest_sha": newest.get("sha") or None,
         "window_newest_date": newest.get("date") or None,
         "window_commit_count": window.get("commit_count"),
+        "window_merge_count": None,  # alignment-collect/v1 has no merge concept -- issue #103
         # list() on a string explodes it per-character, so a collector regressing to
         # "degraded": "oops" would store four codes named o, o, p, s — no crash, silent
         # garbage. Only a real list is trusted; anything else reads as no codes.
+        "degraded_collector": [str(c) for c in _as_list(payload.get("degraded"))],
+    }
+
+
+def _normalize_git_facts(payload):
+    """git-facts/v1 (issue #103, E1.S5): git_reader.py's own in-process pack -- same window
+    shape as alignment-collect/v1 (oldest/newest sha+date, commit_count) PLUS merge_count, the
+    one field no other schema's payload carries. See .sdlc/plans/103.md §A/§C."""
+    window = payload.get("window") or {}
+    oldest = window.get("oldest") or {}
+    newest = window.get("newest") or {}
+    return {
+        "window_since_days": window.get("since_days"),
+        "window_oldest_sha": oldest.get("sha") or None,
+        "window_oldest_date": oldest.get("date") or None,
+        "window_newest_sha": newest.get("sha") or None,
+        "window_newest_date": newest.get("date") or None,
+        "window_commit_count": window.get("commit_count"),
+        "window_merge_count": window.get("merge_count"),
         "degraded_collector": [str(c) for c in _as_list(payload.get("degraded"))],
     }
 
@@ -57,6 +78,7 @@ _NORMALIZERS = {
     "alignment-collect/v1": _normalize_alignment_collect,
     "discovery-scan/v1": _normalize_windowless,
     "pipeline-card/v1": _normalize_windowless,
+    "git-facts/v1": _normalize_git_facts,
 }
 
 
@@ -77,18 +99,19 @@ _INSERT_SQL = """
     INSERT INTO fact_collector_pack
       (project_id, schema, collected_ts, window_since_days, window_oldest_sha,
        window_oldest_date, window_newest_sha, window_newest_date, window_commit_count,
-       degraded_collector, degraded_adapter, raw_payload)
-    VALUES (?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       window_merge_count, degraded_collector, degraded_adapter, raw_payload)
+    VALUES (?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
 def write_pack(conn, project_id, schema, fields, degraded_adapter, raw_payload):
     """One INSERT, one row. degraded_collector/degraded_adapter are always explicit lists —
-    never None — so a later query never sees NULL vs [] ambiguity."""
+    never None. window_merge_count is None for every schema except git-facts/v1 (issue #103)."""
     conn.execute(_INSERT_SQL, [
         project_id, schema,
         fields["window_since_days"], fields["window_oldest_sha"], fields["window_oldest_date"],
         fields["window_newest_sha"], fields["window_newest_date"], fields["window_commit_count"],
+        fields["window_merge_count"],
         list(fields["degraded_collector"]), list(degraded_adapter), raw_payload,
     ])
 

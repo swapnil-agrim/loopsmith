@@ -41,9 +41,59 @@ def test_normalize_alignment_collect_extracts_window_and_degraded():
     assert fields == {
         "window_since_days": 3, "window_oldest_sha": "a", "window_oldest_date": "d1",
         "window_newest_sha": "b", "window_newest_date": "d2", "window_commit_count": 5,
-        "degraded_collector": ["no_test_command"],
+        "window_merge_count": None, "degraded_collector": ["no_test_command"],
     }
     assert extra == []
+
+
+def test_normalize_git_facts_extracts_window_including_merge_count():
+    payload = {
+        "schema": "git-facts/v1",
+        "window": {"since_days": 14, "oldest": {"sha": "a", "date": "d1"},
+                   "newest": {"sha": "b", "date": "d2"}, "commit_count": 5, "merge_count": 2},
+        "degraded": [],
+    }
+    fields, extra = normalize("git-facts/v1", payload)
+    assert fields == {
+        "window_since_days": 14, "window_oldest_sha": "a", "window_oldest_date": "d1",
+        "window_newest_sha": "b", "window_newest_date": "d2", "window_commit_count": 5,
+        "window_merge_count": 2, "degraded_collector": [],
+    }
+    assert extra == []
+
+
+def test_normalize_git_facts_no_git_is_all_null_with_degraded_code():
+    payload = {"schema": "git-facts/v1",
+               "window": {"since_days": 14, "oldest": {"sha": None, "date": None},
+                          "newest": {"sha": None, "date": None}, "commit_count": None,
+                          "merge_count": None},
+               "degraded": ["no_git"]}
+    fields, extra = normalize("git-facts/v1", payload)
+    assert fields["window_commit_count"] is None
+    assert fields["window_merge_count"] is None
+    assert fields["degraded_collector"] == ["no_git"]
+    assert extra == []
+
+
+def test_normalize_alignment_collect_now_carries_a_null_merge_count():
+    """alignment-collect/v1 has no merge concept -- window_merge_count must be present and NULL,
+    not simply absent from the fields dict (write_pack now always expects the key -- issue #103)."""
+    payload = {"schema": "alignment-collect/v1",
+               "window": {"since_days": 3, "oldest": {}, "newest": {}, "commit_count": 5},
+               "degraded": []}
+    fields, _ = normalize("alignment-collect/v1", payload)
+    assert fields["window_merge_count"] is None
+
+
+def test_write_pack_persists_window_merge_count(conn):
+    fields = {"window_since_days": 14, "window_oldest_sha": "a", "window_oldest_date": "d1",
+              "window_newest_sha": "b", "window_newest_date": "d2", "window_commit_count": 5,
+              "window_merge_count": 2, "degraded_collector": []}
+    write_pack(conn, "proj1", "git-facts/v1", fields, [], '{"schema":"git-facts/v1"}')
+    row = conn.execute(
+        "select schema, window_commit_count, window_merge_count from fact_collector_pack"
+    ).fetchone()
+    assert row == ("git-facts/v1", 5, 2)
 
 
 def test_normalize_discovery_scan_is_all_null_window():
@@ -73,7 +123,7 @@ def test_normalize_unknown_schema_returns_unknown_code_and_null_window():
 def test_write_pack_persists_all_columns(conn):
     fields = {"window_since_days": 1, "window_oldest_sha": "a", "window_oldest_date": "d1",
               "window_newest_sha": "b", "window_newest_date": "d2", "window_commit_count": 2,
-              "degraded_collector": ["no_git"]}
+              "window_merge_count": None, "degraded_collector": ["no_git"]}
     write_pack(conn, "proj1", "alignment-collect/v1", fields, ["adapter_output_not_json"], '{"x":1}')
     row = conn.execute(
         "select project_id, schema, window_since_days, degraded_collector, degraded_adapter, "
