@@ -36,7 +36,7 @@ missing commit date (`degraded=["malformed_commit_date"]`) -- verified against a
 corrupted commit object (`git hash-object -t commit -w` with a garbled author line): git prints
 the literal, unexpanded format specifier instead of a date, `datetime.fromisoformat` raises on
 it, and a plan-review reproduced this crashing the entire `insight ingest` run end-to-end before
-`_to_utc_naive` was fixed to catch it. Not a hypothetical case: repos migrated via
+`to_utc_naive` was fixed to catch it. Not a hypothetical case: repos migrated via
 svn2git/hg-git/p4, or recovered from a reflog, are documented to carry malformed author/committer
 timestamps. `ingest_merge_lead_time`'s call into `find_merge_events` is ALSO wrapped in its own
 guard, separately from the per-row write guard (§H) -- defense in depth against discovery itself
@@ -231,10 +231,17 @@ def ingest_git_facts(conn, project_root, days=14, ref=None):
     return {"schema": payload["schema"], "degraded": fields["degraded_collector"] + extra_adapter_codes}
 
 
-def _to_utc_naive(iso_ts):
-    """Parse a git %aI/%cI ISO-8601+offset string -> a naive UTC datetime.datetime, or None on
-    ANY failure -- NEVER RAISES. Matches every other TIMESTAMP column in this store (all naive,
-    per .sdlc/plans/99.md's design table). Two distinct failure modes, both degrade to None:
+def to_utc_naive(iso_ts):
+    """Parse an ISO-8601(+offset) string -> a naive UTC datetime.datetime, or None on ANY
+    failure -- NEVER RAISES. Promoted from private (issue #104, E1.S6) so gh_reader.py can reuse
+    it for gh's own ISO-8601 timestamps instead of duplicating this already-hardened parser --
+    see .sdlc/plans/104.md Design decision G. Behaviour is UNCHANGED from git_reader.py's own
+    %aI/%cI usage; the two callers just happen to feed it two different upstream formats that
+    are both, in practice, well-formed ISO-8601+offset/Z strings.
+
+    Originally written for a git %aI/%cI ISO-8601+offset string. Matches every other TIMESTAMP
+    column in this store (all naive, per .sdlc/plans/99.md's design table). Two distinct failure
+    modes, both degrade to None:
 
     1. Unparseable text. git prints the LITERAL, UNEXPANDED format specifier ('%aI') instead of
        a date when it cannot format a commit's stored author/committer line -- verified directly
@@ -351,7 +358,7 @@ def _git_merge_event(root, rec):
 
     NEVER RAISES. Three independent degrade paths, checked in order, EACH one short-circuiting
     before touching a value that might be None:
-      1. merge_ts itself fails to parse (_to_utc_naive returns None) -> degraded=
+      1. merge_ts itself fails to parse (to_utc_naive returns None) -> degraded=
          ["malformed_commit_date"], nothing else is even attempted.
       2. merge-base could not be found, or the branch's first commit could not be read
          (first is None) -> degraded=["merge_base_unavailable"] (unchanged from before).
@@ -361,7 +368,7 @@ def _git_merge_event(root, rec):
     This is the exact scenario a plan-review reproduced end-to-end: a real commit built with
     `git hash-object -t commit -w` carrying a corrupted author line, made the tip of a feature
     branch, merged normally -- before this fix, path 3's `int((merge_ts - first_ts)...)` raised
-    ValueError inside _to_utc_naive itself and propagated out of find_merge_events, aborting the
+    ValueError inside to_utc_naive itself and propagated out of find_merge_events, aborting the
     entire `insight ingest` run (no top-level guard in __main__.py either) and losing every
     collector/reader that had already run in the same call. Pinned by
     test_git_merge_event_corrupted_author_date_degrades_never_raises in Step 3.2, built against
@@ -369,7 +376,7 @@ def _git_merge_event(root, rec):
     base = _merge_base(root, rec["parents"][0], rec["parents"][1])
     first = _first_commit_on_branch(root, base, rec["parents"][1]) if base else None
     pr_number = _pr_number_from_subject(rec["subject"])
-    merge_ts = _to_utc_naive(rec["committer_ts"])
+    merge_ts = to_utc_naive(rec["committer_ts"])
     if merge_ts is None:
         return {"kind": "git_merge", "merge_sha": rec["sha"], "pr_number": pr_number,
                 "merge_ts": None, "first_commit_sha": None, "first_commit_ts": None,
@@ -378,7 +385,7 @@ def _git_merge_event(root, rec):
         return {"kind": "git_merge", "merge_sha": rec["sha"], "pr_number": pr_number,
                 "merge_ts": merge_ts, "first_commit_sha": None, "first_commit_ts": None,
                 "lead_time_seconds": None, "degraded": ["merge_base_unavailable"]}
-    first_ts = _to_utc_naive(first["author_ts"])
+    first_ts = to_utc_naive(first["author_ts"])
     if first_ts is None:
         return {"kind": "git_merge", "merge_sha": rec["sha"], "pr_number": pr_number,
                 "merge_ts": merge_ts, "first_commit_sha": first["sha"], "first_commit_ts": None,
@@ -434,7 +441,7 @@ def find_merge_events(root, days=14, ref=None):
         elif len(parents) <= 1:
             m = _PR_SUFFIX_RE.search(rec["subject"])
             if m:
-                merge_ts = _to_utc_naive(rec["committer_ts"])
+                merge_ts = to_utc_naive(rec["committer_ts"])
                 # A squash commit's own date can ALSO be malformed (same corrupted-history
                 # sources as a real merge commit's -- svn2git/hg-git/p4, reflog recovery). Both
                 # codes are recorded: lead time was never derivable for a squash_pr row anyway,
@@ -488,13 +495,13 @@ def ingest_merge_lead_time(conn, project_root, days=14, ref=None):
     has no relational tie to any other). See .sdlc/plans/103.md §H for the full reasoning.
 
     The find_merge_events() CALL ITSELF is also guarded, separately from the per-row loop below.
-    _to_utc_naive no longer raises for a malformed commit date (see its own docstring and
+    to_utc_naive no longer raises for a malformed commit date (see its own docstring and
     .sdlc/plans/103.md §D's amendment) -- but this outer guard is deliberate DEFENSE IN DEPTH,
     not a substitute for that fix: discovery is a multi-step walk (log, merge-base, another log,
     per-event regex/parsing) with more than one place a future edit could reintroduce an
     uncaught exception, and a crash during DISCOVERY, before any row-level try/except even runs,
     would otherwise abort the entire `insight ingest` call the exact same way the original
-    _to_utc_naive bug did -- taking every collector and reader that already ran in the same
+    to_utc_naive bug did -- taking every collector and reader that already ran in the same
     process down with it, not just this function's own output."""
     project_root = pathlib.Path(project_root)
     project_id = project_id_for(project_root)

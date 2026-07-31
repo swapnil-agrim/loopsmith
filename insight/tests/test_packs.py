@@ -41,7 +41,8 @@ def test_normalize_alignment_collect_extracts_window_and_degraded():
     assert fields == {
         "window_since_days": 3, "window_oldest_sha": "a", "window_oldest_date": "d1",
         "window_newest_sha": "b", "window_newest_date": "d2", "window_commit_count": 5,
-        "window_merge_count": None, "degraded_collector": ["no_test_command"],
+        "window_merge_count": None, "window_pr_count": None, "window_review_event_count": None,
+        "window_check_row_count": None, "degraded_collector": ["no_test_command"],
     }
     assert extra == []
 
@@ -57,7 +58,8 @@ def test_normalize_git_facts_extracts_window_including_merge_count():
     assert fields == {
         "window_since_days": 14, "window_oldest_sha": "a", "window_oldest_date": "d1",
         "window_newest_sha": "b", "window_newest_date": "d2", "window_commit_count": 5,
-        "window_merge_count": 2, "degraded_collector": [],
+        "window_merge_count": 2, "window_pr_count": None, "window_review_event_count": None,
+        "window_check_row_count": None, "degraded_collector": [],
     }
     assert extra == []
 
@@ -86,14 +88,76 @@ def test_normalize_alignment_collect_now_carries_a_null_merge_count():
 
 
 def test_write_pack_persists_window_merge_count(conn):
+    # NOTE (deviation from .sdlc/plans/104.md's Step 2.1 -- a gap the plan itself missed): this
+    # #103-authored test also builds a `fields` dict by hand and was not in the plan's list of
+    # three pre-existing tests to update, but write_pack now unconditionally indexes the three
+    # new #104 keys too -- found failing with KeyError('window_pr_count') when run as written.
     fields = {"window_since_days": 14, "window_oldest_sha": "a", "window_oldest_date": "d1",
               "window_newest_sha": "b", "window_newest_date": "d2", "window_commit_count": 5,
-              "window_merge_count": 2, "degraded_collector": []}
+              "window_merge_count": 2, "window_pr_count": None, "window_review_event_count": None,
+              "window_check_row_count": None, "degraded_collector": []}
     write_pack(conn, "proj1", "git-facts/v1", fields, [], '{"schema":"git-facts/v1"}')
     row = conn.execute(
         "select schema, window_commit_count, window_merge_count from fact_collector_pack"
     ).fetchone()
     assert row == ("git-facts/v1", 5, 2)
+
+
+def test_normalize_gh_facts_extracts_summary_counts():
+    payload = {
+        "schema": "gh-facts/v1",
+        "window": {"since_days": 14, "oldest": {"sha": None, "date": None},
+                   "newest": {"sha": None, "date": None}, "commit_count": None,
+                   "merge_count": None, "pr_count": 3, "review_event_count": 2,
+                   "check_row_count": 8},
+        "degraded": [],
+    }
+    fields, extra = normalize("gh-facts/v1", payload)
+    assert fields["window_pr_count"] == 3
+    assert fields["window_review_event_count"] == 2
+    assert fields["window_check_row_count"] == 8
+    assert fields["degraded_collector"] == []
+    assert extra == []
+
+
+def test_normalize_gh_facts_unauthenticated_is_all_null_with_degraded_code():
+    payload = {"schema": "gh-facts/v1",
+               "window": {"since_days": 14, "oldest": {"sha": None, "date": None},
+                          "newest": {"sha": None, "date": None}, "commit_count": None,
+                          "merge_count": None, "pr_count": None, "review_event_count": None,
+                          "check_row_count": None},
+               "degraded": ["gh_unauthenticated"]}
+    fields, extra = normalize("gh-facts/v1", payload)
+    assert fields["window_pr_count"] is None
+    assert fields["degraded_collector"] == ["gh_unauthenticated"]
+    assert extra == []
+
+
+def test_normalize_git_facts_now_carries_null_gh_counts():
+    """git-facts/v1 has no PR concept -- the three new gh-facts/v1 columns must be present and
+    NULL, not simply absent from the fields dict (write_pack now always expects the keys)."""
+    payload = {"schema": "git-facts/v1",
+               "window": {"since_days": 14, "oldest": {"sha": "a", "date": "d1"},
+                          "newest": {"sha": "b", "date": "d2"}, "commit_count": 5,
+                          "merge_count": 1},
+               "degraded": []}
+    fields, _ = normalize("git-facts/v1", payload)
+    assert fields["window_pr_count"] is None
+    assert fields["window_review_event_count"] is None
+    assert fields["window_check_row_count"] is None
+
+
+def test_write_pack_persists_gh_facts_counts(conn):
+    fields = {"window_since_days": 14, "window_oldest_sha": None, "window_oldest_date": None,
+              "window_newest_sha": None, "window_newest_date": None, "window_commit_count": None,
+              "window_merge_count": None, "window_pr_count": 3, "window_review_event_count": 2,
+              "window_check_row_count": 8, "degraded_collector": []}
+    write_pack(conn, "proj1", "gh-facts/v1", fields, [], '{"schema":"gh-facts/v1"}')
+    row = conn.execute(
+        "select schema, window_pr_count, window_review_event_count, window_check_row_count "
+        "from fact_collector_pack"
+    ).fetchone()
+    assert row == ("gh-facts/v1", 3, 2, 8)
 
 
 def test_normalize_discovery_scan_is_all_null_window():
@@ -123,7 +187,9 @@ def test_normalize_unknown_schema_returns_unknown_code_and_null_window():
 def test_write_pack_persists_all_columns(conn):
     fields = {"window_since_days": 1, "window_oldest_sha": "a", "window_oldest_date": "d1",
               "window_newest_sha": "b", "window_newest_date": "d2", "window_commit_count": 2,
-              "window_merge_count": None, "degraded_collector": ["no_git"]}
+              "window_merge_count": None, "window_pr_count": None,
+              "window_review_event_count": None, "window_check_row_count": None,
+              "degraded_collector": ["no_git"]}
     write_pack(conn, "proj1", "alignment-collect/v1", fields, ["adapter_output_not_json"], '{"x":1}')
     row = conn.execute(
         "select project_id, schema, window_since_days, degraded_collector, degraded_adapter, "

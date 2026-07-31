@@ -202,9 +202,13 @@ _PACK_EXTRA_COLUMNS = ["window_merge_count"]
 
 
 def test_fact_collector_pack_window_merge_count_is_issue_103_addition(tmp_path):
+    """Narrowed to a PREFIX check by issue #104 -- fact_collector_pack now has 16 real columns,
+    not #103's 13; #103's own addition must still appear, in order, as a prefix. Mirrors #103's
+    identical narrowing of #100's test (test_fact_collector_pack_columns_match_this_storys_design)."""
     conn = duckdb.connect(str(tmp_path / "s.duckdb"))
     ensure_schema(conn)
-    assert _columns(conn, "fact_collector_pack") == _PACK_COLUMNS + _PACK_EXTRA_COLUMNS
+    real = _columns(conn, "fact_collector_pack")
+    assert real[: len(_PACK_COLUMNS + _PACK_EXTRA_COLUMNS)] == _PACK_COLUMNS + _PACK_EXTRA_COLUMNS
     conn.close()
 
 
@@ -226,13 +230,16 @@ def test_ensure_schema_upgrades_a_pre_103_fact_collector_pack_table_in_place(tmp
         "insert into fact_collector_pack (project_id, schema, window_commit_count) "
         "values ('p', 'alignment-collect/v1', 3)"
     )
-    ensure_schema(conn)  # must ADD window_merge_count, not error, not touch existing data
-    assert _columns(conn, "fact_collector_pack") == _PACK_COLUMNS + _PACK_EXTRA_COLUMNS
+    ensure_schema(conn)  # must ADD window_merge_count AND #104's three new columns, in one pass
+    assert _columns(conn, "fact_collector_pack") == (
+        _PACK_COLUMNS + _PACK_EXTRA_COLUMNS + _PACK_EXTRA_COLUMNS_104
+    )
     row = conn.execute(
-        "select project_id, schema, window_commit_count, window_merge_count "
+        "select project_id, schema, window_commit_count, window_merge_count, "
+        "window_pr_count, window_review_event_count, window_check_row_count "
         "from fact_collector_pack"
     ).fetchone()
-    assert row == ("p", "alignment-collect/v1", 3, None)
+    assert row == ("p", "alignment-collect/v1", 3, None, None, None, None)
     conn.close()
 
 
@@ -294,6 +301,150 @@ def test_fact_merge_lead_time_squash_pr_row_accepts_all_nulls(tmp_path):
         "from fact_merge_lead_time where merge_sha = 'sha2'"
     ).fetchone()
     assert row == ("squash_pr", 177, None, None, ["lead_time_requires_network"])
+    conn.close()
+
+
+#: fact_collector_pack's 3 new columns (issue #104) -- same pattern as _PACK_EXTRA_COLUMNS (#103)
+#: on top of #100's table. See .sdlc/plans/104.md Design decision A.
+_PACK_EXTRA_COLUMNS_104 = ["window_pr_count", "window_review_event_count", "window_check_row_count"]
+
+
+def test_fact_collector_pack_gh_facts_columns_are_issue_104_additions(tmp_path):
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    assert _columns(conn, "fact_collector_pack") == (
+        _PACK_COLUMNS + _PACK_EXTRA_COLUMNS + _PACK_EXTRA_COLUMNS_104
+    )
+    conn.close()
+
+
+def test_ensure_schema_upgrades_a_pre_104_fact_collector_pack_table_in_place(tmp_path):
+    """The exact regression #104 exists to prevent, mirroring #102/#103's identical tests:
+    CREATE TABLE IF NOT EXISTS is a no-op against a file that already has a (pre-#104,
+    13-column, #103-shape) fact_collector_pack -- only the three new ALTER statements actually
+    add the missing columns to that EXISTING file, without touching existing data.
+
+    NOTE (deviation from .sdlc/plans/104.md's literal Step 1.1 fixture): the plan's own fixture
+    placed window_merge_count BEFORE degraded_collector/raw_payload in the hand-authored CREATE
+    TABLE, which does not match the column order a real #103-upgraded file actually has --
+    #103's own ALTER TABLE ... ADD COLUMN always appends at the end, so a genuinely #103-shape
+    13-column table has window_merge_count LAST, after raw_payload. Fixed here so the fixture
+    matches what "#103-shape" the docstring claims it simulates actually produces; the plan's
+    literal fixture makes this test fail against a correct implementation of Step 1.2 (verified:
+    running it as written raises an AssertionError at index 9, 'window_merge_count' !=
+    'degraded_collector' -- not a bug in ensure_schema, a bug in the fixture's column order)."""
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    conn.execute("""
+        CREATE TABLE fact_collector_pack (
+            project_id VARCHAR, schema VARCHAR, collected_ts TIMESTAMP,
+            window_since_days INTEGER, window_oldest_sha VARCHAR, window_oldest_date VARCHAR,
+            window_newest_sha VARCHAR, window_newest_date VARCHAR, window_commit_count INTEGER,
+            degraded_collector VARCHAR[], degraded_adapter VARCHAR[], raw_payload VARCHAR,
+            window_merge_count INTEGER
+        )
+    """)
+    conn.execute(
+        "insert into fact_collector_pack (project_id, schema, window_commit_count, "
+        "window_merge_count) values ('p', 'git-facts/v1', 3, 1)"
+    )
+    ensure_schema(conn)  # must ADD the 3 new columns, not error, not touch existing data
+    assert _columns(conn, "fact_collector_pack") == (
+        _PACK_COLUMNS + _PACK_EXTRA_COLUMNS + _PACK_EXTRA_COLUMNS_104
+    )
+    row = conn.execute(
+        "select project_id, schema, window_commit_count, window_merge_count, "
+        "window_pr_count, window_review_event_count, window_check_row_count "
+        "from fact_collector_pack"
+    ).fetchone()
+    assert row == ("p", "git-facts/v1", 3, 1, None, None, None)
+    conn.close()
+
+
+#: fact_pr_review / fact_pr_check (issue #104) are NOT in spec §B.3 -- same reasoning as
+#: _PACK_COLUMNS/_SLICE_COLUMNS/_MERGE_LEAD_TIME_COLUMNS above.
+#: seconds_since_pr_created is a COMPUTED column (event_ts - pr_created_ts, in whole seconds) --
+#: not just three raw timestamps, so "review timing" actually ships a timing, the same way
+#: fact_merge_lead_time (#103) ships lead_time_seconds rather than leaving the subtraction to
+#: every downstream query. Found missing during plan review. See .sdlc/plans/104.md's amended
+#: Design decision D.
+_PR_REVIEW_COLUMNS = [
+    "project_id", "pr_number", "source", "event_id", "actor", "verdict", "event_ts",
+    "pr_created_ts", "pr_merged_ts", "seconds_since_pr_created", "degraded",
+]
+_PR_CHECK_COLUMNS = [
+    "project_id", "pr_number", "check_name", "status", "conclusion", "started_ts",
+    "completed_ts", "pr_created_ts", "pr_merged_ts", "degraded",
+]
+
+
+def test_fact_pr_review_columns_match_this_storys_design(tmp_path):
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    assert _columns(conn, "fact_pr_review") == _PR_REVIEW_COLUMNS
+    conn.close()
+
+
+def test_fact_pr_review_pk_upserts_not_duplicates(tmp_path):
+    import datetime
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    sql = """
+        INSERT INTO fact_pr_review
+          (project_id, pr_number, source, event_id, actor, verdict, event_ts, pr_created_ts,
+           pr_merged_ts, seconds_since_pr_created, degraded)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (project_id, source, event_id) DO UPDATE SET
+          pr_number = excluded.pr_number, actor = excluded.actor, verdict = excluded.verdict,
+          event_ts = excluded.event_ts, pr_created_ts = excluded.pr_created_ts,
+          pr_merged_ts = excluded.pr_merged_ts,
+          seconds_since_pr_created = excluded.seconds_since_pr_created,
+          degraded = excluded.degraded
+    """
+    conn.execute(sql, ["p", 178, "loopsmith_comment", "IC_1", "swapnil-agrim", "block",
+                        datetime.datetime(2026, 7, 31, 11, 6, 22),
+                        datetime.datetime(2026, 7, 31, 10, 55, 39), None, 643, []])
+    conn.execute(sql, ["p", 178, "loopsmith_comment", "IC_1", "swapnil-agrim", "block-updated",
+                        datetime.datetime(2026, 7, 31, 11, 6, 23),
+                        datetime.datetime(2026, 7, 31, 10, 55, 39), None, 644, ["x"]])
+    rows = conn.execute(
+        "select event_id, verdict, seconds_since_pr_created, degraded from fact_pr_review"
+    ).fetchall()
+    assert rows == [("IC_1", "block-updated", 644, ["x"])]  # second call updated, not duplicated
+    conn.close()
+
+
+def test_fact_pr_check_columns_match_this_storys_design(tmp_path):
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    assert _columns(conn, "fact_pr_check") == _PR_CHECK_COLUMNS
+    conn.close()
+
+
+def test_fact_pr_check_pk_upserts_not_duplicates(tmp_path):
+    import datetime
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    sql = """
+        INSERT INTO fact_pr_check
+          (project_id, pr_number, check_name, status, conclusion, started_ts, completed_ts,
+           pr_created_ts, pr_merged_ts, degraded)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (project_id, pr_number, check_name) DO UPDATE SET
+          status = excluded.status, conclusion = excluded.conclusion,
+          started_ts = excluded.started_ts, completed_ts = excluded.completed_ts,
+          pr_created_ts = excluded.pr_created_ts, pr_merged_ts = excluded.pr_merged_ts,
+          degraded = excluded.degraded
+    """
+    conn.execute(sql, ["p", 178, "test (3.10)", "COMPLETED", "SUCCESS",
+                        datetime.datetime(2026, 7, 31, 11, 0, 0),
+                        datetime.datetime(2026, 7, 31, 11, 2, 0), None, None, []])
+    conn.execute(sql, ["p", 178, "test (3.10)", "COMPLETED", "FAILURE",
+                        datetime.datetime(2026, 7, 31, 11, 0, 0),
+                        datetime.datetime(2026, 7, 31, 11, 3, 0), None, None, []])
+    rows = conn.execute(
+        "select check_name, conclusion from fact_pr_check"
+    ).fetchall()
+    assert rows == [("test (3.10)", "FAILURE")]  # second call updated (a re-run), not duplicated
     conn.close()
 
 

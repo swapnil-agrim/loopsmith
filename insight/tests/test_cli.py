@@ -93,7 +93,41 @@ def test_python_dash_m_insight_help_lists_subcommands_and_exits_zero():
 # without duckdb, which must keep running as pure stubs.
 
 
-def test_ingest_creates_default_db_and_exits_zero(tmp_path, monkeypatch):
+@pytest.fixture
+def isolate_path_empty(tmp_path, monkeypatch):
+    """PATH set to a freshly created, completely empty directory -- no external binary (gh, git,
+    bash, python3-as-a-bare-name, ...) is resolvable. Every subprocess-based reader in `insight
+    ingest` (gh_reader.py, git_reader.py, collectors.py) must degrade gracefully under this,
+    never raise -- this fixture is how every pre-existing CLI ingest test in this file proves it
+    still does, now that ingest_gh_reader is wired in unconditionally (issue #104) and would
+    otherwise spawn the REAL system gh on any box that has one on PATH. See .sdlc/plans/104.md
+    Design decision I."""
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+
+
+@pytest.fixture
+def isolate_path_no_gh(tmp_path, monkeypatch):
+    """PATH set to a directory containing ONLY symlinks to the real, currently installed `git`
+    and `bash` (each resolved via shutil.which, never a hardcoded path -- works on any
+    machine/CI runner). Both keep working -- for the tests below that need a real git repo
+    (git_reader.py's own output) or a real collector script (invoked via `bash <script>`) to
+    keep running -- but `gh` does NOT resolve. Verified live this session: with only these two
+    symlinks on PATH, `bash <script>` and `git --version` both succeed, `gh --version` raises
+    FileNotFoundError. See .sdlc/plans/104.md Design decision I."""
+    import shutil
+    bin_dir = tmp_path / "bin-no-gh"
+    bin_dir.mkdir()
+    for tool in ("git", "bash"):
+        real = shutil.which(tool)
+        if real is None:
+            pytest.skip(f"no {tool} on this machine's PATH -- nothing to symlink")
+        (bin_dir / tool).symlink_to(real)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+
+def test_ingest_creates_default_db_and_exits_zero(tmp_path, monkeypatch, isolate_path_empty):
     pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)
     code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
@@ -101,7 +135,9 @@ def test_ingest_creates_default_db_and_exits_zero(tmp_path, monkeypatch):
     assert (tmp_path / ".sdlc" / "insight.duckdb").exists()
 
 
-def test_ingest_prints_success_to_stdout_not_stderr(tmp_path, monkeypatch, capsys):
+def test_ingest_prints_success_to_stdout_not_stderr(
+    tmp_path, monkeypatch, capsys, isolate_path_empty
+):
     pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)
     code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
@@ -111,7 +147,7 @@ def test_ingest_prints_success_to_stdout_not_stderr(tmp_path, monkeypatch, capsy
     assert str(pathlib.Path(".sdlc") / "insight.duckdb") in out
 
 
-def test_ingest_respects_db_flag(tmp_path, monkeypatch):
+def test_ingest_respects_db_flag(tmp_path, monkeypatch, isolate_path_empty):
     pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)
     target = tmp_path / "x.duckdb"
@@ -122,7 +158,7 @@ def test_ingest_respects_db_flag(tmp_path, monkeypatch):
     assert not (tmp_path / ".sdlc" / "insight.duckdb").exists()
 
 
-def test_ingest_is_idempotent_via_cli(tmp_path):
+def test_ingest_is_idempotent_via_cli(tmp_path, isolate_path_empty):
     duckdb = pytest.importorskip("duckdb")
     target = tmp_path / "x.duckdb"
     collectors_root = str(tmp_path / "no-collectors-here")
@@ -135,6 +171,7 @@ def test_ingest_is_idempotent_via_cli(tmp_path):
     assert sorted(names) == sorted({
         "dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff",
         "fact_collector_pack", "fact_slice", "fact_merge_lead_time",
+        "fact_pr_review", "fact_pr_check",
     })
     assert len(names) == len(set(names))
     conn.close()
@@ -149,7 +186,7 @@ def test_main_module_does_not_import_duckdb_at_top_level():
     tree = ast.parse(source, filename="insight/__main__.py")
     banned = {"duckdb", "insight.ingest.store", "insight.ingest.collectors",
               "insight.ingest.packs", "insight.ingest.artifact_reader",
-              "insight.ingest.git_reader", "insight"}
+              "insight.ingest.git_reader", "insight.ingest.gh_reader", "insight"}
     top_level_targets = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -163,7 +200,9 @@ def test_main_module_does_not_import_duckdb_at_top_level():
     )
 
 
-def test_ingest_collectors_root_flag_runs_fake_collectors_end_to_end(tmp_path, monkeypatch, capsys):
+def test_ingest_collectors_root_flag_runs_fake_collectors_end_to_end(
+    tmp_path, monkeypatch, capsys, isolate_path_no_gh
+):
     duckdb = pytest.importorskip("duckdb")
     import stat
     monkeypatch.chdir(tmp_path)
@@ -184,18 +223,21 @@ def test_ingest_collectors_root_flag_runs_fake_collectors_end_to_end(tmp_path, m
     assert "discovery-scan/v1" in out  # not found under fake-skills -> still printed, degraded
     assert "adapter_collector_not_found" in out
     conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
-    # Scoped to the 3 collectors.py sources: `main()` now ALSO writes a 4th, separate
-    # fact_collector_pack row for schema="git-facts/v1" every run (issue #103's
-    # ingest_git_facts, unconditionally wired) -- a deliberate, unrelated additional row, not
-    # a regression in collectors.py's own count. See insight/ingest/git_reader.py.
+    # Scoped to the 3 collectors.py sources: `main()` now ALSO writes two more, separate
+    # fact_collector_pack rows every run -- schema="git-facts/v1" (#103) and schema="gh-facts/v1"
+    # (#104), both unconditionally wired -- a deliberate, unrelated addition, not a regression in
+    # collectors.py's own count. isolate_path_no_gh guarantees gh-facts/v1 is always degraded here
+    # (adapter_spawn_failed), never a real network call, while bash still resolves for the real
+    # fake-collector script above.
     count = conn.execute(
-        "select count(*) from fact_collector_pack where schema != 'git-facts/v1'"
+        "select count(*) from fact_collector_pack "
+        "where schema not in ('git-facts/v1', 'gh-facts/v1')"
     ).fetchone()[0]
     assert count == 3
     conn.close()
 
 
-def test_ingest_never_fatal_when_collectors_root_absent(tmp_path, monkeypatch):
+def test_ingest_never_fatal_when_collectors_root_absent(tmp_path, monkeypatch, isolate_path_empty):
     pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)
     code = main(["ingest", "--collectors-root", str(tmp_path / "nope")])
@@ -203,7 +245,7 @@ def test_ingest_never_fatal_when_collectors_root_absent(tmp_path, monkeypatch):
 
 
 def test_ingest_wires_artifact_reader_and_populates_dim_project_and_fact_goal(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, isolate_path_empty
 ):
     duckdb = pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)
@@ -226,7 +268,7 @@ def test_ingest_wires_artifact_reader_and_populates_dim_project_and_fact_goal(
     conn.close()
 
 
-def test_ingest_never_fatal_with_no_goals_dir_at_all(tmp_path, monkeypatch):
+def test_ingest_never_fatal_with_no_goals_dir_at_all(tmp_path, monkeypatch, isolate_path_empty):
     pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)
     code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
@@ -236,7 +278,9 @@ def test_ingest_never_fatal_with_no_goals_dir_at_all(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- git facts reader (issue #103)
 
 
-def test_ingest_wires_git_reader_and_populates_both_new_targets(tmp_path, monkeypatch, capsys):
+def test_ingest_wires_git_reader_and_populates_both_new_targets(
+    tmp_path, monkeypatch, capsys, isolate_path_no_gh
+):
     duckdb = pytest.importorskip("duckdb")
     import subprocess
     monkeypatch.chdir(tmp_path)
@@ -266,14 +310,18 @@ def test_ingest_wires_git_reader_and_populates_both_new_targets(tmp_path, monkey
     conn.close()
 
 
-def test_ingest_never_fatal_when_project_root_is_not_a_git_repo(tmp_path, monkeypatch):
+def test_ingest_never_fatal_when_project_root_is_not_a_git_repo(
+    tmp_path, monkeypatch, isolate_path_empty
+):
     pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)  # tmp_path is NOT a git repo
     code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
     assert code == 0  # never fatal, per done_when — mirrors #100/#102's own analogous tests
 
 
-def test_ingest_git_window_days_flag_is_respected(tmp_path, monkeypatch, capsys):
+def test_ingest_git_window_days_flag_is_respected(
+    tmp_path, monkeypatch, capsys, isolate_path_no_gh
+):
     duckdb = pytest.importorskip("duckdb")
     import subprocess
     monkeypatch.chdir(tmp_path)
@@ -295,3 +343,52 @@ def test_ingest_git_window_days_flag_is_respected(tmp_path, monkeypatch, capsys)
     ).fetchone()
     assert row == (0,)  # the 2020 commit is outside a 1-day window
     conn.close()
+
+
+# --------------------------------------------------------------------------- gh reader (issue #104)
+
+
+def test_ingest_wires_gh_reader_and_records_a_degrade_code_without_gh(
+    tmp_path, monkeypatch, capsys, isolate_path_empty
+):
+    """The issue's own explicitly-named test, at the CLI level: PATH without gh still completes
+    `insight ingest` -- an entirely empty PATH means NOTHING external (gh, git, bash) can be
+    spawned, and every reader in the same run must degrade, never raise. See .sdlc/plans/104.md
+    Design decision I."""
+    duckdb = pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
+    assert code == 0  # never fatal, per done_when
+
+    out = capsys.readouterr().out
+    assert "gh-facts/v1" in out
+    assert "PR review event(s)" in out
+
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    row = conn.execute(
+        "select degraded_collector from fact_collector_pack where schema = 'gh-facts/v1'"
+    ).fetchone()
+    assert row == (["adapter_spawn_failed"],)
+    assert conn.execute("select count(*) from fact_pr_review").fetchone()[0] == 0
+    assert conn.execute("select count(*) from fact_pr_check").fetchone()[0] == 0
+    conn.close()
+
+
+def test_ingest_gh_window_days_flag_is_accepted(tmp_path, monkeypatch, isolate_path_empty):
+    """Not a behavioural assertion about gh's own output (that's gh_reader.py's own test suite,
+    Task 6) -- this pins that the flag exists, parses, and reaches ingest_gh_reader without
+    raising, exactly mirroring --git-window-days's own CLI-level test."""
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here"),
+                 "--gh-window-days", "30"])
+    assert code == 0
+
+
+def test_help_lists_the_new_gh_window_days_flag(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["ingest", "--help"])
+    out = capsys.readouterr().out
+    assert "--gh-window-days" in out
