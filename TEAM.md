@@ -11,6 +11,11 @@ _Nothing is blocked on another person._
 
 | when | who | did | goal | detail |
 |---|---|---|---|---|
+| 2026-07-31T21:15:46Z | swapnil-agrim | claimed | 111 |  |
+| 2026-07-31T21:15:29Z | swapnil-agrim | parked | 105 | Re-parked (fourth time this run). Unchanged and still needing your decision: fact_collector_pack is append-only by design with three shipped tests asserting it, so this issue's Done-when ('ingest twice produces identical row counts') cannot be met without reversing a deliberate earlier decision and building a schema/PK migration path this codebase has never needed. The ordering half resolved itself -- #180 was folded into this issue, so there is nothing left to sequence behind. NOTE ON THE REPEAT PARKS: loop.py next re-claims this goal on every iteration, re-adding sdlc:goal and sdlc:in-progress and stripping sdlc:parked, so the park does not survive a single loop cycle. That is a helper bug, recorded on this issue earlier, not indecision by the loop -- the decision has been the same each time. |
+| 2026-07-31T21:14:36Z | swapnil-agrim | claimed | 105 |  |
+| 2026-07-31T21:14:17Z | swapnil-agrim | done | 110 |  |
+| 2026-07-31T21:14:04Z | swapnil-agrim | merged | 110 | auto-merge (squash) armed on PR #184 |
 | 2026-07-31T19:58:23Z | swapnil-agrim | claimed | 110 |  |
 | 2026-07-31T19:58:06Z | swapnil-agrim | parked | 105 | Re-parked (third time). Ordering half of the original park is resolved -- #180 was folded into this issue, so there is nothing to wait for. What still needs YOUR decision is unchanged: fact_collector_pack is append-only by design with three shipped tests asserting it, so this issue's Done-when ('ingest twice produces identical row counts') cannot be met without reversing a deliberate earlier decision and building a schema/PK migration path this codebase has never needed. See the two prior park comments and the status-correction note for the full reasoning. |
 | 2026-07-31T19:57:24Z | swapnil-agrim | claimed | 105 |  |
@@ -31,8 +36,3 @@ _Nothing is blocked on another person._
 | 2026-07-31T13:23:53Z | swapnil-agrim | claimed | 105 |  |
 | 2026-07-31T13:22:45Z | swapnil-agrim | claimed | 106 |  |
 | 2026-07-31T13:20:36Z | swapnil-agrim | claimed | 106 |  |
-| 2026-07-31T13:20:18Z | swapnil-agrim | parked | 105 | Two scope decisions only you can make, both verified in Research rather than reasoned. (1) LEDGER PERSISTENCE: spec B.2 step 2 -- read ledger entries/events into raw tables -- was never built. ledger_reader.py is read-only and is not wired into ingest, and no fact_event/fact_handoff exists, so the watermark this story asks for has no write path to gate. Either #105 absorbs building that write path (a whole unopened story's worth of work, well past E1.S7's stated scope), or the watermark ships inert. (2) fact_collector_pack IS APPEND-ONLY BY DESIGN: ingest run twice was measured going 5 -> 10 rows, and three shipped tests assert exactly that behaviour. The issue's own Done-when -- 'running ingest twice produces identical row counts' -- therefore cannot be met without reversing a deliberate, tested decision from an earlier story, which needs a schema/PK migration path this codebase has never built. Both readings lead to materially different work, so guessing would either ship dead code or silently overturn a prior design decision. Also worth your call while you are here: the third dimension of the (project, actor, stream) key is inert -- 'stream' is proposed in spec A.1 but not implemented in the shipped ledger.py. Research is complete and the dossier stands; the goal needs only a scope answer to proceed. |
-| 2026-07-31T13:10:40Z | swapnil-agrim | claimed | 105 |  |
-| 2026-07-31T13:10:18Z | swapnil-agrim | done | 104 |  |
-| 2026-07-31T13:10:03Z | swapnil-agrim | merged | 104 | auto-merge (squash) armed on PR #179 |
-| 2026-07-31T12:55:46Z | swapnil-agrim | claimed | 104 |  |
