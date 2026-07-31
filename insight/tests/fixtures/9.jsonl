@@ -1,0 +1,8 @@
+{"_table": "fact_goal", "project_id": "p1", "goal_id": "g1", "source": "goal", "lane": "small"}
+{"_table": "fact_goal", "project_id": "p1", "goal_id": "g2", "source": "goal", "lane": "small"}
+{"_table": "fact_goal", "project_id": "p1", "goal_id": "g3", "source": "discovery", "lane": "small"}
+{"_table": "fact_goal", "project_id": "p1", "goal_id": "g4", "source": "discovery", "lane": "medium"}
+{"_table": "fact_goal", "project_id": "p1", "goal_id": "g5", "source": "radar", "lane": "medium"}
+{"_table": "fact_goal", "project_id": "p1", "goal_id": "g6", "source": "handoff", "lane": "large"}
+{"_table": "fact_goal", "project_id": "p1", "goal_id": "g7", "source": "handoff", "lane": "large"}
+{"_table": "fact_goal", "project_id": "p1", "goal_id": "g8", "source": "handoff", "lane": "large"}

@@ -1,0 +1,5 @@
+{"_table": "fact_merge_lead_time", "project_id": "p1", "merge_sha": "sha1", "kind": "git_merge", "lead_time_seconds": 3600}
+{"_table": "fact_merge_lead_time", "project_id": "p1", "merge_sha": "sha2", "kind": "git_merge", "lead_time_seconds": 7200}
+{"_table": "fact_merge_lead_time", "project_id": "p1", "merge_sha": "sha3", "kind": "git_merge", "lead_time_seconds": 10800}
+{"_table": "fact_merge_lead_time", "project_id": "p1", "merge_sha": "sha4", "kind": "squash_pr", "degraded": ["lead_time_requires_network"]}
+{"_table": "fact_merge_lead_time", "project_id": "p1", "merge_sha": "sha5", "kind": "squash_pr", "degraded": ["lead_time_requires_network"]}

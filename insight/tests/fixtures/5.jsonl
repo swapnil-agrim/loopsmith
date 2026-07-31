@@ -1,0 +1,1 @@
+{"_table": "fact_collector_pack", "project_id": "p1", "schema": "alignment-collect/v1", "collected_ts": "2026-07-31T00:00:00", "window_commit_count": 40, "raw_payload": "{\"schema\": \"alignment-collect/v1\", \"window\": {\"since_days\": 30, \"commit_count\": 40}, \"dimensions\": {\"d7\": {\"decisions_added\": [], \"repeated_revert_or_fixup_count\": 5}}}"}
