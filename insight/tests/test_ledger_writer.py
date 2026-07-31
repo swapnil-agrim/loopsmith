@@ -2,7 +2,7 @@
 """Tests for insight.ingest.ledger_writer (issue #105, E1.S7): the ledger persistence path --
 fact_event/fact_handoff writes, reliability_class tagging, and the incremental resume cursor.
 
-Module-level importorskip("duckdb") like test_git_reader.py/test_gh_reader.py: this file is a
+Module-level importorskip("duckdb") like test_git_reader.py: this file is a
 read+write module's own test file, not a pure-reader one.
 
 FIXTURES ARE WRITTEN AS REAL FILES under <tmp_path>/.sdlc/ledger/entries/<actor>.jsonl (and
