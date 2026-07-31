@@ -134,7 +134,7 @@ def test_ingest_is_idempotent_via_cli(tmp_path):
     names = [r[0] for r in rows]
     assert sorted(names) == sorted({
         "dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff",
-        "fact_collector_pack", "fact_slice",
+        "fact_collector_pack", "fact_slice", "fact_merge_lead_time",
     })
     assert len(names) == len(set(names))
     conn.close()
@@ -148,7 +148,8 @@ def test_main_module_does_not_import_duckdb_at_top_level():
     source = (REPO_ROOT / "insight" / "__main__.py").read_text(encoding="utf-8")
     tree = ast.parse(source, filename="insight/__main__.py")
     banned = {"duckdb", "insight.ingest.store", "insight.ingest.collectors",
-              "insight.ingest.packs", "insight.ingest.artifact_reader", "insight"}
+              "insight.ingest.packs", "insight.ingest.artifact_reader",
+              "insight.ingest.git_reader", "insight"}
     top_level_targets = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -183,7 +184,13 @@ def test_ingest_collectors_root_flag_runs_fake_collectors_end_to_end(tmp_path, m
     assert "discovery-scan/v1" in out  # not found under fake-skills -> still printed, degraded
     assert "adapter_collector_not_found" in out
     conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
-    count = conn.execute("select count(*) from fact_collector_pack").fetchone()[0]
+    # Scoped to the 3 collectors.py sources: `main()` now ALSO writes a 4th, separate
+    # fact_collector_pack row for schema="git-facts/v1" every run (issue #103's
+    # ingest_git_facts, unconditionally wired) -- a deliberate, unrelated additional row, not
+    # a regression in collectors.py's own count. See insight/ingest/git_reader.py.
+    count = conn.execute(
+        "select count(*) from fact_collector_pack where schema != 'git-facts/v1'"
+    ).fetchone()[0]
     assert count == 3
     conn.close()
 
@@ -224,3 +231,67 @@ def test_ingest_never_fatal_with_no_goals_dir_at_all(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
     assert code == 0  # never fatal, per done_when — mirrors #100's own analogous test
+
+
+# --------------------------------------------------------------------------- git facts reader (issue #103)
+
+
+def test_ingest_wires_git_reader_and_populates_both_new_targets(tmp_path, monkeypatch, capsys):
+    duckdb = pytest.importorskip("duckdb")
+    import subprocess
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+    (tmp_path / "f.txt").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "feat: x (#1)"], cwd=tmp_path, check=True)
+
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "git-facts/v1" in out
+    assert "merge lead-time event(s)" in out
+
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    pack_row = conn.execute(
+        "select window_commit_count, window_merge_count from fact_collector_pack "
+        "where schema = 'git-facts/v1'"
+    ).fetchone()
+    assert pack_row == (1, 0)
+    lead_row = conn.execute(
+        "select kind, pr_number, degraded from fact_merge_lead_time"
+    ).fetchone()
+    assert lead_row == ("squash_pr", 1, ["lead_time_requires_network"])
+    conn.close()
+
+
+def test_ingest_never_fatal_when_project_root_is_not_a_git_repo(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)  # tmp_path is NOT a git repo
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
+    assert code == 0  # never fatal, per done_when — mirrors #100/#102's own analogous tests
+
+
+def test_ingest_git_window_days_flag_is_respected(tmp_path, monkeypatch, capsys):
+    duckdb = pytest.importorskip("duckdb")
+    import subprocess
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+    (tmp_path / "f.txt").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    env = {**__import__("os").environ, "GIT_AUTHOR_DATE": "2020-01-01T00:00:00+00:00",
+           "GIT_COMMITTER_DATE": "2020-01-01T00:00:00+00:00"}
+    subprocess.run(["git", "commit", "-q", "-m", "old commit"], cwd=tmp_path, check=True, env=env)
+
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here"),
+                 "--git-window-days", "1"])
+    assert code == 0
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    row = conn.execute(
+        "select window_commit_count from fact_collector_pack where schema = 'git-facts/v1'"
+    ).fetchone()
+    assert row == (0,)  # the 2020 commit is outside a 1-day window
+    conn.close()

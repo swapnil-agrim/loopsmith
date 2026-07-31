@@ -51,6 +51,11 @@ def build_parser():
         help="directory containing the plugin's collector scripts (default: $CLAUDE_PLUGIN_ROOT/"
              "skills, else ./skills relative to CWD; see insight/ingest/collectors.py)",
     )
+    ingest_parser.add_argument(
+        "--git-window-days", dest="git_window_days", type=int, default=14,
+        help="trailing window (days) for git commit/merge counts and merge lead time "
+             "(default: 14, matching velocity.py's own default; see insight/ingest/git_reader.py)",
+    )
     for name in ("dash", "gaps"):
         subparsers.add_parser(
             name,
@@ -67,12 +72,15 @@ def main(argv=None):
         from insight.ingest.store import open_store, resolve_db_path
         from insight.ingest.packs import ingest_collectors
         from insight.ingest.artifact_reader import ingest_artifacts
+        from insight.ingest.git_reader import ingest_git_facts, ingest_merge_lead_time
 
         path = resolve_db_path(args.db)
         conn = open_store(args.db)
         project_root = pathlib.Path.cwd()
         results = ingest_collectors(conn, project_root, collectors_root=args.collectors_root)
         artifacts = ingest_artifacts(conn, project_root)
+        git_pack = ingest_git_facts(conn, project_root, days=args.git_window_days)
+        lead_time = ingest_merge_lead_time(conn, project_root, days=args.git_window_days)
         conn.close()
         print("insight ingest: store ready at %s" % path)
         for r in results:
@@ -82,6 +90,10 @@ def main(argv=None):
         print("insight ingest: %d goal(s), %d slice(s), config %s"
               % (artifacts["goals"], artifacts["slices"],
                  "present" if artifacts["config_present"] else "absent"))
+        git_suffix = " (degraded: %s)" % ", ".join(git_pack["degraded"]) if git_pack["degraded"] else ""
+        print("insight ingest: %s%s" % (git_pack["schema"], git_suffix))
+        print("insight ingest: %d merge lead-time event(s) (%d skipped)"
+              % (lead_time["events"], lead_time["skipped"]))
         return 0
     issue = _TRACKING_ISSUE[args.command]
     print(
