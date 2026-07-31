@@ -11,6 +11,11 @@ _Nothing is blocked on another person._
 
 | when | who | did | goal | detail |
 |---|---|---|---|---|
+| 2026-07-31T19:58:23Z | swapnil-agrim | claimed | 110 |  |
+| 2026-07-31T19:58:06Z | swapnil-agrim | parked | 105 | Re-parked (third time). Ordering half of the original park is resolved -- #180 was folded into this issue, so there is nothing to wait for. What still needs YOUR decision is unchanged: fact_collector_pack is append-only by design with three shipped tests asserting it, so this issue's Done-when ('ingest twice produces identical row counts') cannot be met without reversing a deliberate earlier decision and building a schema/PK migration path this codebase has never needed. See the two prior park comments and the status-correction note for the full reasoning. |
+| 2026-07-31T19:57:24Z | swapnil-agrim | claimed | 105 |  |
+| 2026-07-31T19:57:07Z | swapnil-agrim | done | 109 |  |
+| 2026-07-31T19:56:43Z | swapnil-agrim | merged | 109 | auto-merge (squash) armed on PR #183 |
 | 2026-07-31T17:16:49Z | swapnil-agrim | claimed | 109 |  |
 | 2026-07-31T17:15:37Z | swapnil-agrim | claimed | 109 |  |
 | 2026-07-31T17:15:08Z | swapnil-agrim | parked | 105 | Re-parked. Blocked on ordering plus one open decision -- see the earlier park comment for the full reasoning; nothing has changed since. Short version: #180 (E1.S9, persist ledger records into fact_event and fact_handoff) is the story that builds the write path this goal's watermark is supposed to gate, and it has not run yet, so a watermark shipped today gates nothing; and fact_collector_pack is append-only by design with three tests asserting it, so this issue's own Done-when ('running ingest twice produces identical row counts') cannot be met without reversing a shipped decision. Both need you. |
@@ -31,8 +36,3 @@ _Nothing is blocked on another person._
 | 2026-07-31T13:10:18Z | swapnil-agrim | done | 104 |  |
 | 2026-07-31T13:10:03Z | swapnil-agrim | merged | 104 | auto-merge (squash) armed on PR #179 |
 | 2026-07-31T12:55:46Z | swapnil-agrim | claimed | 104 |  |
-| 2026-07-31T11:24:56Z | swapnil-agrim | claimed | 104 |  |
-| 2026-07-31T11:24:33Z | swapnil-agrim | done | 103 |  |
-| 2026-07-31T11:23:23Z | swapnil-agrim | merged | 103 | auto-merge (squash) armed on PR #178 |
-| 2026-07-31T10:29:37Z | swapnil-agrim | claimed | 103 |  |
-| 2026-07-31T09:21:37Z | swapnil-agrim | claimed | 103 |  |
