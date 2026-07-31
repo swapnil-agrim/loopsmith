@@ -96,7 +96,7 @@ def test_python_dash_m_insight_help_lists_subcommands_and_exits_zero():
 def test_ingest_creates_default_db_and_exits_zero(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)
-    code = main(["ingest"])
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
     assert code == 0
     assert (tmp_path / ".sdlc" / "insight.duckdb").exists()
 
@@ -104,7 +104,7 @@ def test_ingest_creates_default_db_and_exits_zero(tmp_path, monkeypatch):
 def test_ingest_prints_success_to_stdout_not_stderr(tmp_path, monkeypatch, capsys):
     pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)
-    code = main(["ingest"])
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
     assert code == 0
     out, err = capsys.readouterr()
     assert err == ""
@@ -115,7 +115,8 @@ def test_ingest_respects_db_flag(tmp_path, monkeypatch):
     pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)
     target = tmp_path / "x.duckdb"
-    code = main(["ingest", "--db", str(target)])
+    code = main(["ingest", "--db", str(target),
+                 "--collectors-root", str(tmp_path / "no-collectors-here")])
     assert code == 0
     assert target.exists()
     assert not (tmp_path / ".sdlc" / "insight.duckdb").exists()
@@ -124,14 +125,15 @@ def test_ingest_respects_db_flag(tmp_path, monkeypatch):
 def test_ingest_is_idempotent_via_cli(tmp_path):
     duckdb = pytest.importorskip("duckdb")
     target = tmp_path / "x.duckdb"
-    assert main(["ingest", "--db", str(target)]) == 0
-    assert main(["ingest", "--db", str(target)]) == 0
+    collectors_root = str(tmp_path / "no-collectors-here")
+    assert main(["ingest", "--db", str(target), "--collectors-root", collectors_root]) == 0
+    assert main(["ingest", "--db", str(target), "--collectors-root", collectors_root]) == 0
 
     conn = duckdb.connect(str(target))
     rows = conn.execute("select table_name from duckdb_tables()").fetchall()
     names = [r[0] for r in rows]
     assert sorted(names) == sorted(
-        {"dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff"}
+        {"dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff", "fact_collector_pack"}
     )
     assert len(names) == len(set(names))
     conn.close()
@@ -144,7 +146,7 @@ def test_main_module_does_not_import_duckdb_at_top_level():
     `ingest` branch is correctly invisible to it."""
     source = (REPO_ROOT / "insight" / "__main__.py").read_text(encoding="utf-8")
     tree = ast.parse(source, filename="insight/__main__.py")
-    banned = {"duckdb", "insight.ingest.store", "insight"}
+    banned = {"duckdb", "insight.ingest.store", "insight.ingest.collectors", "insight.ingest.packs", "insight"}
     top_level_targets = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -156,3 +158,36 @@ def test_main_module_does_not_import_duckdb_at_top_level():
         f"insight/__main__.py must not import duckdb (directly or via "
         f"insight.ingest.store) at module level: found {top_level_targets & banned}"
     )
+
+
+def test_ingest_collectors_root_flag_runs_fake_collectors_end_to_end(tmp_path, monkeypatch, capsys):
+    duckdb = pytest.importorskip("duckdb")
+    import stat
+    monkeypatch.chdir(tmp_path)
+    root = tmp_path / "fake-skills"
+    script = root / "sdlc-align" / "scripts" / "alignment-collect.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        "#!/bin/sh\necho '{\"schema\":\"alignment-collect/v1\",\"window\":{\"since_days\":1,"
+        "\"oldest\":{\"sha\":\"\",\"date\":\"\"},\"newest\":{\"sha\":\"\",\"date\":\"\"},"
+        "\"commit_count\":0},\"degraded\":[],\"commits\":[],\"dimensions\":{}}'\n",
+        encoding="utf-8",
+    )
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    code = main(["ingest", "--collectors-root", str(root)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "alignment-collect/v1" in out
+    assert "discovery-scan/v1" in out  # not found under fake-skills -> still printed, degraded
+    assert "adapter_collector_not_found" in out
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    count = conn.execute("select count(*) from fact_collector_pack").fetchone()[0]
+    assert count == 3
+    conn.close()
+
+
+def test_ingest_never_fatal_when_collectors_root_absent(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    code = main(["ingest", "--collectors-root", str(tmp_path / "nope")])
+    assert code == 0  # never fatal, per done_when

@@ -2,7 +2,7 @@
 """DuckDB store bootstrap (issue #99, E1.S1): open/create the store and ensure schema.
 
 Scope is schema bootstrap only — no collector adapter, no ledger reading, no rows
-written, no `phase_trace_completeness` computation. `ensure_schema` runs five
+written, no `phase_trace_completeness` computation. `ensure_schema` runs six
 `CREATE TABLE IF NOT EXISTS` statements against an open connection; that idempotent
 CREATE is the entire correctness story for "re-running never duplicates anything" in
 v1 — no `schema_version` table, no `ALTER` diffing, no migration framework. A future
@@ -29,9 +29,10 @@ import duckdb
 #: importing process's CWD.
 DEFAULT_DB_PATH = pathlib.Path(".sdlc") / "insight.duckdb"
 
-#: The five tables this story creates. Order matches the tuple used for the
-#: CREATE TABLE statements below.
-TABLES = ("dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff")
+#: The tables ensure_schema creates. The first five are #99's schema bootstrap (spec §B.3);
+#: fact_collector_pack was added by #100 (the collector adapter, see insight/ingest/packs.py) and
+#: is a design decision of that story, not part of spec §B.3 — see .sdlc/plans/100.md §C.
+TABLES = ("dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff", "fact_collector_pack")
 
 _DDL = (
     """
@@ -114,6 +115,22 @@ _DDL = (
         settled_ts TIMESTAMP
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS fact_collector_pack (
+        project_id VARCHAR,
+        schema VARCHAR,
+        collected_ts TIMESTAMP,
+        window_since_days INTEGER,
+        window_oldest_sha VARCHAR,
+        window_oldest_date VARCHAR,
+        window_newest_sha VARCHAR,
+        window_newest_date VARCHAR,
+        window_commit_count INTEGER,
+        degraded_collector VARCHAR[],
+        degraded_adapter VARCHAR[],
+        raw_payload VARCHAR
+    )
+    """,
 )
 
 
@@ -124,7 +141,7 @@ def resolve_db_path(db_path=None):
 
 
 def ensure_schema(conn):
-    """Run the five idempotent `CREATE TABLE IF NOT EXISTS` statements against an
+    """Run the six idempotent `CREATE TABLE IF NOT EXISTS` statements against an
     already-open DuckDB connection. Safe to call repeatedly against the same
     connection or file — a no-op against an already-correct schema."""
     for ddl in _DDL:
