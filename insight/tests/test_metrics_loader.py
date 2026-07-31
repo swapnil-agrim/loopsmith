@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
 """Tests for insight.metrics.loader (issue #108, E2.S1). See .sdlc/plans/108.md Design
 decision D for the fail-hard-vs-degrade boundary this file exercises."""
+import os
+
 import pytest
 
 duckdb = pytest.importorskip("duckdb")
@@ -129,3 +131,69 @@ def test_a_non_utf8_byte_anywhere_in_the_file_is_caught_and_named_not_raised_raw
     with pytest.raises(MetricLoadError) as exc:
         load_metrics(conn, metrics_dir=tmp_path)
     assert "1.sql" in str(exc.value)
+
+
+def test_a_nonexistent_metrics_dir_raises_metric_load_error_not_an_empty_registry(tmp_path, conn):
+    """PR review BLOCK, reproduced live on 3.9/3.10/3.12: `pathlib.Path.glob()` silently
+    swallows OSError/PermissionError internally and yields no matches, so
+    `sorted(directory.glob("*.sql"))` on a missing directory used to return `[]` and
+    `load_metrics` returned an EMPTY REGISTRY WITH NO EXCEPTION AT ALL -- from the one module
+    whose entire design decision (D) is to fail hard rather than degrade. A misconfigured
+    `metrics_dir=` override, or a bad deployment path, made the whole catalog silently vanish.
+    Fixed by checking `directory.is_dir()` explicitly before any glob/listdir call."""
+    missing = tmp_path / "does-not-exist"
+    with pytest.raises(MetricLoadError) as exc:
+        load_metrics(conn, metrics_dir=missing)
+    assert str(missing) in str(exc.value)
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0,
+                    reason="needs a non-root posix user; root can read mode-000 directories")
+def test_an_unreadable_metrics_dir_raises_metric_load_error_not_an_empty_registry(tmp_path, conn):
+    """The other half of the same BLOCK: a directory that EXISTS (so `is_dir()` is True --
+    stat only needs search permission on the PARENT, not the directory itself) but cannot be
+    LISTED (mode 000 denies read+execute on the directory itself) hits the exact same
+    glob-swallows-OSError hole. `os.listdir` raises PermissionError here, verified live; this
+    asserts that surfaces as MetricLoadError, not another silent empty registry."""
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    (blocked / "1.sql").write_text(_GOOD_1, encoding="utf-8")
+    os.chmod(blocked, 0o000)
+    try:
+        with pytest.raises(MetricLoadError) as exc:
+            load_metrics(conn, metrics_dir=blocked)
+        assert str(blocked) in str(exc.value)
+    finally:
+        os.chmod(blocked, 0o755)  # restore so pytest's own tmp_path cleanup can remove it
+
+
+def test_metrics_dir_pointing_at_a_plain_file_raises_metric_load_error(tmp_path, conn):
+    """Rounding out the same fix: metrics_dir can be misconfigured to point at a FILE (a typo
+    dropping the trailing directory segment), not just a missing/unreadable directory --
+    `is_dir()` is False for a plain file too, so the same guard covers this shape for free."""
+    not_a_dir = tmp_path / "1.sql"
+    not_a_dir.write_text(_GOOD_1, encoding="utf-8")
+    with pytest.raises(MetricLoadError) as exc:
+        load_metrics(conn, metrics_dir=not_a_dir)
+    assert str(not_a_dir) in str(exc.value)
+
+
+def test_the_three_metrics_modules_never_import_duckdb():
+    """Pins the property Design decisions C/D/E all rest on -- header.py/loader.py/testing.py
+    take an already-open conn wherever they need one and never `import duckdb` themselves
+    (same convention as insight/ingest/packs.py). True today but previously unguarded, unlike
+    insight/__main__.py's own equivalent pin in test_cli.py."""
+    import ast
+    import pathlib
+
+    metrics_dir = pathlib.Path(__file__).resolve().parents[1] / "metrics"
+    for name in ("header.py", "loader.py", "testing.py"):
+        path = metrics_dir / name
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                imported.add(node.module.split(".", 1)[0])
+        assert "duckdb" not in imported, f"{name} must not import duckdb -- conn is passed in already open"

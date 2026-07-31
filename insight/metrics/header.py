@@ -12,6 +12,19 @@ directly below `guardrail` is NOT part of it, no matter how natural that looks t
 it silently terminates the header instead, and is left as ordinary file text. If a guardrail
 needs to be long, keep it on one physical line, however long that line is; your editor will
 wrap it visually on screen, but it is still one line to this parser.
+
+A SECOND, NARROWER CAVEAT about that same trailing-comment position, worth calling out
+explicitly rather than leaving as tribal knowledge (PR review fold-in): the line directly
+below `guardrail` is safe from being merged INTO guardrail (that is exactly what the
+continuation-removal above guarantees), but it is NOT automatically safe from being collected
+as its OWN field. If that trailing comment happens to be shaped like `-- Word: rest of line`
+(a single identifier immediately followed by a colon -- e.g. `-- Note: see spec section 4`),
+the header grammar cannot distinguish it from a real, if unrecognized, header field, and it
+lands in `extra["note"]` rather than being left as ordinary file text. This is low-impact
+today (`extra` is not consumed by anything yet), but it is a real, silent difference in shape
+from an explanatory comment that is NOT colon-shaped (`-- this line explains...`), which is
+correctly left alone. `insight/metrics/1.sql`'s own trailing note is deliberately phrased to
+avoid this (no bare `word:` opening its first line) -- an example, not an enforced rule.
 """
 import re
 
@@ -62,19 +75,36 @@ def parse_header(text, source="<unknown>"):
         )
     missing = set(k for k in REQUIRED_FIELDS if not fields.get(k))
 
-    # BLOCKING pre-PR review fix: validate the POST-SPLIT personas list, not the raw
-    # string's truthiness. A raw value of pure commas/whitespace (`-- personas: ,,`) is a
+    # BLOCKING pre-PR review fix (round 1): validate the POST-SPLIT personas list, not the
+    # raw string's truthiness. A raw value of pure commas/whitespace (`-- personas: ,,`) is a
     # non-empty string -- it survives the check above -- that then splits down to zero real
     # personas: a required PLURAL field silently validating as "present" while carrying
-    # none. Treat that exactly like an absent line. (A single value containing a semicolon
-    # instead of a comma, e.g. `manager; leadership`, is deliberately NOT rejected here --
-    # see test_personas_with_a_semicolon_instead_of_a_comma_is_accepted_as_one_persona_by_design
-    # for why guessing "likely mis-delimited" from punctuation was considered and declined.)
+    # none. Treat that exactly like an absent line.
+    #
+    # BLOCKING pre-PR review fix (round 2): reject ANY empty segment between commas, not
+    # only a case where EVERY segment is empty. `-- personas: manager, , engineer` used to
+    # silently drop the middle entry (["manager", "engineer"]) with no signal -- a fat-
+    # fingered comma leaves a required field quietly short by one, invisible to eye review.
+    # This is a DIFFERENT decision from the one directly below (accepting
+    # `manager; leadership` as one persona), not an inconsistency with it: a semicolon
+    # inside free text is genuinely ambiguous (a mistyped delimiter, or a real value that
+    # happens to contain one?) and rejecting it means guessing authorial intent -- exactly
+    # the heuristic Design decision A already deleted once for continuation lines. An EMPTY
+    # segment has no such ambiguity: no reading of "comma-separated list" makes a
+    # zero-length entry an intended persona, so there is no authorial intent to protect and
+    # the semicolon reasoning does not extend here. See
+    # test_an_empty_segment_between_two_commas_raises_not_silently_dropped and
+    # test_personas_with_a_semicolon_instead_of_a_comma_is_accepted_as_one_persona_by_design
+    # for the two behaviours pinned side by side.
     personas = []
     if "personas" not in missing:
-        personas = [p.strip() for p in fields["personas"].split(",") if p.strip()]
-        if not personas:
-            missing.add("personas")
+        segments = [p.strip() for p in fields["personas"].split(",")]
+        if any(not p for p in segments):
+            raise HeaderError(
+                f"{source}: personas has an empty entry between commas "
+                f"(got {fields['personas']!r}) -- check for a stray or trailing comma"
+            )
+        personas = segments
 
     if missing:
         # Fold-in: distinguish "this key never appears anywhere in the file" from "this key

@@ -27,12 +27,22 @@ def load_fixture_jsonl(conn, path):
     every degraded_* column), and passing it straight through is the correct, already-verified
     binding for that case."""
     with open(path, encoding="utf-8") as f:
-        for line in f:
+        for lineno, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
             row = json.loads(line)
-            table = row.pop("_table")
+            # PR review fold-in: a plain `row.pop("_table")` raised a bare
+            # `KeyError: '_table'` with no filename or line number on a fixture row missing
+            # the key -- cheap to hit for #109-114's own authors hand-authoring a jsonl file.
+            # Named explicitly so the error points straight at the offending line.
+            try:
+                table = row.pop("_table")
+            except KeyError:
+                raise ValueError(
+                    f"{path}:{lineno}: fixture row is missing the required '_table' key: "
+                    f"{line!r}"
+                ) from None
             columns = list(row.keys())
             values = [json.dumps(v) if isinstance(v, dict) else v for v in row.values()]
             placeholders = ", ".join(["?"] * len(columns))

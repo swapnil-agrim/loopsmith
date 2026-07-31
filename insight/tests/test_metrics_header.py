@@ -231,6 +231,29 @@ def test_personas_with_a_semicolon_instead_of_a_comma_is_accepted_as_one_persona
     assert header["personas"] == ["manager; leadership"]
 
 
+def test_an_empty_segment_between_two_commas_raises_not_silently_dropped():
+    """PR review BLOCK, distinct from the semicolon test directly above it -- read them
+    together, not as an inconsistency. `manager; leadership` is accepted because a semicolon
+    INSIDE free text is genuinely ambiguous (is it a typo for a delimiter, or a real value
+    that happens to contain one?); rejecting it means guessing authorial intent from
+    punctuation, exactly the heuristic Design decision A already deleted once. An EMPTY
+    segment between two commas (`manager, , engineer`) has no such ambiguity: there is no
+    interpretation of "comma-separated list" under which a zero-length entry is a real,
+    intended persona. With no authorial intent to protect, the semicolon reasoning does not
+    extend here, and the old code (only rejecting a WHOLLY empty post-split list) silently
+    dropped the middle entry, leaving a required plural field quietly short by one --
+    invisible to eye review, across every one of the 24 files that imitate this format."""
+    text = (
+        "-- name: X\n-- question: Y?\n-- personas: manager, , engineer\n"
+        "-- reliability_class: 1\n-- guardrail: z\nSELECT 1\n"
+    )
+    try:
+        parse_header(text, source="bad.sql")
+        assert False, "expected HeaderError"
+    except HeaderError as e:
+        assert "personas" in str(e)
+
+
 def test_missing_field_message_distinguishes_absent_from_displaced_after_header_end():
     """Fold-in: a field displaced after the header already terminated (e.g. after a blank
     line, or after the SQL body starts) previously reported identically to a field that

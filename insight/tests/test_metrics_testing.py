@@ -132,3 +132,24 @@ def test_harness_still_binds_a_bare_list_natively_to_a_varchar_array_column(conn
         ["a1", "alice", ["backend", "infra"]],
     )
     assert conn.execute("SELECT areas FROM dim_actor").fetchall() == [(["backend", "infra"],)]
+
+
+def test_a_fixture_row_missing_the_table_key_raises_a_clear_error_naming_the_file_and_line(
+    tmp_path, conn
+):
+    """PR review fold-in: a bare `KeyError: '_table'` (no filename, no line number) is what a
+    fixture author sees today for a plain forgotten `_table` key -- cheap to reproduce, and
+    #109-114's own authors will hit it. Wrapped so the error names the fixture path, the 1-based
+    line number, and the offending line's own text."""
+    fixture = tmp_path / "f.jsonl"
+    fixture.write_text(
+        '{"_table": "fact_goal", "project_id": "p", "goal_id": "g1", "outcome": "done"}\n'
+        '{"project_id": "p", "goal_id": "g2", "outcome": "done"}\n',  # line 2: no _table
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError) as exc:
+        load_fixture_jsonl(conn, fixture)
+    msg = str(exc.value)
+    assert str(fixture) in msg
+    assert "2" in msg  # the offending line number, not just "somewhere in this file"
+    assert "_table" in msg
