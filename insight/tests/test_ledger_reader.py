@@ -32,8 +32,10 @@ _LINE_FIXTURES = [
     ("missing_id",         '{"ts":"t","actor":"a","kind":"claimed"}',                             True),
     ("id_no_colon",        '{"id":"nocolon","ts":"t","actor":"a","kind":"claimed"}',              True),
     ("id_non_digit_tail",  '{"id":"a:xyz","ts":"t","actor":"a","kind":"claimed"}',                True),
-    # RecursionError, not ValueError — the one the fixture table was supposed to catch and did
-    # not until a plan-reviewer constructed it. This row is the table proving it is appendable.
+    # Big/deep input must not blow up. This row does NOT pin the RecursionError guard — whether
+    # this depth raises is interpreter-dependent (it does on 3.9, it does not under 3.12's C
+    # parser, where the isinstance(dict) check drops it instead). That guard is pinned
+    # deterministically by test_recursion_error_from_json_is_caught.
     ("deeply_nested",      "[" * 1200 + "]" * 1200,                                            False),
     ("id_is_a_dict",       '{"id":{"x":1},"ts":"t","actor":"a","kind":"claimed"}',               True),
     ("ts_is_a_dict",       '{"id":"a:1","ts":{"x":1},"actor":"a","kind":"claimed"}',             True),
@@ -52,6 +54,40 @@ def test_malformed_and_contract_violating_lines_never_raise(tmp_path, label, lin
     records = ledger_reader.read_all(tmp_path)  # must not raise, for every row
     assert any(r.get("id") == "z:1" for r in records), "the valid trailing record must survive"
     assert len(records) == (2 if kept else 1), f"{label}: expected kept={kept}"
+
+
+def test_recursion_error_from_json_is_caught(tmp_path, monkeypatch):
+    # The `deeply_nested` fixture row canNOT pin this: whether a given nesting depth raises
+    # RecursionError depends on the interpreter — 1200 raises on 3.9's pure-Python path but
+    # parses fine under 3.12's C parser, so on CI that row is filtered by the isinstance(dict)
+    # check instead and would still pass with RecursionError removed from the except clause.
+    # A reviewer proved that by mutation. Raise it directly so the guard is pinned everywhere.
+    entries = tmp_path / "ledger" / "entries"
+    entries.mkdir(parents=True)
+    good = '{"id":"z:1","ts":"2026-01-01T00:00:00Z","actor":"z","kind":"claimed"}'
+    (entries / "a.jsonl").write_text('{"deep":1}\n' + good + "\n", encoding="utf-8")
+
+    real = json.loads
+
+    def loads(text, *a, **kw):
+        if "deep" in text:
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(text, *a, **kw)
+
+    monkeypatch.setattr(ledger_reader.json, "loads", loads)
+    records = ledger_reader.read_all(tmp_path)
+    assert [r["id"] for r in records] == ["z:1"]
+
+
+def test_seq_survives_a_tail_isdigit_accepts_but_int_refuses():
+    # Pins _seq's OWN guard, independent of _sort_key's catch-all — which otherwise absorbs this
+    # and lets the 5000-digit fixture row pass even with _seq unguarded (proved by mutation).
+    # Two unrelated inputs reach this same except: an over-long digit run (int()'s CVE-2020-10735
+    # limit, which any caller can lower with sys.set_int_max_str_digits — hence catching rather
+    # than comparing against a constant), and a superscript, which isdigit() calls a digit and
+    # int() refuses. The superscript is deterministic on every interpreter, so it is the one
+    # asserted here; the digit-limit case is interpreter- and settings-dependent.
+    assert "²".isdigit() and ledger_reader._seq({"id": "a:²"}) == 0
 
 
 def test_an_unsortable_record_sorts_first_instead_of_killing_the_read(tmp_path, monkeypatch):

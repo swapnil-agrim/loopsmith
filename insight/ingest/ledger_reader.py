@@ -35,14 +35,22 @@ def _seq(entry):
     valid tail and falls through to 0.
 
     Divergence 4. `tail.isdigit()` is NOT enough to make int() safe: since 3.10.7/3.11, int()
-    refuses a string of more than 4300 digits (the CVE-2020-10735 fix) and raises ValueError.
-    Both CI interpreters are past that. An `id` tail of 5000 digits would take out the whole
-    sort -- every record, every file -- which is what `ledger._seq` still does. Three of these
-    were found one at a time; the length gate closes the enumerated case, and the caller's
-    try/except closes the ones nobody has thought of yet."""
+    refuses an over-long digit string (the CVE-2020-10735 fix) and raises ValueError. Both CI
+    interpreters are past that. An `id` tail of 5000 digits takes out the whole sort -- every
+    record, every file -- which is what `ledger._seq` still does.
+
+    Catching beats comparing against the limit: the threshold is not a constant (any caller can
+    move it with sys.set_int_max_str_digits), so a hardcoded number would be silently wrong for
+    anyone who lowers it. Degrading only `seq` here, rather than letting _sort_key's catch-all
+    take the whole key, keeps a record with an absurd id ordered by its real ts."""
     ident = str(entry.get("id", ""))
     tail = ident.rsplit(":", 1)[-1]
-    return int(tail) if tail.isdigit() and len(tail) <= 4300 else 0
+    if not tail.isdigit():
+        return 0
+    try:
+        return int(tail)
+    except ValueError:
+        return 0
 
 
 def _sort_key(entry):
