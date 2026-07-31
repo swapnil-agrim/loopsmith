@@ -132,9 +132,10 @@ def test_ingest_is_idempotent_via_cli(tmp_path):
     conn = duckdb.connect(str(target))
     rows = conn.execute("select table_name from duckdb_tables()").fetchall()
     names = [r[0] for r in rows]
-    assert sorted(names) == sorted(
-        {"dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff", "fact_collector_pack"}
-    )
+    assert sorted(names) == sorted({
+        "dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff",
+        "fact_collector_pack", "fact_slice",
+    })
     assert len(names) == len(set(names))
     conn.close()
 
@@ -146,7 +147,8 @@ def test_main_module_does_not_import_duckdb_at_top_level():
     `ingest` branch is correctly invisible to it."""
     source = (REPO_ROOT / "insight" / "__main__.py").read_text(encoding="utf-8")
     tree = ast.parse(source, filename="insight/__main__.py")
-    banned = {"duckdb", "insight.ingest.store", "insight.ingest.collectors", "insight.ingest.packs", "insight"}
+    banned = {"duckdb", "insight.ingest.store", "insight.ingest.collectors",
+              "insight.ingest.packs", "insight.ingest.artifact_reader", "insight"}
     top_level_targets = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -191,3 +193,34 @@ def test_ingest_never_fatal_when_collectors_root_absent(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     code = main(["ingest", "--collectors-root", str(tmp_path / "nope")])
     assert code == 0  # never fatal, per done_when
+
+
+def test_ingest_wires_artifact_reader_and_populates_dim_project_and_fact_goal(
+    tmp_path, monkeypatch, capsys
+):
+    duckdb = pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    goals = tmp_path / ".sdlc" / "goals"
+    goals.mkdir(parents=True)
+    (goals / "0001-x.md").write_text(
+        "---\nid: 0001\ntitle: A goal\nlane: small\ndone_when: it works\n---\nbody\n",
+        encoding="utf-8",
+    )
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "1 goal(s)" in out
+
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    goal_row = conn.execute("select goal_id, title from fact_goal").fetchone()
+    assert goal_row == ("0001", "A goal")
+    project_count = conn.execute("select count(*) from dim_project").fetchone()[0]
+    assert project_count == 1
+    conn.close()
+
+
+def test_ingest_never_fatal_with_no_goals_dir_at_all(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
+    assert code == 0  # never fatal, per done_when — mirrors #100's own analogous test

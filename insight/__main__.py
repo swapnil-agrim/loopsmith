@@ -66,16 +66,22 @@ def main(argv=None):
         # module docstring.
         from insight.ingest.store import open_store, resolve_db_path
         from insight.ingest.packs import ingest_collectors
+        from insight.ingest.artifact_reader import ingest_artifacts
 
         path = resolve_db_path(args.db)
         conn = open_store(args.db)
-        results = ingest_collectors(conn, pathlib.Path.cwd(), collectors_root=args.collectors_root)
+        project_root = pathlib.Path.cwd()
+        results = ingest_collectors(conn, project_root, collectors_root=args.collectors_root)
+        artifacts = ingest_artifacts(conn, project_root)
         conn.close()
         print("insight ingest: store ready at %s" % path)
         for r in results:
             codes = r["degraded_collector"] + r["degraded_adapter"]
             suffix = " (degraded: %s)" % ", ".join(codes) if codes else ""
             print("insight ingest: %s%s" % (r["schema"], suffix))
+        print("insight ingest: %d goal(s), %d slice(s), config %s"
+              % (artifacts["goals"], artifacts["slices"],
+                 "present" if artifacts["config_present"] else "absent"))
         return 0
     issue = _TRACKING_ISSUE[args.command]
     print(

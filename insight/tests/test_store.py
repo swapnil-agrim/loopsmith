@@ -113,11 +113,98 @@ def test_fact_collector_pack_accepts_a_full_row_and_an_empty_pack_row(tmp_path):
     conn.close()
 
 
+#: fact_slice (issue #102) is NOT in spec §B.3 -- same reasoning as _PACK_COLUMNS above.
+_SLICE_COLUMNS = [
+    "project_id", "goal_id", "slice_id", "title", "size", "status", "needs", "files",
+]
+
+
+def test_fact_slice_columns_match_this_storys_design(tmp_path):
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    assert _columns(conn, "fact_slice") == _SLICE_COLUMNS
+    conn.close()
+
+
+def test_fact_slice_composite_pk_and_list_columns_round_trip(tmp_path):
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    conn.execute(
+        "insert into fact_slice values (?, ?, ?, ?, ?, ?, ?, ?)",
+        ["p", "g1", "s1", "Do the thing", "small", "pending", ["s0"], ["a.py", "b.py"]],
+    )
+    with pytest.raises(duckdb.ConstraintException):
+        conn.execute(
+            "insert into fact_slice values (?, ?, ?, ?, ?, ?, ?, ?)",
+            ["p", "g1", "s1", "dup id", "large", "pending", [], []],
+        )
+    row = conn.execute("select needs, files from fact_slice where slice_id = 's1'").fetchone()
+    assert row == (["s0"], ["a.py", "b.py"])
+    conn.close()
+
+
+#: fact_goal.status / fact_goal.verify_command (issue #102) are NOT in spec §B.3 -- see
+#: .sdlc/plans/102.md Design decision B. Own assertion, same reasoning as _PACK_COLUMNS.
+_GOAL_EXTRA_COLUMNS = ["status", "verify_command"]
+
+
+def test_fact_goal_status_and_verify_command_columns_are_issue_102_additions(tmp_path):
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    assert _columns(conn, "fact_goal") == _SPEC_COLUMNS["fact_goal"] + _GOAL_EXTRA_COLUMNS
+    conn.close()
+
+
+def test_ensure_schema_is_idempotent_against_the_new_alter_statements(tmp_path):
+    """The new ALTER TABLE ... ADD COLUMN IF NOT EXISTS statements must not raise or duplicate
+    a column across repeated calls on one connection."""
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    ensure_schema(conn)
+    ensure_schema(conn)
+    assert _columns(conn, "fact_goal") == _SPEC_COLUMNS["fact_goal"] + _GOAL_EXTRA_COLUMNS
+    conn.close()
+
+
+def test_ensure_schema_upgrades_a_pre_102_fact_goal_table_in_place(tmp_path):
+    """The exact regression #102 exists to prevent: CREATE TABLE IF NOT EXISTS is a no-op
+    against a file that already has a (pre-#102, 17-column) fact_goal table -- only the new
+    ALTER statements actually add the missing columns to that EXISTING file, without touching
+    existing data. Simulates the pre-#102 shape directly rather than trusting a fixture file."""
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    conn.execute("""
+        CREATE TABLE fact_goal (
+            project_id VARCHAR, goal_id VARCHAR, title VARCHAR, lane VARCHAR, source VARCHAR,
+            done_when_present BOOLEAN, plan_artifact_present BOOLEAN, created_ts TIMESTAMP,
+            claimed_ts TIMESTAMP, first_done_ts TIMESTAMP, terminal_ts TIMESTAMP,
+            outcome VARCHAR, pr INTEGER, issue INTEGER, retro_grade VARCHAR,
+            verify_state VARCHAR, phase_trace_completeness DOUBLE,
+            PRIMARY KEY (project_id, goal_id)
+        )
+    """)
+    conn.execute("insert into fact_goal (project_id, goal_id, outcome) values ('p', 'g1', 'done')")
+    ensure_schema(conn)  # must ADD the two missing columns, not error, not touch existing data
+    assert _columns(conn, "fact_goal") == _SPEC_COLUMNS["fact_goal"] + _GOAL_EXTRA_COLUMNS
+    row = conn.execute(
+        "select project_id, goal_id, outcome, status, verify_command from fact_goal"
+    ).fetchone()
+    assert row == ("p", "g1", "done", None, None)
+    conn.close()
+
+
 def test_mandated_columns_match_spec_exactly(tmp_path):
     conn = duckdb.connect(str(tmp_path / "s.duckdb"))
     ensure_schema(conn)
     for table, expected in _SPEC_COLUMNS.items():
-        assert _columns(conn, table) == expected, table
+        real = _columns(conn, table)
+        if table == "fact_goal":
+            # issue #102 appended two columns (status, verify_command) that are NOT part of
+            # spec §B.3's mandate -- see _GOAL_EXTRA_COLUMNS above and .sdlc/plans/102.md §B.
+            # The spec-mandated columns must still appear, in order, as a PREFIX; every other
+            # table in this same loop keeps the exact-equality check, unchanged.
+            assert real[: len(expected)] == expected, table
+        else:
+            assert real == expected, table
     conn.close()
 
 

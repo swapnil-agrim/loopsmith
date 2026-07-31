@@ -93,12 +93,15 @@ def write_pack(conn, project_id, schema, fields, degraded_adapter, raw_payload):
     ])
 
 
-def _project_id_for(project_root):
+def project_id_for(project_root):
     """Placeholder identity: sha256 of the resolved absolute path, truncated to 16 hex chars.
-    No story populates dim_project yet (.sdlc/plans/99.md: "this table is never populated by
-    this story anyway") so there is no established project_id scheme to match. A later
-    dim_project-populating story must reconcile this with whatever scheme it picks — tracked,
-    not solved, here (see .sdlc/plans/100.md §C, "what a later story needs to add")."""
+    Shared by both packs.py (fact_collector_pack rows) and artifact_reader.py
+    (dim_project/fact_goal/fact_slice rows, issue #102) so a single `insight ingest` run
+    writes ONE project_id across every table -- the "later story must reconcile this" note
+    this function used to carry (see .sdlc/plans/100.md §C) is resolved by #102 choosing
+    REUSE over a second, drifting scheme. The real remote-url-hash scheme is still E1.S8's
+    task -- see .sdlc/plans/102.md Design decision F for why dim_project.remote_url_sha256
+    stays NULL until then."""
     return hashlib.sha256(str(project_root.resolve()).encode("utf-8")).hexdigest()[:16]
 
 
@@ -110,7 +113,7 @@ def ingest_collectors(conn, project_root, collectors_root=None):
     list of {'name', 'schema', 'degraded_collector', 'degraded_adapter'} for CLI printing.
     Repeated calls APPEND rows (this is a fact/log table, not upserted) — see
     test_ingest_collectors_appends_not_upserts_on_repeated_runs."""
-    project_id = _project_id_for(project_root)
+    project_id = project_id_for(project_root)
     resolved_root = collectors.resolve_collectors_root(collectors_root)
     results = []
     for source in collectors.SOURCES:
