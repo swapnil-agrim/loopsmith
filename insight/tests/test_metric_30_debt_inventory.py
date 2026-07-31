@@ -16,6 +16,7 @@ from insight.metrics.loader import load_metrics  # noqa: E402
 from insight.metrics.testing import load_fixture_jsonl, rows_as_dicts  # noqa: E402
 
 FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "30.jsonl"
+MULTI_PROJECT_FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "30_multi_project.jsonl"
 
 
 @pytest.fixture
@@ -53,3 +54,50 @@ def test_an_adapter_degraded_pack_is_absent_not_pass_despite_zero_candidates(con
     )
     assert rows == [{"status": "ABSENT"}]
     assert rows[0]["status"] != "PASS"
+
+
+def test_a_second_projects_first_scan_does_not_trend_against_a_different_project(conn):
+    """REGRESSION TEST for PR #186's blocking finding: the LAG in 30.sql's trend CTE had no
+    PARTITION BY project_id (and neither packs/trend/the final SELECT projected project_id at
+    all), so the view was unconditionally global across every project sharing the same store --
+    reachable in practice via insight/__main__.py's --repos flag (#106), which ingests multiple
+    project_ids into one store over one connection.
+
+    Reproduced live pre-fix: projA's 2026-07-28 snapshot (20 candidates, its own first-ever scan,
+    correctly ABSENT) leaked into projB's 2026-07-29 snapshot (1 candidate, ALSO its own
+    first-ever scan) as a false prior_count=20 -- rendering PASS ("debt shrank from 20 to 1")
+    for a project that has never been scanned before, the exact false-confident-PASS-instead-of
+    -ABSENT outcome this metric's own guardrail (ABSENT PATH 2, FIRST-SNAPSHOT) exists to
+    prevent, just triggered across a project boundary instead of within one project's own
+    history.
+
+    This fixture (30_multi_project.jsonl) plants projA's real history (one snapshot) alongside
+    projB's own two-snapshot history in the SAME store/connection -- the exact shape --repos
+    produces -- and asserts projB's first scan renders ABSENT with prior_count=NULL despite
+    projA's non-NULL 20 being chronologically and lexically prior in an unpartitioned ORDER BY
+    collected_ts. projB's SECOND scan then correctly trends against projB's OWN first scan (1),
+    never projA's, proving the partition holds on both the ABSENT and the real-trend path."""
+    load_fixture_jsonl(conn, MULTI_PROJECT_FIXTURE)
+    load_metrics(conn)
+    rows = rows_as_dicts(
+        conn.execute(
+            "SELECT project_id, collected_ts, candidate_count, prior_count, status "
+            "FROM metric_30 ORDER BY project_id, collected_ts"
+        )
+    )
+    by_project = {}
+    for r in rows:
+        by_project.setdefault(r["project_id"], []).append(r)
+
+    assert [r["candidate_count"] for r in by_project["projA"]] == [20]
+    assert [r["prior_count"] for r in by_project["projA"]] == [None]
+    assert [r["status"] for r in by_project["projA"]] == ["ABSENT"]
+
+    assert [r["candidate_count"] for r in by_project["projB"]] == [1, 3]
+    assert [r["prior_count"] for r in by_project["projB"]] == [None, 1]
+    assert [r["status"] for r in by_project["projB"]] == ["ABSENT", "WARN"]
+
+    # THE core assertion: projB's first scan must never see projA's 20.
+    projb_first = by_project["projB"][0]
+    assert projb_first["prior_count"] != 20
+    assert projb_first["status"] != "PASS"
