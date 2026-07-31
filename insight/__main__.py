@@ -14,6 +14,7 @@ insight/tests/test_cli.py::test_main_module_does_not_import_duckdb_at_top_level,
 pins this structurally via AST (no duckdb needed to run it).
 """
 import argparse
+import pathlib
 import sys
 
 #: subcommand name -> epic issue tracking its real implementation.
@@ -45,6 +46,11 @@ def build_parser():
         default=None,
         help="path to the DuckDB store file (default: .sdlc/insight.duckdb under CWD)",
     )
+    ingest_parser.add_argument(
+        "--collectors-root", dest="collectors_root", default=None,
+        help="directory containing the plugin's collector scripts (default: $CLAUDE_PLUGIN_ROOT/"
+             "skills, else ./skills relative to CWD; see insight/ingest/collectors.py)",
+    )
     for name in ("dash", "gaps"):
         subparsers.add_parser(
             name,
@@ -59,11 +65,17 @@ def main(argv=None):
         # Lazy: keeps duckdb out of the import graph for --help/dash/gaps. See the
         # module docstring.
         from insight.ingest.store import open_store, resolve_db_path
+        from insight.ingest.packs import ingest_collectors
 
         path = resolve_db_path(args.db)
         conn = open_store(args.db)
+        results = ingest_collectors(conn, pathlib.Path.cwd(), collectors_root=args.collectors_root)
         conn.close()
         print("insight ingest: store ready at %s" % path)
+        for r in results:
+            codes = r["degraded_collector"] + r["degraded_adapter"]
+            suffix = " (degraded: %s)" % ", ".join(codes) if codes else ""
+            print("insight ingest: %s%s" % (r["schema"], suffix))
         return 0
     issue = _TRACKING_ISSUE[args.command]
     print(

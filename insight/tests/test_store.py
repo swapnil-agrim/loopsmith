@@ -62,10 +62,54 @@ def _table_names(conn):
     return {r[0] for r in rows}
 
 
-def test_ensure_schema_creates_all_five_tables(tmp_path):
+def test_ensure_schema_creates_all_tables(tmp_path):
     conn = duckdb.connect(str(tmp_path / "s.duckdb"))
     ensure_schema(conn)
     assert _table_names(conn) == set(TABLES)
+    conn.close()
+
+
+#: fact_collector_pack (issue #100) is NOT in spec §B.3 — it's a design decision this story
+#: makes, not a spec-mandated shape, so it does NOT belong in _SPEC_COLUMNS above (that dict is
+#: "transcribed verbatim from spec §B.3" and would misrepresent this table as spec-mandated).
+#: It gets its own assertion instead.
+_PACK_COLUMNS = [
+    "project_id", "schema", "collected_ts", "window_since_days", "window_oldest_sha",
+    "window_oldest_date", "window_newest_sha", "window_newest_date", "window_commit_count",
+    "degraded_collector", "degraded_adapter", "raw_payload",
+]
+
+
+def test_fact_collector_pack_columns_match_this_storys_design(tmp_path):
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    assert _columns(conn, "fact_collector_pack") == _PACK_COLUMNS
+    conn.close()
+
+
+def test_fact_collector_pack_accepts_a_full_row_and_an_empty_pack_row(tmp_path):
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    conn.execute(
+        "insert into fact_collector_pack "
+        "(project_id, schema, collected_ts, window_since_days, degraded_collector, "
+        " degraded_adapter, raw_payload) values (?, ?, now(), ?, ?, ?, ?)",
+        ["p", "alignment-collect/v1", 1, ["no_test_command"], [], '{"schema":"alignment-collect/v1"}'],
+    )
+    conn.execute(
+        "insert into fact_collector_pack "
+        "(project_id, schema, collected_ts, degraded_collector, degraded_adapter, raw_payload) "
+        "values (?, ?, now(), ?, ?, ?)",
+        ["p", "discovery-scan/v1", [], [], '{"schema":"discovery-scan/v1","candidates":[]}'],
+    )
+    rows = conn.execute(
+        "select schema, window_since_days, degraded_collector, degraded_adapter "
+        "from fact_collector_pack order by schema"
+    ).fetchall()
+    assert rows == [
+        ("alignment-collect/v1", 1, ["no_test_command"], []),
+        ("discovery-scan/v1", None, [], []),
+    ]
     conn.close()
 
 
