@@ -97,7 +97,9 @@ def _project_id_for(project_root):
 
 def ingest_collectors(conn, project_root, collectors_root=None):
     """Run every collectors.SOURCES entry against project_root, normalise, and persist ONE
-    fact_collector_pack row per source — always, even on total failure. Never raises. Returns a
+    fact_collector_pack row per source — always, even on total failure. Raises for nothing a
+    COLLECTOR can do; a store connection that cannot accept a row of constants is still fatal,
+    because there would be nowhere left to record the fact. Returns a
     list of {'name', 'schema', 'degraded_collector', 'degraded_adapter'} for CLI printing.
     Repeated calls APPEND rows (this is a fact/log table, not upserted) — see
     test_ingest_collectors_appends_not_upserts_on_repeated_runs."""
@@ -110,18 +112,26 @@ def ingest_collectors(conn, project_root, collectors_root=None):
         # code does not control. Without this guard one bad source aborts the loop and NO
         # source gets a row, which is strictly worse than the unknown-schema case the story
         # asks us to survive. Caught once, here, rather than re-guarded at every call site.
+        #
+        # The WRITE is inside the try on purpose. Normalising cannot type-check every field a
+        # collector invents, so a well-typed `schema` with, say, an object where window.since_days
+        # should be an int reaches DuckDB and raises ConversionException at INSERT — after the
+        # earlier guard, and just as fatal. A failed INSERT writes no row, so the fallback below
+        # cannot duplicate one.
         try:
             run = collectors.run_source(source, project_root, resolved_root)
             fields, extra_adapter_codes = normalize(run["schema"], run["payload"])
             schema = run["schema"]
             degraded_adapter = list(run["degraded_adapter"]) + extra_adapter_codes
             raw_payload = json.dumps(run["payload"]) if run["payload"] is not None else None
+            write_pack(conn, project_id, schema, fields, degraded_adapter, raw_payload)
         except Exception:
+            # Every value here is a constant, so this write cannot fail for any reason the first
+            # one did — only a broken store connection, which no degraded code could record.
             schema = source.expected_schema
             fields = dict(_EMPTY_WINDOW, degraded_collector=[])
             degraded_adapter = [ADAPTER_INTERNAL_ERROR]
-            raw_payload = None
-        write_pack(conn, project_id, schema, fields, degraded_adapter, raw_payload)
+            write_pack(conn, project_id, schema, fields, degraded_adapter, None)
         results.append({
             "name": source.name, "schema": schema,
             "degraded_collector": fields["degraded_collector"],

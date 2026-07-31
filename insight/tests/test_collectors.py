@@ -117,7 +117,7 @@ def test_run_source_json_array_not_object_degrades_not_json(tmp_path):
     assert result["degraded_adapter"] == ["adapter_output_not_json"]
 
 
-def test_run_source_execute_failure_degrades_exit_nonzero(tmp_path):
+def test_run_source_execute_failure_degrades_spawn_failed(tmp_path):
     """A synthetic Source whose argv names a binary that cannot exist — exercises the OSError
     branch deterministically, independent of any real interpreter's presence/absence."""
     bogus = collectors.Source(
@@ -128,14 +128,15 @@ def test_run_source_execute_failure_degrades_exit_nonzero(tmp_path):
     root = tmp_path / "skills"
     _write_script(root / "nope.sh", "#!/bin/sh\ntrue\n")
     result = collectors.run_source(bogus, tmp_path, root)
-    assert result["degraded_adapter"] == ["adapter_exit_nonzero"]
+    assert result["degraded_adapter"] == ["adapter_spawn_failed"]
 
 
-def test_run_source_timeout_degrades_exit_nonzero(tmp_path):
+def test_run_source_timeout_degrades_timeout_not_exit_nonzero(tmp_path):
+    # A hung collector and one that exited badly want different fixes, so they get different codes.
     root = tmp_path / "skills"
     _write_script(root / "sdlc-align" / "scripts" / "alignment-collect.sh", "#!/bin/sh\nsleep 5\n")
     result = collectors.run_source(collectors.SOURCES[0], tmp_path, root, timeout=0.2)
-    assert result["degraded_adapter"] == ["adapter_exit_nonzero"]
+    assert result["degraded_adapter"] == ["adapter_timeout"]
 
 
 # --------------------------------------------------------------------------- run_source: --json-file based (pipeline-card)

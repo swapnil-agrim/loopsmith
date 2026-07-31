@@ -100,9 +100,14 @@ def run_source(source, project_root, collectors_root, timeout=_TIMEOUT_SECS):
                 argv, cwd=str(project_root), capture_output=True, text=True, timeout=timeout,
                 env={**os.environ, "CLAUDE_PROJECT_DIR": str(project_root)},
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
+            # Distinct from a nonzero exit: neither of these produced an exit code at all, and a
+            # collector that HANGS and one that cannot be spawned are different things to go fix.
             return {"schema": source.expected_schema, "payload": None,
-                    "degraded_adapter": ["adapter_exit_nonzero"]}
+                    "degraded_adapter": ["adapter_timeout"]}
+        except OSError:
+            return {"schema": source.expected_schema, "payload": None,
+                    "degraded_adapter": ["adapter_spawn_failed"]}
 
         if proc.returncode in source.absent_exit_codes:
             return {"schema": source.expected_schema, "payload": None,

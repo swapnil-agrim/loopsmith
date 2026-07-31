@@ -148,6 +148,24 @@ def test_object_schema_is_recorded_not_crashed(conn, tmp_path):
     assert count == 3
 
 
+def test_malformed_non_schema_field_is_recorded_not_crashed(conn, tmp_path):
+    # A well-typed `schema` gets past every check in collectors.py, so a bad value in any OTHER
+    # field only surfaces at the INSERT — window_since_days is INTEGER and DuckDB raises
+    # ConversionException on a struct. 100% line coverage did not catch this; only a malformed
+    # non-schema field does.
+    root = tmp_path / "skills"
+    _write_script(root / "sdlc-align" / "scripts" / "alignment-collect.sh",
+                  '#!/bin/sh\necho \'{"schema":"alignment-collect/v1","window":'
+                  '{"since_days":{"bad":1},"oldest":{},"newest":{},"commit_count":0},'
+                  '"degraded":[]}\'\n')
+    results = ingest_collectors(conn, tmp_path, collectors_root=str(root))
+    assert len(results) == 3
+    align = [r for r in results if r["schema"] == "alignment-collect/v1"][0]
+    assert align["degraded_adapter"] == ["adapter_internal_error"]
+    count = conn.execute("select count(*) from fact_collector_pack").fetchone()[0]
+    assert count == 3  # the failed INSERT wrote nothing, so the fallback did not duplicate
+
+
 def test_null_schema_is_invalid_not_missing(conn, tmp_path):
     root = tmp_path / "skills"
     _write_script(root / "sdlc-loop" / "scripts" / "discovery-scan.sh",
