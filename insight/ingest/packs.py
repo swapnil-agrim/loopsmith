@@ -5,8 +5,24 @@ and how an unrecognised schema is handled. No `import duckdb` here — conn is p
 open (insight/ingest/store.py owns the schema and the duckdb import)."""
 import hashlib
 import json
+import re
+import subprocess
 
 from insight.ingest import collectors
+
+#: A real SSH host alias for this org's own `Host github.com-<alias>` convention (see
+#: _normalize_remote_url's own docstring) is a single label -- letters/digits/underscore/hyphen,
+#: no further host boundary -- never itself a dotted DNS-style hostname. `github.com-work` and
+#: `github.com-mirror` match; `github.com-mirror.example.net` (a genuinely different, real
+#: domain that merely starts with the same 11 characters) does not, because it contains a
+#: literal '.'. BLOCKING finding from independent PR review: a bare `str.startswith
+#: ("github.com-")` check (this function's own first-draft shape) does not make this
+#: distinction and silently collapsed the two onto the same project_id -- reproduced live, this
+#: session, with two real fixture repos. See .sdlc/plans/106.md Design decision B.
+_GITHUB_ALIAS_RE = re.compile(r"^github\.com-[A-Za-z0-9_](?:[A-Za-z0-9_-]*[A-Za-z0-9_])?$")
+
+#: Mirrors collectors.py/git_reader.py/gh_reader.py's own constant of the same name.
+_TIMEOUT_SECS = 300
 
 #: Lands in fact_collector_pack.degraded_adapter when payload carries a schema string with no
 #: registered normaliser below. Never raised — see ingest_collectors.
@@ -148,15 +164,147 @@ def write_pack(conn, project_id, schema, fields, degraded_adapter, raw_payload):
     ])
 
 
+def _git_remote_url(project_root, timeout=_TIMEOUT_SECS):
+    """One `git -C <project_root> remote get-url origin` call -> stripped stdout, or None on
+    ANY failure. A dedicated, PRIVATE, single-purpose wrapper -- NOT a promotion of
+    git_reader.py's own _run_git, because packs.py cannot import git_reader.py without a
+    circular import (git_reader.py already imports project_id_for FROM packs.py). Every other
+    module in this codebase (collectors.py, git_reader.py, gh_reader.py) already owns its own
+    small subprocess wrapper rather than sharing one -- this follows that same, already
+    established convention, not a new one."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "remote", "get-url", "origin"],
+            capture_output=True, text=True, errors="replace", timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _normalize_remote_url(url):
+    """Canonicalize a git remote URL for hashing: strip protocol/userinfo, ssh scp-syntax
+    colon -> slash (ONLY when no scheme was present -- a scheme'd URL's colon is a PORT, not a
+    path start), an explicit port (dropped -- see the port-drop paragraph below for why this is
+    an ACCEPTED, bounded residue rather than a silent oversight), this org's own
+    github.com-<alias> SSH host-alias convention (the SAME one skills/sdlc-setup/scripts/
+    setup.py:detect_repo() already special-cases -- reimplemented, never imported, per the
+    plugin/product boundary; see _GITHUB_ALIAS_RE for why the match is a real alias LABEL, not
+    a bare string-prefix test), trailing .git.
+
+    THE GOVERNING PRINCIPLE, applied to every transform in this function, not only the one
+    branch that first prompted writing it down: collapsing two GENUINELY DIFFERENT remotes onto
+    the same normalized string is SILENT, undetectable cross-project data corruption --
+    strictly worse than failing to collapse two representations of the true SAME remote (which
+    only produces a visible, duplicate dim_project row). Every transform below is audited
+    against that asymmetry, not assumed safe by convenience:
+
+    - Case-folding is HOST-ONLY. A first-draft version of this function lowercased the entire
+      result (host AND path) -- non-blocking finding from independent code review, fixed. DNS
+      hostnames are case-insensitive by spec (RFC 3986 section 3.2.2), so folding host case is
+      always correct. The PATH is a different claim: GitHub/GitLab happen to treat an
+      owner/repo path as effectively case-insensitive, but nothing in the git protocol
+      guarantees that for every host, and a case-sensitive self-hosted server could have two
+      genuinely different repositories whose paths differ only in case. Preserving path case
+      is the safer side of the asymmetry above.
+    - The github.com-<alias> fold is gated on `_GITHUB_ALIAS_RE`, NOT a bare
+      `str.startswith("github.com-")` -- BLOCKING finding from independent PR review,
+      reproduced live (two real fixture repos, no clone/network) then fixed: a bare prefix test
+      folded `github.com-mirror.example.net` (a genuinely different, real self-hosted domain
+      that merely starts with the same 11 characters) onto `github.com`, producing an IDENTICAL
+      project_id for two unrelated repos. A real SSH alias for this convention is a single
+      label with no further host boundary (no dots) -- `_GITHUB_ALIAS_RE` requires exactly that.
+    - The explicit-port drop (below) is the ONE place this function still accepts the
+      corruption-side of the asymmetry, DELIBERATELY, not silently: two genuinely different
+      services hosted on the same hostname at different non-standard ports (e.g. two separate
+      self-hosted git instances on git.example.com:2222 and git.example.com:3333) normalize to
+      the SAME string. Accepted because this is a rare topology, and getting the COMMON case
+      right (an explicit default port vs. an omitted one for the SAME service) matters more
+      than guarding a rare one -- see .sdlc/plans/106.md Design decision B, where this was
+      first named as a residue, not an oversight.
+    - Scheme-prefix stripping, userinfo-stripping (last `@`, matching URL-authority syntax),
+      and the SCP-shorthand detection (`"/" not in u.split(":", 1)[0]`, matching git's own real
+      parsing rule for when scp-like syntax is recognized) all operate on syntax that provably
+      means the same thing regardless of which form was used -- none of them fold two
+      DIFFERENT authorities together, so none carry this same risk.
+
+    file:// and bare local filesystem paths (e.g. `git remote add origin /srv/repos/x.git`) are
+    explicitly OUT OF SCOPE -- returns None. Such a 'remote' is itself just another path on
+    disk, with the exact same non-portability problem project_id_for's own path-hash FALLBACK
+    already has; hashing it would buy no more stability than the fallback the caller already
+    falls through to when this returns None. See .sdlc/plans/106.md Design decision B
+    (non-blocking item 3).
+
+    A query-string/fragment remote (e.g. `https://github.com/o/r.git?token=x`, not a shape
+    `git remote get-url` ever actually emits) leaves the trailing `.git` unstripped --
+    `github.com/o/r.git?token=x` rather than `github.com/o/r`. Deliberately not handled:
+    this is an UNDER-collision (two representations of the true same repo fail to collapse),
+    the safe direction per the asymmetry above, for an input shape this function's real caller
+    (git itself) does not produce. See this issue's own PR review, non-blocking item 2."""
+    u = url.strip()
+    if u.startswith("file://") or u.startswith("/"):
+        return None
+    had_scheme = False
+    for prefix in ("https://", "http://", "ssh://", "git://"):
+        if u.startswith(prefix):
+            u = u[len(prefix):]
+            had_scheme = True
+            break
+    if not had_scheme and ":" in u and "/" not in u.split(":", 1)[0]:
+        # SCP-style shorthand ([user@]host:path) -- ONLY valid with no scheme. Rewrite
+        # host:path -> host/path so the rest of this function treats every form uniformly.
+        host_part, _, path_part = u.partition(":")
+        u = host_part + "/" + path_part
+    # From here on, u is always "authority/path...", whether from a real scheme, the SCP
+    # rewrite above, or a bare host/path input with no colon at all -- so authority (and any
+    # userinfo/port within it) can be isolated the SAME way regardless of origin form.
+    authority, _, rest = u.partition("/")
+    if "@" in authority:
+        authority = authority.rsplit("@", 1)[1]
+    if ":" in authority:
+        # only reachable when had_scheme (the SCP branch above already removed any
+        # authority-level colon for the no-scheme case) -- a port number, e.g. ssh://host:22/...
+        authority = authority.split(":", 1)[0]
+    # Fold BEFORE rejoining with `rest` (the path) -- host case only, never the path. Also
+    # folds BEFORE the github.com-<alias> check below, so an aliased host typed in any case
+    # (e.g. "GitHub.com-work") still matches the "github.com-" prefix test.
+    authority = authority.lower()
+    u = authority + ("/" + rest if rest else "")
+    if u.endswith(".git"):
+        u = u[:-4]
+    parts = u.split("/", 1)
+    if len(parts) == 2 and _GITHUB_ALIAS_RE.match(parts[0]):
+        u = "github.com/" + parts[1]
+    return u.rstrip("/")
+
+
+def remote_identity_for(project_root, timeout=_TIMEOUT_SECS):
+    """(repo, remote_url_sha256) for project_root's `origin` remote -- (None, None) when there
+    is no remote, project_root is not a git repo, git itself is unusable, or the call times out.
+    `repo` is the NORMALIZED remote string (e.g. "github.com/owner/repo"), for dim_project.repo;
+    remote_url_sha256 is its full 64-hex-char sha256, for dim_project.remote_url_sha256 --
+    spec's own long-NULL column, populated for real by this story."""
+    raw = _git_remote_url(project_root, timeout=timeout)
+    if not raw:
+        return None, None
+    normalized = _normalize_remote_url(raw)
+    if not normalized:
+        return None, None
+    return normalized, hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def project_id_for(project_root):
-    """Placeholder identity: sha256 of the resolved absolute path, truncated to 16 hex chars.
-    Shared by both packs.py (fact_collector_pack rows) and artifact_reader.py
-    (dim_project/fact_goal/fact_slice rows, issue #102) so a single `insight ingest` run
-    writes ONE project_id across every table -- the "later story must reconcile this" note
-    this function used to carry (see .sdlc/plans/100.md §C) is resolved by #102 choosing
-    REUSE over a second, drifting scheme. The real remote-url-hash scheme is still E1.S8's
-    task -- see .sdlc/plans/102.md Design decision F for why dim_project.remote_url_sha256
-    stays NULL until then."""
+    """UNCHANGED SIGNATURE, NEW derivation (issue #106): sha256(remote_url_sha256)[:16] when
+    project_root's `origin` remote resolves; else the EXACT PRE-#106 FORMULA,
+    sha256(str(project_root.resolve()))[:16] -- preserved byte-for-byte, unprefixed, as the
+    fallback. See .sdlc/plans/106.md's answers to Research Q2 (this fallback) and Q3 (why
+    keeping it identical means a remote-less repo's project_id does NOT change across this
+    story's boundary -- only a repo WITH a remote gets a new id)."""
+    _, remote_url_sha256 = remote_identity_for(project_root)
+    if remote_url_sha256:
+        return remote_url_sha256[:16]
     return hashlib.sha256(str(project_root.resolve()).encode("utf-8")).hexdigest()[:16]
 
 

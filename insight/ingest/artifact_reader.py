@@ -28,7 +28,7 @@ import json
 import pathlib
 import re
 
-from insight.ingest.packs import project_id_for
+from insight.ingest.packs import project_id_for, remote_identity_for
 
 _FENCE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
 
@@ -214,19 +214,36 @@ def write_slices(conn, project_id, goal_id, slices):
 
 
 _PROJECT_UPSERT_SQL = """
-    INSERT INTO dim_project (project_id, config_json, first_seen, last_seen)
-    VALUES (?, ?, now(), now())
+    INSERT INTO dim_project
+      (project_id, config_json, repo, remote_url_sha256, adopted, skip_reason,
+       first_seen, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, now(), now())
     ON CONFLICT (project_id) DO UPDATE SET
       config_json = excluded.config_json,
+      repo = excluded.repo,
+      remote_url_sha256 = excluded.remote_url_sha256,
+      adopted = excluded.adopted,
+      skip_reason = excluded.skip_reason,
       last_seen = excluded.last_seen
 """
 
 
-def write_project_snapshot(conn, project_id, config_json):
-    """first_seen is set only on the FIRST insert (absent from the SET clause -- untouched on
-    conflict); last_seen updates every run. repo/remote_url_sha256/north_star_present stay
-    NULL, out of scope for #102 -- see .sdlc/plans/102.md Design decision F."""
-    conn.execute(_PROJECT_UPSERT_SQL, [project_id, config_json])
+def write_project_snapshot(conn, project_id, config_json, repo=None, remote_url_sha256=None,
+                            adopted=True, skip_reason=None):
+    """Upsert into dim_project. first_seen is set only on the FIRST insert (absent from the SET
+    clause) -- every other named column is overwritten every run, so a repo that gains a
+    remote, loses .sdlc, or gets (re-)adopted after being skipped 'heals' on its next ingest,
+    not just its first. Issue #106 extends this ONE existing function (repo,
+    remote_url_sha256, adopted, skip_reason) rather than adding a parallel writer: the
+    'read .sdlc successfully' and 'skipped, no .sdlc at all' cases are the SAME fact about the
+    SAME table -- a project's identity and adoption state -- just different column values.
+    Defaults (adopted=True, skip_reason=None) match this function's pre-#106 behaviour exactly,
+    so ingest_artifacts' existing call site needs no argument changes for the adopted path.
+    north_star_present stays NULL, still out of scope -- see .sdlc/plans/102.md Design
+    decision F."""
+    conn.execute(_PROJECT_UPSERT_SQL, [
+        project_id, config_json, repo, remote_url_sha256, adopted, skip_reason,
+    ])
 
 
 def ingest_artifacts(conn, project_root, sdlc_dir=None):
@@ -245,9 +262,11 @@ def ingest_artifacts(conn, project_root, sdlc_dir=None):
     project_root = pathlib.Path(project_root)
     sdlc_dir = pathlib.Path(sdlc_dir) if sdlc_dir is not None else project_root / ".sdlc"
     project_id = project_id_for(project_root)
+    repo, remote_url_sha256 = remote_identity_for(project_root)
 
     config_json = read_config_snapshot(sdlc_dir)
-    write_project_snapshot(conn, project_id, config_json)
+    write_project_snapshot(conn, project_id, config_json, repo=repo,
+                            remote_url_sha256=remote_url_sha256)
 
     goal_count, slice_count = 0, 0
     for goal_path in discover_goal_files(sdlc_dir):

@@ -186,7 +186,8 @@ def test_main_module_does_not_import_duckdb_at_top_level():
     tree = ast.parse(source, filename="insight/__main__.py")
     banned = {"duckdb", "insight.ingest.store", "insight.ingest.collectors",
               "insight.ingest.packs", "insight.ingest.artifact_reader",
-              "insight.ingest.git_reader", "insight.ingest.gh_reader", "insight"}
+              "insight.ingest.git_reader", "insight.ingest.gh_reader",
+              "insight.ingest.repo_scan", "insight"}
     top_level_targets = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -206,6 +207,7 @@ def test_ingest_collectors_root_flag_runs_fake_collectors_end_to_end(
     duckdb = pytest.importorskip("duckdb")
     import stat
     monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc").mkdir()
     root = tmp_path / "fake-skills"
     script = root / "sdlc-align" / "scripts" / "alignment-collect.sh"
     script.parent.mkdir(parents=True)
@@ -284,6 +286,7 @@ def test_ingest_wires_git_reader_and_populates_both_new_targets(
     duckdb = pytest.importorskip("duckdb")
     import subprocess
     monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc").mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
@@ -325,6 +328,7 @@ def test_ingest_git_window_days_flag_is_respected(
     duckdb = pytest.importorskip("duckdb")
     import subprocess
     monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc").mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
@@ -357,6 +361,7 @@ def test_ingest_wires_gh_reader_and_records_a_degrade_code_without_gh(
     Design decision I."""
     duckdb = pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc").mkdir()
 
     code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
     assert code == 0  # never fatal, per done_when
@@ -392,3 +397,163 @@ def test_help_lists_the_new_gh_window_days_flag(capsys):
         parser.parse_args(["ingest", "--help"])
     out = capsys.readouterr().out
     assert "--gh-window-days" in out
+
+
+# --------------------------------------------------------------------------- --repos glob + adoption gate (issue #106)
+
+
+def test_help_lists_the_new_repos_flag(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["ingest", "--help"])
+    out = capsys.readouterr().out
+    assert "--repos" in out
+
+
+def test_ingest_skips_a_repo_without_sdlc_and_records_the_reason(
+    tmp_path, monkeypatch, capsys, isolate_path_empty
+):
+    """Default (no --repos) mode: the universal adoption gate, Design decision E. No .sdlc/ at
+    all -- exit 0 (skip is never fatal), a skip line printed, NONE of the four readers ran."""
+    duckdb = pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)  # no .sdlc/ created
+
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "no_sdlc" in out
+
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    row = conn.execute("select adopted, skip_reason from dim_project").fetchone()
+    assert row == (False, "no_sdlc")
+    for table in ("fact_goal", "fact_collector_pack", "fact_merge_lead_time",
+                   "fact_pr_review", "fact_pr_check"):
+        assert conn.execute("select count(*) from %s" % table).fetchone()[0] == 0
+    conn.close()
+
+
+def test_ingest_repos_glob_zero_matches_is_a_usage_error(tmp_path, monkeypatch, isolate_path_empty):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    code = main(["ingest", "--repos", "nope-*", "--collectors-root", str(tmp_path / "x")])
+    assert code == 1
+
+
+def test_ingest_repos_glob_ingests_two_repos_one_adopted_one_skipped(
+    tmp_path, monkeypatch, capsys, isolate_path_no_gh
+):
+    """The issue's own explicit 4th task: a two-repo fixture, built with real local git init +
+    fake remote URLs, NEVER a clone. Also the load-bearing 'project_id is stable across runs'
+    check: the SAME two-repo ingest is run TWICE and must not duplicate dim_project rows."""
+    duckdb = pytest.importorskip("duckdb")
+    import subprocess
+    monkeypatch.chdir(tmp_path)
+
+    repos = tmp_path / "repos"
+    adopted = repos / "adopted-repo"
+    skipped = repos / "skipped-repo"
+    for root, remote in ((adopted, "git@github.com:org/adopted.git"),
+                          (skipped, "git@github.com:org/skipped.git")):
+        root.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=root, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "x (#1)"],
+                        cwd=root, check=True)
+        subprocess.run(["git", "remote", "add", "origin", remote], cwd=root, check=True)
+    (adopted / ".sdlc" / "goals").mkdir(parents=True)
+    (adopted / ".sdlc" / "goals" / "0001-x.md").write_text(
+        "---\nid: 0001\ntitle: A goal\n---\nbody\n", encoding="utf-8",
+    )
+
+    argv = ["ingest", "--repos", str(repos / "*"),
+            "--collectors-root", str(tmp_path / "no-collectors-here")]
+    assert main(argv) == 0
+    out = capsys.readouterr().out
+    assert str(adopted) in out
+    assert str(skipped) in out
+    assert "no_sdlc" in out
+
+    db = tmp_path / ".sdlc" / "insight.duckdb"
+    conn = duckdb.connect(str(db))
+    adopted_row = conn.execute(
+        "select adopted, skip_reason from dim_project where repo = 'github.com/org/adopted'"
+    ).fetchone()
+    skipped_row = conn.execute(
+        "select adopted, skip_reason from dim_project where repo = 'github.com/org/skipped'"
+    ).fetchone()
+    assert adopted_row == (True, None)
+    assert skipped_row == (False, "no_sdlc")
+    assert conn.execute("select count(*) from fact_goal").fetchone()[0] == 1
+    assert conn.execute(
+        "select count(*) from fact_collector_pack where schema = 'git-facts/v1'"
+    ).fetchone()[0] == 1  # only the ADOPTED repo's git-facts row -- the skipped repo never ran
+    assert conn.execute("select count(*) from dim_project").fetchone()[0] == 2
+    ids_first_run = set(r[0] for r in conn.execute("select project_id from dim_project").fetchall())
+    conn.close()
+
+    # Re-run: project_id must be STABLE across runs -- still exactly 2 dim_project rows, not 4.
+    assert main(argv) == 0
+    conn = duckdb.connect(str(db))
+    assert conn.execute("select count(*) from dim_project").fetchone()[0] == 2
+    ids_second_run = set(r[0] for r in conn.execute("select project_id from dim_project").fetchall())
+    assert ids_first_run == ids_second_run
+    conn.close()
+
+
+def test_ingest_default_single_repo_output_has_no_repo_prefix(
+    tmp_path, monkeypatch, capsys, isolate_path_empty
+):
+    """Design decision E: bare `insight ingest` (no --repos) prints byte-for-byte what it did
+    before this story -- no repo-path prefix on any summary line."""
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc").mkdir()
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert str(tmp_path) not in out
+
+
+def test_ingest_repos_glob_survives_an_unreadable_sibling_directory(
+    tmp_path, monkeypatch, capsys, isolate_path_empty
+):
+    """BLOCKING finding from independent code review, reproduced live then fixed:
+    repo_scan.is_adopted's Path.is_dir() call propagated PermissionError (and any other OSError
+    besides the ENOENT-shaped ones is_dir() itself swallows) for a directory the process cannot
+    stat. The call site computed adoption for EVERY --repos match in ONE list comprehension
+    BEFORE open_store() was ever called (Design decision E's own ordering fix), so this crashed
+    main() outright and took down every OTHER repo in the same run -- including ones sorted
+    ahead of the bad one, and the good one below sorts after it alphabetically ('blocked' <
+    'good'), so this is the maximally damaging ordering. Also proves the fix does not conflate
+    'cannot confirm adoption' with 'confirmed no .sdlc' -- SKIP_UNREADABLE ('unreadable') must
+    appear, SKIP_NO_SDLC ('no_sdlc') must NOT, for the blocked repo."""
+    duckdb = pytest.importorskip("duckdb")
+    import os
+    monkeypatch.chdir(tmp_path)
+
+    repos = tmp_path / "repos"
+    good = repos / "good-repo"
+    good.mkdir(parents=True)
+    (good / ".sdlc").mkdir()
+    blocked = repos / "blocked-repo"
+    blocked.mkdir()
+    os.chmod(blocked, 0o000)
+    try:
+        code = main(["ingest", "--repos", str(repos / "*"),
+                     "--collectors-root", str(tmp_path / "no-collectors-here")])
+    finally:
+        os.chmod(blocked, 0o755)  # restore so pytest's own tmp_path cleanup can remove it
+
+    assert code == 0  # never fatal -- one unreadable sibling must not abort the run
+    out = capsys.readouterr().out
+    assert str(good) in out          # the healthy repo was NOT taken down
+    assert "unreadable" in out
+
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    reasons = {r[0] for r in conn.execute("select skip_reason from dim_project").fetchall()}
+    assert "unreadable" in reasons
+    assert "no_sdlc" not in reasons  # must NOT be conflated with confirmed non-adoption
+    goal_count = conn.execute("select count(*) from fact_goal").fetchone()[0]
+    assert goal_count == 0  # sanity: the good repo just has no goals, ingest still ran for it
+    conn.close()

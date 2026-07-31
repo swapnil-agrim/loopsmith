@@ -448,16 +448,51 @@ def test_fact_pr_check_pk_upserts_not_duplicates(tmp_path):
     conn.close()
 
 
+#: dim_project.adopted / dim_project.skip_reason (issue #106) are NOT part of spec §B.3's
+#: 7-column dim_project -- a #106-owned EXTENSION, same pattern as _GOAL_EXTRA_COLUMNS (#102)
+#: and _PACK_EXTRA_COLUMNS (#103/#104). See .sdlc/plans/106.md Design decision D.
+_DIM_PROJECT_EXTRA_COLUMNS = ["adopted", "skip_reason"]
+
+
+def test_dim_project_adopted_and_skip_reason_columns_are_issue_106_additions(tmp_path):
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    assert _columns(conn, "dim_project") == _SPEC_COLUMNS["dim_project"] + _DIM_PROJECT_EXTRA_COLUMNS
+    conn.close()
+
+
+def test_ensure_schema_upgrades_a_pre_106_dim_project_table_in_place(tmp_path):
+    """Mirrors #102/#103/#104's identical regression tests: CREATE TABLE IF NOT EXISTS is a
+    no-op against a file that already has a pre-#106, 7-column dim_project -- only the new
+    ALTER statements add the two missing columns, without touching existing data."""
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    conn.execute("""
+        CREATE TABLE dim_project (
+            project_id VARCHAR PRIMARY KEY, repo VARCHAR, remote_url_sha256 VARCHAR,
+            north_star_present BOOLEAN, config_json VARCHAR, first_seen TIMESTAMP,
+            last_seen TIMESTAMP
+        )
+    """)
+    conn.execute("insert into dim_project (project_id, config_json) values ('p', '{}')")
+    ensure_schema(conn)  # must ADD adopted/skip_reason, not error, not touch existing data
+    assert _columns(conn, "dim_project") == _SPEC_COLUMNS["dim_project"] + _DIM_PROJECT_EXTRA_COLUMNS
+    row = conn.execute(
+        "select project_id, config_json, adopted, skip_reason from dim_project"
+    ).fetchone()
+    assert row == ("p", "{}", None, None)
+    conn.close()
+
+
 def test_mandated_columns_match_spec_exactly(tmp_path):
     conn = duckdb.connect(str(tmp_path / "s.duckdb"))
     ensure_schema(conn)
     for table, expected in _SPEC_COLUMNS.items():
         real = _columns(conn, table)
-        if table == "fact_goal":
-            # issue #102 appended two columns (status, verify_command) that are NOT part of
-            # spec §B.3's mandate -- see _GOAL_EXTRA_COLUMNS above and .sdlc/plans/102.md §B.
-            # The spec-mandated columns must still appear, in order, as a PREFIX; every other
-            # table in this same loop keeps the exact-equality check, unchanged.
+        if table in ("fact_goal", "dim_project"):
+            # fact_goal: #102 appended status/verify_command. dim_project: #106 appended
+            # adopted/skip_reason. Neither is part of spec §B.3's mandate -- see
+            # _GOAL_EXTRA_COLUMNS / _DIM_PROJECT_EXTRA_COLUMNS above. Both must still appear,
+            # in order, as a PREFIX; every other table in this loop keeps exact-equality.
             assert real[: len(expected)] == expected, table
         else:
             assert real == expected, table

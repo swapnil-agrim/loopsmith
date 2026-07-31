@@ -231,6 +231,64 @@ def test_write_project_snapshot_first_seen_set_once_last_seen_updates(conn):
     assert count == 1                     # upserted, not duplicated
 
 
+def test_write_project_snapshot_defaults_match_pre_106_behaviour(conn):
+    write_project_snapshot(conn, "p1", '{"x":1}')
+    row = conn.execute(
+        "select config_json, repo, remote_url_sha256, adopted, skip_reason "
+        "from dim_project where project_id = 'p1'"
+    ).fetchone()
+    assert row == ('{"x":1}', None, None, True, None)
+
+
+def test_write_project_snapshot_persists_repo_and_remote_url_sha256(conn):
+    write_project_snapshot(conn, "p1", "{}", repo="github.com/o/r", remote_url_sha256="abc123")
+    row = conn.execute(
+        "select repo, remote_url_sha256 from dim_project where project_id = 'p1'"
+    ).fetchone()
+    assert row == ("github.com/o/r", "abc123")
+
+
+def test_write_project_snapshot_records_a_skip(conn):
+    write_project_snapshot(conn, "p1", None, repo="github.com/o/r",
+                            remote_url_sha256="abc123", adopted=False, skip_reason="no_sdlc")
+    row = conn.execute(
+        "select config_json, adopted, skip_reason from dim_project where project_id = 'p1'"
+    ).fetchone()
+    assert row == (None, False, "no_sdlc")
+
+
+def test_write_project_snapshot_heals_a_previously_skipped_project(conn):
+    """A repo that was skipped, then later adopted, must show adopted=True/skip_reason=None on
+    its NEXT ingest -- the upsert overwrites both, it does not merely add to them."""
+    write_project_snapshot(conn, "p1", None, adopted=False, skip_reason="no_sdlc")
+    write_project_snapshot(conn, "p1", "{}", adopted=True, skip_reason=None)
+    row = conn.execute(
+        "select config_json, adopted, skip_reason from dim_project where project_id = 'p1'"
+    ).fetchone()
+    assert row == ("{}", True, None)
+
+
+def test_ingest_artifacts_populates_repo_and_remote_url_sha256(tmp_path, conn):
+    """ingest_artifacts (the adopted path) now opportunistically populates dim_project.repo /
+    .remote_url_sha256 via packs.remote_identity_for -- closes dossier BR-6."""
+    import subprocess
+    from insight.ingest.artifact_reader import ingest_artifacts
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "x"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "remote", "add", "origin", "git@github.com:o/r.git"],
+                    cwd=tmp_path, check=True)
+    (tmp_path / ".sdlc").mkdir()
+    ingest_artifacts(conn, tmp_path)
+    row = conn.execute("select repo, remote_url_sha256 from dim_project").fetchone()
+    # Non-blocking fix from PR review: the previous `row == (..., None) or row[0] == ...` had a
+    # first disjunct that could never be true (the very next line requires row[1] non-None) --
+    # dead drafting logic, simplified to the one assertion it was actually checking.
+    assert row[0] == "github.com/o/r"
+    assert row[1] is not None and len(row[1]) == 64  # sha is a real 64-hex value
+
+
 def test_write_goal_upsert_preserves_other_story_owned_columns(conn):
     record = {"goal_id": "g1", "title": "T1", "lane": "small", "source": None,
               "status": "pending", "verify_command": None,

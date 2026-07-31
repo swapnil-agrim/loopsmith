@@ -4,11 +4,12 @@
 Scope is schema bootstrap plus a narrow, additive schema evolution — no collector
 adapter, no ledger reading, no rows written, no `phase_trace_completeness`
 computation. `ensure_schema` runs ten `CREATE TABLE IF NOT EXISTS` statements,
-then six idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements — two
-added by issue #102, a third by issue #103, three more by issue #104 (see
-.sdlc/plans/102.md §B, .sdlc/plans/103.md §C, and .sdlc/plans/104.md §A for why a
-plain CREATE-only approach can't add a column to a store file an earlier story
-already created). This ALTER set is additive-only — no
+then eight idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements — two
+added by issue #102, a third by issue #103, three more by issue #104, and a final
+two (dim_project.adopted/skip_reason) by issue #106 (see .sdlc/plans/102.md §B,
+.sdlc/plans/103.md §C, .sdlc/plans/104.md §A, and .sdlc/plans/106.md Design
+decision D for why a plain CREATE-only approach can't add a column to a store
+file an earlier story already created). This ALTER set is additive-only — no
 type changes, no drops, no `information_schema` diffing — and is NOT a general
 migration framework: a future story that needs to change a column's TYPE, or drop
 one, still needs to introspect `information_schema.columns` and diff against the
@@ -209,6 +210,8 @@ _ALTER = (
     "ALTER TABLE fact_collector_pack ADD COLUMN IF NOT EXISTS window_pr_count INTEGER",
     "ALTER TABLE fact_collector_pack ADD COLUMN IF NOT EXISTS window_review_event_count INTEGER",
     "ALTER TABLE fact_collector_pack ADD COLUMN IF NOT EXISTS window_check_row_count INTEGER",
+    "ALTER TABLE dim_project ADD COLUMN IF NOT EXISTS adopted BOOLEAN",
+    "ALTER TABLE dim_project ADD COLUMN IF NOT EXISTS skip_reason VARCHAR",
 )
 
 
@@ -219,12 +222,13 @@ def resolve_db_path(db_path=None):
 
 
 def ensure_schema(conn):
-    """Run the ten idempotent `CREATE TABLE IF NOT EXISTS` statements, then the six
-    idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements (issues #102/#103/#104 --
-    see the module docstring and .sdlc/plans/102.md §B / .sdlc/plans/103.md §C /
-    .sdlc/plans/104.md §A), against an already-open DuckDB connection. Safe to call repeatedly
-    against the same connection or file, including a file created by an earlier story before
-    these columns existed."""
+    """Run the ten idempotent `CREATE TABLE IF NOT EXISTS` statements, then the eight
+    idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements (issues
+    #102/#103/#104/#106 -- see the module docstring and .sdlc/plans/102.md §B /
+    .sdlc/plans/103.md §C / .sdlc/plans/104.md §A / .sdlc/plans/106.md Design decision D),
+    against an already-open DuckDB connection. Safe to call repeatedly against the same
+    connection or file, including a file created by an earlier story before these columns
+    existed."""
     for ddl in _DDL:
         conn.execute(ddl)
     for ddl in _ALTER:
