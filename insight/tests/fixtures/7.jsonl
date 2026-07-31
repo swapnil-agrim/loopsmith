@@ -8,3 +8,5 @@
 {"_table": "fact_event", "project_id": "p1", "goal_id": "ge", "ts": "2026-01-15T00:00:00", "actor_id": "a2", "kind": "claimed"}
 {"_table": "fact_event", "project_id": "p1", "goal_id": "gy", "ts": "2026-01-01T00:00:00", "actor_id": "a1", "kind": "claimed"}
 {"_table": "fact_event", "project_id": "p1", "goal_id": "gy", "ts": "2026-01-05T00:00:00", "actor_id": "a2", "kind": "claimed"}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "gq", "ts": "2026-01-01T00:00:00", "actor_id": "a1", "kind": "claimed"}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "gq", "ts": "2026-01-01T00:00:00", "actor_id": "a1", "kind": "done"}

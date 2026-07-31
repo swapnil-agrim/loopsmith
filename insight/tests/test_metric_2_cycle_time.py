@@ -3,14 +3,20 @@
 harness this session: 6 done goals (right-skewed: five close in 1-5h, one closes in 100h), one
 parked goal and one claimed_ts-IS-NULL goal both correctly excluded.
 
-POST-PR-REVIEW fold-in: g9 (claimed 1/5, terminal 1/1 -- terminal BEFORE claimed, i.e. clock
-skew or a bad write) is added and must be EXCLUDED, not surfaced with a negative
+POST-PR-REVIEW fold-in (round 2): g9 (claimed 1/5, terminal 1/1 -- terminal BEFORE claimed, i.e.
+clock skew or a bad write) is added and must be EXCLUDED, not surfaced with a negative
 cycle_time_seconds. VERIFIED live: before the `AND terminal_ts >= claimed_ts` guard, g9 appeared
 with cycle_time_seconds=-345600, silently corrupting the percentiles. Decision (documented in
 2.sql's own guardrail): reject the row outright rather than track it as a degraded/unmeasured
 count the way metric_3 does for NULL lead_time_seconds -- a negative duration is never
 legitimate (unlike an unmeasured NULL, which is a real, expected, common state for a real
-collector), so it is a data-integrity bug elsewhere, not a fact about flow worth counting."""
+collector), so it is a data-integrity bug elsewhere, not a fact about flow worth counting.
+
+POST-PR-REVIEW fold-in (round 3): that exclusion was silent -- no count anywhere. Added
+`excluded_negative_duration_count`, a broadcast constant (same window-function-style pattern as
+p50_seconds/p85_seconds) so a systematic clock-skew bug that someday drops half a project's
+goals leaves a visible signal instead of clean-looking percentiles with nothing wrong on the
+surface."""
 import pathlib
 import pytest
 
@@ -54,6 +60,17 @@ def test_metric_2_excludes_a_negative_duration_row_instead_of_corrupting_percent
     assert "g9" not in [r["goal_id"] for r in rows]
     percentiles = {(r["p50_seconds"], r["p85_seconds"]) for r in rows}
     assert percentiles == {(12600.0, 103500.0)}
+
+
+def test_metric_2_surfaces_how_many_rows_the_negative_duration_guard_dropped(conn):
+    """Round-3 fold-in: the negative-duration exclusion used to be silent -- a systematic
+    clock-skew bug that dropped half a project's goals would render clean percentiles with zero
+    signal anything was wrong. g9 is the fixture's one negative-duration row, so the broadcast
+    excluded_negative_duration_count must read exactly 1 on every remaining row."""
+    load_fixture_jsonl(conn, FIXTURE)
+    load_metrics(conn)
+    rows = rows_as_dicts(conn.execute("SELECT DISTINCT excluded_negative_duration_count FROM metric_2"))
+    assert rows == [{"excluded_negative_duration_count": 1}]
 
 
 def test_metric_2_p85_differs_from_the_mean_on_a_known_right_skew(conn):
