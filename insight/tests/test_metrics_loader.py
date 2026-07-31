@@ -178,11 +178,82 @@ def test_metrics_dir_pointing_at_a_plain_file_raises_metric_load_error(tmp_path,
     assert str(not_a_dir) in str(exc.value)
 
 
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0,
+                    reason="needs a non-root posix user; root can read mode-444 directories")
+def test_a_mode_444_directory_raises_metric_load_error_not_a_raw_permission_error(tmp_path, conn):
+    """PR review block cycle 3, THIRD escape route for the SAME class of bug (see the module
+    docstring's "the pattern is the finding" note): mode 444 (read-but-not-search) is the case
+    that behaves DIFFERENTLY from mode 000. `is_dir()` and `os.listdir()` both succeed --
+    listing entries only needs the read bit -- so the directory-level guard added for mode 000
+    does not fire at all here. The failure only happens per-file, inside `path.read_text()`,
+    because OPENING a file requires the search (execute) bit on its PARENT directory, which
+    mode 444 denies. Verified live: this raised a raw PermissionError with no MetricLoadError
+    before the header-parse loop's except clause was widened from
+    `(HeaderError, UnicodeDecodeError)` to also catch `OSError`."""
+    blocked = tmp_path / "blocked444"
+    blocked.mkdir()
+    (blocked / "1.sql").write_text(_GOOD_1, encoding="utf-8")
+    os.chmod(blocked, 0o444)
+    try:
+        with pytest.raises(MetricLoadError) as exc:
+            load_metrics(conn, metrics_dir=blocked)
+        assert "1.sql" in str(exc.value)
+    finally:
+        os.chmod(blocked, 0o755)  # restore so pytest's own tmp_path cleanup can remove it
+
+
+def test_a_sql_named_entry_that_is_actually_a_directory_raises_metric_load_error(tmp_path, conn):
+    """Second trigger of the same root cause, no permission bits needed at all: an accidental
+    `mkdir metrics/weird.sql` (a `.sql`-suffixed DIRECTORY, not a file) makes `path.read_text()`
+    raise a raw `IsADirectoryError` -- same unguarded read, same fix (widening the except
+    clause to OSError) closes it."""
+    (tmp_path / "weird.sql").mkdir()
+    with pytest.raises(MetricLoadError) as exc:
+        load_metrics(conn, metrics_dir=tmp_path)
+    assert "weird.sql" in str(exc.value)
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0,
+                    reason="needs a non-root posix user; root can traverse mode-000 ancestors")
+def test_an_unreadable_ancestor_makes_is_dir_itself_raise_and_it_must_not_escape(tmp_path, conn):
+    """Found by the sweep the review asked for, not handed over: `directory.is_dir()` -- the
+    very first call this function makes -- is ITSELF unguarded. `is_dir()` normally just
+    returns False for a nonexistent/broken-symlink path, but when an ANCESTOR directory in the
+    chain lacks search permission, the underlying stat() call cannot even be resolved and
+    `is_dir()` raises PermissionError directly, verified live. This is a different call site
+    from the mode-444/mode-000 cases above (those are about `metrics_dir` itself or the files
+    inside it); this one is about `metrics_dir`'s PARENT being unreadable."""
+    blocked_parent = tmp_path / "blocked_parent"
+    inner = blocked_parent / "inner"
+    inner.mkdir(parents=True)
+    (inner / "1.sql").write_text(_GOOD_1, encoding="utf-8")
+    os.chmod(blocked_parent, 0o000)
+    try:
+        with pytest.raises(MetricLoadError) as exc:
+            load_metrics(conn, metrics_dir=inner)
+        assert str(inner) in str(exc.value)
+    finally:
+        os.chmod(blocked_parent, 0o755)  # restore so pytest's own tmp_path cleanup can remove it
+
+
 def test_the_three_metrics_modules_never_import_duckdb():
     """Pins the property Design decisions C/D/E all rest on -- header.py/loader.py/testing.py
     take an already-open conn wherever they need one and never `import duckdb` themselves
     (same convention as insight/ingest/packs.py). True today but previously unguarded, unlike
-    insight/__main__.py's own equivalent pin in test_cli.py."""
+    insight/__main__.py's own equivalent pin in test_cli.py.
+
+    THE GUARD'S REAL BOUNDARY, written down before 24 more metric files lean on this
+    convention (PR review, block cycle 3): `ast.walk` DOES recurse into nested scopes, so a
+    deferred `import duckdb` inside a function body IS caught here -- attacked and confirmed
+    to hold. What is NOT caught: `importlib.import_module("duckdb")` and
+    `__import__("duckdb")` -- neither produces an `ast.Import`/`ast.ImportFrom` node, so both
+    slip past this specific check, confirmed against the real detection logic above. This is
+    not a defect in any of the three shipped modules today (none of them use either dynamic
+    form) -- it is the same scope boundary `tests/test_import_boundary.py`'s own module
+    docstring already states for the plugin/product boundary check ("DYNAMIC IMPORTS ...
+    ARE DELIBERATELY NOT COVERED"), stated here too so a future contributor doesn't read a
+    green run of this test as proof against a dynamic-import route it was never designed to
+    catch."""
     import ast
     import pathlib
 

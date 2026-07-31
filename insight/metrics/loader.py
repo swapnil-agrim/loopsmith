@@ -54,26 +54,43 @@ def load_metrics(conn, metrics_dir=None):
     attempted."""
     directory = pathlib.Path(metrics_dir) if metrics_dir is not None else DEFAULT_METRICS_DIR
 
-    # PR review BLOCK, fixed: `pathlib.Path.glob()` silently swallows OSError/PermissionError
-    # internally and yields no matches -- verified live, identical on 3.9/3.10/3.12: a missing
-    # OR an unreadable metrics_dir used to make `sorted(directory.glob("*.sql"))` come back
-    # `[]`, and load_metrics returned an EMPTY REGISTRY WITH NO EXCEPTION AT ALL -- the one
-    # outcome this loader exists to prevent (Design decision D is fail-hard, never degrade).
-    # `directory.is_dir()` is checked first for the common "doesn't exist" (or "is a plain
-    # file") case, with a message naming the path; `os.listdir` -- which does NOT swallow
-    # OSError, unlike glob -- then does the actual enumeration, so a directory that exists but
-    # cannot be LISTED (mode 000: is_dir() is still True, since stat only needs search
-    # permission on the PARENT, but listing needs read+execute on the directory itself) is
-    # caught too, verified live. Filtering by `name.endswith(".sql")` afterward preserves
-    # the exact case-sensitive-on-POSIX matching `glob("*.sql")` already had.
-    if not directory.is_dir():
+    # THE CLASS OF BUG THIS WHOLE FUNCTION KEEPS RE-DISCOVERING A NEW ROUTE INTO, STATED ONCE
+    # HERE SO THE NEXT FIX ALSO GENERALISES: every real filesystem operation this function
+    # performs -- stat'ing a path, listing a directory, opening/reading a file -- can raise
+    # OSError (or a subclass) for reasons that have NOTHING to do with whether a .sql file's
+    # CONTENT is well-formed: permission bits, TOCTOU races, an entry that is a directory, not
+    # a file. Three separate review rounds each caught a different call site doing this raw:
+    # `path.read_text()` outside its try (round 1); `pathlib.Path.glob()` swallowing
+    # PermissionError internally and returning `[]` at the directory level (round 2); and now,
+    # round 3, TWO more call sites -- `directory.is_dir()` ITSELF (see below), and the same
+    # `path.read_text()` from round 1 still only catching UnicodeDecodeError, not the wider
+    # OSError family (PermissionError from a mode-444 directory denying the search bit needed
+    # to OPEN a file inside it; IsADirectoryError from a `.sql`-named directory entry). The
+    # fix below is written at the CLASS level -- every one of these call sites is now either
+    # wrapped in `except OSError` or feeds into the header-parse loop's widened except clause
+    # -- rather than patching the one instance handed over each time.
+    try:
+        directory_exists = directory.is_dir()
+    except OSError as e:
+        # `is_dir()` normally just returns False for a missing path or a broken symlink; it
+        # raises when an ANCESTOR in the path chain lacks search permission and the stat()
+        # call itself cannot be resolved. Verified live. A different failure shape from
+        # "the directory exists but the read/list bits are wrong" below, so named separately.
+        raise MetricLoadError(f"cannot access metrics directory {directory}: {e}") from e
+    if not directory_exists:
         raise MetricLoadError(
             f"metrics directory does not exist or is not a directory: {directory}"
         )
     try:
         names = os.listdir(directory)
     except OSError as e:
+        # `os.listdir` does NOT swallow OSError the way `Path.glob()` does (round 2's fix) --
+        # a directory that exists but cannot be LISTED (mode 000: is_dir() is still True,
+        # since stat only needs search permission on the PARENT, but listing needs
+        # read+execute on the directory itself) is caught here, verified live.
         raise MetricLoadError(f"cannot read metrics directory {directory}: {e}") from e
+    # Filtering by `name.endswith(".sql")` preserves the exact case-sensitive-on-POSIX
+    # matching `glob("*.sql")` already had.
     paths = sorted(directory / name for name in names if name.endswith(".sql"))
 
     headers = {}
@@ -85,19 +102,23 @@ def load_metrics(conn, metrics_dir=None):
             # entirely and reporting every field as missing -- reproduced live, fixed,
             # re-verified live. Matches tests/test_licence_boundary.py's own precedent for
             # exactly this failure.
-            #
-            # Pre-PR review BLOCK, fixed: this read used to sit OUTSIDE the try/except
-            # below, so a stray non-UTF-8 byte (a smart quote or em-dash pasted from a spec
-            # doc, saved by an editor that doesn't normalize to UTF-8) escaped as a raw
-            # UnicodeDecodeError carrying no filename -- breaking this module's own
-            # documented contract that MetricLoadError "names every offending file and its
-            # reason" (Design decision D). Moving the read inside the try, and catching
-            # UnicodeDecodeError alongside HeaderError, closes that: any decode failure is
-            # now aggregated and named exactly like a header failure.
             text = path.read_text(encoding="utf-8-sig")
             headers[path.stem] = parse_header(text, source=str(path))
-        except (HeaderError, UnicodeDecodeError) as e:
-            errors.append(f"{path}: {e}" if isinstance(e, UnicodeDecodeError) else str(e))
+        except HeaderError as e:
+            errors.append(str(e))  # already carries `source` -- do not re-prefix the path
+        except (OSError, UnicodeDecodeError) as e:
+            # PR review BLOCK, round 3, the CLASS-level fix (see the long comment above this
+            # function's directory-resolution code for the full pattern this closes): this
+            # used to be `except (HeaderError, UnicodeDecodeError)` only, which is narrower
+            # than the failure surface a real filesystem read actually has. Widened to the
+            # whole OSError family so PermissionError (a mode-444 directory: is_dir() and
+            # listdir() both succeed, but OPENING a file inside it needs the search bit on
+            # the directory, which mode 444 denies -- verified live), IsADirectoryError (a
+            # `.sql`-named entry that is actually a directory -- an accidental
+            # `mkdir metrics/weird.sql`), and a TOCTOU FileNotFoundError (the file vanishes
+            # between os.listdir() above and this read) are all aggregated the same way
+            # UnicodeDecodeError already was, instead of escaping raw.
+            errors.append(f"{path}: {e}")
     if errors:
         raise MetricLoadError(
             "one or more metric files failed to parse:\n  " + "\n  ".join(errors)
@@ -108,13 +129,22 @@ def load_metrics(conn, metrics_dir=None):
         metric_id = path.stem
         view_name = f"metric_{metric_id}"
         try:
-            # The read is inside this try too (same reasoning as above -- swept the whole
-            # module for any other file operation that could escape the aggregated
-            # MetricLoadError contract; this is the other one). In practice this second
-            # read of the same path should decode identically to the first loop's, but
-            # nothing guarantees the file is unchanged between the two passes, and the
-            # broad `except Exception` below already exists for CREATE VIEW failures, so
-            # covering the read costs nothing extra.
+            # The read is inside this try too, for the same class of reason as the loop
+            # above. This loop's `except Exception` is DELIBERATELY broader than the
+            # `(HeaderError, OSError, UnicodeDecodeError)` above it -- re-compared side by
+            # side, this is the one remaining, intentional asymmetry between the two loops,
+            # not a residual gap: `conn.execute(CREATE VIEW ...)` is a DuckDB call whose
+            # exception types (CatalogException, ParserException, BinderException, and
+            # others) are not enumerable ahead of time the way this module's own
+            # HeaderError and the stdlib's OSError/UnicodeDecodeError are, so narrowing this
+            # catch to a fixed tuple would risk a new DuckDB exception type escaping raw the
+            # next time duckdb's own exception hierarchy changes. The header-parse loop
+            # above stays narrow ON PURPOSE, not from an oversight: it only ever calls
+            # `path.read_text()` and `parse_header()`, both fully understood by this module,
+            # so a bare Exception there would risk silently swallowing an actual programming
+            # bug in `parse_header` instead of letting it surface loudly (Design decision D's
+            # fail-hard principle applies to bugs in THIS codebase too, not only to malformed
+            # input files).
             text = path.read_text(encoding="utf-8-sig")
             conn.execute(f"CREATE OR REPLACE VIEW {view_name} AS {text}")
         except Exception as e:  # noqa: BLE001 -- wrap+escalate, see Design decision D
