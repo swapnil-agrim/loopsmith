@@ -254,7 +254,24 @@ def _to_utc_naive(iso_ts):
        to an unparseable one, both None, never guessed.
 
     Callers treat None exactly like a missing merge-base (_git_merge_event) -- a degraded row
-    with a machine-readable code, never a propagated exception. See .sdlc/plans/103.md §D."""
+    with a machine-readable code, never a propagated exception. See .sdlc/plans/103.md §D.
+
+    3. A trailing literal 'Z' offset. Newer git (verified: 2.55.0) renders %aI/%cI as
+       '2026-01-01T10:00:00Z' -- a literal 'Z' -- instead of '+00:00' when the commit's offset is
+       exactly UTC. `datetime.fromisoformat` only learned to parse a 'Z' suffix in PYTHON 3.11;
+       this package declares `requires-python = ">=3.9"` and CI tests 3.10, so on 3.10 (and 3.9)
+       EVERY UTC-offset commit date raised ValueError here, silently degrading a real lead time to
+       None with a spurious 'malformed_commit_date' -- found by a post-PR review of #103 that
+       actually ran the suite on 3.10, not just the default interpreter. Normalized away by
+       swapping a trailing 'Z'/'z' for '+00:00' BEFORE the fromisoformat call, on 3.9+ alike -- a
+       genuinely malformed string (e.g. the unexpanded '%aI' specifier, or 'notadate') does not end
+       in 'Z' and still falls through to the ValueError branch above, unchanged. git's own ISO-8601
+       'Z' output is always uppercase (verified against 2.55.0's actual output; date.c formats it
+       literally, not via a locale-sensitive strftime path), but 'z' is normalized too as a cheap,
+       harmless defensive extra -- it costs nothing and cannot mask a genuine failure, since only a
+       string that already ends in Z/z is touched at all."""
+    if isinstance(iso_ts, str) and iso_ts[-1:] in ("Z", "z"):
+        iso_ts = iso_ts[:-1] + "+00:00"
     try:
         dt = datetime.datetime.fromisoformat(iso_ts)
     except (ValueError, TypeError):

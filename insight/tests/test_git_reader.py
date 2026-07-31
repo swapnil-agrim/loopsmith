@@ -68,12 +68,24 @@ def _write_tree(root):
 
 def _hash_corrupted_commit(root, parent_sha, message):
     """Builds a REAL commit object with a garbled author line ('author t <t@example.com>
-    notadate +0000') via git plumbing (`git hash-object -t commit -w`) -- exactly reproducing
-    the scenario a plan-review used to prove the ValueError-out-of-_to_utc_naive bug end-to-end,
-    then to verify the fix: git prints the literal, unexpanded '%aI' for THIS commit's author
-    date, which used to raise inside _to_utc_naive and crash the whole `insight ingest` run.
-    Not a hand-built dict standing in for a real commit -- a real object in the object database,
-    checked out onto a real branch and merged normally."""
+    notadate +0000') via git plumbing (`git hash-object -t commit -w --literally`) -- exactly
+    reproducing the scenario a plan-review used to prove the ValueError-out-of-_to_utc_naive bug
+    end-to-end, then to verify the fix: git prints the literal, unexpanded '%aI' for THIS
+    commit's author date, which used to raise inside _to_utc_naive and crash the whole `insight
+    ingest` run. Not a hand-built dict standing in for a real commit -- a real object in the
+    object database, checked out onto a real branch and merged normally.
+
+    `--literally` is required: git >= 2.54 (confirmed 2.55.0; 2.39.5 still accepts without it)
+    fsck-validates a commit object written via `hash-object -t commit -w` and REJECTS this
+    deliberately-malformed author line outright ('error: object fails fsck: badDate: invalid
+    author/committer line - bad date', exit 128) -- a post-PR review of #103 caught this failing
+    the fixture itself, before any assertion in the test even ran, on both CI Python jobs.
+    `--literally` ("allow --stdin to hash any garbage into a loose object which might not
+    otherwise pass standard object parsing or git-fsck checks" -- git-hash-object(1)) bypasses
+    exactly that validation while writing the identical object; verified empirically that the
+    resulting commit still round-trips through `git log --pretty=format:%aI` as the literal,
+    unexpanded '%aI' specifier -- i.e. it still exercises the exact production parsing path this
+    test exists to pin, unweakened."""
     tree = _write_tree(root)
     commit_text = (
         f"tree {tree}\n"
@@ -84,7 +96,7 @@ def _hash_corrupted_commit(root, parent_sha, message):
         f"{message}\n"
     )
     result = subprocess.run(
-        ["git", "hash-object", "-t", "commit", "-w", "--stdin"],
+        ["git", "hash-object", "-t", "commit", "-w", "--literally", "--stdin"],
         cwd=root, input=commit_text, check=True, capture_output=True, text=True,
     )
     return result.stdout.strip()
@@ -291,6 +303,32 @@ def test_to_utc_naive_offset_less_string_is_rejected_not_silently_localized():
     assert _to_utc_naive("%aI") is None                        # the literal unexpanded-specifier case
     assert _to_utc_naive("not a date") is None
     assert _to_utc_naive("2026-01-01T00:00:00+05:30") is not None  # sanity: the valid case still works
+
+
+def test_to_utc_naive_z_suffix_parses_on_python_39_plus_but_real_garbage_still_degrades():
+    """Regression for the blocking post-PR-review finding on #103/PR #178: newer git (verified
+    directly against 2.55.0, see the empirical check in this story's plan notes) renders %aI/%cI
+    as '...T10:00:00Z' -- a literal 'Z' -- instead of '...+00:00' when a commit's offset is
+    exactly UTC. `datetime.fromisoformat` only learned to parse a trailing 'Z' in PYTHON 3.11;
+    insight/pyproject.toml declares `requires-python = ">=3.9"` and CI tests 3.10, where GitHub's
+    UTC runners hit this on EVERY commit -- turning a real, derivable lead time into a silent
+    None with a spurious 'malformed_commit_date' degrade code. This test calls _to_utc_naive
+    DIRECTLY with a hand-built 'Z'-suffixed string (not via a git fixture, whose exact %aI/%cI
+    rendering depends on the locally installed git's version) so it fails on Python 3.10 without
+    the fix regardless of which git happens to be on PATH.
+
+    The second half proves the fix does NOT weaken the never-guess guarantee: a string that is
+    genuinely garbage and merely happens to END in a 'Z' character (not a real ISO-8601 date at
+    all) must still degrade to None, exactly like any other unparseable input -- the Z/z
+    normalization only strips a trailing zone marker, it does not make fromisoformat lenient
+    about anything else."""
+    z = _to_utc_naive("2026-01-01T10:00:00Z")
+    assert z == datetime.datetime(2026, 1, 1, 10, 0, 0)  # UTC Z suffix -- parses, and correctly
+    assert _to_utc_naive("2026-01-01T10:00:00z") == datetime.datetime(2026, 1, 1, 10, 0, 0)  # lowercase z too
+    # A non-UTC offset alongside a literal Z would be a contradiction -- fromisoformat still
+    # correctly rejects malformed input that merely ENDS in 'Z' without being a real date.
+    assert _to_utc_naive("not a real dateZ") is None          # ends in Z, still garbage -- must degrade
+    assert _to_utc_naive("%aIZ") is None                       # same shape, still garbage -- must degrade
 
 
 def test_find_merge_events_shallow_clone_degrades_merge_base_unavailable(tmp_path):
