@@ -38,3 +38,12 @@ package-dir = { "insight" = "." }
 [tool.setuptools.dynamic]
 # The single source of truth is the VERSION file, not this file — see VERSION.
 version = { file = "VERSION" }
+
+[tool.setuptools.package-data]
+# metrics/*.sql (issue #108) is the first non-.py asset under insight/ -- packages=[...] alone
+# ships only .py files, so a real (non-editable) wheel build silently drops every .sql file
+# without this. VERIFIED live: a scratch build before this line omits a planted metrics/1.sql;
+# after, it's present. See .sdlc/plans/108.md Design decision H. CI's `pip install -e insight/`
+# and the local verify gate's lack of any install step both mean this gap was invisible today
+# — it would only bite a real `pip install loopsmith-insight` from a built wheel.
+"insight.metrics" = ["*.sql"]
