@@ -282,8 +282,11 @@ def test_ingest_artifacts_populates_repo_and_remote_url_sha256(tmp_path, conn):
     (tmp_path / ".sdlc").mkdir()
     ingest_artifacts(conn, tmp_path)
     row = conn.execute("select repo, remote_url_sha256 from dim_project").fetchone()
-    assert row == ("github.com/o/r", None) or row[0] == "github.com/o/r"  # sha is a real 64-hex value
-    assert row[1] is not None and len(row[1]) == 64
+    # Non-blocking fix from PR review: the previous `row == (..., None) or row[0] == ...` had a
+    # first disjunct that could never be true (the very next line requires row[1] non-None) --
+    # dead drafting logic, simplified to the one assertion it was actually checking.
+    assert row[0] == "github.com/o/r"
+    assert row[1] is not None and len(row[1]) == 64  # sha is a real 64-hex value
 
 
 def test_write_goal_upsert_preserves_other_story_owned_columns(conn):

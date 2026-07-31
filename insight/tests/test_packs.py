@@ -370,6 +370,25 @@ def test_normalize_remote_url_collapses_the_github_ssh_host_alias():
     assert aliased == plain == "github.com/owner/repo"
 
 
+def test_normalize_remote_url_does_not_collapse_a_prefix_sharing_different_host():
+    """BLOCKING finding from independent PR review, reproduced live then fixed: the alias fold
+    was a bare `str.startswith("github.com-")` test on the WHOLE host, with no check that what
+    followed the dash was actually a short alias LABEL rather than a further DNS label chain --
+    so a genuinely DIFFERENT host that merely happens to start with those 11 characters
+    (`github.com-mirror.example.net`, a real self-hosted mirror's own domain) collapsed onto
+    `github.com` and produced the IDENTICAL project_id as the real github.com/owner/repo --
+    exactly the silent cross-project collision this same function's own docstring already
+    names as the failure mode to avoid (the case-folding paragraph above), just not yet applied
+    here. A real SSH host alias for this org's own convention is a single label with no further
+    host boundary (no dots) -- `github.com-mirror.example.net` has one, `github.com-work`
+    doesn't. See .sdlc/plans/106.md Design decision B and this issue's own PR review."""
+    from insight.ingest.packs import _normalize_remote_url
+    real = _normalize_remote_url("https://github.com/owner/repo.git")
+    different_host = _normalize_remote_url("git@github.com-mirror.example.net:owner/repo.git")
+    assert different_host != real
+    assert different_host == "github.com-mirror.example.net/owner/repo"
+
+
 def test_normalize_remote_url_drops_an_explicit_ssh_port():
     """BLOCKING finding from plan review, reproduced live then fixed: the first-draft
     normalizer folded an explicit port's digits into the path, so this and its no-port

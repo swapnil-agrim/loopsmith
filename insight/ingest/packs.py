@@ -5,9 +5,21 @@ and how an unrecognised schema is handled. No `import duckdb` here — conn is p
 open (insight/ingest/store.py owns the schema and the duckdb import)."""
 import hashlib
 import json
+import re
 import subprocess
 
 from insight.ingest import collectors
+
+#: A real SSH host alias for this org's own `Host github.com-<alias>` convention (see
+#: _normalize_remote_url's own docstring) is a single label -- letters/digits/underscore/hyphen,
+#: no further host boundary -- never itself a dotted DNS-style hostname. `github.com-work` and
+#: `github.com-mirror` match; `github.com-mirror.example.net` (a genuinely different, real
+#: domain that merely starts with the same 11 characters) does not, because it contains a
+#: literal '.'. BLOCKING finding from independent PR review: a bare `str.startswith
+#: ("github.com-")` check (this function's own first-draft shape) does not make this
+#: distinction and silently collapsed the two onto the same project_id -- reproduced live, this
+#: session, with two real fixture repos. See .sdlc/plans/106.md Design decision B.
+_GITHUB_ALIAS_RE = re.compile(r"^github\.com-[A-Za-z0-9_](?:[A-Za-z0-9_-]*[A-Za-z0-9_])?$")
 
 #: Mirrors collectors.py/git_reader.py/gh_reader.py's own constant of the same name.
 _TIMEOUT_SECS = 300
@@ -175,31 +187,62 @@ def _git_remote_url(project_root, timeout=_TIMEOUT_SECS):
 def _normalize_remote_url(url):
     """Canonicalize a git remote URL for hashing: strip protocol/userinfo, ssh scp-syntax
     colon -> slash (ONLY when no scheme was present -- a scheme'd URL's colon is a PORT, not a
-    path start), an explicit port (dropped -- a default/explicit SSH port doesn't change repo
-    identity for this purpose), this org's own github.com-<alias> SSH host-alias convention (the
-    SAME one skills/sdlc-setup/scripts/setup.py:detect_repo() already special-cases --
-    reimplemented, never imported, per the plugin/product boundary), trailing .git.
+    path start), an explicit port (dropped -- see the port-drop paragraph below for why this is
+    an ACCEPTED, bounded residue rather than a silent oversight), this org's own
+    github.com-<alias> SSH host-alias convention (the SAME one skills/sdlc-setup/scripts/
+    setup.py:detect_repo() already special-cases -- reimplemented, never imported, per the
+    plugin/product boundary; see _GITHUB_ALIAS_RE for why the match is a real alias LABEL, not
+    a bare string-prefix test), trailing .git.
 
-    Case-folding is HOST-ONLY, deliberately -- non-blocking finding from independent code
-    review, fixed here. A first-draft version of this function lowercased the entire result
-    (host AND path). DNS hostnames are case-insensitive by spec (RFC 3986 section 3.2.2), so
-    folding host case is always correct. The PATH is a different claim: GitHub/GitLab happen to
-    treat an owner/repo path as effectively case-insensitive, but nothing in the git protocol
-    guarantees that for every host, and a case-sensitive self-hosted server could have two
-    GENUINELY DIFFERENT repositories whose paths differ only in case. Folding those together
-    would be a SILENT, undetectable collapse onto the same project_id -- cross-project data
-    corruption, indistinguishable after the fact from a correct collapse. The alternative
-    failure mode -- two differently-cased clone URLs of the true SAME repo landing on two
-    different project_ids -- only produces a duplicate, VISIBLE dim_project row, which is a
-    strictly cheaper mistake to have made. That asymmetry (silent corruption vs. a detectable
-    duplicate) is why this function folds host case but preserves path case.
+    THE GOVERNING PRINCIPLE, applied to every transform in this function, not only the one
+    branch that first prompted writing it down: collapsing two GENUINELY DIFFERENT remotes onto
+    the same normalized string is SILENT, undetectable cross-project data corruption --
+    strictly worse than failing to collapse two representations of the true SAME remote (which
+    only produces a visible, duplicate dim_project row). Every transform below is audited
+    against that asymmetry, not assumed safe by convenience:
+
+    - Case-folding is HOST-ONLY. A first-draft version of this function lowercased the entire
+      result (host AND path) -- non-blocking finding from independent code review, fixed. DNS
+      hostnames are case-insensitive by spec (RFC 3986 section 3.2.2), so folding host case is
+      always correct. The PATH is a different claim: GitHub/GitLab happen to treat an
+      owner/repo path as effectively case-insensitive, but nothing in the git protocol
+      guarantees that for every host, and a case-sensitive self-hosted server could have two
+      genuinely different repositories whose paths differ only in case. Preserving path case
+      is the safer side of the asymmetry above.
+    - The github.com-<alias> fold is gated on `_GITHUB_ALIAS_RE`, NOT a bare
+      `str.startswith("github.com-")` -- BLOCKING finding from independent PR review,
+      reproduced live (two real fixture repos, no clone/network) then fixed: a bare prefix test
+      folded `github.com-mirror.example.net` (a genuinely different, real self-hosted domain
+      that merely starts with the same 11 characters) onto `github.com`, producing an IDENTICAL
+      project_id for two unrelated repos. A real SSH alias for this convention is a single
+      label with no further host boundary (no dots) -- `_GITHUB_ALIAS_RE` requires exactly that.
+    - The explicit-port drop (below) is the ONE place this function still accepts the
+      corruption-side of the asymmetry, DELIBERATELY, not silently: two genuinely different
+      services hosted on the same hostname at different non-standard ports (e.g. two separate
+      self-hosted git instances on git.example.com:2222 and git.example.com:3333) normalize to
+      the SAME string. Accepted because this is a rare topology, and getting the COMMON case
+      right (an explicit default port vs. an omitted one for the SAME service) matters more
+      than guarding a rare one -- see .sdlc/plans/106.md Design decision B, where this was
+      first named as a residue, not an oversight.
+    - Scheme-prefix stripping, userinfo-stripping (last `@`, matching URL-authority syntax),
+      and the SCP-shorthand detection (`"/" not in u.split(":", 1)[0]`, matching git's own real
+      parsing rule for when scp-like syntax is recognized) all operate on syntax that provably
+      means the same thing regardless of which form was used -- none of them fold two
+      DIFFERENT authorities together, so none carry this same risk.
 
     file:// and bare local filesystem paths (e.g. `git remote add origin /srv/repos/x.git`) are
     explicitly OUT OF SCOPE -- returns None. Such a 'remote' is itself just another path on
     disk, with the exact same non-portability problem project_id_for's own path-hash FALLBACK
     already has; hashing it would buy no more stability than the fallback the caller already
     falls through to when this returns None. See .sdlc/plans/106.md Design decision B
-    (non-blocking item 3)."""
+    (non-blocking item 3).
+
+    A query-string/fragment remote (e.g. `https://github.com/o/r.git?token=x`, not a shape
+    `git remote get-url` ever actually emits) leaves the trailing `.git` unstripped --
+    `github.com/o/r.git?token=x` rather than `github.com/o/r`. Deliberately not handled:
+    this is an UNDER-collision (two representations of the true same repo fail to collapse),
+    the safe direction per the asymmetry above, for an input shape this function's real caller
+    (git itself) does not produce. See this issue's own PR review, non-blocking item 2."""
     u = url.strip()
     if u.startswith("file://") or u.startswith("/"):
         return None
@@ -232,7 +275,7 @@ def _normalize_remote_url(url):
     if u.endswith(".git"):
         u = u[:-4]
     parts = u.split("/", 1)
-    if len(parts) == 2 and parts[0].startswith("github.com-"):
+    if len(parts) == 2 and _GITHUB_ALIAS_RE.match(parts[0]):
         u = "github.com/" + parts[1]
     return u.rstrip("/")
 
