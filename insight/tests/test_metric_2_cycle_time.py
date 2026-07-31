@@ -16,7 +16,20 @@ POST-PR-REVIEW fold-in (round 3): that exclusion was silent -- no count anywhere
 `excluded_negative_duration_count`, a broadcast constant (same window-function-style pattern as
 p50_seconds/p85_seconds) so a systematic clock-skew bug that someday drops half a project's
 goals leaves a visible signal instead of clean-looking percentiles with nothing wrong on the
-surface."""
+surface.
+
+POST-PR-REVIEW fold-in (round 4): that count itself went silent in the ONE scenario it exists
+for -- with 100% of the done population negative-duration, the round-3 view's outer WHERE
+dropped every row, so the broadcast count vanished along with the percentiles, making "all data
+is corrupt" indistinguishable from "no data has arrived yet" (a genuinely empty table). VERIFIED
+live, all three cases, before and after: empty table -- 0 rows both before and after (unchanged,
+correct); some-good-some-excluded (existing fixture) -- unchanged; ALL-excluded (two synthetic
+rows, both negative-duration, no good rows at all) -- 0 rows BEFORE this fix (indistinguishable
+from empty), exactly 1 row (goal_id/percentiles NULL, excluded_negative_duration_count=2) AFTER.
+Restructured as a `population` CTE (done-and-both-timestamps-present count, split good/excluded)
+LEFT JOINed to the good rows, gated by `population.total_count > 0` -- this is what keeps the
+genuinely-empty-table case at exactly 0 rows while giving the all-excluded case its one
+surviving placeholder row."""
 import pathlib
 import pytest
 
@@ -71,6 +84,35 @@ def test_metric_2_surfaces_how_many_rows_the_negative_duration_guard_dropped(con
     load_metrics(conn)
     rows = rows_as_dicts(conn.execute("SELECT DISTINCT excluded_negative_duration_count FROM metric_2"))
     assert rows == [{"excluded_negative_duration_count": 1}]
+
+
+def test_metric_2_an_all_excluded_population_still_surfaces_the_count(conn):
+    """Round-4 fold-in: a population where EVERY done goal is negative-duration must not vanish
+    indistinguishably from an empty table. Two synthetic goals, both terminal_ts < claimed_ts,
+    no good rows at all -- expect exactly one placeholder row with the real exclusion count and
+    NULL everywhere else, not zero rows."""
+    conn.execute(
+        "INSERT INTO fact_goal (project_id, goal_id, outcome, claimed_ts, terminal_ts) VALUES "
+        "('p1','gbad1','done','2026-01-05T00:00:00','2026-01-01T00:00:00'),"
+        "('p1','gbad2','done','2026-01-06T00:00:00','2026-01-01T00:00:00')"
+    )
+    load_metrics(conn)
+    rows = rows_as_dicts(conn.execute("SELECT * FROM metric_2"))
+    assert rows == [{
+        "goal_id": None, "cycle_time_seconds": None,
+        "p50_seconds": None, "p85_seconds": None,
+        "excluded_negative_duration_count": 2,
+    }]
+
+
+def test_metric_2_a_genuinely_empty_table_still_returns_zero_rows(conn):
+    """The other half of the round-4 fold-in's distinction: an empty fact_goal (nothing
+    ingested yet) must stay at exactly zero rows -- not gain a spurious placeholder row of its
+    own now that the all-excluded case gets one. This is what actually lets a consumer tell the
+    two apart: 0 rows means no data; 1 row with excluded_negative_duration_count > 0 means bad
+    data."""
+    load_metrics(conn)  # no fixture loaded -- fact_goal is empty
+    assert rows_as_dicts(conn.execute("SELECT * FROM metric_2")) == []
 
 
 def test_metric_2_p85_differs_from_the_mean_on_a_known_right_skew(conn):
