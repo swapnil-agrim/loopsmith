@@ -1,0 +1,126 @@
+# SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
+"""Ledger reader (issue #101, E1.S3): the union of ledger/entries/*.jsonl and
+ledger/events/*.jsonl, oldest-first, plus .sdlc/events/*.jsonl when telemetry.share is off.
+
+READS ONLY. Nothing here is persisted into DuckDB (no fact_event/fact_handoff INSERT) and this
+module is not wired into `insight ingest` yet — see .sdlc/plans/101.md §F. A later persistence
+story imports read_all() directly.
+
+Reimplements skills/sdlc-loop/scripts/ledger.py:read_all from scratch (never imported — the
+plugin/product boundary in tests/test_import_boundary.py forbids it, and this module is zero
+duckdb, following collectors.py's shape, so insight/tests/test_ledger_reader.py runs on any box).
+
+THREE DELIBERATE DIVERGENCES from read_all, all load-bearing, all explained in .sdlc/plans/101.md:
+  1. Files are opened with encoding="utf-8-sig", errors="replace" (never "utf-8" alone) --
+     read_all's plain "utf-8" + catch-only-OSError lets a UnicodeDecodeError (a ValueError, NOT an
+     OSError) kill the entire read, contradicting its own "never fatal" docstring; a BOM also eats
+     read_all's first line silently. See plan §A.
+  2. json.loads is wrapped in except (ValueError, RecursionError), not just ValueError -- a line
+     nested ~1000 deep makes json.loads raise RecursionError (a RuntimeError, NOT a ValueError),
+     which read_all's bare `except ValueError` does not catch, so it propagates out and discards
+     every record already read from every file. read_all has this exact hole today. See plan §E's
+     step 1.1 comment / the "deeply_nested" fixture.
+  3. The (ts, actor, seq) sort key coerces ts/actor through str() (missing/None/"" -> "") rather
+     than comparing raw values -- read_all's raw compare raises TypeError the moment two records
+     disagree on ts's TYPE (e.g. one string, one number), which is fatal for the whole sort, not
+     just one line. See plan §D.
+"""
+import json
+import pathlib
+
+
+def _seq(entry):
+    """Identical to ledger._seq: the tail of `id` after the last ':', 0 if not all-digits.
+    `str(...)` on a non-string id (a number, a list) never raises -- it just won't look like a
+    valid tail and falls through to 0.
+
+    Divergence 4. `tail.isdigit()` is NOT enough to make int() safe: since 3.10.7/3.11, int()
+    refuses a string of more than 4300 digits (the CVE-2020-10735 fix) and raises ValueError.
+    Both CI interpreters are past that. An `id` tail of 5000 digits would take out the whole
+    sort -- every record, every file -- which is what `ledger._seq` still does. Three of these
+    were found one at a time; the length gate closes the enumerated case, and the caller's
+    try/except closes the ones nobody has thought of yet."""
+    ident = str(entry.get("id", ""))
+    tail = ident.rsplit(":", 1)[-1]
+    return int(tail) if tail.isdigit() and len(tail) <= 4300 else 0
+
+
+def _sort_key(entry):
+    """The whole key, guarded as one unit. Every crash this reader has had was a sort key that
+    raised on some value nobody enumerated: a mixed type, then a 4301-digit id. Enumerating the
+    next one is a losing game -- an unsortable record sorts first instead of destroying the read."""
+    try:
+        return (_sort_str(entry.get("ts")), _sort_str(entry.get("actor")), _seq(entry))
+    except Exception:
+        return ("", "", 0)
+
+
+def _sort_str(value):
+    """Coerce a sort-key field to str so mixed-type ts/actor values across records/files can
+    still be compared -- see plan §D. Missing/None/"" all collapse to "" (sorts first), matching
+    read_all's default-first ordering without its cross-type TypeError crash."""
+    return "" if value in (None, "") else str(value)
+
+
+def _read_jsonl_records(path):
+    """One file -> list of kept dicts. Every tolerance rule lives here ONCE, so all three globs
+    (entries, ledger events, local events) get identical treatment -- see plan §E."""
+    out = []
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return out  # missing, a directory, unreadable, or any other OS-level failure: skip, not fatal
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except (ValueError, RecursionError):
+            # Third deliberate divergence, same reasoning as the other two. A line nested ~1000
+            # deep makes json.loads raise RecursionError, which is a RuntimeError — NOT a
+            # ValueError — so `except ValueError` misses it and it propagates out of read_all,
+            # discarding every record already accumulated from every file. `ledger.read_all` has
+            # this exact hole; a plan-reviewer built the line and crashed both. "Skipped not
+            # fatal" is the done_when, so it is caught here.
+            continue
+        if isinstance(item, dict) and item.get("kind"):
+            out.append(item)
+    return out
+
+
+def _glob_records(directory):
+    if not directory.exists():
+        return []
+    out = []
+    for path in sorted(directory.glob("*.jsonl")):
+        out.extend(_read_jsonl_records(path))
+    return out
+
+
+def _telemetry_share_is_off(sdlc_dir):
+    """See plan §B. Fails open to False (sharing ON, the shipped default) on any missing/
+    unreadable/malformed config, or a missing/wrong-typed telemetry/share key -- only an explicit
+    JSON `false` turns sharing off."""
+    try:
+        raw = (pathlib.Path(sdlc_dir) / "config.json").read_text(encoding="utf-8-sig", errors="replace")
+        config = json.loads(raw)
+    except (OSError, ValueError):
+        return False
+    telemetry = config.get("telemetry") if isinstance(config, dict) else None
+    share = telemetry.get("share") if isinstance(telemetry, dict) else None
+    return share is False
+
+
+def read_all(sdlc_dir):
+    """The union of ledger/entries/*.jsonl and ledger/events/*.jsonl under sdlc_dir, oldest first,
+    plus sdlc_dir/events/*.jsonl (the local .sdlc/events/ path) additionally when telemetry.share
+    is off (spec §A.2/§B.2: ADDITIVE, never a fallback -- see plan §B). Never raises."""
+    base = pathlib.Path(sdlc_dir)
+    records = []
+    records.extend(_glob_records(base / "ledger" / "entries"))
+    records.extend(_glob_records(base / "ledger" / "events"))
+    if _telemetry_share_is_off(base):
+        records.extend(_glob_records(base / "events"))
+    records.sort(key=_sort_key)
+    return records
