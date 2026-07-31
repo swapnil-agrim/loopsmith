@@ -1,0 +1,1 @@
+{"_table": "fact_collector_pack", "project_id": "p1", "schema": "git-facts/v1", "collected_ts": "2026-07-31T00:00:00", "window_since_days": 14, "window_commit_count": 73, "window_merge_count": 4}
