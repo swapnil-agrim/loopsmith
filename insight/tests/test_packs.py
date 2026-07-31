@@ -337,3 +337,158 @@ def test_project_id_is_deterministic_and_stable_across_calls(conn, tmp_path):
     ingest_collectors(conn, tmp_path, collectors_root=str(root))
     ids = conn.execute("select distinct project_id from fact_collector_pack").fetchall()
     assert len(ids) == 1
+
+
+# --------------------------------------------------------------------------- remote-hash project_id_for (issue #106)
+
+
+def _git_repo(path, remote=None):
+    """A real, local, hermetic git repo -- init + one empty commit + (optionally) a FAKE
+    remote URL, never a clone, never a network call. Mirrors git_reader.py's own test fixtures
+    and this plan's own scratchpad verification."""
+    import subprocess
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "x"], cwd=path, check=True)
+    if remote:
+        subprocess.run(["git", "remote", "add", "origin", remote], cwd=path, check=True)
+
+
+def test_normalize_remote_url_collapses_ssh_and_https_to_the_same_string():
+    from insight.ingest.packs import _normalize_remote_url
+    a = _normalize_remote_url("git@github.com:owner/repo.git")
+    b = _normalize_remote_url("https://github.com/owner/repo.git")
+    assert a == b == "github.com/owner/repo"
+
+
+def test_normalize_remote_url_collapses_the_github_ssh_host_alias():
+    from insight.ingest.packs import _normalize_remote_url
+    aliased = _normalize_remote_url("git@github.com-work:owner/repo.git")
+    plain = _normalize_remote_url("https://github.com/owner/repo")
+    assert aliased == plain == "github.com/owner/repo"
+
+
+def test_normalize_remote_url_drops_an_explicit_ssh_port():
+    """BLOCKING finding from plan review, reproduced live then fixed: the first-draft
+    normalizer folded an explicit port's digits into the path, so this and its no-port
+    equivalent normalized DIFFERENTLY. See .sdlc/plans/106.md Design decision B."""
+    from insight.ingest.packs import _normalize_remote_url
+    with_port = _normalize_remote_url("ssh://git@github.com:22/o/r.git")
+    without_port = _normalize_remote_url("git@github.com:o/r.git")
+    assert with_port == without_port == "github.com/o/r"
+
+
+def test_normalize_remote_url_strips_userinfo_credentials():
+    """BLOCKING finding from plan review, reproduced live then fixed: the first-draft
+    credential guard truncated at the FIRST colon before ever checking for '@', so userinfo
+    (e.g. a rotating token) was NEVER stripped -- meaning the SAME repo got a DIFFERENT
+    project_id every time its embedded token rotated. See .sdlc/plans/106.md Design decision B."""
+    from insight.ingest.packs import _normalize_remote_url
+    with_token = _normalize_remote_url("https://user:token@github.com/o/r.git")
+    without_token = _normalize_remote_url("https://github.com/o/r.git")
+    assert with_token == without_token == "github.com/o/r"
+
+
+def test_normalize_remote_url_returns_none_for_file_scheme():
+    """file:// origins are explicitly out of scope (Design decision B) -- returns None rather
+    than a garbled-looking string, so the caller falls through to the path-hash fallback."""
+    from insight.ingest.packs import _normalize_remote_url
+    assert _normalize_remote_url("file:///users/x/repos/repo") is None
+
+
+def test_normalize_remote_url_returns_none_for_a_bare_filesystem_path():
+    from insight.ingest.packs import _normalize_remote_url
+    assert _normalize_remote_url("/users/x/repos/repo") is None
+
+
+def test_normalize_remote_url_folds_host_case_but_preserves_path_case():
+    """Non-blocking finding from independent code review: a first-draft normalizer lowercased
+    the ENTIRE string (host AND path). Host case-folding is always correct -- DNS hostnames are
+    case-insensitive by spec (RFC 3986 section 3.2.2). Path case-folding is NOT: GitHub/GitLab
+    happen to treat owner/repo as effectively case-insensitive, but a case-sensitive self-hosted
+    git server could have two GENUINELY DIFFERENT repos whose paths differ only in case --
+    folding those would be a SILENT, UNDETECTABLE collapse onto the same project_id (cross-
+    project data corruption). The alternative failure -- two differently-cased clone URLs of
+    the SAME repo getting two different project_ids -- only produces a duplicate, DETECTABLE
+    dim_project row. That asymmetry (silent corruption vs. a visible duplicate) is why path case
+    is preserved here. See .sdlc/plans/106.md Design decision B and this issue's code review."""
+    from insight.ingest.packs import _normalize_remote_url
+    assert _normalize_remote_url("https://GitHub.COM/Owner/Repo.git") == "github.com/Owner/Repo"
+
+
+def test_remote_identity_for_returns_none_none_with_no_remote(tmp_path):
+    from insight.ingest.packs import remote_identity_for
+    _git_repo(tmp_path / "r")
+    assert remote_identity_for(tmp_path / "r") == (None, None)
+
+
+def test_remote_identity_for_returns_none_none_for_a_non_git_directory(tmp_path):
+    from insight.ingest.packs import remote_identity_for
+    (tmp_path / "plain").mkdir()
+    assert remote_identity_for(tmp_path / "plain") == (None, None)
+
+
+def test_remote_identity_for_returns_none_none_when_git_is_unresolvable(tmp_path, monkeypatch):
+    from insight.ingest.packs import remote_identity_for
+    _git_repo(tmp_path / "r", remote="git@github.com:o/r.git")
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    assert remote_identity_for(tmp_path / "r") == (None, None)
+
+
+def test_remote_identity_for_populates_repo_and_a_real_64_char_sha256(tmp_path):
+    from insight.ingest.packs import remote_identity_for
+    _git_repo(tmp_path / "r", remote="git@github.com:owner/repo.git")
+    repo, sha = remote_identity_for(tmp_path / "r")
+    assert repo == "github.com/owner/repo"
+    assert len(sha) == 64
+    import re
+    assert re.fullmatch(r"[0-9a-f]{64}", sha)
+
+
+def test_project_id_for_is_identical_for_two_clones_of_the_same_remote(tmp_path):
+    """The correctness improvement over the pre-#106 path-hash scheme -- verified directly:
+    dossier §2's own repoA/repoA-clone test showed the OLD scheme gave these DIFFERENT ids."""
+    from insight.ingest.packs import project_id_for
+    _git_repo(tmp_path / "clone1", remote="git@github.com:owner/repo.git")
+    _git_repo(tmp_path / "clone2", remote="https://github.com/owner/repo.git")
+    assert project_id_for(tmp_path / "clone1") == project_id_for(tmp_path / "clone2")
+
+
+def test_project_id_for_differs_for_different_remotes(tmp_path):
+    from insight.ingest.packs import project_id_for
+    _git_repo(tmp_path / "a", remote="git@github.com:owner/repo-a.git")
+    _git_repo(tmp_path / "b", remote="git@github.com:owner/repo-b.git")
+    assert project_id_for(tmp_path / "a") != project_id_for(tmp_path / "b")
+
+
+def test_project_id_for_is_stable_across_repeated_calls(tmp_path):
+    from insight.ingest.packs import project_id_for
+    _git_repo(tmp_path / "r", remote="git@github.com:owner/repo.git")
+    assert project_id_for(tmp_path / "r") == project_id_for(tmp_path / "r")
+
+
+def test_project_id_for_falls_back_to_the_exact_pre_106_path_hash_when_no_remote(tmp_path):
+    """Research Q2/Q3: a remote-less repo's project_id is UNCHANGED by this story -- verified
+    against the literal pre-#106 formula, not just 'some fallback'."""
+    import hashlib
+    from insight.ingest.packs import project_id_for
+    _git_repo(tmp_path / "local-only")
+    root = tmp_path / "local-only"
+    expected = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()[:16]
+    assert project_id_for(root) == expected
+
+
+def test_project_id_for_falls_back_to_path_hash_for_a_file_remote(tmp_path):
+    """A file://-or-bare-path origin is out of scope (Design decision B) -- it must fall
+    through to the SAME path-hash fallback as no-remote-at-all, never crash, never produce a
+    garbled identity string. Verified live against a real repo with a bare-path origin."""
+    import hashlib
+    from insight.ingest.packs import project_id_for
+    _git_repo(tmp_path / "r", remote="/some/local/path/repo.git")
+    root = tmp_path / "r"
+    expected = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()[:16]
+    assert project_id_for(root) == expected
