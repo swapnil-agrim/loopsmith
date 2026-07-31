@@ -10,16 +10,20 @@ Reimplements skills/sdlc-loop/scripts/ledger.py:read_all from scratch (never imp
 plugin/product boundary in tests/test_import_boundary.py forbids it, and this module is zero
 duckdb, following collectors.py's shape, so insight/tests/test_ledger_reader.py runs on any box).
 
-THREE DELIBERATE DIVERGENCES from read_all, all load-bearing, all explained in .sdlc/plans/101.md:
+FIVE DELIBERATE DIVERGENCES from read_all, all load-bearing, all explained in .sdlc/plans/101.md.
+Every one converges on the same move: guard the COMPUTATION, degrade the RECORD -- rather than
+enumerating one more exception type. 1-3 are listed here; 4 and 5 are documented at their sites.
   1. Files are opened with encoding="utf-8-sig", errors="replace" (never "utf-8" alone) --
      read_all's plain "utf-8" + catch-only-OSError lets a UnicodeDecodeError (a ValueError, NOT an
      OSError) kill the entire read, contradicting its own "never fatal" docstring; a BOM also eats
      read_all's first line silently. See plan §A.
-  2. json.loads is wrapped in except (ValueError, RecursionError), not just ValueError -- a line
-     nested ~1000 deep makes json.loads raise RecursionError (a RuntimeError, NOT a ValueError),
-     which read_all's bare `except ValueError` does not catch, so it propagates out and discards
-     every record already read from every file. read_all has this exact hole today. See plan §E's
-     step 1.1 comment / the "deeply_nested" fixture.
+  2. json.loads is wrapped in except (ValueError, RecursionError), not just ValueError -- a deeply
+     nested line raises RecursionError, which is a RuntimeError and NOT a ValueError, so read_all's
+     bare `except ValueError` lets it propagate and discard every record already read from every
+     file. The depth that trips it is interpreter-dependent -- roughly 1000 on <=3.11 but about
+     10000 on 3.12+, whose C parser raises far later -- which is precisely why this catches the
+     TYPE instead of testing a threshold. read_all has this hole today. See plan §E step 1.1 and
+     the "deeply_nested" fixture.
   3. The (ts, actor, seq) sort key coerces ts/actor through str() (missing/None/"" -> "") rather
      than comparing raw values -- read_all's raw compare raises TypeError the moment two records
      disagree on ts's TYPE (e.g. one string, one number), which is fatal for the whole sort, not
@@ -85,7 +89,7 @@ def _read_jsonl_records(path):
         try:
             item = json.loads(line)
         except (ValueError, RecursionError):
-            # Third deliberate divergence, same reasoning as the other two. A line nested ~1000
+            # Divergence 2, same reasoning as the others. A deeply nested
             # deep makes json.loads raise RecursionError, which is a RuntimeError — NOT a
             # ValueError — so `except ValueError` misses it and it propagates out of read_all,
             # discarding every record already accumulated from every file. `ledger.read_all` has
@@ -98,10 +102,20 @@ def _read_jsonl_records(path):
 
 
 def _glob_records(directory):
-    if not directory.exists():
+    """Divergence 5, same shape as the other four: guard the computation, degrade the record.
+
+    `Path.exists()` swallows only ENOENT/ENOTDIR/EBADF/ELOOP — every other OSError propagates, so a
+    directory the process cannot stat (mode 000, or a component over NAME_MAX) escaped `read_all`
+    and aborted the caller. The consumer is `insight ingest --repos <glob>`, a multi-repo walk,
+    where one unreadable checkout would take down the entire ingest. `glob()` already returns []
+    for a missing directory, so the existence check was never needed.
+    """
+    try:
+        paths = sorted(directory.glob("*.jsonl"))
+    except OSError:
         return []
     out = []
-    for path in sorted(directory.glob("*.jsonl")):
+    for path in paths:
         out.extend(_read_jsonl_records(path))
     return out
 

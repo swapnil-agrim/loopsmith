@@ -208,18 +208,28 @@ def test_seq_parsed_from_id_tail_breaks_ties_numerically_not_lexicographically(t
 
 
 def test_reads_union_of_entries_and_ledger_events_oldest_first(tmp_path):
+    """Pins OLDEST-FIRST, not merely the union.
+
+    An earlier form used entries=Jan-01 / events=Jan-02 — already in insertion order — so it passed
+    with `records.sort(key=_sort_key)` deleted entirely: it pinned the union while the done_when's
+    headline requirement went unguarded. The entries record is now the LATER one, so only a real
+    sort can put the events record first.
+    """
     entries = tmp_path / "ledger" / "entries"
     entries.mkdir(parents=True)
     events = tmp_path / "ledger" / "events"
     events.mkdir(parents=True)
     (entries / "a.jsonl").write_text(
-        '{"id":"a:1","ts":"2026-01-01T00:00:00Z","actor":"a","kind":"claimed"}\n', encoding="utf-8"
+        '{"id":"a:1","ts":"2026-06-01T00:00:00Z","actor":"a","kind":"claimed"}\n', encoding="utf-8"
     )
     (events / "b.jsonl").write_text(
-        '{"id":"b:1","ts":"2026-01-02T00:00:00Z","actor":"b","kind":"phase"}\n', encoding="utf-8"
+        '{"id":"b:1","ts":"2026-01-01T00:00:00Z","actor":"b","kind":"phase"}\n', encoding="utf-8"
     )
     records = ledger_reader.read_all(tmp_path)
-    assert [r["id"] for r in records] == ["a:1", "b:1"]
+    assert [r["id"] for r in records] == ["b:1", "a:1"], (
+        "events b:1 is dated 2026-01-01 and entries a:1 is 2026-06-01, so oldest-first must put "
+        "b:1 first — if this reads insertion order, the sort is gone"
+    )
 
 
 def test_local_events_excluded_by_default_share_true(tmp_path):
@@ -303,3 +313,39 @@ def test_real_ledger_worktree_if_present():
         pytest.skip(".sdlc/ledger does not exist in this checkout")
     records = ledger_reader.read_all(sdlc_dir)  # must not raise
     assert isinstance(records, list)
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0,
+                    reason="needs a non-root posix user; root can read mode-000 directories")
+def test_an_unreadable_directory_is_skipped_not_fatal(tmp_path):
+    """The file-level counterpart already existed; the DIRECTORY case escaped.
+
+    `Path.exists()` swallows only ENOENT/ENOTDIR/EBADF/ELOOP, so a directory the process cannot
+    stat raised straight out of read_all — breaking the module's own "never raises" claim. It
+    matters because the consumer is `insight ingest --repos <glob>`: one unreadable checkout would
+    have aborted the whole multi-repo walk instead of costing that repo's records.
+    """
+    entries = tmp_path / "ledger" / "entries"
+    entries.mkdir(parents=True)
+    (entries / "a.jsonl").write_text(
+        '{"id":"a:1","ts":"2026-01-01T00:00:00Z","actor":"a","kind":"claimed"}\n', encoding="utf-8")
+    os.chmod(tmp_path / "ledger", 0o000)
+    try:
+        assert ledger_reader.read_all(tmp_path) == []
+    finally:
+        os.chmod(tmp_path / "ledger", 0o755)
+
+
+def test_a_record_with_no_ts_sorts_first(tmp_path):
+    """Pins _sort_str's documented "missing/None/'' all collapse to '' (sorts first)".
+
+    Mutating it to a plain str() killed no test, yet flips a missing-ts record from first to last
+    ('' < '2026' but 'None' > '2026'). The existing missing_ts fixture asserted survival and count,
+    never order.
+    """
+    entries = tmp_path / "ledger" / "entries"
+    entries.mkdir(parents=True)
+    (entries / "a.jsonl").write_text(
+        '{"id":"a:1","ts":"2026-01-01T00:00:00Z","actor":"a","kind":"claimed"}\n'
+        '{"id":"a:2","actor":"a","kind":"claimed"}\n', encoding="utf-8")
+    assert [r["id"] for r in ledger_reader.read_all(tmp_path)] == ["a:2", "a:1"]
