@@ -101,3 +101,22 @@ def test_toml_actually_parses_with_the_expected_shape():
     assert any("duckdb" in dep for dep in project["dependencies"])
     assert project["scripts"]["insight"] == "insight.__main__:main"
     assert data["tool"]["setuptools"]["dynamic"]["version"]["file"] == "VERSION"
+
+
+def test_pyproject_declares_package_data_for_metric_sql_files():
+    """BR-4 (research dossier): packages=[...] alone ships only .py files under insight.metrics
+    -- a metrics/*.sql asset is silently dropped from a real (non-editable) wheel without this.
+    VERIFIED live, this session, in a scratch copy of this exact pyproject.toml shape: building
+    a wheel before this fix omits a planted metrics/1.sql; after adding the package-data
+    stanza below, the identical build includes it. See .sdlc/plans/108.md Design decision H."""
+    text = _pyproject_text()
+    # Allows intervening comment lines between the table header and the key (Step 5.2's own
+    # snippet has several) -- VERIFIED live, this session: a naive "\s*\n\s*" between the two
+    # (no comment-line allowance) fails to match the real snippet, exactly the false-negative
+    # this looser pattern avoids.
+    assert re.search(
+        r'\[tool\.setuptools\.package-data\]'
+        r'(?:\s*\n\s*#[^\n]*)*'
+        r'\s*\n\s*"insight\.metrics"\s*=\s*\[[^\]]*"\*\.sql"',
+        text,
+    ), "pyproject.toml must declare package-data for insight.metrics's *.sql files"
