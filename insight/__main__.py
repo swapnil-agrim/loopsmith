@@ -56,6 +56,12 @@ def build_parser():
         help="trailing window (days) for git commit/merge counts and merge lead time "
              "(default: 14, matching velocity.py's own default; see insight/ingest/git_reader.py)",
     )
+    ingest_parser.add_argument(
+        "--gh-window-days", dest="gh_window_days", type=int, default=14,
+        help="trailing window (days) for gh-backed PR review timings and check outcomes "
+             "(default: 14; requires the gh CLI -- absent/unauthenticated/unreachable gh "
+             "degrades, never fails ingest; see insight/ingest/gh_reader.py)",
+    )
     for name in ("dash", "gaps"):
         subparsers.add_parser(
             name,
@@ -73,6 +79,7 @@ def main(argv=None):
         from insight.ingest.packs import ingest_collectors
         from insight.ingest.artifact_reader import ingest_artifacts
         from insight.ingest.git_reader import ingest_git_facts, ingest_merge_lead_time
+        from insight.ingest.gh_reader import ingest_gh_reader
 
         path = resolve_db_path(args.db)
         conn = open_store(args.db)
@@ -81,6 +88,7 @@ def main(argv=None):
         artifacts = ingest_artifacts(conn, project_root)
         git_pack = ingest_git_facts(conn, project_root, days=args.git_window_days)
         lead_time = ingest_merge_lead_time(conn, project_root, days=args.git_window_days)
+        gh_pack = ingest_gh_reader(conn, project_root, days=args.gh_window_days)
         conn.close()
         print("insight ingest: store ready at %s" % path)
         for r in results:
@@ -94,6 +102,10 @@ def main(argv=None):
         print("insight ingest: %s%s" % (git_pack["schema"], git_suffix))
         print("insight ingest: %d merge lead-time event(s) (%d skipped)"
               % (lead_time["events"], lead_time["skipped"]))
+        gh_suffix = " (degraded: %s)" % ", ".join(gh_pack["degraded"]) if gh_pack["degraded"] else ""
+        print("insight ingest: %s%s" % (gh_pack["schema"], gh_suffix))
+        print("insight ingest: %d PR review event(s), %d PR check row(s)"
+              % (gh_pack["review_events"], gh_pack["check_rows"]))
         return 0
     issue = _TRACKING_ISSUE[args.command]
     print(

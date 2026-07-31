@@ -3,11 +3,12 @@
 
 Scope is schema bootstrap plus a narrow, additive schema evolution — no collector
 adapter, no ledger reading, no rows written, no `phase_trace_completeness`
-computation. `ensure_schema` runs eight `CREATE TABLE IF NOT EXISTS` statements,
-then three idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements — two
-added by issue #102, a third by issue #103 (see .sdlc/plans/102.md §B and
-.sdlc/plans/103.md §C for why a plain CREATE-only approach can't add a column to a
-store file an earlier story already created). This ALTER set is additive-only — no
+computation. `ensure_schema` runs ten `CREATE TABLE IF NOT EXISTS` statements,
+then six idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements — two
+added by issue #102, a third by issue #103, three more by issue #104 (see
+.sdlc/plans/102.md §B, .sdlc/plans/103.md §C, and .sdlc/plans/104.md §A for why a
+plain CREATE-only approach can't add a column to a store file an earlier story
+already created). This ALTER set is additive-only — no
 type changes, no drops, no `information_schema` diffing — and is NOT a general
 migration framework: a future story that needs to change a column's TYPE, or drop
 one, still needs to introspect `information_schema.columns` and diff against the
@@ -34,11 +35,12 @@ import duckdb
 DEFAULT_DB_PATH = pathlib.Path(".sdlc") / "insight.duckdb"
 
 #: The tables ensure_schema creates. The first five are #99's schema bootstrap (spec §B.3);
-#: fact_collector_pack (#100), fact_slice (#102), and fact_merge_lead_time (#103) are design
-#: decisions of those stories, not part of spec §B.3 -- see .sdlc/plans/100.md §C,
-#: .sdlc/plans/102.md §C, and .sdlc/plans/103.md §C.
+#: fact_collector_pack (#100), fact_slice (#102), fact_merge_lead_time (#103), fact_pr_review
+#: and fact_pr_check (#104) are design decisions of those stories, not part of spec §B.3 -- see
+#: .sdlc/plans/100.md §C, .sdlc/plans/102.md §C, .sdlc/plans/103.md §C, .sdlc/plans/104.md §A.
 TABLES = ("dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff",
-          "fact_collector_pack", "fact_slice", "fact_merge_lead_time")
+          "fact_collector_pack", "fact_slice", "fact_merge_lead_time",
+          "fact_pr_review", "fact_pr_check")
 
 _DDL = (
     """
@@ -164,15 +166,49 @@ _DDL = (
         PRIMARY KEY (project_id, merge_sha)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS fact_pr_review (
+        project_id VARCHAR,
+        pr_number INTEGER,
+        source VARCHAR,
+        event_id VARCHAR,
+        actor VARCHAR,
+        verdict VARCHAR,
+        event_ts TIMESTAMP,
+        pr_created_ts TIMESTAMP,
+        pr_merged_ts TIMESTAMP,
+        seconds_since_pr_created BIGINT,
+        degraded VARCHAR[],
+        PRIMARY KEY (project_id, source, event_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS fact_pr_check (
+        project_id VARCHAR,
+        pr_number INTEGER,
+        check_name VARCHAR,
+        status VARCHAR,
+        conclusion VARCHAR,
+        started_ts TIMESTAMP,
+        completed_ts TIMESTAMP,
+        pr_created_ts TIMESTAMP,
+        pr_merged_ts TIMESTAMP,
+        degraded VARCHAR[],
+        PRIMARY KEY (project_id, pr_number, check_name)
+    )
+    """,
 )
 
 #: Narrow, additive-only schema evolution -- see .sdlc/plans/102.md Design decision B for the
-#: mechanism's origin. The third statement is issue #103's: fact_collector_pack.window_merge_count
-#: -- see .sdlc/plans/103.md §C.
+#: mechanism's origin. Statements 3 is issue #103's; 4-6 are issue #104's (fact_collector_pack's
+#: gh-facts/v1 summary columns) -- see .sdlc/plans/104.md §A.
 _ALTER = (
     "ALTER TABLE fact_goal ADD COLUMN IF NOT EXISTS status VARCHAR",
     "ALTER TABLE fact_goal ADD COLUMN IF NOT EXISTS verify_command VARCHAR",
     "ALTER TABLE fact_collector_pack ADD COLUMN IF NOT EXISTS window_merge_count INTEGER",
+    "ALTER TABLE fact_collector_pack ADD COLUMN IF NOT EXISTS window_pr_count INTEGER",
+    "ALTER TABLE fact_collector_pack ADD COLUMN IF NOT EXISTS window_review_event_count INTEGER",
+    "ALTER TABLE fact_collector_pack ADD COLUMN IF NOT EXISTS window_check_row_count INTEGER",
 )
 
 
@@ -183,11 +219,12 @@ def resolve_db_path(db_path=None):
 
 
 def ensure_schema(conn):
-    """Run the eight idempotent `CREATE TABLE IF NOT EXISTS` statements, then the three
-    idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements (issues #102/#103 -- see
-    the module docstring and .sdlc/plans/102.md §B / .sdlc/plans/103.md §C), against an
-    already-open DuckDB connection. Safe to call repeatedly against the same connection or
-    file, including a file created by an earlier story before these columns existed."""
+    """Run the ten idempotent `CREATE TABLE IF NOT EXISTS` statements, then the six
+    idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements (issues #102/#103/#104 --
+    see the module docstring and .sdlc/plans/102.md §B / .sdlc/plans/103.md §C /
+    .sdlc/plans/104.md §A), against an already-open DuckDB connection. Safe to call repeatedly
+    against the same connection or file, including a file created by an earlier story before
+    these columns existed."""
     for ddl in _DDL:
         conn.execute(ddl)
     for ddl in _ALTER:

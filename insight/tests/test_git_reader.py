@@ -13,8 +13,8 @@ import pytest
 duckdb = pytest.importorskip("duckdb")
 
 from insight.ingest.git_reader import (  # noqa: E402
-    _to_utc_naive, find_merge_events, git_facts_payload, ingest_git_facts,
-    ingest_merge_lead_time, is_git_repo, measure_window, write_merge_lead_time_row,
+    find_merge_events, git_facts_payload, ingest_git_facts, ingest_merge_lead_time,
+    is_git_repo, measure_window, to_utc_naive, write_merge_lead_time_row,
 )
 from insight.ingest.store import ensure_schema  # noqa: E402
 
@@ -69,9 +69,9 @@ def _write_tree(root):
 def _hash_corrupted_commit(root, parent_sha, message):
     """Builds a REAL commit object with a garbled author line ('author t <t@example.com>
     notadate +0000') via git plumbing (`git hash-object -t commit -w --literally`) -- exactly
-    reproducing the scenario a plan-review used to prove the ValueError-out-of-_to_utc_naive bug
+    reproducing the scenario a plan-review used to prove the ValueError-out-of-to_utc_naive bug
     end-to-end, then to verify the fix: git prints the literal, unexpanded '%aI' for THIS
-    commit's author date, which used to raise inside _to_utc_naive and crash the whole `insight
+    commit's author date, which used to raise inside to_utc_naive and crash the whole `insight
     ingest` run. Not a hand-built dict standing in for a real commit -- a real object in the
     object database, checked out onto a real branch and merged normally.
 
@@ -265,7 +265,7 @@ def test_git_merge_event_corrupted_author_date_degrades_never_raises(tmp_path):
     """END-TO-END reproduction of the exact scenario a plan-review used to find the crash and
     then verify the fix: a REAL commit object (built with `git hash-object -t commit -w`, not a
     hand-built dict) carrying a garbled author line becomes the tip of a feature branch, merged
-    normally. Before the fix, _to_utc_naive raised ValueError on this commit's author date and
+    normally. Before the fix, to_utc_naive raised ValueError on this commit's author date and
     it propagated out of find_merge_events, uncaught, all the way out of `insight ingest` --
     aborting the whole run and losing every collector/reader that had already run in the same
     process. This test is what would have caught it."""
@@ -299,10 +299,10 @@ def test_to_utc_naive_offset_less_string_is_rejected_not_silently_localized():
     instant with no error raised at all. git's own %aI/%cI always include an offset in normal
     operation, so this path is defensive, not expected input -- but 'defensive' means reject,
     never guess."""
-    assert _to_utc_naive("2026-01-01T00:00:00") is None       # parseable, but no offset at all
-    assert _to_utc_naive("%aI") is None                        # the literal unexpanded-specifier case
-    assert _to_utc_naive("not a date") is None
-    assert _to_utc_naive("2026-01-01T00:00:00+05:30") is not None  # sanity: the valid case still works
+    assert to_utc_naive("2026-01-01T00:00:00") is None       # parseable, but no offset at all
+    assert to_utc_naive("%aI") is None                        # the literal unexpanded-specifier case
+    assert to_utc_naive("not a date") is None
+    assert to_utc_naive("2026-01-01T00:00:00+05:30") is not None  # sanity: the valid case still works
 
 
 def test_to_utc_naive_z_suffix_parses_on_python_39_plus_but_real_garbage_still_degrades():
@@ -312,7 +312,7 @@ def test_to_utc_naive_z_suffix_parses_on_python_39_plus_but_real_garbage_still_d
     exactly UTC. `datetime.fromisoformat` only learned to parse a trailing 'Z' in PYTHON 3.11;
     insight/pyproject.toml declares `requires-python = ">=3.9"` and CI tests 3.10, where GitHub's
     UTC runners hit this on EVERY commit -- turning a real, derivable lead time into a silent
-    None with a spurious 'malformed_commit_date' degrade code. This test calls _to_utc_naive
+    None with a spurious 'malformed_commit_date' degrade code. This test calls to_utc_naive
     DIRECTLY with a hand-built 'Z'-suffixed string (not via a git fixture, whose exact %aI/%cI
     rendering depends on the locally installed git's version) so it fails on Python 3.10 without
     the fix regardless of which git happens to be on PATH.
@@ -322,13 +322,13 @@ def test_to_utc_naive_z_suffix_parses_on_python_39_plus_but_real_garbage_still_d
     all) must still degrade to None, exactly like any other unparseable input -- the Z/z
     normalization only strips a trailing zone marker, it does not make fromisoformat lenient
     about anything else."""
-    z = _to_utc_naive("2026-01-01T10:00:00Z")
+    z = to_utc_naive("2026-01-01T10:00:00Z")
     assert z == datetime.datetime(2026, 1, 1, 10, 0, 0)  # UTC Z suffix -- parses, and correctly
-    assert _to_utc_naive("2026-01-01T10:00:00z") == datetime.datetime(2026, 1, 1, 10, 0, 0)  # lowercase z too
+    assert to_utc_naive("2026-01-01T10:00:00z") == datetime.datetime(2026, 1, 1, 10, 0, 0)  # lowercase z too
     # A non-UTC offset alongside a literal Z would be a contradiction -- fromisoformat still
     # correctly rejects malformed input that merely ENDS in 'Z' without being a real date.
-    assert _to_utc_naive("not a real dateZ") is None          # ends in Z, still garbage -- must degrade
-    assert _to_utc_naive("%aIZ") is None                       # same shape, still garbage -- must degrade
+    assert to_utc_naive("not a real dateZ") is None          # ends in Z, still garbage -- must degrade
+    assert to_utc_naive("%aIZ") is None                       # same shape, still garbage -- must degrade
 
 
 def test_find_merge_events_shallow_clone_degrades_merge_base_unavailable(tmp_path):
@@ -425,7 +425,7 @@ def test_ingest_merge_lead_time_survives_a_crash_during_discovery(conn, tmp_path
     """Pins the OUTER guard around find_merge_events (the blocking finding's second half): a
     crash during discovery itself -- before the per-row loop even starts -- must not propagate
     out of ingest_merge_lead_time and therefore must not be able to abort `insight ingest`.
-    Defense in depth: _to_utc_naive no longer raises for the ONE known cause (a malformed commit
+    Defense in depth: to_utc_naive no longer raises for the ONE known cause (a malformed commit
     date), but this proves the outer guard catches an arbitrary, unforeseen failure too, not only
     that one."""
     import insight.ingest.git_reader as git_reader_module
