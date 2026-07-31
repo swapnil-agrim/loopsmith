@@ -11,6 +11,12 @@ _Nothing is blocked on another person._
 
 | when | who | did | goal | detail |
 |---|---|---|---|---|
+| 2026-07-31T15:17:44Z | swapnil-agrim | claimed | 108 |  |
+| 2026-07-31T15:16:11Z | swapnil-agrim | claimed | 108 |  |
+| 2026-07-31T15:15:48Z | swapnil-agrim | parked | 105 | Blocked on ordering, not on a decision: #180 (E1.S9, persist ledger records into fact_event and fact_handoff) already exists and is the story that builds the write path this goal's watermark is supposed to gate. Verified in Research: spec B.2 step 2 was never built, ledger_reader.py is read-only and is not wired into ingest, and no fact_event/fact_handoff write exists -- so a watermark shipped today gates nothing. #105 should run AFTER #180. Second, independent question still needing your call: fact_collector_pack is append-only BY DESIGN -- measured going 5 to 10 rows across two ingest runs -- with three shipped tests asserting exactly that, so this issue's own Done-when, 'running ingest twice produces identical row counts', cannot be met without reversing a deliberate earlier decision and building a schema/PK migration path this codebase has never needed. Also for your call: the third dimension of the (project, actor, stream) key is inert, since 'stream' is proposed in spec A.1 but not implemented in the shipped ledger.py. Research is complete and the dossier stands at .sdlc/research/105-incremental-resume.md. |
+| 2026-07-31T15:15:04Z | swapnil-agrim | claimed | 105 |  |
+| 2026-07-31T15:14:47Z | swapnil-agrim | done | 106 |  |
+| 2026-07-31T15:14:28Z | swapnil-agrim | merged | 106 | auto-merge (squash) armed on PR #181 |
 | 2026-07-31T13:23:53Z | swapnil-agrim | claimed | 105 |  |
 | 2026-07-31T13:22:45Z | swapnil-agrim | claimed | 106 |  |
 | 2026-07-31T13:20:36Z | swapnil-agrim | claimed | 106 |  |
@@ -30,9 +36,3 @@ _Nothing is blocked on another person._
 | 2026-07-31T08:25:07Z | swapnil-agrim | done | 101 |  |
 | 2026-07-31T08:24:53Z | swapnil-agrim | merged | 101 | auto-merge (squash) armed on PR #174 |
 | 2026-07-31T08:06:02Z | swapnil-agrim | claimed | 101 |  |
-| 2026-07-31T06:51:41Z | swapnil-agrim | claimed | 101 |  |
-| 2026-07-31T06:51:24Z | swapnil-agrim | done | 100 |  |
-| 2026-07-31T06:51:09Z | swapnil-agrim | merged | 100 | auto-merge (squash) armed on PR #173 |
-| 2026-07-31T05:17:39Z | swapnil-agrim | claimed | 100 |  |
-| 2026-07-31T05:17:16Z | swapnil-agrim | done | 99 |  |
-| 2026-07-31T05:17:01Z | swapnil-agrim | merged | 99 | auto-merge (squash) armed on PR #172 |
