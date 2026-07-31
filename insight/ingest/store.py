@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
 """DuckDB store bootstrap (issue #99, E1.S1): open/create the store and ensure schema.
 
-Scope is schema bootstrap only — no collector adapter, no ledger reading, no rows
-written, no `phase_trace_completeness` computation. `ensure_schema` runs six
-`CREATE TABLE IF NOT EXISTS` statements against an open connection; that idempotent
-CREATE is the entire correctness story for "re-running never duplicates anything" in
-v1 — no `schema_version` table, no `ALTER` diffing, no migration framework. A future
-story that needs to change a column's type or add a column to an existing on-disk
-store will need to introspect `information_schema.columns` and diff against the
-expected shape; that is explicitly not built here.
+Scope is schema bootstrap plus one narrow, additive schema evolution — no collector
+adapter, no ledger reading, no rows written, no `phase_trace_completeness`
+computation. `ensure_schema` runs seven `CREATE TABLE IF NOT EXISTS` statements,
+then two idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements added by
+issue #102 (see .sdlc/plans/102.md §B for why a plain CREATE-only approach can't
+add a column to a store file an earlier story already created). This ALTER pair is
+additive-only — no type changes, no drops, no `information_schema` diffing — and is
+NOT a general migration framework: a future story that needs to change a column's
+TYPE, or drop one, still needs to introspect `information_schema.columns` and diff
+against the expected shape, exactly as this docstring said before #102; that
+remains explicitly not built here.
 
 Column types are decisions, not spec-given (the spec at
 docs/superpowers/specs/2026-07-30-loopsmith-insight-data-platform-design.md §B.3 lists
@@ -30,9 +33,10 @@ import duckdb
 DEFAULT_DB_PATH = pathlib.Path(".sdlc") / "insight.duckdb"
 
 #: The tables ensure_schema creates. The first five are #99's schema bootstrap (spec §B.3);
-#: fact_collector_pack was added by #100 (the collector adapter, see insight/ingest/packs.py) and
-#: is a design decision of that story, not part of spec §B.3 — see .sdlc/plans/100.md §C.
-TABLES = ("dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff", "fact_collector_pack")
+#: fact_collector_pack (#100) and fact_slice (#102) are design decisions of those stories, not
+#: part of spec §B.3 -- see .sdlc/plans/100.md §C and .sdlc/plans/102.md §C.
+TABLES = ("dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff",
+          "fact_collector_pack", "fact_slice")
 
 _DDL = (
     """
@@ -131,6 +135,30 @@ _DDL = (
         raw_payload VARCHAR
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS fact_slice (
+        project_id VARCHAR,
+        goal_id VARCHAR,
+        slice_id VARCHAR,
+        title VARCHAR,
+        size VARCHAR,
+        status VARCHAR,
+        needs VARCHAR[],
+        files VARCHAR[],
+        PRIMARY KEY (project_id, goal_id, slice_id)
+    )
+    """,
+)
+
+#: Narrow, additive-only schema evolution (issue #102, the first of its kind in this file) --
+#: ADD COLUMN IF NOT EXISTS only, never a type change or a drop, never information_schema
+#: diffing. Exists specifically so a store file created by an EARLIER story (#99/#100/#101,
+#: fact_goal with 17 columns) gets these two new columns too, not just a fresh file -- CREATE
+#: TABLE IF NOT EXISTS alone is a no-op against an already-existing table. See
+#: .sdlc/plans/102.md Design decision B.
+_ALTER = (
+    "ALTER TABLE fact_goal ADD COLUMN IF NOT EXISTS status VARCHAR",
+    "ALTER TABLE fact_goal ADD COLUMN IF NOT EXISTS verify_command VARCHAR",
 )
 
 
@@ -141,10 +169,14 @@ def resolve_db_path(db_path=None):
 
 
 def ensure_schema(conn):
-    """Run the six idempotent `CREATE TABLE IF NOT EXISTS` statements against an
-    already-open DuckDB connection. Safe to call repeatedly against the same
-    connection or file — a no-op against an already-correct schema."""
+    """Run the seven idempotent `CREATE TABLE IF NOT EXISTS` statements, then the two
+    idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements (issue #102 -- see the
+    module docstring and .sdlc/plans/102.md §B), against an already-open DuckDB connection.
+    Safe to call repeatedly against the same connection or file, including a file created by
+    an earlier story before these columns existed."""
     for ddl in _DDL:
+        conn.execute(ddl)
+    for ddl in _ALTER:
         conn.execute(ddl)
 
 
