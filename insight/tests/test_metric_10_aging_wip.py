@@ -113,3 +113,35 @@ def test_metric_10_a_same_second_claim_then_done_is_not_a_currently_held_claim(c
     load_metrics(conn)
     rows = rows_as_dicts(conn.execute("SELECT * FROM metric_10"))
     assert rows == []
+
+
+def test_metric_10_the_same_actor_holding_claims_in_two_projects_returns_both(conn):
+    """PRECONDITION BUG FIX (issue #105). current_holder already carries project_id (it is
+    SELECTed out of latest_event two CTEs up), but the final ranked window used to
+    `PARTITION BY actor_id` alone, with no project_id anywhere in its PARTITION BY or output
+    list. An actor holding an open claim in TWO DIFFERENT projects therefore collapsed onto
+    ONE row globally -- whichever of the two had the smaller claimed_ts -- and the other
+    project's claim vanished from the result silently (not wrong, just gone; nothing in the
+    query shape would have hinted a row was missing). This was inert only because fact_event
+    carried zero rows in every real run before this story's ledger writer (#105/#180) started
+    filling it -- a single actor working the same identity across two separate LoopSmith
+    projects is exactly this ingest path's own normal shape (project_id is derived per
+    project_root, actor_id is the ledger's own `actor`, and nothing ties the two together).
+
+    Fix: PARTITION BY (project_id, actor_id) and include project_id in the SELECT. Two
+    projects, one shared actor, one open claim in each -- both survive as two rows.
+
+    MUTATION-PROVEN: reverting the fix (PARTITION BY actor_id alone, project_id dropped from
+    the SELECT) makes this test fail -- p2's row disappears entirely (len(rows) == 1, not 2)
+    because 2026-01-01 (p1) sorts before 2026-01-05 (p2) globally. See the story's own report
+    for the exact revert/run/restore transcript."""
+    conn.execute(
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind) VALUES "
+        "('p1','g1','2026-01-01T00:00:00','a1','claimed'),"
+        "('p2','g2','2026-01-05T00:00:00','a1','claimed')"
+    )
+    load_metrics(conn)
+    rows = rows_as_dicts(conn.execute("SELECT * FROM metric_10 ORDER BY project_id"))
+    by_project = {r["project_id"]: (r["actor_id"], r["goal_id"]) for r in rows}
+    assert by_project == {"p1": ("a1", "g1"), "p2": ("a1", "g2")}
+    assert len(rows) == 2  # BOTH survive -- the bug this fixes silently dropped one

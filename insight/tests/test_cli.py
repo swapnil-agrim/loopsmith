@@ -171,7 +171,7 @@ def test_ingest_is_idempotent_via_cli(tmp_path, isolate_path_empty):
     assert sorted(names) == sorted({
         "dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff",
         "fact_collector_pack", "fact_slice", "fact_merge_lead_time",
-        "fact_pr_review", "fact_pr_check",
+        "fact_pr_review", "fact_pr_check", "ingest_ledger_cursor",
     })
     assert len(names) == len(set(names))
     conn.close()
@@ -187,7 +187,7 @@ def test_main_module_does_not_import_duckdb_at_top_level():
     banned = {"duckdb", "insight.ingest.store", "insight.ingest.collectors",
               "insight.ingest.packs", "insight.ingest.artifact_reader",
               "insight.ingest.git_reader", "insight.ingest.gh_reader",
-              "insight.ingest.repo_scan", "insight"}
+              "insight.ingest.repo_scan", "insight.ingest.ledger_writer", "insight"}
     top_level_targets = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -399,6 +399,62 @@ def test_help_lists_the_new_gh_window_days_flag(capsys):
     assert "--gh-window-days" in out
 
 
+# --------------------------------------------------------------------------- ledger writer (issue #105)
+
+
+def test_ingest_wires_ledger_writer_and_populates_fact_event_and_fact_handoff(
+    tmp_path, monkeypatch, capsys, isolate_path_empty
+):
+    duckdb = pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    entries = tmp_path / ".sdlc" / "ledger" / "entries"
+    entries.mkdir(parents=True)
+    (entries / "alice.jsonl").write_text(
+        '{"id":"alice:1","ts":"2026-01-01T00:00:00Z","actor":"alice","kind":"claimed","goal":"g1"}\n'
+        '{"id":"alice:2","ts":"2026-01-02T00:00:00Z","actor":"alice","kind":"handoff","goal":"g1",'
+        '"to":"bob","issue":7}\n',
+        encoding="utf-8",
+    )
+    (entries / "bob.jsonl").write_text(
+        '{"id":"bob:1","ts":"2026-01-03T00:00:00Z","actor":"bob","kind":"ack","goal":"g1",'
+        '"issue":7,"state":"resolved"}\n',
+        encoding="utf-8",
+    )
+
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "ledger event(s)" in out
+    assert "hand-off(s)" in out
+
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    event_row = conn.execute("select goal_id, kind, reliability_class from fact_event").fetchone()
+    assert event_row == ("g1", "claimed", 1)
+    handoff_row = conn.execute(
+        "select from_actor, to_actor, issue, ack_state from fact_handoff"
+    ).fetchone()
+    assert handoff_row == ("alice", "bob", 7, "resolved")
+    conn.close()
+
+
+def test_ingest_ledger_writer_is_idempotent_via_cli(tmp_path, monkeypatch, isolate_path_empty):
+    duckdb = pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    entries = tmp_path / ".sdlc" / "ledger" / "entries"
+    entries.mkdir(parents=True)
+    (entries / "alice.jsonl").write_text(
+        '{"id":"alice:1","ts":"2026-01-01T00:00:00Z","actor":"alice","kind":"claimed","goal":"g1"}\n',
+        encoding="utf-8",
+    )
+    collectors_root = str(tmp_path / "no-collectors-here")
+    assert main(["ingest", "--collectors-root", collectors_root]) == 0
+    assert main(["ingest", "--collectors-root", collectors_root]) == 0
+
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    assert conn.execute("select count(*) from fact_event").fetchone()[0] == 1
+    conn.close()
+
+
 # --------------------------------------------------------------------------- --repos glob + adoption gate (issue #106)
 
 
@@ -414,7 +470,8 @@ def test_ingest_skips_a_repo_without_sdlc_and_records_the_reason(
     tmp_path, monkeypatch, capsys, isolate_path_empty
 ):
     """Default (no --repos) mode: the universal adoption gate, Design decision E. No .sdlc/ at
-    all -- exit 0 (skip is never fatal), a skip line printed, NONE of the four readers ran."""
+    all -- exit 0 (skip is never fatal), a skip line printed, NONE of the five readers
+    (collectors, artifacts, git, gh, ledger -- issue #105 adds the fifth) ran."""
     duckdb = pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)  # no .sdlc/ created
 
@@ -427,7 +484,7 @@ def test_ingest_skips_a_repo_without_sdlc_and_records_the_reason(
     row = conn.execute("select adopted, skip_reason from dim_project").fetchone()
     assert row == (False, "no_sdlc")
     for table in ("fact_goal", "fact_collector_pack", "fact_merge_lead_time",
-                   "fact_pr_review", "fact_pr_check"):
+                   "fact_pr_review", "fact_pr_check", "fact_event", "fact_handoff"):
         assert conn.execute("select count(*) from %s" % table).fetchone()[0] == 0
     conn.close()
 

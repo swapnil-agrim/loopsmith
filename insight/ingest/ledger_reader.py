@@ -2,9 +2,12 @@
 """Ledger reader (issue #101, E1.S3): the union of ledger/entries/*.jsonl and
 ledger/events/*.jsonl, oldest-first, plus .sdlc/events/*.jsonl when telemetry.share is off.
 
-READS ONLY. Nothing here is persisted into DuckDB (no fact_event/fact_handoff INSERT) and this
-module is not wired into `insight ingest` yet — see .sdlc/plans/101.md §F. A later persistence
-story imports read_all() directly.
+READS ONLY -- this module still performs no DuckDB writes itself (no `import duckdb` anywhere
+below). `insight/ingest/ledger_writer.py` (issue #105, E1.S7) is the persistence story .sdlc/
+plans/101.md §F named as "later": it imports `read_all_with_reliability` (below), not `read_all`
+directly, so it can tag each record with the reliability class its OWN source stream carries
+(spec §3) without every other `read_all` caller having to filter an extra key out of each dict.
+`read_all` itself is untouched by that story -- same signature, same return shape, same tests.
 
 Reimplements skills/sdlc-loop/scripts/ledger.py:read_all from scratch (never imported — the
 plugin/product boundary in tests/test_import_boundary.py forbids it, and this module is zero
@@ -146,3 +149,52 @@ def read_all(sdlc_dir):
         records.extend(_glob_records(base / "events"))
     records.sort(key=_sort_key)
     return records
+
+
+def seq_of(entry):
+    """The ledger id's own per-author sequence number -- promoted from private (issue #105,
+    same move .sdlc/plans/104.md Design decision G already made for git_reader.to_utc_naive)
+    so insight/ingest/ledger_writer.py's resume cursor reuses the SAME hardened parser
+    _sort_key already trusts (an absurd or malformed id tail degrades to 0, never raises --
+    see _seq's own docstring for the exact tolerance rules: divergence 4 from ledger.py's own
+    read_all), rather than a second, drifting reimplementation of "the tail after the last
+    ':'." Behaviour is byte-for-byte _seq -- this is a name, not a rewrite."""
+    return _seq(entry)
+
+
+def read_all_with_reliability(sdlc_dir):
+    """Same union and the same oldest-first (ts, actor, seq) sort as read_all, but each
+    returned dict gains one extra key, 'reliability_class': 1 for a record read from
+    ledger/entries/ (Python-controlled -- an actor cannot forget to write a lifecycle line,
+    spec §3's Class 1), 2 for one from ledger/events/ or sdlc_dir/events/ (agent-emitted,
+    best-effort, Class 2). This is the ONE place that distinction is made, so
+    insight/ingest/ledger_writer.py (and anything after it) never has to re-derive "which
+    stream did this come from" from a merged list that has already forgotten -- read_all's own
+    return value carries no such marker, by design (every other current caller -- open_claims,
+    render, team, addressed_to's ledger.py equivalents -- treats the union as one undifferentiated
+    stream, and adding an unrequested key to read_all's own dicts would be an unrelated,
+    untested behaviour change to a function three other stories already depend on byte-for-byte).
+
+    NOT a rewrite of read_all's own internals: same three globs (ledger/entries, ledger/events,
+    sdlc_dir/events gated on telemetry.share is off), same _glob_records/_telemetry_share_is_off
+    helpers, same _sort_key. Only the per-record tag and the point at which it is attached are
+    new. See issue #105 and the module docstring above.
+
+    Today, ledger.py itself has no `stream` parameter yet (that is #136, E6.S1) -- every real
+    ledger write lands in ledger/entries/, so in practice every record read here carries
+    reliability_class=1 until an events-stream writer exists. This function is nonetheless
+    written against the SHAPE the spec already commits to (§3, §A.1), not against today's
+    single-stream reality, so it needs no revision the day #136 starts populating
+    ledger/events/ -- only ledger_writer.py's resume-cursor key (deliberately (project, actor),
+    not (project, actor, stream) -- see that module's own docstring) will need widening then."""
+    base = pathlib.Path(sdlc_dir)
+    tagged = []
+    for rec in _glob_records(base / "ledger" / "entries"):
+        tagged.append(dict(rec, reliability_class=1))
+    for rec in _glob_records(base / "ledger" / "events"):
+        tagged.append(dict(rec, reliability_class=2))
+    if _telemetry_share_is_off(base):
+        for rec in _glob_records(base / "events"):
+            tagged.append(dict(rec, reliability_class=2))
+    tagged.sort(key=_sort_key)
+    return tagged

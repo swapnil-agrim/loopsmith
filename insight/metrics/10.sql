@@ -26,10 +26,10 @@ current_holder AS (
     FROM latest_event
     WHERE rn = 1 AND is_claim = 1
 )
-SELECT actor_id, goal_id, claimed_ts
+SELECT project_id, actor_id, goal_id, claimed_ts
 FROM (
-    SELECT actor_id, goal_id, claimed_ts,
-           ROW_NUMBER() OVER (PARTITION BY actor_id ORDER BY claimed_ts ASC) AS rn
+    SELECT project_id, actor_id, goal_id, claimed_ts,
+           ROW_NUMBER() OVER (PARTITION BY project_id, actor_id ORDER BY claimed_ts ASC) AS rn
     FROM current_holder
 ) ranked
 WHERE rn = 1
