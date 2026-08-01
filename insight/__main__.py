@@ -120,6 +120,13 @@ def build_parser():
         "--port", dest="port", type=int, default=8787,
         help="port for --serve (default: 8787); ignored without --serve",
     )
+    dash_parser.add_argument(
+        "--actor", dest="actor", default=None,
+        help="build the IC persona view (<out>/ic.html) scoped to this actor; falls back to "
+             ".sdlc/config.json's ledger.actor when omitted (issue #126, E4.S3). If neither "
+             "resolves, ic.html is skipped with a WARNING on stdout -- insight dash itself still "
+             "exits 0.",
+    )
     # the stub loop now has nothing left in it -- kept as an empty tuple rather than deleted, so
     # a FUTURE new stub subcommand has an obvious place to land, mirroring how this loop already
     # shrank from {"gaps", "dash"} to {"dash"} in #122 without changing shape
@@ -328,6 +335,30 @@ def main(argv=None):
                 % (index_path, summary["metric_count"], summary["metrics_with_data"],
                    summary["gaps_verdict"])
             )
+
+        # IC persona view (issue #126, E4.S3): a SECOND, actor-scoped file, ic.html, built from a
+        # fresh connection (the one above is already closed). Lazy import, same convention as
+        # everything else in this branch. Unresolved actor is NOT a `dash` failure -- see
+        # insight.dash.actor's own module docstring (Decision 1/2 of .sdlc/plans/126.md) and the
+        # six pre-existing `dash` CLI tests (test_cli.py:742-819) that run with no config/flag and
+        # assert code == 0, stderr == "" -- this branch must not regress either.
+        from insight.dash.actor import ActorResolutionError, resolve_actor
+        from insight.dash.ic import render_ic_view
+
+        try:
+            actor = resolve_actor(pathlib.Path(".sdlc"), explicit=args.actor)
+        except ActorResolutionError as e:
+            print("insight dash: WARNING no actor resolved -- skipping IC view (%s)" % e)
+        else:
+            ic_conn = open_store(args.db)
+            try:
+                ic_html, _ic_summary = render_ic_view(ic_conn, actor)
+            finally:
+                ic_conn.close()
+            assert_self_contained(ic_html)  # belt-and-suspenders, mirrors index.html above
+            ic_path = out_dir / "ic.html"
+            ic_path.write_text(ic_html, encoding="utf-8", errors="replace")
+            print("insight dash: wrote %s (IC view for %s)" % (ic_path, actor))
 
         if args.serve:
             try:
