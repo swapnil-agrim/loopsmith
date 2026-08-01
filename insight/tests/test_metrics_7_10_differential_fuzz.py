@@ -203,7 +203,13 @@ def test_a_terminal_releasing_one_actor_and_a_reclaim_by_another_at_the_same_ins
     rows7 = rows_as_dicts(conn.execute("SELECT * FROM metric_7 ORDER BY week_start"))
     assert [r["wip_count"] for r in rows7] == [0, 1]
     rows10 = rows_as_dicts(conn.execute("SELECT * FROM metric_10"))
-    assert rows10 == [{"actor_id": "a2", "goal_id": "g", "claimed_ts": rows10[0]["claimed_ts"]}]
+    # project_id joined the SELECT list as part of issue #105's PARTITION BY (project_id,
+    # actor_id) fix (metric_10 used to PARTITION BY actor_id alone, silently dropping an
+    # actor's claim in a second project) -- this exact-shape row comparison is updated to
+    # match, not weakened: actor_id/goal_id/claimed_ts are still pinned exactly as before.
+    assert rows10 == [
+        {"project_id": "p1", "actor_id": "a2", "goal_id": "g", "claimed_ts": rows10[0]["claimed_ts"]}
+    ]
 
 
 def test_double_terminal_events_for_one_goal_are_a_harmless_noop(conn):

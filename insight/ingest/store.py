@@ -3,7 +3,7 @@
 
 Scope is schema bootstrap plus a narrow, additive schema evolution — no collector
 adapter, no ledger reading, no rows written, no `phase_trace_completeness`
-computation. `ensure_schema` runs ten `CREATE TABLE IF NOT EXISTS` statements,
+computation. `ensure_schema` runs eleven `CREATE TABLE IF NOT EXISTS` statements,
 then eight idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements — two
 added by issue #102, a third by issue #103, three more by issue #104, and a final
 two (dim_project.adopted/skip_reason) by issue #106 (see .sdlc/plans/102.md §B,
@@ -15,6 +15,17 @@ migration framework: a future story that needs to change a column's TYPE, or dro
 one, still needs to introspect `information_schema.columns` and diff against the
 expected shape, exactly as this docstring said before #102; that remains
 explicitly not built here.
+
+`ingest_ledger_cursor` (issue #105, E1.S7) is the eleventh table, a NEW CREATE
+rather than an ALTER (same footing as fact_collector_pack/fact_slice/
+fact_merge_lead_time/fact_pr_review/fact_pr_check before it) — the resume
+watermark `insight/ingest/ledger_writer.py` reads/advances so a second `insight
+ingest` run neither re-writes a ledger record it already landed in fact_event/
+fact_handoff nor skips one a partial run never reached. It is deliberately NOT
+named `fact_*`/`dim_*`: it is not a fact about the project, it is this ingest
+path's own bookkeeping, the same distinction that keeps it out of
+docs/superpowers/specs/2026-07-30-loopsmith-insight-data-platform-design.md §B.3's
+star schema entirely.
 
 Column types are decisions, not spec-given (the spec at
 docs/superpowers/specs/2026-07-30-loopsmith-insight-data-platform-design.md §B.3 lists
@@ -37,11 +48,12 @@ DEFAULT_DB_PATH = pathlib.Path(".sdlc") / "insight.duckdb"
 
 #: The tables ensure_schema creates. The first five are #99's schema bootstrap (spec §B.3);
 #: fact_collector_pack (#100), fact_slice (#102), fact_merge_lead_time (#103), fact_pr_review
-#: and fact_pr_check (#104) are design decisions of those stories, not part of spec §B.3 -- see
-#: .sdlc/plans/100.md §C, .sdlc/plans/102.md §C, .sdlc/plans/103.md §C, .sdlc/plans/104.md §A.
+#: and fact_pr_check (#104), and ingest_ledger_cursor (#105) are design decisions of those
+#: stories, not part of spec §B.3 -- see .sdlc/plans/100.md §C, .sdlc/plans/102.md §C,
+#: .sdlc/plans/103.md §C, .sdlc/plans/104.md §A.
 TABLES = ("dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff",
           "fact_collector_pack", "fact_slice", "fact_merge_lead_time",
-          "fact_pr_review", "fact_pr_check")
+          "fact_pr_review", "fact_pr_check", "ingest_ledger_cursor")
 
 _DDL = (
     """
@@ -198,6 +210,14 @@ _DDL = (
         PRIMARY KEY (project_id, pr_number, check_name)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS ingest_ledger_cursor (
+        project_id VARCHAR,
+        actor_id VARCHAR,
+        last_seq BIGINT,
+        PRIMARY KEY (project_id, actor_id)
+    )
+    """,
 )
 
 #: Narrow, additive-only schema evolution -- see .sdlc/plans/102.md Design decision B for the
@@ -222,7 +242,7 @@ def resolve_db_path(db_path=None):
 
 
 def ensure_schema(conn):
-    """Run the ten idempotent `CREATE TABLE IF NOT EXISTS` statements, then the eight
+    """Run the eleven idempotent `CREATE TABLE IF NOT EXISTS` statements, then the eight
     idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements (issues
     #102/#103/#104/#106 -- see the module docstring and .sdlc/plans/102.md §B /
     .sdlc/plans/103.md §C / .sdlc/plans/104.md §A / .sdlc/plans/106.md Design decision D),

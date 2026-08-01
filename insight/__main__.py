@@ -89,6 +89,7 @@ def _ingest_one_repo(conn, project_root, args, label=None):
     from insight.ingest.artifact_reader import ingest_artifacts
     from insight.ingest.git_reader import ingest_git_facts, ingest_merge_lead_time
     from insight.ingest.gh_reader import ingest_gh_reader
+    from insight.ingest.ledger_writer import ingest_ledger
 
     prefix = "%s: " % label if label else ""
     results = ingest_collectors(conn, project_root, collectors_root=args.collectors_root)
@@ -96,6 +97,7 @@ def _ingest_one_repo(conn, project_root, args, label=None):
     git_pack = ingest_git_facts(conn, project_root, days=args.git_window_days)
     lead_time = ingest_merge_lead_time(conn, project_root, days=args.git_window_days)
     gh_pack = ingest_gh_reader(conn, project_root, days=args.gh_window_days)
+    ledger_result = ingest_ledger(conn, project_root)
     for r in results:
         codes = r["degraded_collector"] + r["degraded_adapter"]
         suffix = " (degraded: %s)" % ", ".join(codes) if codes else ""
@@ -111,6 +113,8 @@ def _ingest_one_repo(conn, project_root, args, label=None):
     print("insight ingest: %s%s%s" % (prefix, gh_pack["schema"], gh_suffix))
     print("insight ingest: %s%d PR review event(s), %d PR check row(s)"
           % (prefix, gh_pack["review_events"], gh_pack["check_rows"]))
+    print("insight ingest: %s%d ledger event(s), %d hand-off(s) (%d skipped)"
+          % (prefix, ledger_result["events"], ledger_result["handoffs"], ledger_result["skipped"]))
 
 
 def main(argv=None):
