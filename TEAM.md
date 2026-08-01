@@ -11,6 +11,7 @@ _Nothing is blocked on another person._
 
 | when | who | did | goal | detail |
 |---|---|---|---|---|
+| 2026-08-01T01:44:08Z | swapnil-agrim | claimed | 113 |  |
 | 2026-08-01T01:17:13Z | swapnil-agrim | claimed | 113 |  |
 | 2026-08-01T01:16:55Z | swapnil-agrim | done | 112 |  |
 | 2026-08-01T01:16:41Z | swapnil-agrim | merged | 112 | auto-merge (squash) armed on PR #190 |
@@ -35,4 +36,3 @@ _Nothing is blocked on another person._
 | 2026-07-31T17:15:37Z | swapnil-agrim | claimed | 109 |  |
 | 2026-07-31T17:15:08Z | swapnil-agrim | parked | 105 | Re-parked. Blocked on ordering plus one open decision -- see the earlier park comment for the full reasoning; nothing has changed since. Short version: #180 (E1.S9, persist ledger records into fact_event and fact_handoff) is the story that builds the write path this goal's watermark is supposed to gate, and it has not run yet, so a watermark shipped today gates nothing; and fact_collector_pack is append-only by design with three tests asserting it, so this issue's own Done-when ('running ingest twice produces identical row counts') cannot be met without reversing a shipped decision. Both need you. |
 | 2026-07-31T17:14:14Z | swapnil-agrim | claimed | 105 |  |
-| 2026-07-31T17:13:58Z | swapnil-agrim | done | 108 |  |
