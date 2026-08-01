@@ -26,7 +26,18 @@ Fixture (32.jsonl), seven fact_handoff rows under project_id='p1':
   - issue=307: area=infra, priority=low, ONE acked row, ack_ts < opened_ts -- an ALL-EXCLUDED
     group (post-review addition, Decision I): every acked row in this group is negative-duration,
     so `good` contributes nothing for it. Without this row, the join-predicate fix and the
-    fold-in fix it inherits from 2.sql are asserted but never pinned."""
+    fold-in fix it inherits from 2.sql are asserted but never pinned.
+  - issue=null (rows 8-9): the orphan-ack pair (BLOCKING-finding regression, post-review, issue
+    #112 PR #190 cycle 2). Row 8 is a goal-only hand-off (area='ops', issue=None, never acked in
+    its own row). Row 9 is its orphaned ack (issue=None, ack_ts/ack_state populated, every other
+    column NULL) -- exactly what ledger_writer.py's _apply_handoff/_apply_ack produce for an
+    issue-less record, since fact_handoff has no goal_id column to re-match the ack to its own
+    hand-off. Before the issue IS NOT NULL fix, row 9 alone (ack_ts IS NOT NULL) entered
+    `population` as a phantom (area=NULL, priority=NULL) group; `good` requires
+    ack_ts >= opened_ts, and opened_ts is NULL on that row, so the comparison is NULL (not true)
+    and `good` excludes it -- but `population` still LEFT JOINs it in as a visible
+    (area=NULL, priority=NULL, sample_count=0) row, a group describing a hand-off that does not
+    exist."""
 import pathlib
 import pytest
 
@@ -103,6 +114,24 @@ def test_metric_32_an_all_excluded_group_still_produces_a_visible_row(conn):
         "sample_count": 0,
         "excluded_negative_duration_count": 1,
     }]
+
+
+def test_metric_32_excludes_the_phantom_null_area_group_from_an_orphaned_ack(conn):
+    """BLOCKING-finding regression (post-review, issue #112 PR #190 cycle 2): fact_handoff has no
+    goal_id column, so an issue-less hand-off's own later ack lands as a second, orphaned row
+    (issue NULL, area/priority/opened_ts all NULL, only ack_ts/ack_state populated) rather than
+    merging into the original. Fixture rows 8 and 9 add exactly that pair (a goal-only hand-off,
+    area='ops', plus its orphaned ack). Before the issue IS NOT NULL fix, the orphaned ack row
+    alone entered `population` (ack_ts IS NOT NULL) and LEFT JOINed into a visible
+    (area=NULL, priority=NULL, sample_count=0) row -- a group describing a hand-off that was
+    never really measured. Both the issue-less hand-off and its orphaned ack are excluded from
+    this view entirely now."""
+    load_fixture_jsonl(conn, FIXTURE)
+    load_metrics(conn)
+    rows = rows_as_dicts(conn.execute("SELECT area, priority FROM metric_32"))
+    assert None not in {r["area"] for r in rows}
+    assert "ops" not in {r["area"] for r in rows}
+    assert (None, None) not in {(r["area"], r["priority"]) for r in rows}
 
 
 def test_metric_32_declares_itself_dark(conn):

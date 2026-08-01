@@ -14,3 +14,5 @@
 {"_table": "fact_handoff", "project_id": "p1", "from_actor": "a0", "to_actor": "a2", "area": "platform", "issue": 414, "priority": "low", "opened_ts": "2026-01-01T00:00:00", "ack_ts": null, "ack_state": null, "settled_ts": null}
 {"_table": "fact_handoff", "project_id": "p1", "from_actor": "a0", "to_actor": "a3", "area": "platform", "issue": 415, "priority": "low", "opened_ts": "2026-01-01T00:00:00", "ack_ts": null, "ack_state": null, "settled_ts": null}
 {"_table": "fact_handoff", "project_id": "p1", "from_actor": "a0", "to_actor": "a3", "area": "platform", "issue": 416, "priority": "low", "opened_ts": "2026-01-01T00:00:00", "ack_ts": null, "ack_state": null, "settled_ts": null}
+{"_table": "fact_handoff", "project_id": "p1", "from_actor": "z1", "to_actor": "z2", "area": "ops", "issue": null, "priority": "medium", "opened_ts": "2026-01-01T00:00:00", "ack_ts": null, "ack_state": null, "settled_ts": null}
+{"_table": "fact_handoff", "project_id": "p1", "issue": null, "ack_ts": "2026-01-01T05:00:00", "ack_state": "deferred", "settled_ts": null}
