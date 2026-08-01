@@ -21,10 +21,13 @@ lines.
 
 TWO VALIDATIONS WITH NO METRICS-LAYER ANALOG (Design decision 2): `class` must be one of the
 five spec-named gap classes (VALID_GAP_CLASSES); `severity` -- the level a rule reports IF it
-triggers -- must be one of WARN/FAIL/ABSENT (VALID_TRIGGERED_SEVERITIES). PASS is deliberately
-excluded: PASS is reserved for the zero-evidence case, computed at evaluation time
-(insight/gaps/evaluate.py), never authored in a header. A rule statically declaring PASS as
-"the severity when I find something" is a contradiction in terms.
+triggers -- must be one of WARN/FAIL (VALID_TRIGGERED_SEVERITIES). PASS and ABSENT are BOTH
+deliberately excluded: each names a state the ENGINE computes at evaluation time
+(insight/gaps/evaluate.py), never a level an author picks. A rule statically declaring PASS as
+"the severity when I find something" is a contradiction in terms, and a declarable ABSENT is
+worse -- evaluate_rule returns whatever the header declared, so such a rule could emit an ABSENT
+finding CARRYING evidence rows, which a consumer cannot tell from a genuinely never-measured one
+(spec:534). See the comment on VALID_TRIGGERED_SEVERITIES below.
 
 THE LOAD-TIME REJECT INVARIANT (Design decision 3, issue #116's own done_when: "a rule with no
 evidence query is rejected"): after the header-line loop below terminates at index `i`,
@@ -74,9 +77,16 @@ def _strip_sql_comments(text, source):
     `SELECT 1 AS "col/*name"` are both real queries, not empty bodies. The double-quote half is a
     post-PR-review fix: without it an unmatched `/*` inside a quoted identifier read as a block
     comment that never closed, and a VALID query was REJECTED -- the mirror image of the two bugs
-    this scanner replaced, and just as wrong. `$$`-style dollar-quoting is NOT tracked; it has
-    the same false-rejection shape, no shipped rule or metric uses it, and adding a tag-matching
-    branch for it is only worth doing if a real rule ever needs one."""
+    this scanner replaced, and just as wrong.
+
+    `$$`-style dollar-quoting is NOT tracked, and the concrete consequence is named here so a
+    future rule author is not surprised by it: a body like `SELECT $$ /* unclosed $$` is valid
+    DuckDB SQL and executes fine, but this scanner sees the bare `/*`, opens a comment that never
+    closes, and REJECTS the file with "unterminated /* block comment". That is a false rejection,
+    the same shape as the double-quote bug fixed above. It is left unhandled deliberately: no
+    shipped rule or metric uses dollar-quoting anywhere, and the failure is a loud load-time
+    error rather than a silent misclassification, so a tag-matching branch is worth writing only
+    when a real rule needs one."""
     out = []
     i, n, depth = 0, len(text), 0
     while i < n:
