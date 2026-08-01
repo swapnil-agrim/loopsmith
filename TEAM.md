@@ -11,6 +11,9 @@ _Nothing is blocked on another person._
 
 | when | who | did | goal | detail |
 |---|---|---|---|---|
+| 2026-08-01T04:53:50Z | swapnil-agrim | claimed | 117 |  |
+| 2026-08-01T04:53:36Z | swapnil-agrim | done | 195 |  |
+| 2026-08-01T04:53:08Z | swapnil-agrim | merged | 195 | auto-merge (squash) armed on PR #196 |
 | 2026-08-01T04:34:39Z | swapnil-agrim | claimed | 117 |  |
 | 2026-08-01T04:34:25Z | swapnil-agrim | done | 116 |  |
 | 2026-08-01T04:34:09Z | swapnil-agrim | merged | 116 | auto-merge (squash) armed on PR #194 |
@@ -33,6 +36,3 @@ _Nothing is blocked on another person._
 | 2026-07-31T22:50:56Z | swapnil-agrim | merged | 111 | auto-merge (squash) armed on PR #186 |
 | 2026-07-31T21:15:46Z | swapnil-agrim | claimed | 111 |  |
 | 2026-07-31T21:15:29Z | swapnil-agrim | parked | 105 | Re-parked (fourth time this run). Unchanged and still needing your decision: fact_collector_pack is append-only by design with three shipped tests asserting it, so this issue's Done-when ('ingest twice produces identical row counts') cannot be met without reversing a deliberate earlier decision and building a schema/PK migration path this codebase has never needed. The ordering half resolved itself -- #180 was folded into this issue, so there is nothing left to sequence behind. NOTE ON THE REPEAT PARKS: loop.py next re-claims this goal on every iteration, re-adding sdlc:goal and sdlc:in-progress and stripping sdlc:parked, so the park does not survive a single loop cycle. That is a helper bug, recorded on this issue earlier, not indecision by the loop -- the decision has been the same each time. |
-| 2026-07-31T21:14:36Z | swapnil-agrim | claimed | 105 |  |
-| 2026-07-31T21:14:17Z | swapnil-agrim | done | 110 |  |
-| 2026-07-31T21:14:04Z | swapnil-agrim | merged | 110 | auto-merge (squash) armed on PR #184 |
