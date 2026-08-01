@@ -18,6 +18,7 @@ the same run -- the same "one bad input must not deny visibility into everything
 insight.__main__'s own `ingest` branch already established (its own per-repo try/except,
 insight/__main__.py:187-193)."""
 import datetime
+import decimal
 
 from insight.gaps.evaluate import evaluate_rule
 from insight.gaps.loader import load_gap_rules
@@ -34,9 +35,17 @@ def json_default(value):
     carries is a DuckDB TIMESTAMP surfacing as a native datetime.datetime/date through the
     DB-API (proven live, insight/tests/test_gap_rule_consistency_files_outside_plan.py's own
     `collected_ts` assertion; re-verified this session, .sdlc/plans/122.md Design decision 5).
-    Anything else re-raises TypeError rather than being silently coerced."""
+    A decimal.Decimal (DuckDB's own inferred type for a bare numeric literal that isn't forced to
+    DOUBLE via e.g. `* 1.0`) is coerced to float -- issue #129's own research:
+    insight.metrics.reliability's COVERAGE_DENOMINATOR_COLUMNS dodges this by accident via `* 1.0`,
+    but nothing enforces that convention for a future class-2 author who computes coverage_pct a
+    different way, and this is the one choke point every inlined dash payload (render.py's and
+    manager.py's json_script) already routes through. Anything else re-raises TypeError rather
+    than being silently coerced."""
     if isinstance(value, (datetime.datetime, datetime.date)):
         return value.isoformat()
+    if isinstance(value, decimal.Decimal):
+        return float(value)
     raise TypeError(f"object of type {type(value).__name__} is not JSON serializable: {value!r}")
 
 

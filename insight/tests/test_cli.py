@@ -748,6 +748,29 @@ def test_dash_builds_index_html_and_exits_zero(tmp_path, monkeypatch):
     assert (tmp_path / "out" / "manager.html").exists()
 
 
+def test_dash_reports_coverage_denominator_missing_as_a_clean_error_not_a_traceback(
+    tmp_path, monkeypatch, capsys, isolate_path_empty,
+):
+    """CoverageDenominatorMissing can only fire against the real catalog if #114's own static
+    guard (test_class_2_metrics_expose_a_coverage_denominator.py) has already regressed --
+    belt-and-suspenders, per issue #129 D8 -- so this is exercised via monkeypatch, the same shape
+    every other CLI-level error-path test in this file already uses (see isolate_path_empty/
+    isolate_path_no_gh's own precedent), not by constructing a real broken catalog."""
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    import insight.dash.render as render_mod
+
+    def _boom(conn, db_path_label, metrics_dir=None):
+        raise render_mod.CoverageDenominatorMissing("metric 900: missing coverage-denominator column(s)")
+
+    monkeypatch.setattr(render_mod, "render_dashboard", _boom)
+    code = main(["dash", "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out")])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "insight dash: metric catalog failed to load" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_dash_prints_to_stdout_not_stderr_on_success(tmp_path, monkeypatch, capsys):
     pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)

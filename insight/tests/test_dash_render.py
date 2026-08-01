@@ -13,7 +13,13 @@ duckdb = pytest.importorskip("duckdb")
 from insight.gaps.report import build_report  # noqa: E402
 from insight.ingest.store import ensure_schema  # noqa: E402
 from insight.metrics.loader import MetricLoadError  # noqa: E402
-from insight.dash.render import assert_self_contained, render_dashboard  # noqa: E402
+from insight.dash.render import (  # noqa: E402
+    CoverageDenominatorMissing,
+    assert_self_contained,
+    coverage_denominator_html,
+    extract_coverage,
+    render_dashboard,
+)
 
 
 @pytest.fixture
@@ -285,3 +291,99 @@ def test_assert_self_contained_still_passes_on_real_output(conn):
     <style> rule in the file, the one most likely to regress this invariant."""
     html_text, _ = render_dashboard(conn, "s.duckdb")
     assert_self_contained(html_text)  # must not raise
+
+
+# --------------------------------------------------------------------------- Issue #129 (E4.S6):
+# coverage-qualified rendering. Spec lines 125-128: every class-2 metric value renders with its
+# coverage denominator adjacent; a class-2 value with no denominator is a bug, not a number (D8:
+# raise, not render).
+
+
+def test_extract_coverage_returns_none_for_a_class_1_row():
+    row = {"class1_count": 1, "class2_count": 0, "total_count": 1, "coverage_pct": 1.0}
+    assert extract_coverage("1", 1, row) is None
+
+
+def test_extract_coverage_returns_none_when_row_is_none():
+    assert extract_coverage("7", 2, None) is None
+
+
+def test_extract_coverage_returns_the_four_values_for_a_class_2_row_that_carries_them():
+    row = {
+        "class1_count": 62, "class2_count": 38, "total_count": 100, "coverage_pct": 0.62,
+        "unrelated_column": "ignored",
+    }
+    assert extract_coverage("900", 2, row) == {
+        "class1_count": 62, "class2_count": 38, "total_count": 100, "coverage_pct": 0.62,
+    }
+
+
+def test_extract_coverage_treats_a_null_coverage_pct_as_a_legitimate_value_not_a_missing_column():
+    row = {"class1_count": 0, "class2_count": 0, "total_count": 0, "coverage_pct": None}
+    assert extract_coverage("900", 2, row) == row
+
+
+def test_extract_coverage_raises_coverage_denominator_missing_when_a_class_2_row_lacks_the_columns():
+    with pytest.raises(CoverageDenominatorMissing):
+        extract_coverage("900", 2, {"wip_count": 3})
+
+
+def test_coverage_denominator_html_returns_empty_string_for_none():
+    assert coverage_denominator_html(None) == ""
+
+
+def test_coverage_denominator_html_renders_the_span_with_percentage_and_counts():
+    html_frag = coverage_denominator_html(
+        {"class1_count": 62, "class2_count": 38, "total_count": 100, "coverage_pct": 0.62}
+    )
+    assert 'class="coverage-denom"' in html_frag
+    assert "62%" in html_frag
+    assert "62 of 100 rows class-1" in html_frag
+    assert "38 class-2" in html_frag
+
+
+def test_coverage_denominator_html_renders_n_a_for_a_null_coverage_pct():
+    html_frag = coverage_denominator_html(
+        {"class1_count": 0, "class2_count": 0, "total_count": 0, "coverage_pct": None}
+    )
+    assert "n/a" in html_frag
+
+
+def test_metric_catalog_renders_a_coverage_denominator_next_to_a_class_2_metrics_value(tmp_path, conn):
+    metrics_dir = tmp_path / "metrics"
+    metrics_dir.mkdir()
+    (metrics_dir / "900.sql").write_text(
+        "-- name: Hypothetical class-2 metric (synthetic, issue #129 fixture)\n"
+        "-- question: ?\n"
+        "-- personas: manager\n"
+        "-- reliability_class: 2\n"
+        "-- guardrail: synthetic fixture only, proves render_dashboard's registry-wide catalog "
+        "table renders a coverage denominator for a class-2 metric; not a real shipped metric\n"
+        "SELECT 41 AS efficiency_pct,\n"
+        "  62 AS class1_count, 38 AS class2_count, 100 AS total_count, 0.62::DOUBLE AS coverage_pct\n",
+        encoding="utf-8",
+    )
+    html_text, _ = render_dashboard(conn, "s.duckdb", metrics_dir=metrics_dir)
+    row_html = re.search(r'<tr><td>900</td>.*?</tr>', html_text, re.DOTALL).group(0)
+    assert 'class="coverage-denom"' in row_html
+    assert "62%" in row_html
+    assert "62 of 100 rows class-1" in row_html
+    assert "38 class-2" in row_html
+
+
+def test_metric_catalog_raises_when_a_class_2_metric_has_no_coverage_columns(tmp_path, conn):
+    metrics_dir = tmp_path / "metrics"
+    metrics_dir.mkdir()
+    (metrics_dir / "901.sql").write_text(
+        "-- name: Hypothetical class-2 metric with no coverage figure (synthetic, issue #129 fixture)\n"
+        "-- question: ?\n"
+        "-- personas: manager\n"
+        "-- reliability_class: 2\n"
+        "-- guardrail: synthetic fixture only, proves render_dashboard raises "
+        "CoverageDenominatorMissing when a class-2 metric's view lacks the four coverage-"
+        "denominator columns; not a real shipped metric\n"
+        "SELECT 5 AS event_count\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CoverageDenominatorMissing):
+        render_dashboard(conn, "s.duckdb", metrics_dir=metrics_dir)

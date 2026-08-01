@@ -2,6 +2,7 @@
 """Tests for insight/gaps/report.py (issue #122, [E3.S7], Task 1 / bundled base runner; see
 .sdlc/plans/122.md)."""
 import datetime
+import decimal
 import json
 
 import pytest
@@ -103,6 +104,22 @@ def test_json_round_trip_survives_a_real_datetime_evidence_value(conn):
     back = json.loads(text)
     back_finding = next(f for f in back["findings"] if f["rule_id"] == "consistency_files_outside_plan")
     assert back_finding["evidence"][0]["collected_ts"] == "2026-01-01T00:00:00"
+
+
+def test_json_default_coerces_a_decimal_to_a_plain_float():
+    """Issue #129 D0: DuckDB infers a bare numeric literal (e.g. a coverage_pct column not forced
+    to DOUBLE via `* 1.0`) as decimal.Decimal, not float -- json_default is the one choke point
+    every inlined dash payload routes through, so it must coerce here rather than crash."""
+    result = json_default(decimal.Decimal("0.62"))
+    assert result == 0.62
+    assert isinstance(result, float)
+
+
+def test_json_default_still_raises_typeerror_for_an_unrelated_unserializable_type():
+    class Unserializable:
+        pass
+    with pytest.raises(TypeError):
+        json_default(Unserializable())
 
 
 def test_render_report_shows_action_and_evidence_only_for_warn_and_fail(conn):

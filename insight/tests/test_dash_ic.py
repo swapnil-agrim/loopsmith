@@ -184,6 +184,17 @@ def test_cost_row_is_genuinely_live_when_a_column_is_populated(conn):
     assert "tokens_in/tokens_out/cost_cents have zero writers" not in html_text
 
 
+def test_cost_row_ignores_reliability_class_2_rows(conn):
+    """Mirrors test_dash_manager.py's own test_reason_class_measured_count_ignores_reliability_class_2
+    -- same doctrine (spec line 563: a NOW read must not trust a reliability_class=2 row), same
+    shape of proof, applied to the one ic.py fetcher that didn't have it yet (issue #129 D7)."""
+    conn.execute(
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class, "
+        "tokens_in) VALUES ('p1', 'g1', ?, 'alice', 'claimed', 2, 500)", [NOW],
+    )
+    assert _cost_row(conn, "alice") == (None, None, None, 0)
+
+
 # --------------------------------------------------------------------------- cold start: actor never appeared
 
 

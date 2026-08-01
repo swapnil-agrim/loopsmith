@@ -52,7 +52,7 @@ from insight.dash.charts import (
     render_stat_tile,
 )
 from insight.dash.colors import status_mark, texture_defs
-from insight.dash.render import json_script
+from insight.dash.render import coverage_denominator_html, extract_coverage, json_script
 from insight.dash.shell import base_style
 from insight.metrics.loader import load_metrics
 
@@ -77,7 +77,7 @@ def _wip_row(conn):
     aggregate view -- {week_start, wip_count}. Returns None if `metric_7` has zero rows (genuinely
     no claimed/done/parked/failed event has ever been measured -- distinct from a real week
     existing with `wip_count = 0`, which is a measured zero, not an absence)."""
-    cur = conn.execute("SELECT week_start, wip_count FROM metric_7 ORDER BY week_start DESC LIMIT 1")
+    cur = conn.execute("SELECT * FROM metric_7 ORDER BY week_start DESC LIMIT 1")
     row = cur.fetchone()
     if row is None:
         return None
@@ -123,7 +123,7 @@ def _absent_line(explain_text, id_prefix="dash"):
     )
 
 
-def _render_park_taxonomy(rate_row, reason_class_count, id_prefix="dash"):
+def _render_park_taxonomy(rate_row, reason_class_count, coverage=None, id_prefix="dash"):
     """TWO DISTINCT ABSENCE CLAIMS on one panel (Decision 2), never collapsed into one generic
     sentence: (a) park RATE -- `fact_goal.outcome` is unpopulated on the real store today, so
     `terminal_count = 0` is a genuine measured zero over an empty terminal population, not a
@@ -145,6 +145,7 @@ def _render_park_taxonomy(rate_row, reason_class_count, id_prefix="dash"):
             "Park rate", f"{rate:.0%}",
             id_prefix=id_prefix,
         ))
+        parts.append(coverage_denominator_html(coverage))
         parts.append(
             f'<p>{rate_row["parked_terminal_count"]} of {rate_row["terminal_count"]} terminal '
             "goal(s) parked at least once.</p>"
@@ -186,17 +187,22 @@ def _render_review_cycle_distribution(id_prefix="dash"):
 
 # --------------------------------------------------------------------------- page shell
 
-def render_manager_view(conn, now=None):
+def render_manager_view(conn, now=None, metrics_dir=None):
     """Render the manager persona's own page: burndown + MC band, WIP and aging, handoff graph
     (area grain), park taxonomy, review-cycle distribution. Returns (html_text, summary). No
     `actor` parameter -- see this module's own docstring, Decision 5. Every panel is wrapped in
     its own `<section id="panel-...">` -- the structural boundary
     `insight/tests/test_dash_manager_guardrail.py` strips the one sanctioned panel by, before
-    checking the remainder for any individual-grain leak."""
+    checking the remainder for any individual-grain leak. `metrics_dir` is test-only (mirrors
+    render_dashboard's own established convention, issue #129 D5) -- the CLI never passes it,
+    always the real shipped catalog."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     generated_at = now.isoformat()
 
-    load_metrics(conn)  # CREATE OR REPLACE VIEW metric_<id> for every metric this page reads
+    # CREATE OR REPLACE VIEW metric_<id> for every metric this page reads; also read for
+    # reliability_class so metric_7/metric_14's coverage denominators (issue #129) can be
+    # threaded in below.
+    registry = load_metrics(conn, metrics_dir=metrics_dir)
 
     weekly_remaining = _burndown_weekly_remaining_rows(conn)
     p10_total, p90_total = _mc_band(conn)
@@ -212,7 +218,13 @@ def render_manager_view(conn, now=None):
     if wip_row is None:
         wip_stat_html = _absent_line("no claimed/done/parked/failed event has ever been measured.")
     else:
-        wip_stat_html = render_stat_tile("WIP (open claims)", wip_row["wip_count"])
+        wip_coverage = extract_coverage("7", registry["7"]["reliability_class"], wip_row)
+        wip_stat_html = (
+            render_stat_tile("WIP (open claims)", wip_row["wip_count"])
+            + coverage_denominator_html(wip_coverage)
+        )
+
+    park_coverage = extract_coverage("14", registry["14"]["reliability_class"], park_rate_row)
 
     payload = {
         "generated_at": generated_at,
@@ -259,7 +271,7 @@ individual grain except aging WIP (below) and hand-off response (not rendered on
 
 <section id="panel-park-taxonomy">
 <h2>Park taxonomy</h2>
-{_render_park_taxonomy(park_rate_row, reason_class_count)}
+{_render_park_taxonomy(park_rate_row, reason_class_count, park_coverage)}
 </section>
 
 <section id="panel-review-cycles">

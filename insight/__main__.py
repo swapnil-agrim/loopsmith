@@ -297,7 +297,9 @@ def main(argv=None):
         # convention is kept for symmetry and because the AST test below pins it either way.
         from insight.ingest.store import open_store, resolve_db_path
         from insight.metrics.loader import MetricLoadError
-        from insight.dash.render import render_dashboard, assert_self_contained, DEFAULT_OUT_DIR
+        from insight.dash.render import (
+            render_dashboard, assert_self_contained, DEFAULT_OUT_DIR, CoverageDenominatorMissing,
+        )
         from insight.dash.serve import serve_forever_until_interrupted
 
         db_path = resolve_db_path(args.db)
@@ -307,10 +309,13 @@ def main(argv=None):
 
         try:
             html_text, summary = render_dashboard(conn, str(db_path))
-        except MetricLoadError as e:
+        except (MetricLoadError, CoverageDenominatorMissing) as e:
             # A first-party bug in the shipped .sql catalog -- fatal, never silently swallowed
             # (see load_metrics' own fail-hard Design decision D; this never happens against the
             # real catalog today, but the CLI must not pretend otherwise if it ever does).
+            # CoverageDenominatorMissing (issue #129 D8) is the same shape of contract violation
+            # as a bad header: a class-2 metric's own view lacking its coverage-denominator
+            # columns, caught here rather than surfacing as a raw traceback.
             print("insight dash: metric catalog failed to load: %s" % e, file=sys.stderr)
             return 1
         finally:

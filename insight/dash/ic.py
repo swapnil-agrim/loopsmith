@@ -180,11 +180,17 @@ def _cost_row(conn, actor):
     that is always zero (`_write_event`'s own six-column insert never populates any of the
     three), so this always returns `(None, None, None, 0)` on every real store, honestly ABSENT
     rather than faked, but wired to light up automatically the day a cost-emitting writer lands,
-    with no second code change (mirrors #120's own precedent for `fact_goal.pr`)."""
+    with no second code change (mirrors #120's own precedent for `fact_goal.pr`).
+    `reliability_class = 1` only, matching every other NOW-tier fetcher in this file
+    (`_my_queue_rows`, `_park_count`, the `events` CTE) and spec line 563: a NOW metric must not
+    read any reliability_class=2 row. Issue #129 D7: the spec's own Class-2 table names "phase
+    tokens" as agent-emitted, so without this filter a future class-2 token-emitter would leak an
+    unqualified, best-effort number into `_render_cost`'s "live" branch with no coverage figure
+    and no error."""
     return conn.execute(
         "SELECT sum(tokens_in), sum(tokens_out), sum(cost_cents), count(*) FROM fact_event "
-        "WHERE actor_id = ? AND (tokens_in IS NOT NULL OR tokens_out IS NOT NULL "
-        "OR cost_cents IS NOT NULL)", [actor],
+        "WHERE actor_id = ? AND reliability_class = 1 AND (tokens_in IS NOT NULL OR "
+        "tokens_out IS NOT NULL OR cost_cents IS NOT NULL)", [actor],
     ).fetchone()
 
 
