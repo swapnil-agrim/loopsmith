@@ -1,0 +1,12 @@
+{"_table": "dim_project", "project_id": "projA", "config_json": {"parallel": {"enabled": false}, "ledger": {"enabled": true}, "verify": {"enforce": true}, "work": {"require_review": "changes", "auto_merge": "protected"}, "gates": {"hard_plan_gate": {"enabled": false}}, "review": {"independent": true}, "knowledge_graph": {"enabled": false}}}
+{"_table": "dim_project", "project_id": "projB", "config_json": {"parallel": {"enabled": false}, "ledger": {"enabled": true}, "verify": {"enforce": true}, "work": {"require_review": "changes", "auto_merge": "protected"}, "gates": {"hard_plan_gate": {"enabled": false}}, "review": {"independent": true}}}
+{"_table": "dim_project", "project_id": "projC", "config_json": null}
+{"_table": "fact_merge_lead_time", "project_id": "projA", "merge_sha": "sha1", "kind": "merge", "pr_number": 101, "merge_ts": "2026-01-01T00:00:00", "first_commit_sha": "c1", "first_commit_ts": "2026-01-01T00:00:00", "lead_time_seconds": 3600}
+{"_table": "fact_merge_lead_time", "project_id": "projA", "merge_sha": "sha2", "kind": "merge", "pr_number": 102, "merge_ts": "2026-01-02T00:00:00", "first_commit_sha": "c2", "first_commit_ts": null, "lead_time_seconds": null}
+{"_table": "fact_pr_check", "project_id": "projA", "pr_number": 101, "check_name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS"}
+{"_table": "fact_pr_check", "project_id": "projA", "pr_number": 101, "check_name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS"}
+{"_table": "fact_pr_check", "project_id": "projA", "pr_number": 102, "check_name": "ci", "status": "COMPLETED", "conclusion": "FAILURE"}
+{"_table": "fact_pr_review", "project_id": "projA", "pr_number": 101, "source": "native_review", "event_id": "ev1", "actor": "bot", "verdict": "APPROVED"}
+{"_table": "fact_pr_review", "project_id": "projA", "pr_number": 101, "source": "loopsmith_comment", "event_id": "ev2", "actor": "bot2", "verdict": "approve"}
+{"_table": "fact_pr_review", "project_id": "projA", "pr_number": 102, "source": "loopsmith_comment", "event_id": "ev3", "actor": "bot2", "verdict": "block"}
+{"_table": "fact_pr_check", "project_id": "projC", "pr_number": 201, "check_name": "ci", "status": "IN_PROGRESS", "conclusion": null}
