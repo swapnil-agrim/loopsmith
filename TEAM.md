@@ -11,6 +11,9 @@ _Nothing is blocked on another person._
 
 | when | who | did | goal | detail |
 |---|---|---|---|---|
+| 2026-08-01T03:14:25Z | swapnil-agrim | claimed | 116 |  |
+| 2026-08-01T03:14:10Z | swapnil-agrim | done | 114 |  |
+| 2026-08-01T03:13:55Z | swapnil-agrim | merged | 114 | auto-merge (squash) armed on PR #193 |
 | 2026-08-01T02:16:31Z | swapnil-agrim | claimed | 114 |  |
 | 2026-08-01T02:16:13Z | swapnil-agrim | done | 113 |  |
 | 2026-08-01T02:15:58Z | swapnil-agrim | merged | 113 | auto-merge (squash) armed on PR #192 |
@@ -33,6 +36,3 @@ _Nothing is blocked on another person._
 | 2026-07-31T19:58:23Z | swapnil-agrim | claimed | 110 |  |
 | 2026-07-31T19:58:06Z | swapnil-agrim | parked | 105 | Re-parked (third time). Ordering half of the original park is resolved -- #180 was folded into this issue, so there is nothing to wait for. What still needs YOUR decision is unchanged: fact_collector_pack is append-only by design with three shipped tests asserting it, so this issue's Done-when ('ingest twice produces identical row counts') cannot be met without reversing a deliberate earlier decision and building a schema/PK migration path this codebase has never needed. See the two prior park comments and the status-correction note for the full reasoning. |
 | 2026-07-31T19:57:24Z | swapnil-agrim | claimed | 105 |  |
-| 2026-07-31T19:57:07Z | swapnil-agrim | done | 109 |  |
-| 2026-07-31T19:56:43Z | swapnil-agrim | merged | 109 | auto-merge (squash) armed on PR #183 |
-| 2026-07-31T17:16:49Z | swapnil-agrim | claimed | 109 |  |
