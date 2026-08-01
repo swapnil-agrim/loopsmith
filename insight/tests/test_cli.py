@@ -693,7 +693,11 @@ def test_gaps_json_flag_writes_a_report_that_round_trips(tmp_path, monkeypatch):
     import json
     data = json.loads(out.read_text())
     assert data["schema"] == "insight-gaps-report/v1"
-    assert len(data["findings"]) == 10
+    # Derived from the registry, not a literal: this test is about the JSON round-tripping every
+    # rule, and a hardcoded count broke the moment #121 added an eleventh. The property is
+    # "nothing is lost through serialisation", not "the catalog has ten entries".
+    from insight.gaps.loader import load_gap_rules
+    assert len(data["findings"]) == len(load_gap_rules())
 
 
 def test_gaps_compare_degrades_on_a_truncated_prior_file(tmp_path, monkeypatch, capsys):

@@ -90,8 +90,10 @@ def test_a_bom_prefixed_rule_file_still_parses(tmp_path):
 
 def test_load_gap_rules_defaults_to_the_real_insight_gaps_directory():
     """Issue #117 landed Coverage's four rules; issue #118 added Definition's two; issue #120
-    adds Consistency's three. This assertion is the intentional update #118's own version of this
-    docstring predicted."""
+    added Consistency's three; issue #121 adds Debt's one -- the fifth gap class to ship a rule
+    (epic #115 itself is NOT closed by this story -- #209 and #210 remain open, see
+    .sdlc/plans/121.md's own correction banner). This assertion is the intentional update #120's
+    own version of this docstring predicted."""
     registry = load_gap_rules()
     expected_class = {
         "coverage_gate_absent": "Coverage",
@@ -104,6 +106,7 @@ def test_load_gap_rules_defaults_to_the_real_insight_gaps_directory():
         "consistency_ledger_done_pr_open": "Consistency",
         "consistency_verify_no_test_touched": "Consistency",
         "consistency_files_outside_plan": "Consistency",
+        "debt_discovery_scan_rising": "Debt",
     }
     assert set(registry) == set(expected_class)
     for rule_id, rule in registry.items():

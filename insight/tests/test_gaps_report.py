@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from insight.gaps.loader import load_gap_rules  # noqa: E402
 from insight.gaps.report import build_report, json_default, render_report
 
 
@@ -24,8 +25,10 @@ def test_report_carries_every_rule_including_pass_and_absent(conn):
     report = build_report(conn)
     assert report["schema"] == "insight-gaps-report/v1"
     rule_ids = {f["rule_id"] for f in report["findings"]}
-    # a fresh, empty store: every rule's population is 0 -> ABSENT for all ten.
-    assert len(rule_ids) == 10
+    # A fresh, empty store: every rule's population is 0 -> ABSENT for ALL of them. The count is
+    # derived from the registry, not hardcoded -- this test is about "every rule appears", and a
+    # literal broke the moment #121 added an eleventh rule, which is not what it is checking.
+    assert len(rule_ids) == len(load_gap_rules())
     assert {f["severity"] for f in report["findings"]} == {"ABSENT"}
     assert report["errors"] == []
     assert report["verdict"] == {
@@ -52,19 +55,23 @@ def test_a_warn_finding_carries_its_rule_id_and_full_evidence(conn):
 
 def test_a_crashing_rule_is_isolated_never_aborts_the_run(conn):
     """Live-reproduced this session: malformed raw_payload crashes every rule sharing that
-    schema's json_extract calls. The OTHER 7 rules must still evaluate and appear in findings."""
+    schema's json_extract calls. Every OTHER rule must still evaluate and appear in findings --
+    that isolation is the property, and it must not be stated as a count that a new rule breaks."""
     conn.execute(
         "INSERT INTO fact_collector_pack (project_id, schema, collected_ts, raw_payload) "
         "VALUES ('p1', 'alignment-collect/v1', '2026-01-01', 'not valid json {{{')"
     )
     report = build_report(conn)
-    errored_ids = {e["rule_id"] for e in report["errors"]}
-    assert errored_ids == {
+    crashing = {
         "consistency_files_outside_plan", "consistency_verify_no_test_touched",
         "coverage_gate_absent",
     }
+    errored_ids = {e["rule_id"] for e in report["errors"]}
+    assert errored_ids == crashing
     found_ids = {f["rule_id"] for f in report["findings"]}
-    assert len(found_ids) == 7  # the other 7 rules still ran, isolated from the 3 that crashed
+    # The non-crashing rules still ran, isolated from the ones that did. Derived, not literal:
+    # the property is "a crash isolates to its own rule", not "the catalog has ten entries".
+    assert len(found_ids) == len(load_gap_rules()) - len(crashing)
     assert report["verdict"]["errored"] is True
 
 
