@@ -55,25 +55,17 @@ import datetime
 import html
 
 from insight.dash.charts import render_aging_wip, render_aging_wip_table, render_stat_tile
-from insight.dash.colors import status_mark, texture_defs, viz_css_vars
+from insight.dash.colors import status_mark, texture_defs
 from insight.dash.render import json_script
+from insight.dash.shell import base_style
 
 _STYLE = f"""
-{viz_css_vars()}
-body {{ font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-       margin: 2rem; color: var(--dash-ink); background: var(--dash-surface); }}
-h1 {{ font-size: 1.4rem; }} h2 {{ font-size: 1.1rem; margin-top: 2rem; }}
-table {{ border-collapse: collapse; width: 100%; }}
-th, td {{ text-align: left; padding: 4px 10px; border-bottom: 1px solid var(--dash-gridline);
-          font-size: 13px; }}
-.banner {{ background: var(--dash-status-warn); border: 1px solid var(--dash-baseline);
-          padding: .75rem 1rem; border-radius: 6px; margin-bottom: 1.5rem; color: var(--dash-on-status); }}
+{base_style()}
 .stat-tile {{ display: inline-block; padding: .75rem 1rem; margin: 0 .75rem .75rem 0;
              border: 1px solid var(--dash-gridline); border-radius: 6px; min-width: 10rem; }}
 .stat-tile-label {{ font-size: 12px; color: var(--dash-ink2); }}
 .stat-tile-value {{ font-size: 1.6rem; }}
 .stat-tile-delta {{ font-size: 12px; color: var(--dash-ink2); }}
-footer {{ margin-top: 2rem; font-size: 12px; color: var(--dash-muted); }}
 """
 
 

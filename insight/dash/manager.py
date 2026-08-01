@@ -1,0 +1,285 @@
+# SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
+"""The manager persona view (issue #127, E4.S4): burndown + MC band, WIP and aging, handoff
+graph, park taxonomy, and review-cycle distribution -- team-wide, not scoped to one actor.
+
+**THE GUARDRAIL, STATED HERE BECAUSE IT IS THE ACCEPTANCE CRITERION (spec Section 6):** no
+metric renders at individual grain on this page, with exactly two sanctioned exceptions -- aging
+WIP (metric_10, the `panel-wip-aging` `<section>` below) and hand-off response (metric_32, not
+rendered on this page at all -- see .sdlc/plans/127.md Settled Question 2). Every other panel's
+fetcher either reads a base table with an explicit non-actor projection (`_handoff_by_area_rows`
+in `insight.dash.charts` -- `{area, handoff_count}`, no actor column present at all) or a
+metric view that is already aggregated past individual grain (`metric_7`, `metric_14`). Nothing
+in this module imports `insight.dash.ic` or `insight.dash.actor`, and `render_manager_view`
+takes no `actor` parameter -- the manager view is team-wide by construction, never
+actor-resolution-gated (Decision 5; unlike `ic.html`, there is no "unresolved actor" failure mode
+here). `insight/tests/test_dash_manager_guardrail.py` is the proving test for this file's entire
+reason to exist.
+
+**NAMED CONTRACT (plan-review nit, folded in explicitly rather than left implicit): the inlined
+`<script type="application/json">` payload below sits OUTSIDE every `<section>` tag, exactly like
+every other dash page's own data script.** That means anything it carries is readable via View
+Source regardless of which panel a reader thinks they're looking at -- section-scoping cannot
+protect it. THE INVARIANT: the manager payload carries no key derived from the raw
+`_aging_wip_rows(conn)` rows (which carry `actor_id`) -- only COUNT-ONLY shapes are ever inlined
+for that clause (`aging_wip_count`, an int). The rendered `panel-wip-aging` `<section>` itself
+legitimately contains the real actor names (the one sanctioned exception, rendered by
+`render_aging_wip`/`render_aging_wip_table`, reused unmodified from issue #125) -- that is fine
+because it is inside its own sanctioned section; the JSON payload is not section-scoped, so it
+gets the stricter, count-only treatment. `insight/tests/test_dash_manager_guardrail.py` asserts
+this directly, separately from the section-stripping check.
+
+Cold-start honesty (Decision 2 of .sdlc/plans/127.md): three of five panels render an honest
+ABSENT shell on the real store today, and the THREE flavors of absence on this page are kept
+textually distinct rather than collapsed into one generic dot -- "measured absence" (an
+instrument exists, nothing has landed yet: burndown, handoff graph, park rate), "zero writers"
+(a column exists in the schema but no code path anywhere ever populates it: the park-taxonomy
+breakdown), and "no ingest path" (no route from the underlying data to the store at all, not
+even a dark column: review-cycle distribution). See `_render_park_taxonomy` and
+`_render_review_cycle_distribution` below for exactly which sentence belongs to which claim.
+"""
+import datetime
+import html
+
+from insight.dash.charts import (
+    _aging_wip_rows,
+    _burndown_weekly_remaining_rows,
+    _handoff_by_area_rows,
+    _mc_band,
+    render_aging_wip,
+    render_aging_wip_table,
+    render_burndown_with_mc_band,
+    render_handoff_graph_by_area,
+    render_stat_tile,
+)
+from insight.dash.colors import status_mark, texture_defs
+from insight.dash.render import json_script
+from insight.dash.shell import base_style
+from insight.metrics.loader import load_metrics
+
+#: This page uses render_stat_tile (WIP count, park rate) exactly like ic.py does, so it needs
+#: the same `.stat-tile*` rule group ic.py's own _STYLE carries -- render.py does not use stat
+#: tiles at all, so this is page-specific, not a sixth common group base_style() should absorb.
+_STYLE = f"""
+{base_style()}
+.stat-tile {{ display: inline-block; padding: .75rem 1rem; margin: 0 .75rem .75rem 0;
+             border: 1px solid var(--dash-gridline); border-radius: 6px; min-width: 10rem; }}
+.stat-tile-label {{ font-size: 12px; color: var(--dash-ink2); }}
+.stat-tile-value {{ font-size: 1.6rem; }}
+.stat-tile-delta {{ font-size: 12px; color: var(--dash-ink2); }}
+h3 {{ font-size: 1rem; margin-top: 1.25rem; }}
+"""
+
+
+# --------------------------------------------------------------------------- page-specific fetchers
+
+def _wip_row(conn):
+    """The most recent week's row from `metric_7` (Flow load / WIP), an already area/actor-free
+    aggregate view -- {week_start, wip_count}. Returns None if `metric_7` has zero rows (genuinely
+    no claimed/done/parked/failed event has ever been measured -- distinct from a real week
+    existing with `wip_count = 0`, which is a measured zero, not an absence)."""
+    cur = conn.execute("SELECT week_start, wip_count FROM metric_7 ORDER BY week_start DESC LIMIT 1")
+    row = cur.fetchone()
+    if row is None:
+        return None
+    cols = [d[0] for d in cur.description]
+    return dict(zip(cols, row))
+
+
+def _park_rate_row(conn):
+    """`metric_14`'s own single row, read directly -- its `park_rate`/`parked_terminal_count`/
+    `terminal_count` columns are NOT re-derived here (a bare `count(*)` over this aggregate view
+    would be fooled by its own phantom NULL row over zero input rows; reading the columns it
+    already computed avoids that trap entirely, same posture as `insight.dash.render._measured`).
+    """
+    cur = conn.execute("SELECT * FROM metric_14")
+    row = cur.fetchone()
+    if row is None:
+        return None
+    cols = [d[0] for d in cur.description]
+    return dict(zip(cols, row))
+
+
+def _reason_class_measured_count(conn):
+    """A genuine, filtered `count(*)` over `fact_event`, a base table -- NOT a bare `count(*)`
+    over an aggregate view (Decision 9's own trap): a real filtered scan of real rows correctly
+    returns 0 when nothing matches, no phantom-row correction needed. `reliability_class = 1`
+    only, matching every other NOW-tier read in this codebase (a `reliability_class = 2` row must
+    never be trusted -- spec line 563)."""
+    return conn.execute(
+        "SELECT count(*) FROM fact_event WHERE reason_class IS NOT NULL AND reliability_class = 1"
+    ).fetchone()[0]
+
+
+# --------------------------------------------------------------------------- bespoke ABSENT-text renderers
+
+def _absent_line(explain_text, id_prefix="dash"):
+    """A one-line ABSENT marker for prose panels (not a chart) -- the same `status_mark()` +
+    `texture_defs()` primitives every other ABSENT state in this codebase uses, just inlined as a
+    `<p>` rather than inside an `<svg>`."""
+    return (
+        '<p><svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="ABSENT">'
+        + texture_defs(id_prefix) + status_mark("ABSENT", 6, 8, id_prefix=id_prefix)
+        + f'</svg> {explain_text}</p>'
+    )
+
+
+def _render_park_taxonomy(rate_row, reason_class_count, id_prefix="dash"):
+    """TWO DISTINCT ABSENCE CLAIMS on one panel (Decision 2), never collapsed into one generic
+    sentence: (a) park RATE -- `fact_goal.outcome` is unpopulated on the real store today, so
+    `terminal_count = 0` is a genuine measured zero over an empty terminal population, not a
+    broken instrument. (b) park TAXONOMY (the `reason_class` breakdown, spec #15's own question)
+    -- `fact_event.reason_class` has zero writers anywhere in the ingest path, full stop; no
+    store state could populate it today. That is categorically NOT "0 rows measured", it is "no
+    code path can produce a value here" -- a different, stronger claim than (a)."""
+    parts = ["<h3>Park rate</h3>"]
+    if not rate_row or not rate_row.get("terminal_count"):
+        parts.append(_absent_line(
+            "no terminal goals recorded yet (<code>fact_goal.outcome</code> is not populated on "
+            "any row measured today) &mdash; a measured zero over an empty terminal population, "
+            "not a broken instrument.",
+            id_prefix=id_prefix,
+        ))
+    else:
+        rate = rate_row.get("park_rate") or 0.0
+        parts.append(render_stat_tile(
+            "Park rate", f"{rate:.0%}",
+            id_prefix=id_prefix,
+        ))
+        parts.append(
+            f'<p>{rate_row["parked_terminal_count"]} of {rate_row["terminal_count"]} terminal '
+            "goal(s) parked at least once.</p>"
+        )
+    parts.append("<h3>Park taxonomy (why it stopped)</h3>")
+    if not reason_class_count:
+        parts.append(_absent_line(
+            "no instrument. <code>fact_event.reason_class</code> has zero writers anywhere in "
+            "the ingest path today &mdash; this is not a measured zero, it is the complete "
+            "absence of a data path.",
+            id_prefix=id_prefix,
+        ))
+    else:
+        parts.append(
+            f"<p>{reason_class_count} <code>fact_event</code> row(s) carry a "
+            "<code>reason_class</code> value.</p>"
+        )
+    return "".join(parts)
+
+
+def _render_review_cycle_distribution(id_prefix="dash"):
+    """The STRONGEST ABSENT flavor on this page (Decision 2): unlike park taxonomy (a schema
+    column with zero writers) or burndown (a view that exists and returns empty), `review_cycles`
+    lives ONLY in a per-goal, transient JSON record (`.sdlc/state/work/<goal>.json`, written by
+    `work.py`'s own `_record`/`_save`) that no `insight ingest` reader touches at all -- zero
+    references to it anywhere under `insight/`. There is no `metrics/16.sql`, no dark column, no
+    empty view: no route from this data to the store whatsoever. Takes no arguments -- there is
+    no live branch this function can ever render without new ingest work outside this story's
+    scope (see .sdlc/plans/127.md Risk 4)."""
+    return _absent_line(
+        "no ingest path exists for this data at all. <code>review_cycles</code> lives only in "
+        "per-goal state JSON (<code>.sdlc/state/work/&lt;goal&gt;.json</code>, written by "
+        "<code>work.py</code>'s own <code>_record</code>/<code>_save</code>), never ingested "
+        "into the store &mdash; not a dark metric, not an empty view, a complete absence of any "
+        "route from this data to the store.",
+        id_prefix=id_prefix,
+    )
+
+
+# --------------------------------------------------------------------------- page shell
+
+def render_manager_view(conn, now=None):
+    """Render the manager persona's own page: burndown + MC band, WIP and aging, handoff graph
+    (area grain), park taxonomy, review-cycle distribution. Returns (html_text, summary). No
+    `actor` parameter -- see this module's own docstring, Decision 5. Every panel is wrapped in
+    its own `<section id="panel-...">` -- the structural boundary
+    `insight/tests/test_dash_manager_guardrail.py` strips the one sanctioned panel by, before
+    checking the remainder for any individual-grain leak."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    generated_at = now.isoformat()
+
+    load_metrics(conn)  # CREATE OR REPLACE VIEW metric_<id> for every metric this page reads
+
+    weekly_remaining = _burndown_weekly_remaining_rows(conn)
+    p10_total, p90_total = _mc_band(conn)
+
+    wip_row = _wip_row(conn)
+    aging_rows = _aging_wip_rows(conn)
+
+    handoff_rows = _handoff_by_area_rows(conn)
+
+    park_rate_row = _park_rate_row(conn)
+    reason_class_count = _reason_class_measured_count(conn)
+
+    if wip_row is None:
+        wip_stat_html = _absent_line("no claimed/done/parked/failed event has ever been measured.")
+    else:
+        wip_stat_html = render_stat_tile("WIP (open claims)", wip_row["wip_count"])
+
+    payload = {
+        "generated_at": generated_at,
+        "burndown": {
+            "weeks": len(weekly_remaining), "p10_total": p10_total, "p90_total": p90_total,
+        },
+        "wip": wip_row,
+        # COUNT ONLY -- never the raw _aging_wip_rows() rows themselves (they carry actor_id).
+        # See this module's own docstring for why this is a named, tested invariant.
+        "aging_wip_count": len(aging_rows),
+        "handoff_by_area": handoff_rows,
+        "park_rate": park_rate_row,
+        "reason_class_measured_count": reason_class_count,
+    }
+
+    html_text = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LoopSmith Insight -- Manager view</title>
+<style>{_STYLE}</style>
+</head>
+<body class="viz-root">
+<h1>LoopSmith Insight -- Manager view</h1>
+<p>Generated {html.escape(generated_at)}. Team-wide: no metric on this page renders at
+individual grain except aging WIP (below) and hand-off response (not rendered on this page).</p>
+
+<section id="panel-burndown">
+<h2>Burndown + Monte Carlo band</h2>
+{render_burndown_with_mc_band(weekly_remaining, p10_total=p10_total, p90_total=p90_total)}
+</section>
+
+<section id="panel-wip-aging">
+<h2>WIP and aging</h2>
+{wip_stat_html}
+{render_aging_wip(aging_rows, now=now)}
+{render_aging_wip_table(aging_rows, now=now)}
+</section>
+
+<section id="panel-handoff-graph">
+<h2>Handoff graph (by area)</h2>
+{render_handoff_graph_by_area(handoff_rows)}
+</section>
+
+<section id="panel-park-taxonomy">
+<h2>Park taxonomy</h2>
+{_render_park_taxonomy(park_rate_row, reason_class_count)}
+</section>
+
+<section id="panel-review-cycles">
+<h2>Review-cycle distribution</h2>
+{_render_review_cycle_distribution()}
+</section>
+
+<script type="application/json" id="insight-manager-data">{json_script(payload)}</script>
+<footer>Self-contained: no network fetch, no external script/style/font reference. Data is
+inlined above. No individual-grain metric appears on this page except aging WIP (panel-wip-aging)
+and hand-off response (not rendered here) -- see this module's own docstring.</footer>
+</body>
+</html>"""
+
+    summary = {
+        "burndown_weeks": len(weekly_remaining),
+        "wip_count": wip_row["wip_count"] if wip_row else None,
+        "aging_wip_count": len(aging_rows),
+        "handoff_areas": len(handoff_rows),
+        "park_terminal_count": (park_rate_row or {}).get("terminal_count") or 0,
+        "reason_class_measured_count": reason_class_count,
+    }
+    return html_text, summary
