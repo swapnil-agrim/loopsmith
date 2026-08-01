@@ -17,5 +17,9 @@ consistency_files_outside_plan -- the first is a genuine cross-table join (fact_
 fact_goal.pr -> fact_pr_review/fact_pr_check) that renders ABSENT on this repo's own real data
 today because fact_goal.pr has no writer yet (see that rule's own guardrail); the other two are
 single-fact_collector_pack-record checks over alignment-collect's own d1/d2 dimensions, per
-spec :529's own naming. Debt (#121) still does not ship.
+spec :529's own naming. Debt (#121) still does not ship. The RUNNER over these rules ships with
+issue #122 (E3.S7): report.py's build_report/render_report execute the whole catalog against a
+store -- isolating a rule that crashes rather than aborting the run -- and compare.py's
+compare_reports classifies one run against a prior one, so `insight gaps [--compare]` is a real
+command rather than the stub it was through #116-#121.
 """

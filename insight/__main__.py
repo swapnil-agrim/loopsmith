@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
 """`python -m insight` / the `insight` console script (issue #95, E0.S2).
 
-`ingest` (issue #99, E1.S1) is real: it opens/creates a DuckDB store and ensures its
-schema exists. `dash` and `gaps` are still stubs tracked by their own epics — running
-one prints where the real work lives rather than pretending to do something it can't;
-a stub that pretends to work is worse than one that says it doesn't.
+`ingest` (issue #99, E1.S1) and `gaps` (issue #122, E3.S7) are real: `ingest`
+opens/creates a DuckDB store and ensures its schema exists; `gaps` evaluates every
+loaded gap rule and reports findings, with `--compare` classifying each against a
+prior run. `dash` is the only subcommand still a stub, tracked by its own epic —
+running it prints where the real work lives rather than pretending to do something it
+can't; a stub that pretends to work is worse than one that says it doesn't.
 
-`insight.ingest.store` (and therefore `duckdb`) is imported LAZILY, inside main()'s
-`ingest` branch only — never at module level here. Hoisting it to the top would make
-`--help`, `dash`, and `gaps` all require duckdb to be importable, breaking the "stubs
-stay pure" contract on a box without duckdb installed. See
+`insight.ingest.store` and `insight.gaps.{report,compare}` (and therefore `duckdb`)
+are imported LAZILY, inside main()'s `ingest`/`gaps` branches only — never at module
+level here. Hoisting them to the top would make `--help` and `dash` require duckdb to
+be importable, breaking the "stubs stay pure" contract on a box without duckdb
+installed. See
 insight/tests/test_cli.py::test_main_module_does_not_import_duckdb_at_top_level, which
 pins this structurally via AST (no duckdb needed to run it).
 """
@@ -71,11 +74,26 @@ def build_parser():
              "directory with no .sdlc/ is skipped with an explicit reason, never processed; "
              "zero matches is a usage error (exit 1). See insight/ingest/repo_scan.py.",
     )
-    for name in ("dash", "gaps"):
-        subparsers.add_parser(
-            name,
-            help="not implemented yet - see issue #%d" % _TRACKING_ISSUE[name],
-        )
+    gaps_parser = subparsers.add_parser(
+        "gaps",
+        help="evaluate every loaded gap rule and report findings (WARN/FAIL/PASS/ABSENT); "
+             "--compare classifies each against a prior run (issue #122, E3.S7)",
+    )
+    gaps_parser.add_argument(
+        "--db", dest="db", default=None,
+        help="path to the DuckDB store file (default: .sdlc/insight.duckdb under CWD)",
+    )
+    gaps_parser.add_argument(
+        "--json", dest="json_out", default=None,
+        help="write the full findings report (JSON) to this path",
+    )
+    gaps_parser.add_argument(
+        "--compare", dest="compare", default=None,
+        help="path to a prior report written by --json; classifies each finding regressed / "
+             "improved / still-failing against it",
+    )
+    for name in ("dash",):
+        subparsers.add_parser(name, help="not implemented yet - see issue #%d" % _TRACKING_ISSUE[name])
     return parser
 
 
@@ -193,6 +211,48 @@ def main(argv=None):
                 continue
         conn.close()
         return 0
+    if args.command == "gaps":
+        # Lazy, mirroring the `ingest` branch: keeps duckdb (and everything transitively under
+        # insight.gaps/insight.ingest.store) out of the import graph for --help/dash. See the
+        # module docstring and insight/gaps/report.py's own docstring.
+        import json
+        from insight.ingest.store import open_store
+        from insight.gaps.report import build_report, render_report, json_default
+
+        conn = open_store(args.db)
+        report = build_report(conn)
+        conn.close()
+
+        delta = None
+        if args.compare:
+            prior_path = pathlib.Path(args.compare)
+            if not prior_path.exists():
+                print("SKIP: %s not found" % prior_path, file=sys.stderr)
+                return 3
+            from insight.gaps.compare import compare_reports
+            # A prior file is an ARTIFACT OF AN EARLIER `--json` RUN, so it can be truncated or
+            # half-written (disk full, SIGKILL mid-write) in a way the missing-file case above
+            # would not catch. pipeline.py's own `card --compare` loads its prior unguarded and
+            # would traceback here; the mirroring mandate is over the CLASSIFICATION semantics,
+            # not over that, so this degrades to the same SKIP/exit-3 path as a missing file.
+            try:
+                prior = json.loads(prior_path.read_text())
+            except ValueError as exc:
+                print("SKIP: %s is not valid JSON (%s)" % (prior_path, exc), file=sys.stderr)
+                return 3
+            if not isinstance(prior, dict):
+                print("SKIP: %s is not a findings report (top level is %s, not an object)"
+                      % (prior_path, type(prior).__name__), file=sys.stderr)
+                return 3
+            delta = compare_reports(prior, report)
+            report["delta"] = delta
+
+        print(render_report(report, delta))
+        if args.json_out:
+            out = pathlib.Path(args.json_out)
+            out.write_text(json.dumps(report, indent=2, default=json_default))
+            print("wrote %s" % out)
+        return 1 if (report["verdict"]["failing"] or report["verdict"]["errored"]) else 0
     issue = _TRACKING_ISSUE[args.command]
     print(
         "insight %s: not implemented yet - see issue #%d" % (args.command, issue),
