@@ -85,8 +85,13 @@ def test_absent_ranks_below_warn():
     assert SEVERITY_ORDER["ABSENT"] < SEVERITY_ORDER["WARN"]
 
 
-def test_valid_triggered_severities_are_a_subset_of_severity_order_excluding_pass():
+def test_valid_triggered_severities_are_severity_order_minus_the_two_computed_states():
     """A structural check that insight.gaps.header's own vocabulary (Decision 2) and
     insight.gaps.severity's vocabulary (Decision 5) cannot silently diverge from each other now
-    that they are two separate modules with two separate literal tuples."""
-    assert set(header.VALID_TRIGGERED_SEVERITIES) == set(SEVERITY_ORDER) - {"PASS"}
+    that they are two separate modules with two separate literal tuples.
+
+    POST-PR-REVIEW BLOCKING FIX: the excluded set is now BOTH computed states, not PASS alone.
+    ABSENT is what evaluate_rule returns when the population query finds nothing to measure; an
+    author who could also declare it could emit an ABSENT finding carrying real evidence rows,
+    collapsing "never measured" and "measured, and here is the proof" into one token."""
+    assert set(header.VALID_TRIGGERED_SEVERITIES) == set(SEVERITY_ORDER) - {"PASS", "ABSENT"}

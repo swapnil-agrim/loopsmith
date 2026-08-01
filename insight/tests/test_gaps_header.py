@@ -68,11 +68,17 @@ def test_class_must_be_one_of_the_five_named_classes():
         assert "class" in str(e)
 
 
-def test_severity_must_be_warn_fail_or_absent():
-    for sev in ("WARN", "FAIL", "ABSENT"):
+def test_severity_must_be_warn_or_fail():
+    """POST-PR-REVIEW BLOCKING FIX: ABSENT moved from the accepted list to the rejected one.
+    evaluate_rule's third branch returns whatever the header declared, so a declarable ABSENT
+    let a rule match real evidence rows and emit an ABSENT finding CARRYING EVIDENCE -- a
+    measured, evidenced finding wearing the token reserved for "never measured", which a
+    consumer cannot tell apart from a genuinely un-instrumented one (spec:534). PASS and ABSENT
+    are both states the ENGINE computes, never levels an author picks."""
+    for sev in ("WARN", "FAIL"):
         header = parse_header(_text({"severity": f"-- severity: {sev}\n"}), source="ok.sql")
         assert header["severity"] == sev
-    for bad in ("PASS", "Bogus"):
+    for bad in ("PASS", "ABSENT", "Bogus"):
         try:
             parse_header(_text({"severity": f"-- severity: {bad}\n"}), source="bad.sql")
             assert False, f"expected GapHeaderError for severity {bad!r}"
@@ -134,4 +140,49 @@ def test_a_real_query_carrying_an_inline_block_comment_still_parses():
     about block comments being present."""
     text = "".join(_BASE_FIELDS.values()) + "SELECT /* the goals */ goal_id FROM fact_goal\n"
     rule = parse_header(text, source="annotated.sql")
+    assert rule["class"] == "Definition"
+
+
+def test_a_nested_block_comment_body_also_raises():
+    """POST-PR-REVIEW BLOCKING FIX. The previous strip was a non-greedy regex, so it stopped at
+    the FIRST `*/`. DuckDB's grammar NESTS: `/* outer /* inner */ */` is one comment to DuckDB,
+    but the regex stripped only through the inner `*/` and left trailing text, so a body DuckDB
+    reads as pure commentary looked non-empty and was ACCEPTED as having an evidence query --
+    then died at evaluation on `None.description`. Same symptom and same root cause as the
+    single-level bug already fixed once; nesting reopened it."""
+    text = "".join(_BASE_FIELDS.values()) + "/* outer /* inner */ SELECT 1 FROM fact_goal */\n"
+    try:
+        parse_header(text, source="nested.sql")
+        assert False, "expected GapHeaderError"
+    except GapHeaderError as e:
+        assert "evidence query" in str(e)
+
+
+def test_an_unterminated_block_comment_raises_at_load_time():
+    """An unterminated `/*` swallows the rest of the file, so the rule has no evidence query --
+    a load-time rejection by name, not a duckdb.ParserException three layers later."""
+    text = "".join(_BASE_FIELDS.values()) + "/* TODO SELECT project_id FROM fact_goal\n"
+    try:
+        parse_header(text, source="unterminated.sql")
+        assert False, "expected GapHeaderError"
+    except GapHeaderError as e:
+        assert "unterminated" in str(e)
+
+
+def test_comment_markers_inside_a_string_literal_are_not_comments():
+    """The other direction: the stripper must not eat a REAL query because a literal happens to
+    contain `--` or `/*`. A rule wrongly rejected is as broken as one wrongly accepted."""
+    body = "SELECT goal_id FROM fact_goal WHERE note = 'a -- b /* c'\n"
+    rule = parse_header("".join(_BASE_FIELDS.values()) + body, source="literal.sql")
+    assert rule["class"] == "Definition"
+
+
+def test_a_comment_marker_inside_a_double_quoted_identifier_is_not_a_comment():
+    """POST-PR-REVIEW should-fix: the scanner honoured single-quoted literals but not
+    double-quoted IDENTIFIERS, so an unmatched `/*` inside one read as a block comment that never
+    closed and a VALID query was REJECTED -- the mirror image of the two bugs this scanner was
+    written to fix, and just as wrong. Verified against real DuckDB: `SELECT 1 AS "col/*name"`
+    executes fine."""
+    body = 'SELECT 1 AS "col/*name", goal_id FROM fact_goal\n'
+    rule = parse_header("".join(_BASE_FIELDS.values()) + body, source="ident.sql")
     assert rule["class"] == "Definition"

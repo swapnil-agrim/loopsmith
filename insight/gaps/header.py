@@ -21,10 +21,13 @@ lines.
 
 TWO VALIDATIONS WITH NO METRICS-LAYER ANALOG (Design decision 2): `class` must be one of the
 five spec-named gap classes (VALID_GAP_CLASSES); `severity` -- the level a rule reports IF it
-triggers -- must be one of WARN/FAIL/ABSENT (VALID_TRIGGERED_SEVERITIES). PASS is deliberately
-excluded: PASS is reserved for the zero-evidence case, computed at evaluation time
-(insight/gaps/evaluate.py), never authored in a header. A rule statically declaring PASS as
-"the severity when I find something" is a contradiction in terms.
+triggers -- must be one of WARN/FAIL (VALID_TRIGGERED_SEVERITIES). PASS and ABSENT are BOTH
+deliberately excluded: each names a state the ENGINE computes at evaluation time
+(insight/gaps/evaluate.py), never a level an author picks. A rule statically declaring PASS as
+"the severity when I find something" is a contradiction in terms, and a declarable ABSENT is
+worse -- evaluate_rule returns whatever the header declared, so such a rule could emit an ABSENT
+finding CARRYING evidence rows, which a consumer cannot tell from a genuinely never-measured one
+(spec:534). See the comment on VALID_TRIGGERED_SEVERITIES below.
 
 THE LOAD-TIME REJECT INVARIANT (Design decision 3, issue #116's own done_when: "a rule with no
 evidence query is rejected"): after the header-line loop below terminates at index `i`,
@@ -37,9 +40,93 @@ import re
 
 REQUIRED_FIELDS = ("name", "class", "metric", "action", "severity", "guardrail", "population")
 VALID_GAP_CLASSES = ("Coverage", "Definition", "Threshold", "Consistency", "Debt")
-VALID_TRIGGERED_SEVERITIES = ("WARN", "FAIL", "ABSENT")
+# PASS and ABSENT are both COMPUTED at evaluation time and neither is author-declarable.
+# POST-PR-REVIEW BLOCKING FIX: ABSENT used to be declarable here, and evaluate_rule's third
+# branch returns whatever the header declared -- so a rule could declare `severity: ABSENT`,
+# match real evidence rows, and emit an ABSENT finding CARRYING EVIDENCE. A consumer then cannot
+# tell that measured, evidenced finding apart from a genuinely never-measured one by severity
+# alone, which is spec:534's own forbidden collapse ("a gap engine that cannot tell
+# checked-and-fine from never-checked is worse than none") one token over from PASS. The
+# reasoning that excluded PASS applies to ABSENT word for word: it names a state the ENGINE
+# determined, not a level an author chose. A rule whose finding is "these goals have no gate"
+# declares WARN or FAIL -- those un-instrumented goals are its evidence, and the gap is real.
+VALID_TRIGGERED_SEVERITIES = ("WARN", "FAIL")
 
 _FIELD_LINE = re.compile(r"^--\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$")
+
+
+def _strip_sql_comments(text, source):
+    """Remove `--` line comments and `/* ... */` block comments, returning only executable text.
+
+    POST-PR-REVIEW BLOCKING FIX: this replaces a single-pass `re.sub(r"/\\*.*?\\*/", ...)`, which
+    is non-greedy and therefore NON-NESTING -- it stops at the FIRST `*/`. DuckDB's own grammar
+    nests: `/* outer /* inner */ */` is one comment to DuckDB, but the regex stripped only
+    through the inner `*/` and left trailing text behind, so a body that DuckDB reads as pure
+    commentary looked non-empty here and was ACCEPTED as having an evidence query. It then
+    crashed at evaluation with an AttributeError on None -- the exact symptom, and the exact
+    root cause (a regex approximating a comment grammar), that the single-level fix had already
+    been written to prevent. This scanner tracks nesting depth instead, so the reject boundary
+    matches DuckDB's parser rather than an approximation of it.
+
+    An UNTERMINATED `/*` is rejected here too, rather than being left to surface at evaluation as
+    a duckdb.ParserException: a rule whose evidence query is swallowed by a comment that never
+    closes has no evidence query, which is a load-time rejection by name.
+
+    Single-quoted string literals AND double-quoted identifiers are honoured, so a `--` or `/*`
+    inside either is not mistaken for a comment -- `WHERE note = 'a -- b'` and
+    `SELECT 1 AS "col/*name"` are both real queries, not empty bodies. The double-quote half is a
+    post-PR-review fix: without it an unmatched `/*` inside a quoted identifier read as a block
+    comment that never closed, and a VALID query was REJECTED -- the mirror image of the two bugs
+    this scanner replaced, and just as wrong.
+
+    `$$`-style dollar-quoting is NOT tracked, and the concrete consequence is named here so a
+    future rule author is not surprised by it: a body like `SELECT $$ /* unclosed $$` is valid
+    DuckDB SQL and executes fine, but this scanner sees the bare `/*`, opens a comment that never
+    closes, and REJECTS the file with "unterminated /* block comment". That is a false rejection,
+    the same shape as the double-quote bug fixed above. It is left unhandled deliberately: no
+    shipped rule or metric uses dollar-quoting anywhere, and the failure is a loud load-time
+    error rather than a silent misclassification, so a tag-matching branch is worth writing only
+    when a real rule needs one."""
+    out = []
+    i, n, depth = 0, len(text), 0
+    while i < n:
+        if depth:
+            if text.startswith("/*", i):
+                depth += 1
+                i += 2
+            elif text.startswith("*/", i):
+                depth -= 1
+                i += 2
+            else:
+                i += 1
+            continue
+        if text.startswith("/*", i):
+            depth = 1
+            i += 2
+        elif text.startswith("--", i):
+            end = text.find("\n", i)
+            i = n if end == -1 else end
+        elif text[i] in ("'", '"'):
+            quote = text[i]
+            doubled = quote * 2
+            out.append(text[i])
+            i += 1
+            while i < n:
+                out.append(text[i])
+                # A doubled quote is an escaped one inside the literal, not the end of it.
+                if text[i] == quote and not text.startswith(doubled, i):
+                    i += 1
+                    break
+                i += 2 if text.startswith(doubled, i) else 1
+        else:
+            out.append(text[i])
+            i += 1
+    if depth:
+        raise GapHeaderError(
+            f"{source}: unterminated /* block comment in the body -- a rule whose evidence "
+            "query is swallowed by a comment that never closes has no evidence query"
+        )
+    return "".join(out)
 
 
 class GapHeaderError(ValueError):
@@ -120,18 +207,13 @@ def parse_header(text, source="<unknown>"):
             f"header -- see .sdlc/plans/116.md Design decision 2), got {fields['severity']!r}"
         )
 
-    # `/* ... */` is stripped as well as `--`, so a rule whose body is only a block comment
-    # ("/* TODO: write the query later */") is rejected HERE, by name, rather than surviving to
-    # evaluation time -- where conn.execute() on a comment-only statement returns None and
-    # rows_as_dicts dies on `.description` with an AttributeError that names nothing useful.
-    # Done_when says a rule with no evidence query is REJECTED; a confusing crash three layers
-    # later is not a rejection.
-    body_text = re.sub(r"/\*.*?\*/", " ", "\n".join(lines[i:]), flags=re.DOTALL)
-    body = [
-        line for line in body_text.splitlines()
-        if line.strip() and not line.strip().startswith("--")
-    ]
-    if not body:
+    # Comments are stripped so a rule whose body is only commentary ("/* TODO: write the query
+    # later */") is rejected HERE, by name, rather than surviving to evaluation time -- where
+    # conn.execute() on a comment-only statement returns None and rows_as_dicts dies on
+    # `.description` with an AttributeError that names nothing useful. Done_when says a rule with
+    # no evidence query is REJECTED; a confusing crash three layers later is not a rejection.
+    body_text = _strip_sql_comments("\n".join(lines[i:]), source)
+    if not body_text.strip():
         raise GapHeaderError(
             f"{source}: header parses but no evidence query follows it (empty body)"
         )

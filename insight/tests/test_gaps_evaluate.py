@@ -175,3 +175,30 @@ def test_evaluate_rule_returns_absent_when_the_population_query_returns_no_rows_
         "class": "Definition", "metric": "24", "action": "add a done_when to the goal",
         "severity": "ABSENT", "evidence": [],
     }
+
+
+def test_an_absent_finding_carrying_evidence_raises():
+    """POST-PR-REVIEW BLOCKING FIX, the guard's other direction. Excluding PASS and ABSENT from
+    the empty-evidence check left the converse open: nothing stopped an ABSENT finding from
+    carrying evidence rows -- a measured, evidenced finding wearing the token reserved for
+    "never measured", indistinguishable by severity alone from a genuinely un-instrumented one
+    (spec:534). ABSENT is no longer author-declarable, so evaluate_rule cannot reach this state;
+    the guard is what keeps it unreachable for the five gap classes that will call make_finding
+    directly."""
+    try:
+        make_finding(gap_class="Coverage", metric="24", action="add the gate",
+                     severity="ABSENT", evidence=[{"goal_id": "g1"}])
+        assert False, "expected GapEvaluationError"
+    except GapEvaluationError as e:
+        assert "ABSENT" in str(e)
+
+
+def test_a_pass_finding_carrying_evidence_raises():
+    """Same guard, the PASS half: PASS means the population was checked and came back clean, so
+    evidence rows contradict it outright."""
+    try:
+        make_finding(gap_class="Definition", metric="24", action="add a done_when",
+                     severity="PASS", evidence=[{"goal_id": "g1"}])
+        assert False, "expected GapEvaluationError"
+    except GapEvaluationError as e:
+        assert "PASS" in str(e)
