@@ -118,3 +118,64 @@ def test_a_pack_missing_d2_entirely_is_absent_not_pass(conn, registry):
         "class": "Consistency", "metric": "alignment_collect_d2", "action": rule["action"],
         "severity": "ABSENT", "evidence": [],
     }
+
+
+def test_a_d2_json_null_literal_is_absent_not_pass(conn, registry):
+    """POST-PR-REVIEW BLOCKING FIX (PR #203, mutation-tested). json_extract(raw_payload,
+    '$.dimensions.d2') IS NOT NULL -- the ORIGINAL population guard -- is TRUE for a d2 that is a
+    JSON `null` literal (json_extract returns a non-SQL-NULL value for any PRESENT key regardless
+    of type; only a genuinely MISSING key returns SQL NULL). Under that guard this fixture read
+    population 1 while every d2 field extraction below it returned NULL and was softened by
+    CAST(...)/COALESCE into "nothing to flag", rendering a false PASS. json_type(raw_payload,
+    '$.dimensions.d2') = 'OBJECT' correctly excludes it: json_type of a JSON null literal is the
+    STRING 'NULL', not the guard's 'OBJECT', so population is 0 -> ABSENT."""
+    conn.execute(
+        "INSERT INTO fact_collector_pack (project_id, schema, collected_ts, raw_payload) "
+        "VALUES ('p1', 'alignment-collect/v1', '2026-01-01', "
+        "'{\"schema\":\"alignment-collect/v1\",\"dimensions\":{\"d1\":"
+        "{\"commits_with_source\":5},\"d2\":null}}')"
+    )
+    rule = registry["consistency_verify_no_test_touched"]
+    assert evaluate_rule(conn, rule) == {
+        "class": "Consistency", "metric": "alignment_collect_d2", "action": rule["action"],
+        "severity": "ABSENT", "evidence": [],
+    }
+
+
+def test_a_d2_json_array_is_absent_not_pass(conn, registry):
+    """POST-PR-REVIEW BLOCKING FIX (PR #203, mutation-tested). d2 is a JSON array ([1,2,3])
+    rather than an object -- the reviewer's own live reproduction case. Under the ORIGINAL
+    json_extract(...) IS NOT NULL guard this read population 1 while
+    test_command_known/tests_touched_with_source_pct extraction (a dotted path into an array)
+    returned NULL and was excluded via CAST(...) IS TRUE / COALESCE, rendering a false PASS.
+    json_type(...) = 'OBJECT' correctly excludes an ARRAY-typed d2: population 0 -> ABSENT."""
+    conn.execute(
+        "INSERT INTO fact_collector_pack (project_id, schema, collected_ts, raw_payload) "
+        "VALUES ('p1', 'alignment-collect/v1', '2026-01-01', "
+        "'{\"schema\":\"alignment-collect/v1\",\"dimensions\":{\"d1\":"
+        "{\"commits_with_source\":5},\"d2\":[1,2,3]}}')"
+    )
+    rule = registry["consistency_verify_no_test_touched"]
+    assert evaluate_rule(conn, rule) == {
+        "class": "Consistency", "metric": "alignment_collect_d2", "action": rule["action"],
+        "severity": "ABSENT", "evidence": [],
+    }
+
+
+def test_a_d2_bare_scalar_is_absent_not_pass(conn, registry):
+    """POST-PR-REVIEW BLOCKING FIX (PR #203, mutation-tested). d2 is a bare JSON string
+    ("degraded") rather than an object -- json_type is 'VARCHAR', not the guard's 'OBJECT', the
+    third of the three wrong-shape json_type values named in the review (NULL/ARRAY/VARCHAR,
+    alongside the correct OBJECT and the missing-key None). Population 0 -> ABSENT, not a false
+    PASS."""
+    conn.execute(
+        "INSERT INTO fact_collector_pack (project_id, schema, collected_ts, raw_payload) "
+        "VALUES ('p1', 'alignment-collect/v1', '2026-01-01', "
+        "'{\"schema\":\"alignment-collect/v1\",\"dimensions\":{\"d1\":"
+        "{\"commits_with_source\":5},\"d2\":\"degraded\"}}')"
+    )
+    rule = registry["consistency_verify_no_test_touched"]
+    assert evaluate_rule(conn, rule) == {
+        "class": "Consistency", "metric": "alignment_collect_d2", "action": rule["action"],
+        "severity": "ABSENT", "evidence": [],
+    }
