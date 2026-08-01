@@ -60,13 +60,25 @@ def read_goal_file(path):
 
 
 def discover_goal_files(sdlc_dir):
-    """<sdlc_dir>/goals/*.md, sorted. Scope: LOCAL FILE goals only -- a discovery.source ==
-    "github" goal lives as a GitHub issue with no frontmatter text at all, out of scope for a
-    frontmatter reader. See .sdlc/plans/102.md Design decision E."""
+    """<sdlc_dir>/goals/*.md, sorted, excluding the sdlc-init-scaffolded README.md (issue #118
+    Design decision 2). Every LoopSmith project that has run sdlc-init/sdlc-setup gets this exact
+    file (skills/sdlc-init/templates/goals/README.md.tmpl, copied verbatim, skip-if-exists), and
+    matched CASE-INSENSITIVELY -- the scaffold always writes exactly README.md, but a hand-renamed
+    readme.md would otherwise slip through on a case-sensitive filesystem while being caught on
+    macOS, and a check whose result depends on the developer's filesystem is worse than either
+    answer. A differently-NAMED prose file still slips through; that is the accepted limit, and
+    it carries no --- frontmatter fence at all (it is prose, not a goal) -- so before this fix,
+    goal_record's own fm={} fallback ingested it as a real goal named "README" with
+    done_when_present=False, contaminating every goal-grained consumer, this story's two new
+    Definition rules included. Filtered by EXACT filename, not by a frontmatter-presence probe --
+    see .sdlc/plans/118.md Design decision 2 for why, and for what this deliberately does not
+    catch (a differently-named, hand-added prose file would still slip through). Scope is
+    otherwise unchanged: LOCAL FILE goals only -- a discovery.source == "github" goal has no
+    frontmatter text at all, out of scope for a frontmatter reader (#102 Design decision E)."""
     goals_dir = pathlib.Path(sdlc_dir) / "goals"
     if not goals_dir.is_dir():
         return []
-    return sorted(goals_dir.glob("*.md"))
+    return sorted(p for p in goals_dir.glob("*.md") if p.name.lower() != "readme.md")
 
 
 def goal_record(sdlc_dir, goal_path):
