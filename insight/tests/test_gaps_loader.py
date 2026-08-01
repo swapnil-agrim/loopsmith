@@ -99,6 +99,7 @@ def test_load_gap_rules_defaults_to_the_real_insight_gaps_directory():
         "coverage_degraded_collector": "Coverage",
         "definition_no_done_when": "Definition",
         "definition_no_plan_artifact": "Definition",
+        "threshold_lead_time_breach": "Threshold",
     }
     assert set(registry) == set(expected_class)
     for rule_id, rule in registry.items():

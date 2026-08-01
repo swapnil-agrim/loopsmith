@@ -7,6 +7,10 @@ coverage_review_missing, coverage_degraded_collector. Definition now ships two r
 #118, E3.S3): definition_no_done_when, definition_no_plan_artifact -- the spec's third
 Definition clause ("no `verify_command` and no `verify.command`") is met BY REFERENCE to
 Coverage's own coverage_verify_no_command.sql (#117), not duplicated -- see that rule's own
-guardrail and .sdlc/plans/118.md Design decision 1. Threshold, Consistency, and Debt (#119-#121)
-still do not.
+guardrail and .sdlc/plans/118.md Design decision 1. Threshold now ships one rule (issue #119,
+E3.S4): threshold_lead_time_breach -- fires only when a measured merge's lead time is part of a
+run of 3 or more consecutive merges that each crossed their own trailing p85 (derived per
+project, never a hardcoded magnitude), anywhere in that project's history, not only its most
+recent merges; see that rule's own guardrail and .sdlc/plans/119.md. Consistency and Debt
+(#120-#121) still do not.
 """

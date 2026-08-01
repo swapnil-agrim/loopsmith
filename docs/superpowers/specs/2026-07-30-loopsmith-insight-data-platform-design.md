@@ -541,8 +541,9 @@ Three properties inherited deliberately from `pipeline.py`:
    WARN 91–99% of the time (78–93% even with a derived materiality margin; a ≥40-point minimum-history cutoff
    still left 76.2%). The rule is now **k consecutive breaches, k=3** — 0.15³ ≈ 0.34% on a stationary series.
    k is a RUN LENGTH, not a magnitude: it encodes no domain expectation, so the property this rule was
-   protecting survives. Sensitivity was never the problem — a 4× sustained step-up and a 10,000× spike both
-   still fire.
+   protecting survives. Sensitivity was never the problem — a 4× sustained step-up still fires, starting at
+   its first regressed point; a 10,000× single spike correctly does *not* fire on its own — no run-length
+   filter with k≥2 ever can, on one point — which is exactly what "never on a single crossing" means.
 3. **`--compare` semantics.** Gaps diff run-over-run into `regressed / improved / still-failing`, and
    **still-failing is the recurrence signal — systemic, not incidental; it goes to the backlog, not to a
    one-off fix.** That sentence is already in `pipeline.py`'s docstring; the gap engine adopts it.
