@@ -114,3 +114,42 @@ def test_render_report_shows_action_and_evidence_only_for_warn_and_fail(conn):
     # an ABSENT line must never print an "action:" continuation (evidence is empty by invariant)
     absent_line_index = text.index("definition_no_done_when")
     assert "action:" not in text[absent_line_index:absent_line_index + 80]
+
+
+def _report(findings=(), errors=()):
+    """A hand-built report -- render_report reads only these keys, never a live store."""
+    return {"schema": "insight-gaps-report/v1", "findings": list(findings),
+            "errors": list(errors),
+            "verdict": {"overall": "ABSENT", "failing": False, "errored": bool(errors),
+                        "clean": False}}
+
+
+def test_render_report_never_hides_a_crashed_rule():
+    """The guarantee two plan-review rounds blocked on: a rule that crashed is visible in the
+    RENDERED output on every run, not only in the machine-readable delta. Nothing else covered
+    this line, so a regression here would have gone silent."""
+    out = render_report(_report(errors=[{"rule_id": "boom", "error": "InvalidInputException: x"}]))
+    assert "! boom ERRORED: InvalidInputException: x" in out
+    assert "(rule error(s) present)" in out
+
+
+def test_render_report_shows_every_delta_bucket_by_its_own_name():
+    """Each bucket renders as its own distinguishable line -- a still-failing recurrence must
+    never be confused with a rule whose visibility was merely lost to a crash."""
+    delta = {
+        "regressed": [{"rule_id": "r1", "before": "PASS", "now": "FAIL"}],
+        "improved": [{"rule_id": "r2", "before": "FAIL", "now": "PASS"}],
+        "still_failing": [{"rule_id": "r3", "before": "FAIL", "now": "FAIL"}],
+        "errored_in_current": [{"rule_id": "r4", "before": "WARN"}],
+        "still_erroring": [{"rule_id": "r5"}],
+        "recovered_from_error": [{"rule_id": "r6", "now": "PASS"}],
+        "recurrence_count": 1,
+    }
+    out = render_report(_report(), delta)
+    assert "REGRESSED r1: PASS -> FAIL" in out
+    assert "STILL FAILING r3" in out and "route to the backlog" in out
+    assert "ERRORED IN CURRENT RUN r4 (was WARN in the prior run)" in out
+    assert "STILL ERRORING r5" in out
+    assert "RECOVERED FROM ERROR r6 -> now PASS" in out
+    # recurrence is still_failing ALONE -- the three error buckets never inflate it.
+    assert "still-failing (recurrence)=1" in out

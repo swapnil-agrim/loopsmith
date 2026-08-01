@@ -691,3 +691,30 @@ def test_gaps_json_flag_writes_a_report_that_round_trips(tmp_path, monkeypatch):
     data = json.loads(out.read_text())
     assert data["schema"] == "insight-gaps-report/v1"
     assert len(data["findings"]) == 10
+
+
+def test_gaps_compare_degrades_on_a_truncated_prior_file(tmp_path, monkeypatch, capsys):
+    """A prior report is an artifact of an earlier `--json` run, so it can be half-written
+    (disk full, SIGKILL). That must take the same SKIP/exit-3 path as a missing file, never a
+    raw traceback -- pipeline.py's own --compare would traceback here."""
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "prior.json").write_text('{"schema": "insight-gaps-report/v1", "findi')
+    from insight.ingest.store import ensure_schema
+    import duckdb
+    ensure_schema(duckdb.connect(str(tmp_path / "s.duckdb")))
+    assert main(["gaps", "--db", "s.duckdb", "--compare", "prior.json"]) == 3
+    assert "not valid JSON" in capsys.readouterr().err
+
+
+def test_gaps_compare_degrades_on_a_prior_file_of_the_wrong_shape(tmp_path, monkeypatch, capsys):
+    """Valid JSON that is not a report object at all -- a list, say -- is rejected by shape
+    rather than exploding somewhere inside compare_reports."""
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "prior.json").write_text("[1, 2, 3]")
+    from insight.ingest.store import ensure_schema
+    import duckdb
+    ensure_schema(duckdb.connect(str(tmp_path / "s.duckdb")))
+    assert main(["gaps", "--db", "s.duckdb", "--compare", "prior.json"]) == 3
+    assert "not a findings report" in capsys.readouterr().err

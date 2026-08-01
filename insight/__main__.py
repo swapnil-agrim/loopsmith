@@ -230,7 +230,20 @@ def main(argv=None):
                 print("SKIP: %s not found" % prior_path, file=sys.stderr)
                 return 3
             from insight.gaps.compare import compare_reports
-            prior = json.loads(prior_path.read_text())
+            # A prior file is an ARTIFACT OF AN EARLIER `--json` RUN, so it can be truncated or
+            # half-written (disk full, SIGKILL mid-write) in a way the missing-file case above
+            # would not catch. pipeline.py's own `card --compare` loads its prior unguarded and
+            # would traceback here; the mirroring mandate is over the CLASSIFICATION semantics,
+            # not over that, so this degrades to the same SKIP/exit-3 path as a missing file.
+            try:
+                prior = json.loads(prior_path.read_text())
+            except ValueError as exc:
+                print("SKIP: %s is not valid JSON (%s)" % (prior_path, exc), file=sys.stderr)
+                return 3
+            if not isinstance(prior, dict):
+                print("SKIP: %s is not a findings report (top level is %s, not an object)"
+                      % (prior_path, type(prior).__name__), file=sys.stderr)
+                return 3
             delta = compare_reports(prior, report)
             report["delta"] = delta
 
