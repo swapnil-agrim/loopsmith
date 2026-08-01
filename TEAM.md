@@ -11,6 +11,9 @@ _Nothing is blocked on another person._
 
 | when | who | did | goal | detail |
 |---|---|---|---|---|
+| 2026-08-01T00:01:58Z | swapnil-agrim | claimed | 112 |  |
+| 2026-08-01T00:01:21Z | swapnil-agrim | done | 105 |  |
+| 2026-08-01T00:01:03Z | swapnil-agrim | merged | 105 | auto-merge (squash) armed on PR #187 |
 | 2026-07-31T22:59:03Z | swapnil-agrim | parked | 105 | Re-parked (fifth time this run). The decision has never changed and is recorded in full in the earlier park comments: fact_collector_pack is append-only by design with three shipped tests asserting it, so this issue's Done-when cannot be met without reversing a deliberate earlier decision. The ordering half resolved itself when #180 was folded in here. NEW AND RELEVANT TO SEQUENCING: #111's retrospective identified insight/metrics/10.sql (Aging WIP, shipped #109) as the highest-severity latent bug in the catalog -- ROW_NUMBER OVER (PARTITION BY actor_id) with no project_id, so one actor's open claim in a second project does not render wrong, it VANISHES from the view. It is inert ONLY because fact_event has zero rows, and THIS goal is what populates fact_event. So the retro's recommendation is to fix 10.sql as a precondition of this goal landing, rather than as an independent backlog item. That makes your decision here gate a real bug fix, not just this story. |
 | 2026-07-31T22:58:22Z | swapnil-agrim | claimed | 105 |  |
 | 2026-07-31T22:58:04Z | swapnil-agrim | done | 111 |  |
@@ -33,6 +36,3 @@ _Nothing is blocked on another person._
 | 2026-07-31T17:13:41Z | swapnil-agrim | merged | 108 | auto-merge (squash) armed on PR #182 |
 | 2026-07-31T15:17:44Z | swapnil-agrim | claimed | 108 |  |
 | 2026-07-31T15:16:11Z | swapnil-agrim | claimed | 108 |  |
-| 2026-07-31T15:15:48Z | swapnil-agrim | parked | 105 | Blocked on ordering, not on a decision: #180 (E1.S9, persist ledger records into fact_event and fact_handoff) already exists and is the story that builds the write path this goal's watermark is supposed to gate. Verified in Research: spec B.2 step 2 was never built, ledger_reader.py is read-only and is not wired into ingest, and no fact_event/fact_handoff write exists -- so a watermark shipped today gates nothing. #105 should run AFTER #180. Second, independent question still needing your call: fact_collector_pack is append-only BY DESIGN -- measured going 5 to 10 rows across two ingest runs -- with three shipped tests asserting exactly that, so this issue's own Done-when, 'running ingest twice produces identical row counts', cannot be met without reversing a deliberate earlier decision and building a schema/PK migration path this codebase has never needed. Also for your call: the third dimension of the (project, actor, stream) key is inert, since 'stream' is proposed in spec A.1 but not implemented in the shipped ledger.py. Research is complete and the dossier stands at .sdlc/research/105-incremental-resume.md. |
-| 2026-07-31T15:15:04Z | swapnil-agrim | claimed | 105 |  |
-| 2026-07-31T15:14:47Z | swapnil-agrim | done | 106 |  |
