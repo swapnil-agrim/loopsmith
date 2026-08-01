@@ -307,7 +307,7 @@
         {
           "id": "E3.S6",
           "title": "Debt gap class",
-          "done_when": "Fires on rising discovery-scan inventory; evidence carries file, count and trend. The knowledge/gaps.md half is DESCOPED to its own story -- gaps.md has no per-entry timestamp and no ingest surface, so there is nothing to query; disclosing a missing instrument is correct, fabricating one is not.",
+          "done_when": "Fires on rising discovery-scan inventory; evidence carries the project, the snapshot timestamp, the candidate count, the derived trailing baseline and the breach run length. NOT a file: this rule's grain is one row per snapshot-trend point, where a single file is not meaningful -- discovery-scan/v1's `source` is the literal string 'discovery', not a path, and its candidate list is capped at 10 while the real count is not. An earlier version of this done_when asked for a file column that the data cannot honestly supply. The knowledge/gaps.md half is DESCOPED to issue #210 -- gaps.md has no per-entry timestamp and no ingest surface, so there is nothing to query.",
           "tasks": [
             "Rules over the scan snapshots",
             "Trend derivation",
