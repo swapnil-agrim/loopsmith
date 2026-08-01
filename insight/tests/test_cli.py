@@ -44,9 +44,10 @@ def test_help_exits_zero_and_lists_all_three_subcommands(capsys):
         assert name in out
 
 
-#: ingest (issue #99, E1.S1) is real now, not a stub — it's exercised by its own
-#: tests below, each individually guarded with pytest.importorskip("duckdb").
-_STILL_STUB_TRACKING_ISSUE = {"gaps": 115, "dash": 123}
+#: ingest (issue #99, E1.S1) and gaps (issue #122, E3.S7) are real now, not stubs — each is
+#: exercised by its own tests below, individually guarded with pytest.importorskip("duckdb")
+#: where it touches a store.
+_STILL_STUB_TRACKING_ISSUE = {"dash": 123}
 
 
 @pytest.mark.parametrize("command, issue", sorted(_STILL_STUB_TRACKING_ISSUE.items()))
@@ -187,7 +188,8 @@ def test_main_module_does_not_import_duckdb_at_top_level():
     banned = {"duckdb", "insight.ingest.store", "insight.ingest.collectors",
               "insight.ingest.packs", "insight.ingest.artifact_reader",
               "insight.ingest.git_reader", "insight.ingest.gh_reader",
-              "insight.ingest.repo_scan", "insight.ingest.ledger_writer", "insight"}
+              "insight.ingest.repo_scan", "insight.ingest.ledger_writer",
+              "insight.gaps.report", "insight.gaps.compare", "insight"}
     top_level_targets = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -614,3 +616,78 @@ def test_ingest_repos_glob_survives_an_unreadable_sibling_directory(
     goal_count = conn.execute("select count(*) from fact_goal").fetchone()[0]
     assert goal_count == 0  # sanity: the good repo just has no goals, ingest still ran for it
     conn.close()
+
+
+# --------------------------------------------------------------------------- gaps (issue #122)
+
+
+def test_help_lists_the_new_gaps_flags(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["gaps", "--help"])
+    out = capsys.readouterr().out
+    for flag in ("--db", "--json", "--compare"):
+        assert flag in out
+
+
+def test_gaps_against_an_empty_store_exits_zero(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "x.duckdb"
+    code = main(["gaps", "--db", str(target)])
+    assert code == 0
+
+
+def test_gaps_prints_to_stdout_not_stderr_on_a_clean_run(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    code = main(["gaps", "--db", str(tmp_path / "x.duckdb")])
+    assert code == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert "Gap findings report" in out
+
+
+def test_gaps_exits_one_on_a_real_fail_finding(tmp_path, monkeypatch):
+    duckdb = pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "x.duckdb"
+    conn = duckdb.connect(str(target))
+    from insight.ingest.store import ensure_schema
+    ensure_schema(conn)
+    conn.execute(
+        "INSERT INTO dim_project (project_id, config_json) VALUES "
+        "('p1', '{\"work\":{\"require_review\":\"approval\"}}')"
+    )
+    conn.execute(
+        "INSERT INTO fact_merge_lead_time (project_id, merge_sha, pr_number, kind) "
+        "VALUES ('p1', 's1', 101, 'squash_pr')"
+    )
+    conn.execute(
+        "INSERT INTO fact_pr_check (project_id, pr_number, check_name, conclusion) "
+        "VALUES ('p1', 101, 'ci', 'success')"
+    )
+    conn.close()
+    code = main(["gaps", "--db", str(target)])
+    assert code == 1
+
+
+def test_gaps_compare_against_a_missing_prior_returns_3(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    code = main(["gaps", "--db", str(tmp_path / "x.duckdb"),
+                 "--compare", str(tmp_path / "nope.json")])
+    assert code == 3
+    assert "not found" in capsys.readouterr().err
+
+
+def test_gaps_json_flag_writes_a_report_that_round_trips(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    out = tmp_path / "report.json"
+    code = main(["gaps", "--db", str(tmp_path / "x.duckdb"), "--json", str(out)])
+    assert code == 0
+    import json
+    data = json.loads(out.read_text())
+    assert data["schema"] == "insight-gaps-report/v1"
+    assert len(data["findings"]) == 10
