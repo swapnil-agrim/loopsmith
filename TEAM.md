@@ -11,6 +11,9 @@ _Nothing is blocked on another person._
 
 | when | who | did | goal | detail |
 |---|---|---|---|---|
+| 2026-08-01T07:06:57Z | swapnil-agrim | claimed | 119 |  |
+| 2026-08-01T07:06:42Z | swapnil-agrim | done | 118 |  |
+| 2026-08-01T07:06:27Z | swapnil-agrim | merged | 118 | auto-merge (squash) armed on PR #199 |
 | 2026-08-01T06:17:40Z | swapnil-agrim | claimed | 118 |  |
 | 2026-08-01T06:17:25Z | swapnil-agrim | done | 117 |  |
 | 2026-08-01T06:17:10Z | swapnil-agrim | merged | 117 | auto-merge (squash) armed on PR #198 |
@@ -33,6 +36,3 @@ _Nothing is blocked on another person._
 | 2026-08-01T00:01:58Z | swapnil-agrim | claimed | 112 |  |
 | 2026-08-01T00:01:21Z | swapnil-agrim | done | 105 |  |
 | 2026-08-01T00:01:03Z | swapnil-agrim | merged | 105 | auto-merge (squash) armed on PR #187 |
-| 2026-07-31T22:59:03Z | swapnil-agrim | parked | 105 | Re-parked (fifth time this run). The decision has never changed and is recorded in full in the earlier park comments: fact_collector_pack is append-only by design with three shipped tests asserting it, so this issue's Done-when cannot be met without reversing a deliberate earlier decision. The ordering half resolved itself when #180 was folded in here. NEW AND RELEVANT TO SEQUENCING: #111's retrospective identified insight/metrics/10.sql (Aging WIP, shipped #109) as the highest-severity latent bug in the catalog -- ROW_NUMBER OVER (PARTITION BY actor_id) with no project_id, so one actor's open claim in a second project does not render wrong, it VANISHES from the view. It is inert ONLY because fact_event has zero rows, and THIS goal is what populates fact_event. So the retro's recommendation is to fix 10.sql as a precondition of this goal landing, rather than as an independent backlog item. That makes your decision here gate a real bug fix, not just this story. |
-| 2026-07-31T22:58:22Z | swapnil-agrim | claimed | 105 |  |
-| 2026-07-31T22:58:04Z | swapnil-agrim | done | 111 |  |
