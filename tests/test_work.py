@@ -32,14 +32,21 @@ def _runner(handlers):
                 if isinstance(resp, Exception):
                     raise resp
                 return resp(line) if callable(resp) else resp
+        if "rev-parse HEAD" in line:
+            return HEAD_SHA          # gate()'s stale-head check (#197); override via a handler
         return ""
 
     run.calls = calls
     return run
 
 
-def _view(mergeable="MERGEABLE", status="CLEAN", checks=(("ci", "SUCCESS"),)):
-    return json.dumps({"mergeable": mergeable, "mergeStateStatus": status,
+#: The sha both sides report by default, so a test that does not care about the stale-head guard
+#: (#197) sees a matching head. A test that DOES care overrides one side.
+HEAD_SHA = "0" * 40
+
+
+def _view(mergeable="MERGEABLE", status="CLEAN", checks=(("ci", "SUCCESS"),), head=HEAD_SHA):
+    return json.dumps({"mergeable": mergeable, "mergeStateStatus": status, "headRefOid": head,
                        "statusCheckRollup": [{"name": n, "conclusion": c} for n, c in checks]})
 
 
@@ -692,3 +699,57 @@ def test_post_review_default_cap_is_three(tmp_path):
     for i in range(2):
         assert work.post_review(d, ON, goal, run=run, verdict="block", reason=str(i)).startswith("posted")
     assert work.post_review(d, ON, goal, run=run, verdict="block", reason="3rd").startswith("PARK:")
+
+
+# --------------------------------------------------------------------------- stale head (#197)
+
+
+def test_gate_refuses_when_the_pr_head_is_not_what_we_reviewed(tmp_path):
+    """The trap that shipped defects to a protected main three times in one run.
+
+    `work.py commit` is LOCAL; only `work.py pr` pushes. A fix made after a review block can leave
+    the PR head at the pre-fix commit, and GitHub then answers CLEAN with every required check
+    green -- about code nobody approved. Each signal is correct; each is about the wrong tree.
+    """
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([("pr view", _view(head="a" * 40)), ("rev-parse HEAD", "b" * 40)])
+    ok, verdict, _ = work.gate(d, ON, goal, run=run, sleep=NOSLEEP)
+    assert not ok
+    assert "STALE HEAD" in verdict
+    assert "aaaaaaa" in verdict and "bbbbbbb" in verdict, "name both heads -- a bare refusal is unactionable"
+    assert "work.py pr" in verdict, "say the command that fixes it"
+
+
+def test_gate_allows_a_head_that_matches(tmp_path):
+    """The guard must not block the normal path."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    ok, verdict, _ = work.gate(d, ON, goal, run=_runner([("pr view", _view())]), sleep=NOSLEEP)
+    assert ok and verdict == "clean and safe"
+
+
+def test_gate_fails_closed_when_a_head_is_unreadable(tmp_path):
+    """A head we cannot read is not evidence of a fresh one. Both directions refuse."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+
+    no_local = _runner([("pr view", _view()), ("rev-parse HEAD", "")])
+    ok, verdict, _ = work.gate(d, ON, goal, run=no_local, sleep=NOSLEEP)
+    assert not ok and "local branch tip read back empty" in verdict
+
+    no_remote = _runner([("pr view", _view(head=""))])
+    ok, verdict, _ = work.gate(d, ON, goal, run=no_remote, sleep=NOSLEEP)
+    assert not ok and "did not report headRefOid" in verdict
+
+
+def test_gate_checks_the_head_before_believing_any_github_verdict(tmp_path):
+    """Ordering is the point: with a stale head, CONFLICTING/BEHIND/failing-check are all answers
+    about the wrong tree, so the head check must come first rather than as a late tie-break."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([("pr view", _view("CONFLICTING", "DIRTY", head="e" * 40)),
+                   ("rev-parse HEAD", "f" * 40)])
+    ok, verdict, _ = work.gate(d, ON, goal, run=run, sleep=NOSLEEP)
+    assert not ok
+    assert "STALE HEAD" in verdict, "the head check must win over the conflict report"

@@ -208,7 +208,21 @@ def gate(sdlc_dir, config, goal, run=None, sleep=time.sleep):
 
     `mergeable` is clean; `mergeStateStatus` is safe (it folds in required checks and reviews). The
     retry is not politeness: GitHub computes mergeability lazily and the first read after a push is
-    normally UNKNOWN, so treating that as an answer either parks every PR or merges blind."""
+    normally UNKNOWN, so treating that as an answer either parks every PR or merges blind.
+
+    STALE HEAD is checked FIRST, and it is not a nicety. `work.py commit` commits LOCALLY; only
+    `work.py pr` pushes. So a fix made after a `loopsmith:block` — committed, re-verified, reviewed
+    in the worktree — can leave the PR head at the PRE-FIX commit. Every GitHub answer is about the
+    REMOTE head, so `mergeable`, `mergeStateStatus` and all required checks then pass correctly
+    about code nobody approved, and an armed `--auto` squashes it.
+
+    Not hypothetical: three times in one run. #190 merged its first commit instead of its reviewed
+    tip and shipped five wrong Layer-3 metric views to a protected `main`; #194 did the same and
+    shipped two; a third was caught only because a later goal's research quoted a constant that had
+    already been changed. Four required checks passed every time — correctly, about the wrong code.
+
+    A green check on a head you did not review is worse than a red one, so this fails CLOSED: an
+    unreadable head on either side refuses rather than merges."""
     run = run or _run
     rec = _record(sdlc_dir, goal)
     if not rec or not rec.get("pr"):
@@ -216,11 +230,31 @@ def gate(sdlc_dir, config, goal, run=None, sleep=time.sleep):
     data = {}
     for attempt in range(UNKNOWN_ATTEMPTS):
         data = json.loads(run(rec["worktree"], [
-            "gh", "pr", "view", rec["pr"], "--json", "mergeable,mergeStateStatus,statusCheckRollup"]))
+            "gh", "pr", "view", rec["pr"],
+            "--json", "mergeable,mergeStateStatus,statusCheckRollup,headRefOid"]))
         if data.get("mergeable") != "UNKNOWN":
             break
         if attempt < UNKNOWN_ATTEMPTS - 1:
             sleep(UNKNOWN_BACKOFF * (2 ** attempt))
+
+    # Before any GitHub verdict is believed: is GitHub even looking at what we reviewed?
+    remote_head = (data.get("headRefOid") or "").strip()
+    try:
+        local_head = run(rec["worktree"], ["git", "rev-parse", "HEAD"]).strip()
+    except Exception as exc:                # noqa: BLE001 - unreadable tip must never merge
+        return False, f"could not read the local branch tip ({exc})", data
+    if not remote_head:
+        return False, ("GitHub did not report headRefOid, so the PR head cannot be checked against "
+                       "this worktree — refusing rather than merging an unverifiable head"), data
+    if not local_head:
+        return False, ("the local branch tip read back empty, so the PR head cannot be checked "
+                       "against it — refusing rather than merging an unverifiable head"), data
+    if remote_head != local_head:
+        return False, (
+            f"STALE HEAD — the PR is at {remote_head[:7]} but this worktree is at "
+            f"{local_head[:7]}. Commits made after the last `work.py pr` were never pushed, so "
+            f"GitHub's checks and reviews all passed against code that is NOT what was reviewed "
+            f"here. Run `work.py pr` to push, then re-review."), data
 
     mergeable, status = data.get("mergeable"), data.get("mergeStateStatus")
     if mergeable == "UNKNOWN":
