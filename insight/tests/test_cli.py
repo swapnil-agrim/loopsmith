@@ -44,10 +44,12 @@ def test_help_exits_zero_and_lists_all_three_subcommands(capsys):
         assert name in out
 
 
-#: ingest (issue #99, E1.S1) and gaps (issue #122, E3.S7) are real now, not stubs — each is
-#: exercised by its own tests below, individually guarded with pytest.importorskip("duckdb")
-#: where it touches a store.
-_STILL_STUB_TRACKING_ISSUE = {"dash": 123}
+#: ingest (issue #99, E1.S1), gaps (issue #122, E3.S7), and dash (issue #124, E4.S1) are all
+#: real now, not stubs — each is exercised by its own tests below, individually guarded with
+#: pytest.importorskip("duckdb") where it touches a store. Empty dict -> the parametrized test
+#: below collects zero cases and simply stops running, exactly mirroring what happened when
+#: gaps was removed from it in #122 and ingest before that.
+_STILL_STUB_TRACKING_ISSUE = {}
 
 
 @pytest.mark.parametrize("command, issue", sorted(_STILL_STUB_TRACKING_ISSUE.items()))
@@ -189,7 +191,8 @@ def test_main_module_does_not_import_duckdb_at_top_level():
               "insight.ingest.packs", "insight.ingest.artifact_reader",
               "insight.ingest.git_reader", "insight.ingest.gh_reader",
               "insight.ingest.repo_scan", "insight.ingest.ledger_writer",
-              "insight.gaps.report", "insight.gaps.compare", "insight"}
+              "insight.gaps.report", "insight.gaps.compare",
+              "insight.dash.render", "insight.dash.serve", "insight"}
     top_level_targets = set()
     for node in tree.body:
         if isinstance(node, ast.Import):
@@ -718,3 +721,150 @@ def test_gaps_compare_degrades_on_a_prior_file_of_the_wrong_shape(tmp_path, monk
     ensure_schema(duckdb.connect(str(tmp_path / "s.duckdb")))
     assert main(["gaps", "--db", "s.duckdb", "--compare", "prior.json"]) == 3
     assert "not a findings report" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- dash (issue #124)
+
+
+def test_help_lists_the_new_dash_flags(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dash", "--help"])
+    out = capsys.readouterr().out
+    for flag in ("--db", "--out", "--serve", "--port"):
+        assert flag in out
+
+
+def test_dash_builds_index_html_and_exits_zero(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    code = main(["dash", "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out")])
+    assert code == 0
+    assert (tmp_path / "out" / "index.html").exists()
+
+
+def test_dash_prints_to_stdout_not_stderr_on_success(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    code = main(["dash", "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out")])
+    assert code == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert "wrote" in out
+
+
+def test_dash_default_out_dir_is_under_dot_sdlc(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    code = main(["dash", "--db", str(tmp_path / "x.duckdb")])
+    assert code == 0
+    assert (tmp_path / ".sdlc" / "insight-dash" / "index.html").exists()
+
+
+def test_dash_against_a_never_ingested_store_still_exits_zero_but_warns(tmp_path, monkeypatch, capsys):
+    """Store file doesn't exist yet -- open_store() creates it, but nothing has ever ingested
+    into it. Distinct from the onboarding-week test below (Blocking 2, .sdlc/plans/124.md
+    section L) -- the two must render DIFFERENT banners, not the same generic "cold" one."""
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    code = main(["dash", "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out")])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "never ingested" in out
+    html_text = (tmp_path / "out" / "index.html").read_text(encoding="utf-8")
+    assert "this store has never been ingested" in html_text
+    assert "Ingested, nothing measurable yet" not in html_text
+
+
+def test_dash_against_an_onboarding_week_store_warns_differently_and_never_says_never_ingested(
+    tmp_path, monkeypatch, capsys
+):
+    """A real insight ingest ran (a dim_project row exists) but nothing measurable has landed
+    yet -- spec's own 'cold start' state. Must NOT tell this user to re-run ingest; they already
+    did. Regression test for Blocking 2."""
+    duckdb = pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "x.duckdb"
+    from insight.ingest.store import ensure_schema
+    conn = duckdb.connect(str(target))
+    ensure_schema(conn)
+    conn.execute(
+        "INSERT INTO dim_project (project_id, repo, adopted, first_seen, last_seen) "
+        "VALUES ('p1', 'github.com/org/fresh-repo', true, now(), now())"
+    )
+    conn.close()
+
+    code = main(["dash", "--db", str(target), "--out", str(tmp_path / "out")])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "nothing measurable yet" in out
+    html_text = (tmp_path / "out" / "index.html").read_text(encoding="utf-8")
+    assert "Ingested, nothing measurable yet" in html_text
+    assert "this store has never been ingested" not in html_text
+
+
+def test_dash_index_html_has_no_external_reference(tmp_path, monkeypatch):
+    """Task 3's page-level network assertion, exercised at the full CLI level too -- not just
+    inside test_dash_render.py's more targeted unit tests."""
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    from insight.dash.render import assert_self_contained
+    code = main(["dash", "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out")])
+    assert code == 0
+    html_text = (tmp_path / "out" / "index.html").read_text(encoding="utf-8")
+    assert_self_contained(html_text)  # must not raise
+
+
+def test_dash_serve_actually_serves_over_loopback_end_to_end(tmp_path, monkeypatch):
+    """The literal 'builds and serves locally' done_when clause, exercised through the real CLI
+    wiring (not just insight/dash/serve.py's own unit tests) -- runs main(["dash", "--serve", ...])
+    in a background thread (main() blocks inside --serve until interrupted), fetches the real page
+    over http://127.0.0.1:<port>/, then shuts the server down.
+
+    Synchronization without a sleep-based race: insight.dash.serve.build_server is spied on (the
+    real function is still called through) so the test learns the ACTUAL bound port (--port 0
+    means the OS assigns one) the moment the server object is constructed, via a threading.Event
+    -- before serve_forever() ever blocks. The test then calls the captured server's own
+    .shutdown() directly, which makes serve_forever() return normally (not via KeyboardInterrupt),
+    letting main()'s dash branch fall through to `return 0` the same way `python3 -m http.server`
+    exiting cleanly would."""
+    pytest.importorskip("duckdb")
+    import threading
+    import urllib.request
+    from insight.dash import serve as serve_mod
+
+    monkeypatch.chdir(tmp_path)
+
+    created = {}
+    ready = threading.Event()
+    real_build_server = serve_mod.build_server
+
+    def spying_build_server(directory, host=serve_mod.DEFAULT_HOST, port=serve_mod.DEFAULT_PORT):
+        httpd = real_build_server(directory, host=host, port=port)
+        created["httpd"] = httpd
+        ready.set()
+        return httpd
+
+    monkeypatch.setattr(serve_mod, "build_server", spying_build_server)
+
+    result = {}
+
+    def run():
+        result["code"] = main([
+            "dash", "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out"),
+            "--serve", "--port", "0",  # port 0 -> OS-assigned ephemeral port, no CI collisions
+        ])
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    assert ready.wait(timeout=5), "server was never constructed"
+    port = created["httpd"].server_address[1]
+
+    resp = urllib.request.urlopen(f"http://127.0.0.1:{port}/index.html", timeout=3)
+    assert resp.status == 200
+    assert b"insight-dash-data" in resp.read()
+
+    created["httpd"].shutdown()
+    t.join(timeout=5)
+    assert not t.is_alive()
+    assert result["code"] == 0

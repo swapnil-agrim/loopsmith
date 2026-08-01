@@ -1,18 +1,18 @@
 # SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
 """`python -m insight` / the `insight` console script (issue #95, E0.S2).
 
-`ingest` (issue #99, E1.S1) and `gaps` (issue #122, E3.S7) are real: `ingest`
-opens/creates a DuckDB store and ensures its schema exists; `gaps` evaluates every
-loaded gap rule and reports findings, with `--compare` classifying each against a
-prior run. `dash` is the only subcommand still a stub, tracked by its own epic —
-running it prints where the real work lives rather than pretending to do something it
-can't; a stub that pretends to work is worse than one that says it doesn't.
+`ingest` (issue #99, E1.S1), `gaps` (issue #122, E3.S7), and `dash` (issue #124, E4.S1)
+are all real now: `ingest` opens/creates a DuckDB store and ensures its schema exists;
+`gaps` evaluates every loaded gap rule and reports findings, with `--compare`
+classifying each against a prior run; `dash` builds a self-contained `index.html` from
+the real metric catalog and gap findings report, optionally serving it over loopback
+HTTP with `--serve`. There is no longer a stub subcommand in this parser.
 
-`insight.ingest.store` and `insight.gaps.{report,compare}` (and therefore `duckdb`)
-are imported LAZILY, inside main()'s `ingest`/`gaps` branches only — never at module
-level here. Hoisting them to the top would make `--help` and `dash` require duckdb to
-be importable, breaking the "stubs stay pure" contract on a box without duckdb
-installed. See
+`insight.ingest.store`, `insight.gaps.{report,compare}`, and `insight.dash.{render,serve}`
+(and therefore `duckdb`) are imported LAZILY, inside main()'s `ingest`/`gaps`/`dash`
+branches only — never at module level here. Hoisting them to the top would make
+`--help` require duckdb to be importable, breaking the "argparse skeleton stays pure"
+contract on a box without duckdb installed. See
 insight/tests/test_cli.py::test_main_module_does_not_import_duckdb_at_top_level, which
 pins this structurally via AST (no duckdb needed to run it).
 """
@@ -92,7 +92,38 @@ def build_parser():
         help="path to a prior report written by --json; classifies each finding regressed / "
              "improved / still-failing against it",
     )
-    for name in ("dash",):
+    dash_parser = subparsers.add_parser(
+        "dash",
+        help="build a static, self-contained HTML dashboard from the DuckDB store; --serve "
+             "optionally serves it over loopback HTTP (issue #124, E4.S1)",
+    )
+    dash_parser.add_argument(
+        "--db", dest="db", default=None,
+        help="path to the DuckDB store file (default: .sdlc/insight.duckdb under CWD)",
+    )
+    dash_parser.add_argument(
+        "--out", dest="out", default=None,
+        help="directory to write the dashboard into (default: .sdlc/insight-dash under CWD); "
+             "writes <out>/index.html",
+    )
+    dash_parser.add_argument(
+        "--serve", dest="serve", action="store_true",
+        help="after building, serve --out over 127.0.0.1 (loopback only) until interrupted -- "
+             "OPTIONAL: the built index.html also opens directly via file://, no server required",
+    )
+    dash_parser.add_argument(
+        # 8787 is also insight.dash.serve.DEFAULT_PORT -- build_parser() cannot import
+        # insight.dash.serve to share it without breaking the lazy-import/--help contract (it
+        # would pull duckdb-adjacent modules in transitively), so the literal is duplicated
+        # deliberately. If you change this default, also change DEFAULT_PORT in
+        # insight/dash/serve.py.
+        "--port", dest="port", type=int, default=8787,
+        help="port for --serve (default: 8787); ignored without --serve",
+    )
+    # the stub loop now has nothing left in it -- kept as an empty tuple rather than deleted, so
+    # a FUTURE new stub subcommand has an obvious place to land, mirroring how this loop already
+    # shrank from {"gaps", "dash"} to {"dash"} in #122 without changing shape
+    for name in ():
         subparsers.add_parser(name, help="not implemented yet - see issue #%d" % _TRACKING_ISSUE[name])
     return parser
 
@@ -253,6 +284,57 @@ def main(argv=None):
             out.write_text(json.dumps(report, indent=2, default=json_default))
             print("wrote %s" % out)
         return 1 if (report["verdict"]["failing"] or report["verdict"]["errored"]) else 0
+    if args.command == "dash":
+        # Lazy, mirroring ingest/gaps: keeps duckdb out of the import graph for --help. Neither
+        # insight.dash.render nor insight.dash.serve actually needs duckdb directly, but the
+        # convention is kept for symmetry and because the AST test below pins it either way.
+        from insight.ingest.store import open_store, resolve_db_path
+        from insight.metrics.loader import MetricLoadError
+        from insight.dash.render import render_dashboard, assert_self_contained, DEFAULT_OUT_DIR
+        from insight.dash.serve import serve_forever_until_interrupted
+
+        db_path = resolve_db_path(args.db)
+        conn = open_store(args.db)
+        out_dir = pathlib.Path(args.out) if args.out else pathlib.Path(".sdlc") / DEFAULT_OUT_DIR
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            html_text, summary = render_dashboard(conn, str(db_path))
+        except MetricLoadError as e:
+            # A first-party bug in the shipped .sql catalog -- fatal, never silently swallowed
+            # (see load_metrics' own fail-hard Design decision D; this never happens against the
+            # real catalog today, but the CLI must not pretend otherwise if it ever does).
+            print("insight dash: metric catalog failed to load: %s" % e, file=sys.stderr)
+            return 1
+        finally:
+            conn.close()
+
+        assert_self_contained(html_text)  # belt-and-suspenders -- Decision 4b; should be unreachable
+
+        index_path = out_dir / "index.html"
+        # errors="replace", not the encoding= default -- a --db path containing invalid UTF-8
+        # bytes (os.fsdecode's own surrogateescape) survives html.escape() unharmed but crashes a
+        # plain write_text() with UnicodeEncodeError; live-reproduced and fixed, see
+        # .sdlc/plans/124.md section N.
+        index_path.write_text(html_text, encoding="utf-8", errors="replace")
+
+        if not summary["ever_ingested"]:
+            print("insight dash: WARNING never ingested -- wrote onboarding shell to %s" % index_path)
+        elif not summary["has_data"]:
+            print("insight dash: WARNING ingested, nothing measurable yet -- wrote %s" % index_path)
+        else:
+            print(
+                "insight dash: wrote %s (%d metrics, %d with data; gaps verdict %s)"
+                % (index_path, summary["metric_count"], summary["metrics_with_data"],
+                   summary["gaps_verdict"])
+            )
+
+        if args.serve:
+            try:
+                serve_forever_until_interrupted(out_dir, port=args.port)
+            except KeyboardInterrupt:
+                pass
+        return 0
     issue = _TRACKING_ISSUE[args.command]
     print(
         "insight %s: not implemented yet - see issue #%d" % (args.command, issue),
