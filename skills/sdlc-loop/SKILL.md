@@ -137,8 +137,13 @@ Then repeat until the helper says stop:
    `/sdlc-review` in diff mode. That subagent decides the verdict below. **No human approves — the loop reviews and clears its own PR:**
    - **No blocking issues** → `work.py post-review .sdlc "$goal" --verdict approve` (posts `loopsmith:approve`).
    - **Blocking issues** → `work.py post-review .sdlc "$goal" --verdict block --reason "<the issues>"`, then
-     **fix them in the worktree** (back to Implement), re-run `loop.py verify`, and **re-review**. Repeat
-     until clean, then post `--verdict approve`. **The cycle is hard-capped:** `post-review` counts the
+     **fix them in the worktree** (back to Implement), re-run `loop.py verify`, then
+     `work.py commit` **AND `work.py pr` — the push is not optional**, and **re-review**. Repeat
+     until clean, then post `--verdict approve`.
+     **`commit` is LOCAL; only `pr` pushes.** Skipping it leaves the PR head at the pre-fix commit,
+     so GitHub's checks and reviews all pass — correctly — about code nobody approved, and an armed
+     auto-merge squashes that. This shipped defects to a protected `main` three times before
+     `gate()` grew a STALE HEAD refusal; the guard is the backstop, this line is the intent. **The cycle is hard-capped:** `post-review` counts the
      block cycles and, once they hit `work.max_review_cycles` (default **3**), returns a `PARK: …` line
      instead of asking for another fix — the review genuinely didn't converge, so `record parked "<why>"`
      for a human. You never have to count the cycles yourself; the cap is enforced in code.
