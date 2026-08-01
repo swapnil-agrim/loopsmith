@@ -11,6 +11,8 @@ _Nothing is blocked on another person._
 
 | when | who | did | goal | detail |
 |---|---|---|---|---|
+| 2026-08-01T08:31:28Z | swapnil-agrim | claimed | 120 |  |
+| 2026-08-01T08:31:12Z | swapnil-agrim | parked | 119 | The issue's done_when is not achievable as written. 'Fires when a metric crosses its OWN trailing p85' plus 'no hardcoded constants' is self-defeating: ~15% of any series' points exceed its own p85 by construction, so measured over 500 trials per shape a HEALTHY stationary project fires a false WARN 91-99% of the time (naive criterion) or 78-93% (with a derived p85+(p85-p50) materiality margin). Sensitivity is fine - a 4x sustained step-up and a 10,000x spike both fire - so the rule can detect real regressions; it cannot stay quiet on healthy ones. A minimum-history cutoff was measured and rejected (>=40 prior points still leaves 76.2% firing). Needs a human product decision among: accept a magnitude constant and amend the done_when; latest-point-only plus a separate anti-amnesia mechanism; require a consecutive run of breaches; threshold a coarser rolling statistic; or drop the story. Analysis + live numbers in .sdlc/plans/119.md. |
 | 2026-08-01T07:27:40Z | swapnil-agrim | claimed | 119 |  |
 | 2026-08-01T07:06:57Z | swapnil-agrim | claimed | 119 |  |
 | 2026-08-01T07:06:42Z | swapnil-agrim | done | 118 |  |
@@ -34,5 +36,3 @@ _Nothing is blocked on another person._
 | 2026-08-01T01:17:13Z | swapnil-agrim | claimed | 113 |  |
 | 2026-08-01T01:16:55Z | swapnil-agrim | done | 112 |  |
 | 2026-08-01T01:16:41Z | swapnil-agrim | merged | 112 | auto-merge (squash) armed on PR #190 |
-| 2026-08-01T00:01:58Z | swapnil-agrim | claimed | 112 |  |
-| 2026-08-01T00:01:21Z | swapnil-agrim | done | 105 |  |
