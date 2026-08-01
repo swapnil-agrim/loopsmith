@@ -23,6 +23,7 @@ import math
 
 from insight.dash.colors import (
     ALL_PAIRS_CAP,
+    CATEGORICAL,
     SEQUENTIAL_BLUE_DARK,
     SEQUENTIAL_BLUE_LIGHT,
     status_mark,
@@ -622,3 +623,110 @@ def _mc_band(conn):
     if not rec.get("trial_count"):
         return None, None
     return rec.get("p10_total_done"), rec.get("p90_total_done")
+
+
+# --------------------------------------------------------------------------- Task 3 (issue #127): handoff graph by area
+
+# Dash-layer SQL, not a re-derivation of metric_31 (issue #127, .sdlc/plans/127.md Decision 1):
+# metric_31 groups fact_handoff by (project_id, area, from_actor, to_actor) -- individual grain,
+# not sanctioned for the manager view (spec's guardrail names exactly two exceptions, aging WIP
+# and handoff response, and #31/"who blocks whom" is not one of them). This constant re-aggregates
+# to AREA grain only, actor columns dropped entirely at the SQL level (the privacy boundary lives
+# in the query, matching insight.dash.ic's own posture) -- never a Python-side projection over an
+# actor-carrying fetch. `WHERE issue IS NOT NULL` mirrors metric_31.sql's own guardrail comment:
+# an issue-less hand-off's later ack lands as a second, orphaned fact_handoff row with
+# area/from_actor/to_actor all NULL (fact_handoff has no goal_id column to re-match it durably),
+# which would otherwise GROUP BY into a phantom `area IS NULL` bucket nothing real ever opened.
+# Not partitioned by project_id in the GROUP BY -- matches BURNDOWN_WEEKLY_REMAINING_SQL and
+# FLOW_LANES_SQL's own precedent (single-project dash-layer views), distinct from the per-project
+# metrics/*.sql catalog views.
+MANAGER_HANDOFF_BY_AREA_SQL = """
+SELECT area, count(*) AS handoff_count
+FROM fact_handoff
+WHERE issue IS NOT NULL
+GROUP BY area
+ORDER BY handoff_count DESC, area
+"""
+
+_HANDOFF_GRAPH_W, _HANDOFF_GRAPH_H = 480, 320
+_HANDOFF_HUB_CX, _HANDOFF_HUB_CY = 240, 160
+_HANDOFF_HUB_R = 18
+_HANDOFF_SPOKE_DIST = 110
+# Node radius and edge stroke-width both scale LINEARLY with handoff_count (magnitude on two
+# redundant channels, never colour alone -- matching every other primitive in this file): a
+# fixed floor (a zero-adjacent count is still a visible node/edge, never a literal zero-size
+# mark) plus a span proportional to count/max_count.
+_HANDOFF_NODE_R_MIN, _HANDOFF_NODE_R_SPAN = 8, 16
+_HANDOFF_EDGE_W_MIN, _HANDOFF_EDGE_W_SPAN = 1, 5
+
+
+def render_handoff_graph_by_area(rows, id_prefix="dash"):
+    """Star graph (issue #127 Decision 1): one hub node ("all hand-offs"), one spoke per area.
+    `fact_handoff` carries exactly ONE `area` column per row -- no `from_area`/`to_area` pair --
+    so a literal directed area-to-area graph cannot be built without inventing an actor-to-area
+    mapping the schema does not support; a star graph honestly represents "which areas generate
+    hand-off traffic" without fabricating a relationship the data doesn't carry. `rows`:
+    [{area, handoff_count}], no actor column present at all (dropped at the SQL layer, Decision
+    1) -- this function has no actor-shaped input to leak even if it wanted to. Categorical hue
+    per area, capped at `len(CATEGORICAL)` via the shared `_categorical_slots()` helper (aligned
+    to the same helper every other categorical primitive in this file uses, rather than a local
+    `min(i, cap-1)` reimplementation). The accessible label says what this actually shows --
+    "Handoff volume by area" -- never "who blocks whom" (that phrasing describes the sanctioned,
+    individual-grain #31, not this area-level re-aggregation)."""
+    if not rows:
+        return _absent_svg(
+            "Handoff graph by area: no data",
+            "fact_handoff has no rows with a linked issue",
+            id_prefix=id_prefix,
+        )
+    n = len(rows)
+    total = sum(r["handoff_count"] for r in rows)
+    max_count = max(r["handoff_count"] for r in rows) or 1
+    areas = [r["area"] for r in rows]
+    slot_of, other_used = _categorical_slots(areas, cap=len(CATEGORICAL))
+    other_slot = len(CATEGORICAL) - 1
+    other_names = [a for a, s in slot_of.items() if s == other_slot] if other_used else []
+
+    aria = f"Handoff volume by area: {n} area(s), {total} total"
+    parts = [
+        f'<svg width="{_HANDOFF_GRAPH_W}" height="{_HANDOFF_GRAPH_H}" '
+        f'viewBox="0 0 {_HANDOFF_GRAPH_W} {_HANDOFF_GRAPH_H}" role="img" '
+        f'aria-label="{html.escape(aria)}">',
+        f'<circle cx="{_HANDOFF_HUB_CX}" cy="{_HANDOFF_HUB_CY}" r="{_HANDOFF_HUB_R}" '
+        f'fill="var(--{id_prefix}-baseline)"/>',
+        f'<text x="{_HANDOFF_HUB_CX}" y="{_HANDOFF_HUB_CY + 4}" font-size="11" '
+        f'text-anchor="middle" fill="var(--{id_prefix}-ink2)">all hand-offs</text>',
+    ]
+    for i, r in enumerate(rows):
+        angle = 2 * math.pi * i / n
+        nx = _HANDOFF_HUB_CX + _HANDOFF_SPOKE_DIST * math.cos(angle)
+        ny = _HANDOFF_HUB_CY + _HANDOFF_SPOKE_DIST * math.sin(angle)
+        frac = r["handoff_count"] / max_count
+        node_r = _HANDOFF_NODE_R_MIN + _HANDOFF_NODE_R_SPAN * frac
+        edge_w = _HANDOFF_EDGE_W_MIN + _HANDOFF_EDGE_W_SPAN * frac
+        slot = slot_of[r["area"]]
+        label = "Other" if (slot == other_slot and len(other_names) > 1) else r["area"]
+        parts.append(
+            f'<line x1="{_HANDOFF_HUB_CX}" y1="{_HANDOFF_HUB_CY}" x2="{nx:.1f}" y2="{ny:.1f}" '
+            f'stroke="var(--{id_prefix}-cat-{slot})" stroke-width="{edge_w:.1f}" opacity="0.6"/>'
+        )
+        parts.append(
+            f'<circle cx="{nx:.1f}" cy="{ny:.1f}" r="{node_r:.1f}" '
+            f'fill="var(--{id_prefix}-cat-{slot})"/>'
+        )
+        parts.append(
+            f'<text x="{nx:.1f}" y="{ny - node_r - 4:.1f}" font-size="11" text-anchor="middle" '
+            f'fill="var(--{id_prefix}-ink2)">{html.escape(str(label))} '
+            f'({r["handoff_count"]})</text>'
+        )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _handoff_by_area_rows(conn):
+    """Run MANAGER_HANDOFF_BY_AREA_SQL against `conn`. Shape: [{area, handoff_count}] -- no
+    actor/from_actor/to_actor key present at all (not merely null), the defence-in-depth
+    guarantee insight/tests/test_dash_manager_guardrail.py checks directly."""
+    cur = conn.execute(MANAGER_HANDOFF_BY_AREA_SQL)
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]

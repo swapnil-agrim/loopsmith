@@ -19,7 +19,7 @@ import re
 import pytest
 
 from insight.dash import charts
-from insight.dash.colors import ALL_PAIRS_CAP
+from insight.dash.colors import ALL_PAIRS_CAP, CATEGORICAL
 from insight.dash.render import assert_self_contained
 
 _HEX_IN_MARK = re.compile(r'(?:fill|stroke)="#[0-9a-fA-F]{3,6}"')
@@ -467,6 +467,88 @@ def test_burndown_against_real_store_does_not_raise():
     finally:
         conn.close()
     assert "<svg" in out
+
+
+# --------------------------------------------------------------------------- Task 3 (issue #127): handoff graph by area
+
+_HANDOFF_AREA_ROWS = [
+    {"area": "insight", "handoff_count": 7},
+    {"area": "loop", "handoff_count": 3},
+    {"area": "docs", "handoff_count": 1},
+]
+
+
+def test_handoff_graph_by_area_empty_rows_renders_absent_shell():
+    out = charts.render_handoff_graph_by_area([])
+    assert 'fill="var(--dash-status-absent)"' in out
+    assert "ABSENT" in out
+    assert "no data" in out.lower()
+
+
+def test_handoff_graph_by_area_accessible_label_says_by_area_not_who_blocks_whom():
+    out = charts.render_handoff_graph_by_area(_HANDOFF_AREA_ROWS)
+    assert "Handoff volume by area" in out
+    assert "who blocks whom" not in out.lower()
+    assert "blocks" not in out.lower()
+
+
+def test_handoff_graph_by_area_renders_one_circle_and_one_line_per_area_plus_the_hub():
+    out = charts.render_handoff_graph_by_area(_HANDOFF_AREA_ROWS)
+    n = len(_HANDOFF_AREA_ROWS)
+    assert out.count("<line") == n
+    assert out.count("<circle") == n + 1  # + the hub node
+
+
+def test_handoff_graph_by_area_node_radius_and_edge_width_are_monotonic_in_handoff_count():
+    out = charts.render_handoff_graph_by_area(_HANDOFF_AREA_ROWS)
+    radii = [float(m) for m in re.findall(r'<circle[^>]*r="([\d.]+)"', out)][1:]  # skip hub
+    widths = [float(m) for m in re.findall(r'stroke-width="([\d.]+)"', out)]
+    # _HANDOFF_AREA_ROWS is already ordered by descending handoff_count (7, 3, 1)
+    assert radii == sorted(radii, reverse=True)
+    assert widths == sorted(widths, reverse=True)
+    assert radii[0] > radii[-1]
+    assert widths[0] > widths[-1]
+
+
+def test_handoff_graph_by_area_every_spoke_is_direct_labelled_with_area_and_count():
+    out = charts.render_handoff_graph_by_area(_HANDOFF_AREA_ROWS)
+    for row in _HANDOFF_AREA_ROWS:
+        assert f'{row["area"]} ({row["handoff_count"]})' in out
+
+
+def test_handoff_graph_by_area_folds_beyond_categorical_cap_to_other_via_shared_helper():
+    rows = [{"area": f"area{i}", "handoff_count": i + 1} for i in range(len(CATEGORICAL) + 2)]
+    out = charts.render_handoff_graph_by_area(rows)
+    assert "Other" in out
+    fills = set(re.findall(r"var\(--dash-cat-\d\)", out))
+    assert len(fills) == len(CATEGORICAL)
+
+
+def test_handoff_graph_by_area_never_emits_a_literal_hex_in_a_mark():
+    out = charts.render_handoff_graph_by_area(_HANDOFF_AREA_ROWS)
+    assert not _HEX_IN_MARK.search(out)
+
+
+def test_handoff_by_area_rows_shape_has_no_actor_column():
+    """Defence in depth (issue #127 Decision 3): the raw fetcher output carries no
+    actor/from_actor/to_actor key at all -- not merely a null value."""
+    rows = [{"area": "insight", "handoff_count": 7}]
+    for row in rows:
+        assert set(row) == {"area", "handoff_count"}
+
+
+@_skip_no_real_store
+def test_handoff_by_area_rows_against_real_store_does_not_raise():
+    duckdb = pytest.importorskip("duckdb")
+    conn = duckdb.connect(str(_REAL_STORE), read_only=True)
+    try:
+        rows = charts._handoff_by_area_rows(conn)
+        out = charts.render_handoff_graph_by_area(rows)
+    finally:
+        conn.close()
+    assert "<svg" in out
+    for row in rows:
+        assert set(row) == {"area", "handoff_count"}
 
 
 # --------------------------------------------------------------------------- self-contained, all primitives

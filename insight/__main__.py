@@ -360,6 +360,24 @@ def main(argv=None):
             ic_path.write_text(ic_html, encoding="utf-8", errors="replace")
             print("insight dash: wrote %s (IC view for %s)" % (ic_path, actor))
 
+        # Manager persona view (issue #127, E4.S4): a THIRD, team-wide file, manager.html, built
+        # from yet another fresh connection (ic_conn above, if it was opened at all, is already
+        # closed) -- mirrors the render->close->reopen pattern already used twice in this branch.
+        # UNCONDITIONAL, unlike ic.html: the manager view has no per-viewer identity to resolve
+        # (Decision 5 of .sdlc/plans/127.md), so it never touches resolve_actor and is written on
+        # every successful `dash` run, regardless of whether an actor resolves.
+        from insight.dash.manager import render_manager_view
+
+        manager_conn = open_store(args.db)
+        try:
+            manager_html, _manager_summary = render_manager_view(manager_conn)
+        finally:
+            manager_conn.close()
+        assert_self_contained(manager_html)  # belt-and-suspenders, mirrors index.html/ic.html above
+        manager_path = out_dir / "manager.html"
+        manager_path.write_text(manager_html, encoding="utf-8", errors="replace")
+        print("insight dash: wrote %s (manager view)" % manager_path)
+
         if args.serve:
             try:
                 serve_forever_until_interrupted(out_dir, port=args.port)

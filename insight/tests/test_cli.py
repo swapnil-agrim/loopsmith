@@ -745,6 +745,7 @@ def test_dash_builds_index_html_and_exits_zero(tmp_path, monkeypatch):
     code = main(["dash", "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out")])
     assert code == 0
     assert (tmp_path / "out" / "index.html").exists()
+    assert (tmp_path / "out" / "manager.html").exists()
 
 
 def test_dash_prints_to_stdout_not_stderr_on_success(tmp_path, monkeypatch, capsys):
@@ -755,6 +756,7 @@ def test_dash_prints_to_stdout_not_stderr_on_success(tmp_path, monkeypatch, caps
     out, err = capsys.readouterr()
     assert err == ""
     assert "wrote" in out
+    assert (tmp_path / "out" / "manager.html").exists()
 
 
 def test_dash_default_out_dir_is_under_dot_sdlc(tmp_path, monkeypatch):
@@ -763,6 +765,7 @@ def test_dash_default_out_dir_is_under_dot_sdlc(tmp_path, monkeypatch):
     code = main(["dash", "--db", str(tmp_path / "x.duckdb")])
     assert code == 0
     assert (tmp_path / ".sdlc" / "insight-dash" / "index.html").exists()
+    assert (tmp_path / ".sdlc" / "insight-dash" / "manager.html").exists()
 
 
 def test_dash_against_a_never_ingested_store_still_exits_zero_but_warns(tmp_path, monkeypatch, capsys):
@@ -778,6 +781,7 @@ def test_dash_against_a_never_ingested_store_still_exits_zero_but_warns(tmp_path
     html_text = (tmp_path / "out" / "index.html").read_text(encoding="utf-8")
     assert "this store has never been ingested" in html_text
     assert "Ingested, nothing measurable yet" not in html_text
+    assert (tmp_path / "out" / "manager.html").exists()
 
 
 def test_dash_against_an_onboarding_week_store_warns_differently_and_never_says_never_ingested(
@@ -805,6 +809,7 @@ def test_dash_against_an_onboarding_week_store_warns_differently_and_never_says_
     html_text = (tmp_path / "out" / "index.html").read_text(encoding="utf-8")
     assert "Ingested, nothing measurable yet" in html_text
     assert "this store has never been ingested" not in html_text
+    assert (tmp_path / "out" / "manager.html").exists()
 
 
 def test_dash_index_html_has_no_external_reference(tmp_path, monkeypatch):
@@ -817,6 +822,7 @@ def test_dash_index_html_has_no_external_reference(tmp_path, monkeypatch):
     assert code == 0
     html_text = (tmp_path / "out" / "index.html").read_text(encoding="utf-8")
     assert_self_contained(html_text)  # must not raise
+    assert (tmp_path / "out" / "manager.html").exists()
 
 
 # --------------------------------------------------------------------------- dash IC view (issue #126, E4.S3)
