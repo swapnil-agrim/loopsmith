@@ -89,10 +89,12 @@ def test_a_bom_prefixed_rule_file_still_parses(tmp_path):
 
 
 def test_load_gap_rules_defaults_to_the_real_insight_gaps_directory():
-    """No rules_dir override. Zero real rule .sql files ship with this story (issue #116 ships
-    only the format/loader/severity vocabulary; the five gap classes are #117-#121), so this
-    asserts an empty registry directly rather than leaving it implicit. THIS TEST IS DESIGNED TO
-    START FAILING the moment #117 lands its first rule file -- a future author reading that
-    failure should update this assertion, not treat it as a regression."""
+    """Issue #117 landed the first real rule files -- Coverage class, four rules. This
+    assertion is the intentional update this test's own docstring (pre-#117) predicted."""
     registry = load_gap_rules()
-    assert registry == {}
+    assert set(registry) == {
+        "coverage_gate_absent", "coverage_verify_no_command",
+        "coverage_review_missing", "coverage_degraded_collector",
+    }
+    for rule_id in registry:
+        assert registry[rule_id]["class"] == "Coverage"

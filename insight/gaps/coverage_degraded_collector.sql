@@ -1,0 +1,11 @@
+-- name: Collector pack degraded
+-- class: Coverage
+-- metric: ingest_reliability
+-- action: read the degraded_collector/degraded_adapter code(s) on this pack and fix the underlying condition
+-- severity: WARN
+-- guardrail: SPEC section B.3.1's OWN SENTENCE MADE LITERAL (docs/superpowers/specs/2026-07-30-loopsmith-insight-data-platform-design.md:337: "degraded[] IS the ABSENT signal... the gap engine's Coverage class consumes those codes directly instead of the dashboard re-deriving absence"). POPULATION IS NOT SCOPED TO alignment-collect/v1 -- unlike coverage_gate_absent's population, every registered collector schema writes a row every run (insight/ingest/packs.py's ingest_collectors), and a git-facts/v1 or gh-facts/v1 pack degrading is just as real a coverage gap as an alignment-collect/v1 one; this is the one Coverage source in this story that is deliberately all-schema. THIS RULE GATES ON THE degraded[] ARRAYS DIRECTLY -- coverage_gate_absent gates on a computed DENOMINATOR being empty instead, and 24.sql's own guardrail explicitly documents these two are NOT equivalent (a pack degraded only by no_test_command has a non-empty degraded_collector array but both real denominators intact) -- cited by name (Design decision 4, .sdlc/plans/117.md), not re-litigated; merging the two rules would silently claim an equivalence this codebase has already proven false once. THE COALESCE(len(...), 0) GUARD AGAINST A GENUINELY NULL ARRAY IS SCHEMA-DEFENSIVE, NOT REACHABLE VIA THE REAL WRITER TODAY -- packs.py:153-164's write_pack always passes an explicit Python list (possibly empty, never None) for both degraded_collector and degraded_adapter on every `insight ingest` run, so `degraded_collector IS NULL` cannot occur through any real code path; the guard is kept because the column itself is a nullable VARCHAR[], the same "unpinned-by-necessity against a live writer" posture 24.sql's own guardrail uses for its SIGN FIX/NULL-PCT SYMMETRY checks.
+-- population: SELECT count(*) FROM fact_collector_pack
+SELECT project_id, schema, collected_ts, degraded_collector, degraded_adapter
+FROM fact_collector_pack
+WHERE COALESCE(len(degraded_collector), 0) > 0 OR COALESCE(len(degraded_adapter), 0) > 0
+ORDER BY project_id, schema, collected_ts
