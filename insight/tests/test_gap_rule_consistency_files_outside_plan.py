@@ -96,6 +96,36 @@ def test_zero_source_commits_does_not_fire(conn, registry):
     }
 
 
+def test_a_wellformed_files_changed_array_with_no_commits_with_source_at_all_is_pass(
+    conn, registry
+):
+    """OUT-OF-SCOPE BEHAVIOR, PINNED, the analogous case for this rule to the sibling rule's own
+    "well-formed d2, no d1 at all" note (round-2 post-PR-review: named explicitly as "not in
+    scope, do not fix, may disclose" for consistency_verify_no_test_touched.sql; applied here
+    for the identical reason since commits_with_source plays the SAME soft, secondary-gate role
+    in both rules). d1 here IS a well-formed object with a real, non-empty
+    files_changed_outside_any_plan array -- but commits_with_source itself is missing entirely
+    from that object (not merely malformed). commits_with_source's own guard is deliberately
+    `json_type(...) IS NULL OR json_type(...) IN ('UBIGINT', 'BIGINT')` -- the IS NULL branch
+    specifically ADMITS a missing commits_with_source (as opposed to a MALFORMED,
+    present-but-wrong-typed one, which the same guard's second branch still excludes -- see
+    test_commits_with_source_shaped_as_an_object_is_absent_not_a_crash). A missing
+    commits_with_source therefore still contributes to population (via the
+    files_changed_outside_any_plan guard alone), and TRY_CAST(NULL) softens via COALESCE(...,0)
+    to 0, so `0 > 0` is FALSE and the row never reaches evidence -> PASS."""
+    conn.execute(
+        "INSERT INTO fact_collector_pack (project_id, schema, collected_ts, raw_payload) "
+        "VALUES ('p1', 'alignment-collect/v1', '2026-01-01', "
+        "'{\"schema\":\"alignment-collect/v1\",\"dimensions\":{\"d1\":"
+        "{\"files_changed_outside_any_plan\":[\"a.py\"]}}}')"
+    )
+    rule = registry["consistency_files_outside_plan"]
+    assert evaluate_rule(conn, rule) == {
+        "class": "Consistency", "metric": "alignment_collect_d1", "action": rule["action"],
+        "severity": "PASS", "evidence": [],
+    }
+
+
 def test_a_pack_missing_d1_entirely_is_absent_not_pass(conn, registry):
     """raw_payload='{"schema":"alignment-collect/v1","dimensions":{}}'. Hand-computed, verified
     live: population 0 -> severity == ABSENT, evidence == []."""
@@ -194,3 +224,112 @@ def test_a_wellformed_d1_with_files_changed_as_a_bare_string_is_absent_not_pass(
         "class": "Consistency", "metric": "alignment_collect_d1", "action": rule["action"],
         "severity": "ABSENT", "evidence": [],
     }
+
+
+def test_commits_with_source_shaped_as_an_object_is_absent_not_a_crash(conn, registry):
+    """ROUND-2 POST-PR-REVIEW BLOCKING FIX (mutation-tested), the reviewer's own exact live
+    crash reproduction, against the ORIGINAL bare-CAST design this round replaced. d1 here is a
+    well-formed object and files_changed_outside_any_plan is a real, non-empty array -- but
+    commits_with_source is itself a nested JSON object ({"x": 1}), not a number. Round 1's fix
+    guarded only the d1 CONTAINER's own shape and the files_changed_outside_any_plan ARRAY's own
+    shape; it did not guard this SIBLING SCALAR field, and used a bare CAST, which RAISES
+    DuckDB's ConversionException on a real type mismatch (COALESCE never runs -- it only
+    catches a NULL result, not an exception) -- reproduced live, pre-fix (this round):
+    `evaluate_rule` raised duckdb.duckdb.ConversionException: Failed to cast value to
+    numerical: {"x":1}. FIXED, this round, in two layers: (1) every extraction now uses
+    TRY_CAST, which returns SQL NULL rather than raising for ANY type mismatch, closing the
+    crash at its root regardless of guard presence (confirmed live: TRY_CAST(json_extract(...)
+    AS INTEGER) on this exact object returns NULL, no exception); (2) commits_with_source ALSO
+    carries its own population/evidence guard -- `json_type(...) IS NULL OR json_type(...) IN
+    ('UBIGINT', 'BIGINT')` -- which specifically EXCLUDES a present-but-wrong-typed value like
+    this one (ABSENT) while still ADMITTING a genuinely MISSING commits_with_source (an
+    explicitly out-of-scope case pinned by
+    test_a_wellformed_files_changed_array_with_no_commits_with_source_at_all_is_pass, below).
+    Population 0 -> ABSENT here, no exception."""
+    conn.execute(
+        "INSERT INTO fact_collector_pack (project_id, schema, collected_ts, raw_payload) "
+        "VALUES ('p1', 'alignment-collect/v1', '2026-01-01', "
+        "'{\"schema\":\"alignment-collect/v1\",\"dimensions\":{\"d1\":"
+        "{\"commits_with_source\":{\"x\":1},\"files_changed_outside_any_plan\":"
+        "[\"a.py\"]}}}')"
+    )
+    rule = registry["consistency_files_outside_plan"]
+    assert evaluate_rule(conn, rule) == {
+        "class": "Consistency", "metric": "alignment_collect_d1", "action": rule["action"],
+        "severity": "ABSENT", "evidence": [],
+    }
+
+
+def test_a_wellformed_row_survives_a_malformed_sibling_row_in_the_same_store(conn, registry):
+    """ROUND-2 POST-PR-REVIEW BLOCKING FIX (mutation-tested), a MIXED-store crash-safety check:
+    p1 is well-formed and WARN-worthy; p2 has the identical malformed (nested-object)
+    commits_with_source as the single-row test above. Population (guards intact) correctly
+    reads 1 (only p1 counts). Because every field extraction in this rule now uses TRY_CAST (not
+    bare CAST), p2's own malformed value never raises regardless of guard presence or absence --
+    confirmed live, this scenario no longer isolates the evidence-side guard's own necessity by
+    itself (see test_a_coercible_commits_with_source_string_does_not_leak_into_evidence, below,
+    for that proof -- an OBJECT never coerces via TRY_CAST, but a numeric STRING does, and THAT
+    is the real risk the evidence-side guard closes). This test still pins the CRASH-SAFETY
+    property directly: p1's own WARN finding must survive untouched alongside a malformed
+    sibling row, with no exception raised."""
+    conn.execute(
+        "INSERT INTO fact_collector_pack (project_id, schema, collected_ts, raw_payload) "
+        "VALUES "
+        "('p1', 'alignment-collect/v1', '2026-01-01', "
+        "'{\"schema\":\"alignment-collect/v1\",\"dimensions\":{\"d1\":"
+        "{\"commits_with_source\":3,\"files_changed_outside_any_plan\":"
+        "[\"scratch.py\",\"notes.md\"]}}}'), "
+        "('p2', 'alignment-collect/v1', '2026-01-02', "
+        "'{\"schema\":\"alignment-collect/v1\",\"dimensions\":{\"d1\":"
+        "{\"commits_with_source\":{\"x\":1},\"files_changed_outside_any_plan\":"
+        "[\"a.py\"]}}}')"
+    )
+    rule = registry["consistency_files_outside_plan"]
+    population = conn.execute(rule["population"]).fetchone()
+    assert population == (1,)
+    finding = evaluate_rule(conn, rule)
+    assert finding["severity"] == "WARN"
+    assert finding["evidence"] == [{
+        "project_id": "p1", "collected_ts": datetime.datetime(2026, 1, 1),
+        "commits_with_source": 3,
+        "files_changed_outside_any_plan": ["scratch.py", "notes.md"],
+        "files_outside_plan_confidence": None,
+    }]
+
+
+def test_a_coercible_commits_with_source_string_does_not_leak_into_evidence(conn, registry):
+    """ROUND-2 POST-PR-REVIEW BLOCKING FIX (mutation-tested), THE PROOF the evidence-side
+    commits_with_source guard is genuinely load-bearing, distinct from a crash-safety concern:
+    TRY_CAST is PERMISSIVE, not merely crash-safe -- TRY_CAST(json_extract(...) AS INTEGER) on
+    the JSON STRING "5" successfully coerces to the integer 5 (confirmed live this round). p2's
+    own commits_with_source is the string "5" -- json_type is 'VARCHAR', which fails BOTH
+    branches of the OR-guard (not NULL, not UBIGINT/BIGINT), so population correctly EXCLUDES
+    p2 (population reads 1, only p1). Reproduced live this round WITH the evidence-side guard
+    REMOVED (population's own copy left intact): evidence returned p2 too, its wrong-shaped
+    commits_with_source silently coerced to 5 and passing the `> 0` gate -- a wrong-shaped value
+    masquerading as a real, confirmed measurement, worse than a crash. FIXED by keeping the same
+    OR-guard in the evidence WHERE too, which TRY_CAST's own permissiveness cannot substitute
+    for."""
+    conn.execute(
+        "INSERT INTO fact_collector_pack (project_id, schema, collected_ts, raw_payload) "
+        "VALUES "
+        "('p1', 'alignment-collect/v1', '2026-01-01', "
+        "'{\"schema\":\"alignment-collect/v1\",\"dimensions\":{\"d1\":"
+        "{\"commits_with_source\":3,\"files_changed_outside_any_plan\":"
+        "[\"scratch.py\",\"notes.md\"]}}}'), "
+        "('p2', 'alignment-collect/v1', '2026-01-02', "
+        "'{\"schema\":\"alignment-collect/v1\",\"dimensions\":{\"d1\":"
+        "{\"commits_with_source\":\"5\",\"files_changed_outside_any_plan\":"
+        "[\"a.py\"]}}}')"
+    )
+    rule = registry["consistency_files_outside_plan"]
+    population = conn.execute(rule["population"]).fetchone()
+    assert population == (1,)
+    finding = evaluate_rule(conn, rule)
+    assert finding["severity"] == "WARN"
+    assert finding["evidence"] == [{
+        "project_id": "p1", "collected_ts": datetime.datetime(2026, 1, 1),
+        "commits_with_source": 3,
+        "files_changed_outside_any_plan": ["scratch.py", "notes.md"],
+        "files_outside_plan_confidence": None,
+    }]
