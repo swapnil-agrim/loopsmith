@@ -174,6 +174,30 @@ def test_a_project_with_no_run_of_three_and_a_clean_project_are_both_left_alone(
     }
 
 
+def test_two_projects_short_runs_never_concatenate_into_one_fabricated_run(conn, rule):
+    """A run must not leak across projects. Two projects each hold a run of 2 -- short of k=3 --
+    and their breaches are INTERLEAVED IN TIME (p1 d4, p2 d5, p1 d6) so that a run length counted
+    without `PARTITION BY project_id` would splice them into a single run of 3 and fire. The
+    existing two-project case above cannot catch that (neither project breaches more than once,
+    so the spliced run is still short); this one is the mutation test for it. Verified live both
+    ways: as shipped -> PASS; with run_lengths' partition reduced to `OVER (PARTITION BY grp)` ->
+    WARN on a fabricated 3-row run spanning both projects."""
+    _insert(conn, [
+        ("p1", "a1", datetime.datetime(2026, 1, 1), 100),
+        ("p2", "b1", datetime.datetime(2026, 1, 1), 100),
+        ("p1", "a2", datetime.datetime(2026, 1, 2), 100),
+        ("p2", "b2", datetime.datetime(2026, 1, 2), 100),
+        ("p1", "a3", datetime.datetime(2026, 1, 3), 100),
+        ("p2", "b3", datetime.datetime(2026, 1, 3), 100),
+        ("p1", "a4", datetime.datetime(2026, 1, 4), 1000),
+        ("p2", "b5", datetime.datetime(2026, 1, 5), 1000),
+        ("p1", "a6", datetime.datetime(2026, 1, 6), 1000),
+    ])
+    finding = evaluate_rule(conn, rule)
+    assert finding["severity"] == "PASS"
+    assert finding["evidence"] == []
+
+
 def test_unmeasured_rows_never_occupy_a_slot_in_a_neighbours_trailing_window(conn, rule):
     """D2, unaffected by k=3: a NULL lead_time_seconds row (an unmeasured merge) contributes
     nothing to any window at all. Reusing the sustained-regression shape's own healthy prefix
