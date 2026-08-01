@@ -1,0 +1,9 @@
+{"_table": "dim_project", "project_id": "projA", "repo": "org/projA"}
+{"_table": "dim_project", "project_id": "projB", "repo": "org/projB"}
+{"_table": "fact_goal", "project_id": "projA", "goal_id": "a1", "outcome": "done", "claimed_ts": "2026-01-01T00:00:00", "terminal_ts": "2026-01-01T01:00:00"}
+{"_table": "fact_goal", "project_id": "projA", "goal_id": "a2", "outcome": "done", "claimed_ts": "2026-01-02T00:00:00", "terminal_ts": "2026-01-02T01:00:00"}
+{"_table": "fact_goal", "project_id": "projA", "goal_id": "a3", "outcome": "failed", "claimed_ts": "2026-01-03T00:00:00", "terminal_ts": "2026-01-03T01:00:00"}
+{"_table": "fact_event", "project_id": "projA", "goal_id": "a1", "ts": "2026-01-01T00:30:00", "actor_id": "act1", "kind": "parked"}
+{"_table": "fact_collector_pack", "project_id": "projA", "schema": "alignment-collect/v1", "collected_ts": "2026-07-29T00:00:00", "window_commit_count": 10, "degraded_collector": [], "degraded_adapter": [], "raw_payload": "{\"schema\": \"alignment-collect/v1\", \"degraded\": [], \"window\": {\"commit_count\": 10}, \"dimensions\": {\"d1\": {\"commits_with_source\": 10, \"plan_existed_pct\": 90}, \"d5\": {\"commits_with_review_pct\": 90}}}"}
+{"_table": "fact_collector_pack", "project_id": "projA", "schema": "alignment-collect/v1", "collected_ts": "2026-07-30T00:00:00", "window_commit_count": 10, "degraded_collector": ["no_recognized_source"], "degraded_adapter": [], "raw_payload": "{\"schema\": \"alignment-collect/v1\", \"degraded\": [\"no_recognized_source\"], \"window\": {\"commit_count\": 10}, \"dimensions\": {\"d1\": {\"commits_with_source\": 0, \"plan_existed_pct\": 0}, \"d5\": {\"commits_with_review_pct\": 85}}}"}
+{"_table": "fact_goal", "project_id": "projB", "goal_id": "b1", "outcome": "done", "claimed_ts": "2026-02-01T00:00:00", "terminal_ts": "2026-02-01T01:00:00"}
