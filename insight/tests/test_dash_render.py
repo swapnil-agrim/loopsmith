@@ -157,3 +157,34 @@ def test_a_broken_metrics_catalog_raises_metric_load_error(tmp_path, conn):
     )
     with pytest.raises(MetricLoadError):
         render_dashboard(conn, "s.duckdb", metrics_dir=metrics_dir)
+
+
+# --------------------------------------------------------------------------- Task 7 (issue #125,
+# E4.S2, Decision 6): migrating _STYLE's ad-hoc badge/dot hexes onto insight.dash.colors' tokens.
+
+#: The 9 literal hex strings _STYLE used to bake in directly (research brief, .sdlc/plans/125.md
+#: section F) -- the direct proof the migration actually happened, not just that colours "look
+#: right" some other way.
+_OLD_ADHOC_HEXES = (
+    "#e6f4ea", "#1a7f37", "#fff3cd", "#7a5b00", "#ffe0e0",
+    "#8a1c1c", "#eee", "#555", "#6e7781",
+)
+
+
+def test_style_no_longer_contains_the_old_adhoc_hexes():
+    from insight.dash.render import _STYLE
+    for hexval in _OLD_ADHOC_HEXES:
+        assert hexval not in _STYLE, f"{hexval!r} should have been migrated onto a colors.py token"
+
+
+def test_style_declares_dark_mode_scope():
+    from insight.dash.render import _STYLE
+    assert "@media (prefers-color-scheme: dark)" in _STYLE
+    assert '[data-theme="dark"]' in _STYLE
+
+
+def test_assert_self_contained_still_passes_on_real_output(conn):
+    """Explicit named case (Task 7's own proving-test list) -- the migration touches every
+    <style> rule in the file, the one most likely to regress this invariant."""
+    html_text, _ = render_dashboard(conn, "s.duckdb")
+    assert_self_contained(html_text)  # must not raise

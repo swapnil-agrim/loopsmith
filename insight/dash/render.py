@@ -30,26 +30,38 @@ import html
 import json
 import re
 
+from insight.dash.colors import viz_css_vars
 from insight.gaps.report import build_report, json_default
 from insight.metrics.loader import load_metrics
 
 DEFAULT_OUT_DIR = "insight-dash"  # joined under .sdlc/ by the CLI layer, mirrors DEFAULT_DB_PATH
 
-_STYLE = """
-body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-       margin: 2rem; color: #1b1f23; }
-h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
-table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid #e1e4e8; font-size: 13px; }
-.dot-has { color: #1a7f37; } .dot-empty { color: #6e7781; }
-.badge { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px; }
-.badge-warn { background: #fff3cd; color: #7a5b00; }
-.badge-fail { background: #ffe0e0; color: #8a1c1c; }
-.badge-pass { background: #e6f4ea; color: #1a7f37; }
-.badge-absent { background: #eee; color: #555; }
-.banner { background: #fff3cd; border: 1px solid #f0d98a; padding: .75rem 1rem;
-          border-radius: 6px; margin-bottom: 1.5rem; }
-footer { margin-top: 2rem; font-size: 12px; color: #6e7781; }
+#: Task 7 (issue #125, E4.S2, Decision 6): the badge/dot colours below used to be literal,
+#: light-mode-only hex baked straight into this string, with no dark-mode variant at all. They now
+#: reference insight.dash.colors' shared tokens via viz_css_vars() -- the SAME status vocabulary
+#: every chart primitive in insight/dash/charts.py uses, so a viewer never sees two competing
+#: colour systems for the same four PASS/WARN/FAIL/ABSENT states. `.viz-root` (the class the
+#: <body> carries below) is the scope viz_css_vars()'s custom properties are declared under; the
+#: `body` selector itself picks up `--dash-ink`/`--dash-surface` for the page's own text/background,
+#: gaining dark-mode support the shell never had. `_ICON_CLASS` (below) is unchanged -- only the
+#: hex values these class names resolve to moved here.
+_STYLE = f"""
+{viz_css_vars()}
+body {{ font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+       margin: 2rem; color: var(--dash-ink); background: var(--dash-surface); }}
+h1 {{ font-size: 1.4rem; }} h2 {{ font-size: 1.1rem; margin-top: 2rem; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ text-align: left; padding: 4px 10px; border-bottom: 1px solid var(--dash-gridline);
+          font-size: 13px; }}
+.dot-has {{ color: var(--dash-status-pass); }} .dot-empty {{ color: var(--dash-muted); }}
+.badge {{ display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px; }}
+.badge-warn {{ background: var(--dash-status-warn); color: var(--dash-ink); }}
+.badge-fail {{ background: var(--dash-status-fail); color: var(--dash-surface); }}
+.badge-pass {{ background: var(--dash-status-pass); color: var(--dash-surface); }}
+.badge-absent {{ background: var(--dash-status-absent); color: var(--dash-surface); }}
+.banner {{ background: var(--dash-status-warn); border: 1px solid var(--dash-baseline);
+          padding: .75rem 1rem; border-radius: 6px; margin-bottom: 1.5rem; color: var(--dash-ink); }}
+footer {{ margin-top: 2rem; font-size: 12px; color: var(--dash-muted); }}
 """
 
 _ICON_CLASS = {"PASS": "badge-pass", "WARN": "badge-warn", "FAIL": "badge-fail", "ABSENT": "badge-absent"}
@@ -219,7 +231,7 @@ def render_dashboard(conn, db_path_label, metrics_dir=None):
 <title>LoopSmith Insight -- Dashboard</title>
 <style>{_STYLE}</style>
 </head>
-<body>
+<body class="viz-root">
 {banner}
 <h1>LoopSmith Insight -- Dashboard (shell)</h1>
 <p>Generated {html.escape(generated_at)} from <code>{html.escape(db_path_label)}</code>.
