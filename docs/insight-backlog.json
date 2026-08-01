@@ -307,7 +307,7 @@
         {
           "id": "E3.S6",
           "title": "Debt gap class",
-          "done_when": "Fires on rising discovery-scan inventory and unanswered knowledge/gaps.md queries; evidence carries file, count, and trend",
+          "done_when": "Fires on rising discovery-scan inventory; evidence carries file, count and trend. The knowledge/gaps.md half is DESCOPED to its own story -- gaps.md has no per-entry timestamp and no ingest surface, so there is nothing to query; disclosing a missing instrument is correct, fabricating one is not.",
           "tasks": [
             "Rules over the scan snapshots",
             "Trend derivation",
