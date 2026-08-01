@@ -46,6 +46,30 @@ def test_metric_31_counts_edges_by_area_and_actor_pair(conn):
     assert all(r["project_id"] == "p1" for r in rows_as_dicts(conn.execute("SELECT project_id FROM metric_31")))
 
 
+def test_metric_31_excludes_the_phantom_null_actor_edge_from_an_orphaned_ack(conn):
+    """BLOCKING-finding regression (post-review, issue #112 PR #190): fact_handoff has no
+    goal_id column, so an issue-less hand-off's own later ack lands as a second, orphaned row
+    (issue NULL, area/from_actor/to_actor all NULL, only ack_ts/ack_state populated) rather than
+    merging into the original. Fixture rows 6 and 7 add exactly that pair (a goal-only hand-off,
+    area='ops', plus its orphaned ack). Before the issue IS NOT NULL fix, the orphaned ack row
+    alone GROUP BY'd into its own phantom (area=NULL, from_actor=NULL, to_actor=NULL) edge with
+    handoff_count=1 -- a graph edge nothing real ever opened. Both the issue-less hand-off and
+    its orphaned ack are excluded from this view entirely now -- the original 3 edges, unchanged."""
+    load_fixture_jsonl(conn, FIXTURE)
+    load_metrics(conn)
+    rows = rows_as_dicts(
+        conn.execute("SELECT area, from_actor, to_actor, handoff_count FROM metric_31")
+    )
+    assert (None, None, None) not in {(r["area"], r["from_actor"], r["to_actor"]) for r in rows}
+    assert "ops" not in {r["area"] for r in rows}
+    edges = {(r["area"], r["from_actor"], r["to_actor"], r["handoff_count"]) for r in rows}
+    assert edges == {
+        ("backend", "a1", "a2", 2),
+        ("backend", "a1", "a3", 1),
+        ("frontend", "a2", "a1", 2),
+    }
+
+
 def test_metric_31_declares_itself_dark(conn):
     load_fixture_jsonl(conn, FIXTURE)
     registry = load_metrics(conn)

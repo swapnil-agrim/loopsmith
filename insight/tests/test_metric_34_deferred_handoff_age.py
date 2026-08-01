@@ -94,6 +94,25 @@ def test_metric_34_exposes_the_raw_ack_ts_not_a_computed_age(conn):
     ]
 
 
+def test_metric_34_excludes_the_all_null_phantom_row_from_an_orphaned_ack(conn):
+    """BLOCKING-finding regression (post-review, issue #112 PR #190) -- worse than metric 33's
+    version of the same gap. The fixture's 6th and 7th rows are a goal-only hand-off (issue=None,
+    never acked in its own row) plus its orphaned ack (issue=None, ack_state='deferred',
+    settled_ts NULL, every non-ack column NULL). Before the issue IS NOT NULL fix, the orphaned
+    ack row alone satisfied metric_34's own WHERE (ack_state = 'deferred' AND settled_ts IS
+    NULL) and surfaced as an all-NULL phantom (area/from_actor/to_actor/opened_ts all NULL, only
+    ack_ts populated) -- while the REAL deferred hand-off it belongs to never appears at all
+    (its own ack_state stays NULL forever, since the merge that would have set it had no issue
+    number to land on). issue IS NOT NULL removes the phantom; it does not and cannot recover
+    the real row -- that residue is named, accepted, and out of scope here (Decision K)."""
+    load_fixture_jsonl(conn, FIXTURE)
+    load_metrics(conn)
+    rows = rows_as_dicts(conn.execute("SELECT issue, area FROM metric_34"))
+    assert all(r["issue"] is not None for r in rows)
+    assert all(r["area"] is not None for r in rows)
+    assert [r["issue"] for r in rows] == [102, 105]
+
+
 def test_metric_34_declares_itself_dark(conn):
     load_fixture_jsonl(conn, FIXTURE)
     registry = load_metrics(conn)
