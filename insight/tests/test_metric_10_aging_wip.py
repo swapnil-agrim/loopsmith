@@ -89,10 +89,10 @@ def test_metric_10_a_reclaim_drops_the_earlier_actors_hold_entirely(conn):
     (round-2) SQL never surfaced at all because it only ever looked at each actor's own claim
     rows, never noticing a1's claim on g had been superseded by someone else's."""
     conn.execute(
-        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind) VALUES "
-        "('p1','g','2026-01-01T00:00:00','a1','claimed'),"
-        "('p1','h','2026-01-05T00:00:00','a1','claimed'),"
-        "('p1','g','2026-01-10T00:00:00','a2','claimed')"
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','g','2026-01-01T00:00:00','a1','claimed',1),"
+        "('p1','h','2026-01-05T00:00:00','a1','claimed',1),"
+        "('p1','g','2026-01-10T00:00:00','a2','claimed',1)"
     )
     load_metrics(conn)
     rows = rows_as_dicts(conn.execute("SELECT * FROM metric_10 ORDER BY actor_id"))
@@ -106,9 +106,9 @@ def test_metric_10_a_same_second_claim_then_done_is_not_a_currently_held_claim(c
     %Y-%m-%dT%H:%M:%SZ -- no sub-second resolution): a claim released by a terminal event at the
     IDENTICAL timestamp must not appear as an open claim for its actor."""
     conn.execute(
-        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind) VALUES "
-        "('p1','gq','2026-01-01T00:00:00','a1','claimed'),"
-        "('p1','gq','2026-01-01T00:00:00','a1','done')"
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','gq','2026-01-01T00:00:00','a1','claimed',1),"
+        "('p1','gq','2026-01-01T00:00:00','a1','done',1)"
     )
     load_metrics(conn)
     rows = rows_as_dicts(conn.execute("SELECT * FROM metric_10"))
@@ -136,12 +136,28 @@ def test_metric_10_the_same_actor_holding_claims_in_two_projects_returns_both(co
     because 2026-01-01 (p1) sorts before 2026-01-05 (p2) globally. See the story's own report
     for the exact revert/run/restore transcript."""
     conn.execute(
-        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind) VALUES "
-        "('p1','g1','2026-01-01T00:00:00','a1','claimed'),"
-        "('p2','g2','2026-01-05T00:00:00','a1','claimed')"
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','g1','2026-01-01T00:00:00','a1','claimed',1),"
+        "('p2','g2','2026-01-05T00:00:00','a1','claimed',1)"
     )
     load_metrics(conn)
     rows = rows_as_dicts(conn.execute("SELECT * FROM metric_10 ORDER BY project_id"))
     by_project = {r["project_id"]: (r["actor_id"], r["goal_id"]) for r in rows}
     assert by_project == {"p1": ("a1", "g1"), "p2": ("a1", "g2")}
     assert len(rows) == 2  # BOTH survive -- the bug this fixes silently dropped one
+
+
+def test_metric_10_excludes_a_class_2_claim(conn):
+    """Reliability-class enforcement (#114, spec line 563: "a NOW metric must not read any
+    reliability_class=2 row"). g1's class-1 claim (a1) must surface; g2's class-2 claim (a9)
+    must never surface a row for a9 at all."""
+    conn.execute(
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','g1','2026-01-01T00:00:00','a1','claimed',1),"
+        "('p1','g2','2026-01-02T00:00:00','a9','claimed',2)"
+    )
+    load_metrics(conn)
+    rows = rows_as_dicts(conn.execute("SELECT * FROM metric_10"))
+    assert len(rows) == 1
+    assert rows[0]["actor_id"] == "a1"
+    assert rows[0]["goal_id"] == "g1"

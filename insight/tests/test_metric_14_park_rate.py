@@ -31,3 +31,22 @@ def test_metric_14_counts_distinct_parked_goals_not_raw_events(conn):
     assert rows == [{
         "parked_terminal_count": 2, "terminal_count": 4, "park_rate": 0.5,
     }]
+
+
+def test_metric_14_a_class_2_park_event_does_not_inflate_park_rate(conn):
+    """Reliability-class enforcement (#114, spec line 563: "a NOW metric must not read any
+    reliability_class=2 row"). g1 (done, terminal, never parked in the baseline) gets one
+    class-2 'parked' event. If wrongly included, parked_terminal_count becomes 3 (g2, g4, g1),
+    park_rate = 3/4 = 0.75. Expected: unchanged from the pinned baseline
+    (parked_terminal_count=2, terminal_count=4, park_rate=0.5)."""
+    load_fixture_jsonl(conn, FIXTURE)
+    conn.execute(
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','g1','2026-01-01T00:15:00','a9','parked',2)"
+    )
+    registry = load_metrics(conn)
+    assert registry["14"]["extra"]["data_status"] == "dark"
+    rows = rows_as_dicts(conn.execute("SELECT * FROM metric_14"))
+    assert rows == [{
+        "parked_terminal_count": 2, "terminal_count": 4, "park_rate": 0.5,
+    }]

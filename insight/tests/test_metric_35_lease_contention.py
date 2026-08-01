@@ -102,3 +102,42 @@ def test_metric_35_declares_itself_dark(conn):
     load_fixture_jsonl(conn, FIXTURE)
     registry = load_metrics(conn)
     assert registry["35"]["extra"]["data_status"] == "dark"
+
+
+def test_metric_35_class_2_events_are_invisible_across_all_three_fact_event_reads(conn):
+    """Reliability-class enforcement (#114, spec line 563: "a NOW metric must not read any
+    reliability_class=2 row"). Deliberately shaped to independently exercise each of 35.sql's
+    THREE separate fact_event reads (transitions, current_holder's own inner subquery,
+    all_claimed_goals) -- a fix that only filtered one or two of the three must still fail this
+    test. Fresh, isolated insert -- no fixture load, matching this file's own isolation style
+    for a from-scratch scenario.
+
+    g1: control, class-1 only, single open claim.
+    g2: class-2 ONLY (no class-1 claim ever for this goal). This is the case that only
+        all_claimed_goals's own filter can produce: if that one occurrence's filter were dropped
+        while transitions/current_holder kept theirs, g2 would still surface a row
+        (contended=false, current_actor_id=NULL) -- a bug the other two occurrences' filters
+        cannot mask.
+    g4: class-1 claim by a1 (2026-01-01), then a class-2 claim by a2 (2026-01-05) -- the same
+        shape as this repo's own real gy lease-contention scenario, but the SECOND claim is
+        untrusted. If transitions's filter were dropped, a2's claim would look like a genuine
+        second actor and contended would flip true. If current_holder's filter were dropped,
+        current_actor_id would flip to a2. With all three filters intact, g4 reads exactly like
+        a single, uncontended, still-open claim by a1."""
+    conn.execute(
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','g1','2026-01-01T00:00:00','a1','claimed',1),"
+        "('p1','g2','2026-01-02T00:00:00','a9','claimed',2),"
+        "('p1','g4','2026-01-01T00:00:00','a1','claimed',1),"
+        "('p1','g4','2026-01-05T00:00:00','a2','claimed',2)"
+    )
+    load_metrics(conn)
+    rows = rows_as_dicts(conn.execute("SELECT * FROM metric_35 ORDER BY goal_id"))
+    assert [r["goal_id"] for r in rows] == ["g1", "g4"]  # g2 never appears
+    by_goal = {r["goal_id"]: r for r in rows}
+    assert by_goal["g1"]["contended"] is False
+    assert by_goal["g1"]["current_actor_id"] == "a1"
+    assert by_goal["g1"]["claimed_ts"] == datetime.datetime(2026, 1, 1, 0, 0, 0)
+    assert by_goal["g4"]["contended"] is False  # a2's class-2 claim invisible
+    assert by_goal["g4"]["current_actor_id"] == "a1"  # a2 never becomes the holder
+    assert by_goal["g4"]["claimed_ts"] == datetime.datetime(2026, 1, 1, 0, 0, 0)

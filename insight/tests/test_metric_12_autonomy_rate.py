@@ -34,3 +34,25 @@ def test_metric_12_counts_only_span_clean_done_goals_as_autonomous(conn):
     assert rows == [{
         "autonomous_done_count": 2, "terminal_count": 6, "autonomy_rate": 0.3333,
     }]
+
+
+def test_metric_12_a_class_2_intervention_does_not_break_autonomy(conn):
+    """Reliability-class enforcement (#114, spec line 563: "a NOW metric must not read any
+    reliability_class=2 row"). g1 (done, claimed_ts=2026-01-01T00:00:00,
+    terminal_ts=2026-01-01T05:00:00, clean in the baseline test) gets one class-2 'ack' event
+    WITHIN its span. If wrongly included, this row would join interventions for g1 (its ts is
+    inside [claimed_ts, terminal_ts]), demoting g1 from autonomous -- autonomous_done_count would
+    drop from 2 to 1, autonomy_rate from 0.3333 to 0.1667 (1/6). Expected: no change from the
+    already-pinned baseline (test_metric_12_counts_only_span_clean_done_goals_as_autonomous's own
+    values)."""
+    load_fixture_jsonl(conn, FIXTURE)
+    conn.execute(
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','g1','2026-01-01T02:00:00','a9','ack',2)"
+    )
+    registry = load_metrics(conn)
+    assert registry["12"]["extra"]["data_status"] == "dark"
+    rows = rows_as_dicts(conn.execute("SELECT * FROM metric_12"))
+    assert rows == [{
+        "autonomous_done_count": 2, "terminal_count": 6, "autonomy_rate": 0.3333,
+    }]
