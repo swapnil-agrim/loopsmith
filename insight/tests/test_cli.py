@@ -819,6 +819,74 @@ def test_dash_index_html_has_no_external_reference(tmp_path, monkeypatch):
     assert_self_contained(html_text)  # must not raise
 
 
+# --------------------------------------------------------------------------- dash IC view (issue #126, E4.S3)
+
+
+def test_help_lists_the_new_actor_flag(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["dash", "--help"])
+    out = capsys.readouterr().out
+    for flag in ("--db", "--out", "--serve", "--port", "--actor"):
+        assert flag in out
+
+
+def test_dash_writes_ic_html_when_actor_flag_given(tmp_path, monkeypatch):
+    """tmp_path has no .sdlc/config.json at all -- the --actor flag alone must be enough."""
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    code = main([
+        "dash", "--actor", "swapnil-agrim",
+        "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out"),
+    ])
+    assert code == 0
+    ic_path = tmp_path / "out" / "ic.html"
+    assert ic_path.exists()
+    assert "swapnil-agrim" in ic_path.read_text(encoding="utf-8")
+
+
+def test_dash_writes_ic_html_from_config_actor_when_no_flag(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc").mkdir()
+    (tmp_path / ".sdlc" / "config.json").write_text(
+        '{"ledger": {"actor": "swapnil-agrim"}}', encoding="utf-8",
+    )
+    code = main(["dash", "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out")])
+    assert code == 0
+    ic_path = tmp_path / "out" / "ic.html"
+    assert ic_path.exists()
+    assert "swapnil-agrim" in ic_path.read_text(encoding="utf-8")
+
+
+def test_dash_skips_ic_html_and_warns_when_actor_unresolved(tmp_path, monkeypatch, capsys):
+    """The regression proof for Decision 2: tmp_path, no config, no --actor flag -- the exact
+    setup every pre-existing `dash` CLI test above already uses -- must still exit 0 with an
+    empty stderr, must NOT write ic.html, and must warn on stdout."""
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    code = main(["dash", "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out")])
+    assert code == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert "WARNING" in out and "no actor resolved" in out
+    assert not (tmp_path / "out" / "ic.html").exists()
+    assert (tmp_path / "out" / "index.html").exists()  # the S1 shell must still be written
+
+
+def test_dash_ic_html_has_no_external_reference(tmp_path, monkeypatch):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    from insight.dash.render import assert_self_contained
+    code = main([
+        "dash", "--actor", "swapnil-agrim",
+        "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out"),
+    ])
+    assert code == 0
+    html_text = (tmp_path / "out" / "ic.html").read_text(encoding="utf-8")
+    assert_self_contained(html_text)  # must not raise
+
+
 def test_dash_serve_actually_serves_over_loopback_end_to_end(tmp_path, monkeypatch):
     """The literal 'builds and serves locally' done_when clause, exercised through the real CLI
     wiring (not just insight/dash/serve.py's own unit tests) -- runs main(["dash", "--serve", ...])
