@@ -33,6 +33,14 @@ def _data_script(html_text):
     return json.loads(m.group(1))
 
 
+def _onboarding_table(html_text):
+    m = re.search(
+        r'<table id="cold-start-metrics">.*?</table>', html_text, re.DOTALL,
+    )
+    assert m, "cold-start onboarding table not found in rendered page"
+    return m.group(0)
+
+
 def test_render_dashboard_against_real_metric_catalog_and_gaps(conn):
     html_text, summary = render_dashboard(conn, "s.duckdb")
     assert summary["metric_count"] == 25
@@ -131,7 +139,45 @@ def test_metrics_3_11_12_14_never_falsely_report_data_on_an_empty_store(conn):
         assert by_id[metric_id]["has_data"] is False, metric_id
 
 
-def test_warm_store_renders_no_banner_at_all(conn):
+def test_target_scenario_collectors_populated_ledger_off_renders_the_ledger_enablement_banner(conn):
+    """#128's own stated target: ingested, collectors ran (fact_goal + fact_collector_pack +
+    fact_merge_lead_time all populated), but the ledger has never written a row. This is also the
+    fixture that falsifies the round-1-revised `other_has_data` (allowlist-complement) design --
+    see .sdlc/plans/128.md's 'why the allowlist-complement condition is wrong' section: metric 26
+    (bare fact_goal count) and metric 41 (fact_collector_pack, schema alignment-collect/v1) both
+    read has_data=True here despite neither being a cold-start metric, which would leave
+    other_has_data=True and banner="" under that design even after it "landed"."""
+    conn.execute(
+        "INSERT INTO dim_project (project_id, repo, adopted, first_seen, last_seen) "
+        "VALUES ('p1', 'github.com/org/repo', true, now(), now())"
+    )
+    conn.execute(
+        "INSERT INTO fact_goal (project_id, goal_id, done_when_present, plan_artifact_present) "
+        "VALUES ('p1', 'g1', true, true)"
+    )
+    conn.execute(
+        "INSERT INTO fact_collector_pack (project_id, schema, collected_ts, raw_payload) "
+        "VALUES ('p1', 'alignment-collect/v1', '2026-01-01', "
+        "'{\"schema\":\"alignment-collect/v1\",\"dimensions\":{\"d1\":"
+        "{\"commits_with_source\":5,\"plan_existed_pct\":80},\"d5\":"
+        "{\"commits_with_review_pct\":60}}}')"
+    )
+    conn.execute(
+        "INSERT INTO fact_merge_lead_time (project_id, merge_sha, pr_number, kind) "
+        "VALUES ('p1', 's1', 101, 'squash_pr')"
+    )
+    html_text, summary = render_dashboard(conn, "s.duckdb")
+    assert summary["ever_ingested"] is True
+    assert summary["has_data"] is True
+    assert "this store has never been ingested" not in html_text
+    assert "Ingested, nothing measurable yet" not in html_text
+    assert "Ledger not enabled" in html_text
+    assert "sync.py bootstrap" in html_text
+    assert "turn it on with one config change" in html_text
+    assert_self_contained(html_text)
+
+
+def test_collector_only_store_renders_the_ledger_enablement_banner(conn):
     conn.execute(
         "INSERT INTO dim_project (project_id, repo, adopted, first_seen, last_seen) "
         "VALUES ('p1', 'github.com/org/repo', true, now(), now())"
@@ -145,6 +191,57 @@ def test_warm_store_renders_no_banner_at_all(conn):
     assert summary["has_data"] is True
     assert "this store has never been ingested" not in html_text
     assert "Ingested, nothing measurable yet" not in html_text
+    assert "Ledger not enabled" in html_text
+    assert "sync.py bootstrap" in html_text
+    assert "turn it on with one config change" in html_text
+    assert_self_contained(html_text)
+
+
+def test_collector_only_store_never_shows_a_bare_zero_for_the_still_unmeasured_cold_start_metrics(conn):
+    """Same fixture as the collector-only test above (only fact_merge_lead_time populated).
+    Metric 42 is ALSO populated by this fixture -- 42.sql's merge_stats CTE reads
+    fact_merge_lead_time directly -- so the still-unmeasured set here is 6 ids, not 7:
+    4, 5, 9, 20, 24, 30 (NOT 42)."""
+    conn.execute(
+        "INSERT INTO dim_project (project_id, repo, adopted, first_seen, last_seen) "
+        "VALUES ('p1', 'github.com/org/repo', true, now(), now())"
+    )
+    conn.execute(
+        "INSERT INTO fact_merge_lead_time (project_id, merge_sha, pr_number, kind) "
+        "VALUES ('p1', 's1', 101, 'squash_pr')"
+    )
+    html_text, _ = render_dashboard(conn, "s.duckdb")
+    payload = _data_script(html_text)
+    by_id = {m["id"]: m for m in payload["metrics"]}
+    table = _onboarding_table(html_text)
+    for metric_id in ("4", "5", "9", "20", "24", "30"):
+        assert by_id[metric_id]["measured"] == 0, metric_id
+        assert by_id[metric_id]["has_data"] is False, metric_id
+        assert re.search(rf"<td>{metric_id}</td><td>[^<]*</td><td>no data yet</td>", table), metric_id
+
+
+def test_fully_warm_store_with_ledger_data_renders_no_banner_at_all(conn):
+    """Passes against both today's unmodified code (falls to banner="" for the old,
+    coincidentally-right reason) and the fixed code (deliberately takes the final else) -- a
+    non-regression guard for the fully-warm case, not evidence the fix works on its own."""
+    conn.execute(
+        "INSERT INTO dim_project (project_id, repo, adopted, first_seen, last_seen) "
+        "VALUES ('p1', 'github.com/org/repo', true, now(), now())"
+    )
+    conn.execute(
+        "INSERT INTO fact_merge_lead_time (project_id, merge_sha, pr_number, kind) "
+        "VALUES ('p1', 's1', 101, 'squash_pr')"
+    )
+    conn.execute(
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) "
+        "VALUES ('p1', 'g1', now(), 'a1', 'claimed', 1)"
+    )
+    html_text, summary = render_dashboard(conn, "s.duckdb")
+    assert summary["ever_ingested"] is True
+    assert summary["has_data"] is True
+    assert "this store has never been ingested" not in html_text
+    assert "Ingested, nothing measurable yet" not in html_text
+    assert "Ledger not enabled" not in html_text
 
 
 def test_a_broken_metrics_catalog_raises_metric_load_error(tmp_path, conn):

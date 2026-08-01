@@ -57,6 +57,11 @@ _STYLE = f"""
 
 _ICON_CLASS = {"PASS": "badge-pass", "WARN": "badge-warn", "FAIL": "badge-fail", "ABSENT": "badge-absent"}
 
+#: The 8 collector-derived metrics available with zero setup on day zero -- no ledger, no
+#: config change, nothing turned on (spec: docs/superpowers/specs/2026-07-30-loopsmith-insight-
+#: data-platform-design.md lines 505-506, "Cold start -- stated plainly").
+_COLD_START_METRICS = {"3", "4", "5", "9", "20", "24", "30", "42"}
+
 #: The three characters that let embedded JSON interact with surrounding HTML/script lexing.
 #: Escaping exactly these three (matches Django's json_script filter) is sufficient -- proven
 #: live against a real </script> breakout payload, .sdlc/plans/124.md section F.
@@ -150,6 +155,48 @@ def _ever_ingested(conn):
     return conn.execute("select count(*) from dim_project").fetchone()[0] > 0
 
 
+def _ledger_has_rows(conn):
+    """True iff insight_ledger has ever written a row into fact_event or fact_handoff -- the
+    ONLY two tables insight.ingest.ledger_writer writes (verified by reading that module in
+    full: _EVENT_INSERT_SQL writes fact_event, _apply_handoff/_apply_ack write fact_handoff;
+    ingest_ledger_cursor is resume bookkeeping only, read by no metric view). Both are real
+    base tables, not aggregate views, so a plain count(*) is exact -- no phantom-row
+    correction needed (same posture as insight.dash.manager._reason_class_measured_count).
+    Deliberately NOT derived from any metric's has_data -- see .sdlc/plans/128.md's own 'why the
+    allowlist-complement condition is wrong' section: several non-cold-start metrics (26, 41)
+    read non-ledger tables and would falsely flip a metric-derived signal on ordinary
+    goal-file/collector ingest that never touched the ledger at all."""
+    return (
+        conn.execute("select count(*) from fact_event").fetchone()[0] > 0
+        or conn.execute("select count(*) from fact_handoff").fetchone()[0] > 0
+    )
+
+
+def _render_onboarding(metric_rows):
+    """The 'ingested, ledger off' onboarding surface -- #128's actual target state: this store
+    HAS been ingested (dim_project exists), collectors have run, but fact_event/fact_handoff
+    are both empty (see _ledger_has_rows). Lists each of the 8 cold-start metrics by its real
+    has_data (from _metric_rows() -- no new SQL) so a metric that DOES already have data shows
+    "has data", not "no data yet". Text is the spec's own wording at lines 511-513,
+    HTML-equivalent markup for the source markdown's backticks/em dash/italics -- never
+    paraphrased. `id="cold-start-metrics"` lets tests locate this table without confusing it
+    with the catalog table below."""
+    available = [m for m in metric_rows if m["id"] in _COLD_START_METRICS]
+    rows = "".join(
+        f"<tr><td>{html.escape(m['id'])}</td><td>{html.escape(m['name'])}</td>"
+        f"<td>{'has data' if m['has_data'] else 'no data yet'}</td></tr>"
+        for m in available
+    )
+    return (
+        '<div class="banner"><strong>Ledger not enabled</strong> -- '
+        "Throughput, cycle time and WIP need the team ledger &mdash; turn it on with one "
+        "config change and one <code>sync.py bootstrap</code>. Here is what you "
+        "<em>can</em> see today:"
+        '<table id="cold-start-metrics"><thead><tr><th>id</th><th>name</th><th>status</th>'
+        f"</tr></thead><tbody>{rows}</tbody></table></div>"
+    )
+
+
 def _render_metric_table(rows):
     out = []
     for m in rows:
@@ -209,6 +256,13 @@ def render_dashboard(conn, db_path_label, metrics_dir=None):
             "expected right after a brand-new adoption (the spec's own \"cold start\" state). "
             "See the metric catalog below for what's cheap to get first.</div>"
         )
+    elif not _ledger_has_rows(conn):
+        # ever_ingested and has_data are both True here (some metric has data -- could be a
+        # cold-start collector metric, or 26/41/etc. from ordinary goal-file ingest with no
+        # ledger involved at all), but the ledger itself has never written a row. #128's target
+        # state.
+        banner = _render_onboarding(metric_rows)
+    # else: the ledger has real rows too -- fully warm, no banner, matching today's behaviour.
 
     payload = {"generated_at": generated_at, "db_path": db_path_label,
                "ever_ingested": ever_ingested, "has_data": has_data,
