@@ -120,3 +120,19 @@ def test_pyproject_declares_package_data_for_metric_sql_files():
         r'\s*\n\s*"insight\.metrics"\s*=\s*\[[^\]]*"\*\.sql"',
         text,
     ), "pyproject.toml must declare package-data for insight.metrics's *.sql files"
+
+
+def test_pyproject_declares_package_data_for_gap_rule_sql_files():
+    """Issue #116, E3.S1, Design decision 6: gap rules ship as .sql files (mirroring the metric
+    catalog), and insight.gaps is already in packages=[...] with no matching package-data entry
+    -- the exact gap test_pyproject_declares_package_data_for_metric_sql_files above already
+    exists to name for a sibling package. Fixed before issue #117 lands the first real rule
+    .sql file, so it never has a window where it would silently vanish from a built wheel.
+    Not anchored to immediately follow the [tool.setuptools.package-data] header the way the
+    metrics test above is -- this entry is second in the file, not first."""
+    text = _pyproject_text()
+    assert re.search(r'"insight\.gaps"\s*=\s*\[[^\]]*"\*\.sql"', text), (
+        "pyproject.toml must declare package-data for insight.gaps's *.sql files (issue #116) "
+        "-- packages=[...] alone silently drops them from a real wheel, see #108 Design "
+        "decision H for the exact prior instance of this gap"
+    )
