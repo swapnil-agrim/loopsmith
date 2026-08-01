@@ -157,10 +157,14 @@ def coverage_denominator_html(coverage):
             pct_text = f"{float(pct):.0%}"
         except (TypeError, ValueError):
             pct_text = html.escape(str(pct))
+    # issue #129 review: escape all three, matching pct_text's own fallback above and every other
+    # data-derived value in this file -- extract_coverage checks column PRESENCE only, not type,
+    # so a .sql aliasing something non-numeric into these names must not inject unescaped content.
     return (
         ' <span class="coverage-denom">&mdash; coverage '
-        f'{pct_text} ({coverage["class1_count"]} of {coverage["total_count"]} rows class-1, '
-        f'{coverage["class2_count"]} class-2)</span>'
+        f'{pct_text} ({html.escape(str(coverage["class1_count"]))} of '
+        f'{html.escape(str(coverage["total_count"]))} rows class-1, '
+        f'{html.escape(str(coverage["class2_count"]))} class-2)</span>'
     )
 
 

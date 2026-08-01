@@ -376,6 +376,15 @@ def main(argv=None):
         manager_conn = open_store(args.db)
         try:
             manager_html, _manager_summary = render_manager_view(manager_conn)
+        except (MetricLoadError, CoverageDenominatorMissing) as e:
+            # Same treatment as the render_dashboard call above -- issue #129 review: this call
+            # was previously bare, relying on the implicit (and undocumented) invariant that
+            # render_dashboard's own registry-wide sweep over the same catalog would always raise
+            # first. That ordering is not guaranteed (a reordering or a metrics_dir divergence
+            # breaks it silently), so CoverageDenominatorMissing must be caught here too, not
+            # inferred from a call site three blocks up.
+            print("insight dash: metric catalog failed to load: %s" % e, file=sys.stderr)
+            return 1
         finally:
             manager_conn.close()
         assert_self_contained(manager_html)  # belt-and-suspenders, mirrors index.html/ic.html above

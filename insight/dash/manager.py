@@ -70,6 +70,12 @@ h3 {{ font-size: 1rem; margin-top: 1.25rem; }}
 """
 
 
+#: The only keys of _wip_row's own result ever inlined into the manager payload (issue #129
+#: review, fix 2) -- kept separate from whatever _wip_row's `SELECT *` happens to return, so what
+#: gets embedded in the page stays a structural allowlist, not a byproduct of the query's shape.
+_WIP_PAYLOAD_KEYS = ("week_start", "wip_count")
+
+
 # --------------------------------------------------------------------------- page-specific fetchers
 
 def _wip_row(conn):
@@ -226,12 +232,23 @@ def render_manager_view(conn, now=None, metrics_dir=None):
 
     park_coverage = extract_coverage("14", registry["14"]["reliability_class"], park_rate_row)
 
+    # issue #129 review: _wip_row reads `SELECT *` (needed so extract_coverage above can see a
+    # future coverage-denominator column without a second code change), but what gets INLINED
+    # into the payload below must stay structural, not test-dependent -- this module's own
+    # docstring's "only COUNT-ONLY shapes are ever inlined" invariant. Naming metric_7's coverage
+    # columns explicitly doesn't work: it's class-1 today and its view carries none of them, so
+    # naming them here would KeyError. An explicit allowlist of the known-safe keys survives a
+    # future column addition to metric_7's view without widening what this page ever inlines.
+    wip_payload = (
+        {k: wip_row[k] for k in _WIP_PAYLOAD_KEYS if k in wip_row} if wip_row is not None else None
+    )
+
     payload = {
         "generated_at": generated_at,
         "burndown": {
             "weeks": len(weekly_remaining), "p10_total": p10_total, "p90_total": p90_total,
         },
-        "wip": wip_row,
+        "wip": wip_payload,
         # COUNT ONLY -- never the raw _aging_wip_rows() rows themselves (they carry actor_id).
         # See this module's own docstring for why this is a named, tested invariant.
         "aging_wip_count": len(aging_rows),

@@ -179,8 +179,14 @@ def _cost_row(conn, actor):
     real `count(*)` over rows where at least one of the three cost columns is non-NULL -- today
     that is always zero (`_write_event`'s own six-column insert never populates any of the
     three), so this always returns `(None, None, None, 0)` on every real store, honestly ABSENT
-    rather than faked, but wired to light up automatically the day a cost-emitting writer lands,
-    with no second code change (mirrors #120's own precedent for `fact_goal.pr`).
+    rather than faked. It does NOT light up automatically the day a cost-emitting writer lands
+    (issue #129 review, correcting this docstring's own prior claim): the spec classifies phase
+    tokens/cost as Class-2, agent-emitted, so a real future cost-emitting writer tagging its rows
+    correctly per spec is exactly what `reliability_class = 1` below excludes, forever, not just
+    until one lands. Class-2 cost display is deliberately deferred to a later story pending the
+    coverage-denominator treatment (see `extract_coverage`/`CoverageDenominatorMissing` in
+    `insight.dash.render`) -- unlike `fact_goal.pr` (#120's precedent, a class-1 column), there is
+    no "no second code change" story here.
     `reliability_class = 1` only, matching every other NOW-tier fetcher in this file
     (`_my_queue_rows`, `_park_count`, the `events` CTE) and spec line 563: a NOW metric must not
     read any reliability_class=2 row. Issue #129 D7: the spec's own Class-2 table names "phase

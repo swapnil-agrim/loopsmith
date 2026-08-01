@@ -771,6 +771,33 @@ def test_dash_reports_coverage_denominator_missing_as_a_clean_error_not_a_traceb
     assert "Traceback" not in captured.err
 
 
+def test_dash_reports_coverage_denominator_missing_from_manager_view_as_a_clean_error(
+    tmp_path, monkeypatch, capsys,
+):
+    """Same shape as the render_dashboard test above, but for the manager-view call site (issue
+    #129 review, fix 1): that call previously had NO except clause at all, relying on the
+    implicit, undocumented invariant that render_dashboard's own registry-wide sweep over the
+    same catalog would always raise first. Monkeypatching render_manager_view directly (not
+    render_dashboard) proves this call site now catches CoverageDenominatorMissing on its own,
+    independent of that ordering."""
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    import insight.dash.manager as manager_mod
+    import insight.dash.render as render_mod
+
+    def _boom(conn, now=None, metrics_dir=None):
+        raise render_mod.CoverageDenominatorMissing(
+            "metric 900: missing coverage-denominator column(s)"
+        )
+
+    monkeypatch.setattr(manager_mod, "render_manager_view", _boom)
+    code = main(["dash", "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out")])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "insight dash: metric catalog failed to load" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_dash_prints_to_stdout_not_stderr_on_success(tmp_path, monkeypatch, capsys):
     pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)
