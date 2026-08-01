@@ -539,7 +539,7 @@ Three properties inherited deliberately from `pipeline.py`:
    rule here was a single crossing of the trailing p85, which is self-defeating — ~15% of any series exceeds
    its own p85 *by construction*, and over 500 trials per shape a healthy stationary project fired a false
    WARN 91–99% of the time (78–93% even with a derived materiality margin; a ≥40-point minimum-history cutoff
-   still left 76.2%). The rule is now **k consecutive breaches, k=3** — 0.15³ ≈ 0.34% on a stationary series.
+   still left 76.2%). The rule is now **k consecutive breaches, k=3**. **CORRECTED AGAIN 2026-08-02:** an earlier version of this line cited 0.15³ ≈ 0.34%, which is the probability for a SINGLE point and is not what a reader wants to know. The rate that matters is cumulative — the chance a whole healthy series fires at least once — and it is far higher. Measured: **7–23%** across #119's shapes, and 3.8–18.4% across #121's four (n=30 → 18.4%, n=10 → 8.2%, n=7 → 3.8%, n=15/baseline=5 → 10.6%). Still a large improvement on the 91–99% a single crossing produced, which is the point — but roughly 50× the number this line first quoted, and quoting the smaller one made the rule look better than it is.
    k is a RUN LENGTH, not a magnitude: it encodes no domain expectation, so the property this rule was
    protecting survives. Sensitivity was never the problem — a 4× sustained step-up still fires, starting at
    its first regressed point; a 10,000× single spike correctly does *not* fire on its own — no run-length
