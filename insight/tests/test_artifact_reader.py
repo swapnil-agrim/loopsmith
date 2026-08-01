@@ -67,6 +67,26 @@ def test_discover_goal_files_sorted(tmp_path):
     assert names == ["0001.md", "0002.md"]
 
 
+def test_discover_goal_files_excludes_the_scaffolded_readme(tmp_path):
+    """Issue #118 Design decision 2: the sdlc-init scaffold's README.md
+    (skills/sdlc-init/templates/goals/README.md.tmpl, copied verbatim into every project's
+    .sdlc/goals/) carries no --- frontmatter fence at all -- it is prose, not a goal -- and must
+    be excluded from discover_goal_files' own glob before any real goal file is ever read.
+
+    Matched CASE-INSENSITIVELY (pre-PR review nit): the scaffold always writes exactly README.md,
+    but an exact match would let a hand-renamed readme.md through on a case-sensitive filesystem
+    while catching it on macOS -- a check whose answer depends on the developer's filesystem is
+    worse than either answer consistently. Asserted on the lowercase spelling here because that
+    is the variant an exact-match implementation lets through; a case-folding filesystem collapses
+    the two, so this test pins the STRING comparison, not the filesystem's behaviour."""
+    _goal(tmp_path, "readme.md", "# Goals\n\nOne markdown file per goal...\n")
+    _goal(tmp_path, "0001-x.md", "---\nid: 0001\n---\n")
+    _goal(tmp_path, "0002-x.md", "---\nid: 0002\n---\n")
+    names = [p.name for p in discover_goal_files(tmp_path)]
+    assert names == ["0001-x.md", "0002-x.md"]
+    assert not any(n.lower() == "readme.md" for n in names)
+
+
 # --------------------------------------------------------------------------- goal_record: the done_when test
 
 def test_goal_missing_done_when_is_recorded_as_absent_not_defaulted(tmp_path):
@@ -361,6 +381,20 @@ def test_ingest_artifacts_end_to_end(conn, tmp_path):
     assert slice_row == ("s1", ["a.py"])
     project_row = conn.execute("select config_json from dim_project").fetchone()
     assert project_row == ('{"mode": {"default": "goal"}}',)
+
+
+def test_ingest_artifacts_excludes_the_readme_from_fact_goal(conn, tmp_path):
+    """Issue #118 Design decision 2, exercised end to end: the scaffolded README.md must not
+    land in fact_goal at all -- summary["goals"] counts only the one real goal, and the only
+    row in fact_goal is that real goal's."""
+    _goal(tmp_path, "README.md", "# Goals\n\nOne markdown file per goal...\n")
+    _goal(tmp_path, "0001-x.md", "---\nid: 0001\ntitle: T\ndone_when: x\n---\n")
+
+    summary = ingest_artifacts(conn, tmp_path, sdlc_dir=tmp_path)
+
+    assert summary["goals"] == 1
+    goal_ids = [r[0] for r in conn.execute("SELECT goal_id FROM fact_goal").fetchall()]
+    assert goal_ids == ["0001"]
 
 
 def test_ingest_artifacts_no_goals_dir_still_writes_project_snapshot(conn, tmp_path):

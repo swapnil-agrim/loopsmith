@@ -89,12 +89,17 @@ def test_a_bom_prefixed_rule_file_still_parses(tmp_path):
 
 
 def test_load_gap_rules_defaults_to_the_real_insight_gaps_directory():
-    """Issue #117 landed the first real rule files -- Coverage class, four rules. This
-    assertion is the intentional update this test's own docstring (pre-#117) predicted."""
+    """Issue #117 landed Coverage's four rules; issue #118 adds Definition's two. This assertion
+    is the intentional update #117's own version of this docstring predicted."""
     registry = load_gap_rules()
-    assert set(registry) == {
-        "coverage_gate_absent", "coverage_verify_no_command",
-        "coverage_review_missing", "coverage_degraded_collector",
+    expected_class = {
+        "coverage_gate_absent": "Coverage",
+        "coverage_verify_no_command": "Coverage",
+        "coverage_review_missing": "Coverage",
+        "coverage_degraded_collector": "Coverage",
+        "definition_no_done_when": "Definition",
+        "definition_no_plan_artifact": "Definition",
     }
-    for rule_id in registry:
-        assert registry[rule_id]["class"] == "Coverage"
+    assert set(registry) == set(expected_class)
+    for rule_id, rule in registry.items():
+        assert rule["class"] == expected_class[rule_id]
