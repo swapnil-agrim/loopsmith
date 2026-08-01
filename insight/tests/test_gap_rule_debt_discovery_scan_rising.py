@@ -29,6 +29,13 @@ def rule():
     return load_gap_rules()["debt_discovery_scan_rising"]
 
 
+def _payload(counts):
+    """A discovery-scan/v1 payload carrying len(counts) candidates."""
+    import json as _json
+    return _json.dumps({"schema": "discovery-scan/v1",
+                        "candidates": [{"file": f"f{i}.py"} for i in range(len(counts))]})
+
+
 def _insert(conn, project_id, counts, start=datetime.date(2026, 1, 1)):
     for i, c in enumerate(counts):
         ts = datetime.datetime.combine(start + datetime.timedelta(days=i), datetime.time())
@@ -94,7 +101,7 @@ def test_a_degraded_snapshot_is_skipped_not_treated_as_a_zero_count(conn, rule):
     conn.execute(
         "INSERT INTO fact_collector_pack (project_id, schema, collected_ts, degraded_adapter, "
         "raw_payload) VALUES ('p1', 'discovery-scan/v1', '2026-01-04', "
-        "['adapter_exit_nonzero'], '{\"schema\":\"discovery-scan/v1\",\"candidates\":[]}')"
+        "['adapter_schema_invalid'], '%s')" % _payload([0] * 900)
     )
     _insert(conn, "p1", [20, 20, 20], start=datetime.date(2026, 1, 5))
     _insert(conn, "p1", [40, 40, 40, 40], start=datetime.date(2026, 1, 8))
@@ -103,6 +110,13 @@ def test_a_degraded_snapshot_is_skipped_not_treated_as_a_zero_count(conn, rule):
     assert len(finding["evidence"]) == 3
     for e in finding["evidence"]:
         assert e["candidate_count"] == 40
+    # The degraded row reports NINE HUNDRED candidates. If it entered the window at all, every
+    # trailing_p85 below would be dragged toward 900 and the run would collapse. Asserting the
+    # baseline sequence is the only thing that can SEE that -- severity and candidate_count cannot,
+    # which is why an earlier version of this test survived deleting the degraded CASE entirely.
+    # A degraded pack really can carry a payload (collectors.py's adapter_schema_invalid path), so
+    # this is the realistic shape, not a contrived one.
+    assert [e["trailing_p85"] for e in finding["evidence"]] == [20.0, 21.999999999999993, 39.0]
 
 
 def test_two_projects_interleaved_never_splice_into_one_fabricated_run(conn, rule):

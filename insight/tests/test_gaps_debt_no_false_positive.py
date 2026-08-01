@@ -64,9 +64,14 @@ def test_realistic_noisy_healthy_series_fires_rarely_measured_not_assumed(
     """500 independently-seeded synthetic healthy projects per shape, i.i.d.
     Normal(baseline, sigma) per snapshot, clipped non-negative, rounded -- NOT a random walk (see
     .sdlc/plans/121.md Design decision 2 for why that distinction matters and what it changes).
-    This session's own canonical run at these exact seeds: n=30 -> 83/500 (16.6%); n=10 ->
-    52/500 (10.4%); n=7 -> 35/500 (7.0%); n=15,baseline=5 -> 50/500 (10.0%) -- all measured via
-    this exact query, through evaluate_rule, not a hand-rolled reimplementation. Thresholds here
+    RE-MEASURED AT REVIEW by instrumenting this very test and reading its own counters:
+    n=30 -> 92/500 (18.4%); n=10 -> 41/500 (8.2%); n=7 -> 19/500 (3.8%);
+    n=15,baseline=5 -> 53/500 (10.6%). An earlier revision of this docstring reported
+    83/52/35/50; not one of those four reproduced against the shipped SQL. The generated data
+    was never in question -- the naive criterion still measures 99-100% on the identical series --
+    so the divergence was in evaluation, and the numbers are corrected here rather than
+    re-explained. They are the justification for the run-of-3 requirement, so they have to be
+    the real ones. Thresholds here
     are set well above those measured numbers (margin against Monte Carlo wobble across duckdb
     patch versions) but far below the 86-100%/42-51% every earlier, rejected criterion
     produced -- a real regression guard, not a rubber stamp."""
