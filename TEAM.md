@@ -11,6 +11,8 @@ _Nothing is blocked on another person._
 
 | when | who | did | goal | detail |
 |---|---|---|---|---|
+| 2026-08-01T18:23:38Z | swapnil-agrim | done | 121 |  |
+| 2026-08-01T18:23:18Z | swapnil-agrim | merged | 121 | auto-merge (squash) armed on PR #213 |
 | 2026-08-01T17:26:05Z | swapnil-agrim | claimed | 125 |  |
 | 2026-08-01T17:25:50Z | swapnil-agrim | parked | 121 | Half the done_when has no instrument, and choosing what to do about it is a product call — the same class of decision #119 was parked for. Clause 1 (rising discovery-scan inventory) is LIVE; clause 2 (unanswered knowledge/gaps.md queries) is ABSENT with NO SCHEMA AT ALL — kg.py:28-67 is the only code touching gaps.md, it records no per-entry timestamp, and nothing in insight/ references it. The story's three Tasks name only the scan snapshots, so Tasks and done_when disagree about scope. Issue #210 has since been filed for the gaps.md ingest surface, which makes 'ship clause 1 and defer clause 2' a concrete option a human can simply approve. Two blocking defects must also be fixed first, both on the issue: the plan's false claim that this closes epic #115, and a measured hole where ~3 prior snapshots make the trailing p85 land exactly on the elevated value so strict > caps the run at 2 and a real sustained 2x step-up is missed entirely. Nothing implemented; the plan, data audit and measurements are the deliverable in .sdlc/plans/121.md. |
 | 2026-08-01T17:25:13Z | swapnil-agrim | claimed | 121 |  |
@@ -34,5 +36,3 @@ _Nothing is blocked on another person._
 | 2026-08-01T11:47:04Z | swapnil-agrim | claimed | 119 |  |
 | 2026-08-01T08:31:28Z | swapnil-agrim | claimed | 120 |  |
 | 2026-08-01T08:31:12Z | swapnil-agrim | parked | 119 | The issue's done_when is not achievable as written. 'Fires when a metric crosses its OWN trailing p85' plus 'no hardcoded constants' is self-defeating: ~15% of any series' points exceed its own p85 by construction, so measured over 500 trials per shape a HEALTHY stationary project fires a false WARN 91-99% of the time (naive criterion) or 78-93% (with a derived p85+(p85-p50) materiality margin). Sensitivity is fine - a 4x sustained step-up and a 10,000x spike both fire - so the rule can detect real regressions; it cannot stay quiet on healthy ones. A minimum-history cutoff was measured and rejected (>=40 prior points still leaves 76.2% firing). Needs a human product decision among: accept a magnitude constant and amend the done_when; latest-point-only plus a separate anti-amnesia mechanism; require a consecutive run of breaches; threshold a coarser rolling statistic; or drop the story. Analysis + live numbers in .sdlc/plans/119.md. |
-| 2026-08-01T07:27:40Z | swapnil-agrim | claimed | 119 |  |
-| 2026-08-01T07:06:57Z | swapnil-agrim | claimed | 119 |  |
