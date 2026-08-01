@@ -84,11 +84,11 @@ def test_metric_7_a_same_second_claim_then_done_contributes_zero_wip_forever(con
     real, non-degenerate date range and gq's zero contribution is checked at every week in it,
     not just the one week its own claim falls in."""
     conn.execute(
-        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind) VALUES "
-        "('p1','gq','2026-01-01T00:00:00','a1','claimed'),"
-        "('p1','gq','2026-01-01T00:00:00','a1','done'),"
-        "('p1','gr','2026-01-01T00:00:00','a2','claimed'),"
-        "('p1','gr','2026-01-15T00:00:00','a2','done')"
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','gq','2026-01-01T00:00:00','a1','claimed',1),"
+        "('p1','gq','2026-01-01T00:00:00','a1','done',1),"
+        "('p1','gr','2026-01-01T00:00:00','a2','claimed',1),"
+        "('p1','gr','2026-01-15T00:00:00','a2','done',1)"
     )
     load_metrics(conn)
     rows = rows_as_dicts(conn.execute("SELECT * FROM metric_7 ORDER BY week_start"))
@@ -105,12 +105,39 @@ def test_metric_7_does_not_double_count_a_goal_claimed_by_two_actors_with_no_rel
     load_fixture_jsonl(conn, FIXTURE)  # baseline schema only; overwritten below with a minimal case
     conn.execute("DELETE FROM fact_event")
     conn.execute(
-        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind) VALUES "
-        "('p1','gy','2026-01-01T00:00:00','a1','claimed'),"
-        "('p1','gy','2026-01-05T00:00:00','a2','claimed')"
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','gy','2026-01-01T00:00:00','a1','claimed',1),"
+        "('p1','gy','2026-01-05T00:00:00','a2','claimed',1)"
     )
     load_metrics(conn)
     rows = rows_as_dicts(conn.execute("SELECT * FROM metric_7 ORDER BY week_start"))
     # A single lease-contended goal must read as at most 1 unit of WIP per week, never 2.
     assert all(r["wip_count"] <= 1 for r in rows)
     assert [r["wip_count"] for r in rows] == [0, 1]
+
+
+def test_metric_7_excludes_a_class_2_claim_from_wip(conn):
+    """Reliability-class enforcement (#114, spec line 563: "a NOW metric must not read any
+    reliability_class=2 row"). Fresh, isolated insert -- no fixture load, matching this file's
+    own test_metric_7_does_not_double_count_... isolation style. A class-1 claim on ga and a
+    class-2 claim on a DISTINCT goal gz, both stamped to 2026-01-05T00:00:00 -- a MONDAY, chosen
+    deliberately (not 2026-01-01, a Thursday): with the filter correct, ga is the only row events
+    ever sees, weeks becomes a single-point generate_series(X, X, INTERVAL 7 DAY) bucket at
+    date_trunc('week', ...) == 2026-01-05 itself (VERIFIED live before trusting this, per this
+    plan's own named risk: a Thursday claim truncates its week bucket back to the PRECEDING
+    Monday, which then sits strictly BEFORE the claim's own ts and never satisfies candidate's
+    `e.ts <= w.week_start` join at all -- a degenerate single-bucket case that reads wip_count=0
+    regardless of the filter and would not exercise this test's own mutation at all; a
+    Monday-at-midnight claim makes week_start == ts exactly, so the join does fire). With ga's
+    claim landing in its own bucket, wip_count == 1. If the filter were dropped, gz -- a distinct
+    goal_id, same instant -- would rank its own rn=1, is_claim=1 row too, making wip_count == 2;
+    this is the failure this test exists to catch."""
+    conn.execute(
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','ga','2026-01-05T00:00:00','a1','claimed',1),"
+        "('p1','gz','2026-01-05T00:00:00','a9','claimed',2)"
+    )
+    load_metrics(conn)
+    rows = rows_as_dicts(conn.execute("SELECT * FROM metric_7 ORDER BY week_start"))
+    assert len(rows) == 1
+    assert rows[0]["wip_count"] == 1

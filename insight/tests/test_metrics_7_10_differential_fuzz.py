@@ -120,8 +120,9 @@ def _load_events(conn, events, rng):
     rng.shuffle(scrambled)
     for e in scrambled:
         conn.execute(
-            "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind) VALUES (?,?,?,?,?)",
-            ["p1", e["goal"], e["ts"], e["actor"], e["kind"]],
+            "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) "
+            "VALUES (?,?,?,?,?,?)",
+            ["p1", e["goal"], e["ts"], e["actor"], e["kind"], 1],
         )
 
 
@@ -194,10 +195,10 @@ def test_a_terminal_releasing_one_actor_and_a_reclaim_by_another_at_the_same_ins
     timestamp. Truth (verified against the real open_claims() this round): g is OPEN, held by
     a2, from that instant."""
     conn.execute(
-        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind) VALUES "
-        "('p1','g','2026-01-01T00:00:00','a1','claimed'),"
-        "('p1','g','2026-01-05T00:00:00','a1','done'),"
-        "('p1','g','2026-01-05T00:00:00','a2','claimed')"
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','g','2026-01-01T00:00:00','a1','claimed',1),"
+        "('p1','g','2026-01-05T00:00:00','a1','done',1),"
+        "('p1','g','2026-01-05T00:00:00','a2','claimed',1)"
     )
     load_metrics(conn)
     rows7 = rows_as_dicts(conn.execute("SELECT * FROM metric_7 ORDER BY week_start"))
@@ -217,10 +218,10 @@ def test_double_terminal_events_for_one_goal_are_a_harmless_noop(conn):
     absent key (a no-op in open_claims() too -- `dict.pop(key, None)`). Must not error and must
     never appear as an open claim in either metric."""
     conn.execute(
-        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind) VALUES "
-        "('p1','g','2026-01-01T00:00:00','a1','claimed'),"
-        "('p1','g','2026-01-03T00:00:00','a1','parked'),"
-        "('p1','g','2026-01-04T00:00:00','a1','failed')"
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','g','2026-01-01T00:00:00','a1','claimed',1),"
+        "('p1','g','2026-01-03T00:00:00','a1','parked',1),"
+        "('p1','g','2026-01-04T00:00:00','a1','failed',1)"
     )
     load_metrics(conn)
     assert rows_as_dicts(conn.execute("SELECT * FROM metric_10")) == []
@@ -233,8 +234,8 @@ def test_a_terminal_with_no_prior_claim_is_a_harmless_noop(conn):
     some other path) -- open_claims()'s own `held.pop(goal, None)` treats this as a no-op; this
     view must too, not raise or fabricate a claim."""
     conn.execute(
-        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind) VALUES "
-        "('p1','ghost','2026-01-01T00:00:00','a1','done')"
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','ghost','2026-01-01T00:00:00','a1','done',1)"
     )
     load_metrics(conn)
     assert rows_as_dicts(conn.execute("SELECT * FROM metric_10")) == []
@@ -252,9 +253,9 @@ def test_a_same_actor_same_instant_claim_and_terminal_is_a_known_unresolvable_ti
     future change to this tie-break is a visible, intentional diff, not a regression nobody
     notices."""
     conn.execute(
-        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind) VALUES "
-        "('p1','g','2026-01-01T00:00:00','a1','claimed'),"
-        "('p1','g','2026-01-01T00:00:00','a1','done')"
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('p1','g','2026-01-01T00:00:00','a1','claimed',1),"
+        "('p1','g','2026-01-01T00:00:00','a1','done',1)"
     )
     load_metrics(conn)
     assert rows_as_dicts(conn.execute("SELECT * FROM metric_10")) == []

@@ -103,3 +103,32 @@ def test_metric_41_every_row_has_a_non_null_project_id(conn):
     rows = rows_as_dicts(conn.execute("SELECT project_id FROM metric_41"))
     assert all(r["project_id"] is not None for r in rows)
     assert len(rows) == 2
+
+
+def test_metric_41_a_class_2_park_event_does_not_inflate_park_rate(conn):
+    """Reliability-class enforcement (#114, spec line 563: "a NOW metric must not read any
+    reliability_class=2 row"). projA's a2 (also terminal/done, not currently parked in the
+    baseline) gets one class-2 'parked' event. If wrongly included, parked_terminal_count
+    becomes 2, park_rate = 2/3 = 0.6667. Expected: unchanged from the pinned baseline
+    (park_rate=0.3333, parked_terminal_count=1, identical to
+    test_metric_41_projA_matches_hand_computed_throughput_park_and_gate_values's own row)."""
+    load_fixture_jsonl(conn, FIXTURE)
+    conn.execute(
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) VALUES "
+        "('projA','a2','2026-01-02T00:15:00','act9','parked',2)"
+    )
+    load_metrics(conn)
+    row = rows_as_dicts(
+        conn.execute("SELECT * FROM metric_41 WHERE project_id = 'projA'")
+    )[0]
+    assert row == {
+        "project_id": "projA",
+        "done_count": 2,
+        "parked_terminal_count": 1,
+        "terminal_count": 3,
+        "park_rate": 0.3333,
+        "gates_measured_count": 3,
+        "gates_absent_count": 1,
+        "gate_pass_count": 3,
+        "gate_coverage_pct": 100.0,
+    }
