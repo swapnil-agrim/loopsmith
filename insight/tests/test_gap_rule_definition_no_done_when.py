@@ -61,3 +61,22 @@ def test_every_goal_with_a_done_when_is_pass(conn, registry):
         "class": "Definition", "metric": "done_when_coverage", "action": rule["action"],
         "severity": "PASS", "evidence": [],
     }
+
+
+def test_a_null_done_when_present_is_surfaced_as_evidence_not_silently_passed(conn, registry):
+    """POST-PR-REVIEW nit, closed. SQL equality is three-valued: a NULL done_when_present falls
+    out of `WHERE done_when_present = false` entirely, so the rule would have returned PASS --
+    population > 0, zero evidence rows -- for a goal nobody actually measured. That is the
+    "unmeasured reads as fine" collapse spec:534 forbids, in the very class built to catch it.
+
+    The column is not NULLable through any path today (original CREATE TABLE, never an ALTER;
+    _GOAL_UPSERT_SQL always supplies an explicit bool on INSERT and on ON CONFLICT UPDATE), so
+    this is written against a hand-NULLed row -- the state a future second writer of fact_goal
+    would introduce. Hand-computed: population = 2 (both rows), g_null is evidence, g_ok is not."""
+    conn.execute(
+        "INSERT INTO fact_goal (project_id, goal_id, done_when_present) VALUES "
+        "('p1', 'g_ok', true), ('p1', 'g_null', NULL)"
+    )
+    finding = evaluate_rule(conn, registry["definition_no_done_when"])
+    assert finding["severity"] == "WARN"
+    assert finding["evidence"] == [{"project_id": "p1", "goal_id": "g_null"}]
