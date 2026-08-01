@@ -192,6 +192,22 @@ def test_scatter_reference_line_labels_use_exact_p50_p90_values():
     assert "p90: 54602s" in out
 
 
+def test_scatter_dot_colour_is_a_categorical_css_var_never_a_status_var():
+    """The guard render_aging_wip already had and the scatter did not — found by PR review, which
+    mutated the dot fill to var(--dash-status-fail) and watched all eight scatter tests still
+    pass. The no-literal-hex regex only catches baked hex, so a RESERVED status token slipping in
+    as a series colour was invisible: exactly the anti-pattern the design system forbids (status
+    colours are reserved and never impersonate a series). Also pins the all-pairs cap — a scatter
+    validates only the first three categorical slots."""
+    out = charts.render_percentile_scatter(_SCATTER_ROWS)
+    fills = re.findall(r'<circle[^>]*fill="([^"]+)"', out)
+    assert fills, "expected at least one <circle> fill"
+    for f in fills:
+        assert re.match(r"var\(--dash-cat-\d\)$", f), f
+        assert "status" not in f
+        assert int(re.search(r"cat-(\d)", f).group(1)) < ALL_PAIRS_CAP
+
+
 def test_scatter_percentile_matches_the_documented_floor_index_formula_not_quantile_cont():
     """On the real 4-row fixture, sorted [325, 3812, 19657, 54602]: this chart's own formula ->
     p50=19657, quantile_cont(0.5) -> 11734.5, quantile_disc(0.5) -> 3812 -- all three different,

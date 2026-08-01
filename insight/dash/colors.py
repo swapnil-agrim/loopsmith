@@ -95,6 +95,13 @@ def viz_css_vars(prefix="dash"):
         seq = SEQUENTIAL_BLUE_LIGHT if mode == "light" else SEQUENTIAL_BLUE_DARK
         parts += [f"--{prefix}-seq-{i}: {hexv};" for i, hexv in enumerate(seq)]
         parts += [f"--{prefix}-{role}: {v[mode]};" for role, v in CHROME.items()]
+        # TEXT ON A STATUS FILL DOES NOT FLIP, BECAUSE THE FILL DOES NOT FLIP. The status palette
+        # is fixed across modes by design ("never themed"), so pairing it with a mode-flipping
+        # foreground is what broke `warn`: white-on-#fab219 measures 1.83:1 in dark, while
+        # black-on-#fab219 measures 10.73:1 in BOTH modes. pass/fail/absent happen to survive
+        # var(--dash-surface) in both modes; warn is the one light-enough fill that does not, so
+        # every status-filled surface uses this fixed ink instead of guessing per badge.
+        parts.append(f"--{prefix}-on-status: {CHROME['ink']['light']};")
         return " ".join(parts)
     return f"""
 .viz-root {{ color-scheme: light; {_vars("light")} }}

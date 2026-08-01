@@ -55,12 +55,12 @@ th, td {{ text-align: left; padding: 4px 10px; border-bottom: 1px solid var(--da
           font-size: 13px; }}
 .dot-has {{ color: var(--dash-status-pass); }} .dot-empty {{ color: var(--dash-muted); }}
 .badge {{ display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px; }}
-.badge-warn {{ background: var(--dash-status-warn); color: var(--dash-ink); }}
-.badge-fail {{ background: var(--dash-status-fail); color: var(--dash-surface); }}
-.badge-pass {{ background: var(--dash-status-pass); color: var(--dash-surface); }}
-.badge-absent {{ background: var(--dash-status-absent); color: var(--dash-surface); }}
+.badge-warn {{ background: var(--dash-status-warn); color: var(--dash-on-status); }}
+.badge-fail {{ background: var(--dash-status-fail); color: var(--dash-on-status); }}
+.badge-pass {{ background: var(--dash-status-pass); color: var(--dash-on-status); }}
+.badge-absent {{ background: var(--dash-status-absent); color: var(--dash-on-status); }}
 .banner {{ background: var(--dash-status-warn); border: 1px solid var(--dash-baseline);
-          padding: .75rem 1rem; border-radius: 6px; margin-bottom: 1.5rem; color: var(--dash-ink); }}
+          padding: .75rem 1rem; border-radius: 6px; margin-bottom: 1.5rem; color: var(--dash-on-status); }}
 footer {{ margin-top: 2rem; font-size: 12px; color: var(--dash-muted); }}
 """
 
