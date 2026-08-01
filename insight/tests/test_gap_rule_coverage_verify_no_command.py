@@ -70,3 +70,28 @@ def test_every_goal_covered_is_pass(conn, registry):
         "class": "Coverage", "metric": "26", "action": rule["action"],
         "severity": "PASS", "evidence": [],
     }
+
+
+def test_an_empty_string_verify_command_is_no_command_not_covered(conn, registry):
+    """POST-PR-REVIEW BLOCKING FIX, and the more dangerous of the two: a SILENT FALSE PASS with
+    zero evidence, on the rule whose whole job is to prevent exactly that.
+
+    loop.py:174-177's real precedence is `cmd = cmd or config_command or None; if not cmd:
+    NO-COMMAND` -- Python truthiness, so '' behaves identically to None. This rule's PROJECT
+    fallback check already honoured that (IS NULL OR = ''), but its GOAL-level check was a bare
+    `IS NULL`. And '' is a REAL, reachable shape, not hypothetical: artifact_reader.py's
+    parse_frontmatter produces exactly '' for a frontmatter line reading `verify_command:` with
+    nothing after the colon.
+
+    So a goal with an empty verify_command and no project fallback rendered PASS with no
+    evidence, while loop.py would print NO-COMMAND for that same goal -- the "measured and found
+    fine" collapse spec:534 forbids. Hand-computed: population = 1 (one fact_goal row), evidence
+    = that one goal -> WARN."""
+    conn.execute("INSERT INTO dim_project (project_id, config_json) VALUES ('p9', '{}')")
+    conn.execute(
+        "INSERT INTO fact_goal (project_id, goal_id, verify_command) VALUES ('p9', 'g9', '')"
+    )
+    rule = registry["coverage_verify_no_command"]
+    finding = evaluate_rule(conn, rule)
+    assert finding["severity"] == "WARN"
+    assert finding["evidence"] == [{"project_id": "p9", "goal_id": "g9"}]

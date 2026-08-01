@@ -169,3 +169,36 @@ def test_require_review_true_and_mixed_case_approval_both_count_as_approval_mode
         {"project_id": "p6", "pr_number": 601},
         {"project_id": "p7", "pr_number": 701},
     ]
+
+
+def test_a_quoted_string_true_is_off_not_approval(conn, registry):
+    """POST-PR-REVIEW BLOCKING FIX. The normalisation added at pre-PR review matched
+    lower(trim(...)) IN ('approval','true'), citing review_mode()'s docstring ("`true` means the
+    strongest"). But review_mode()'s actual approval branch is `if value is True` -- a Python
+    IDENTITY check on the parsed JSON BOOLEAN. A JSON STRING "true" fails that check, falls
+    through to the string branch, is not in (off, changes, approval), and resolves to OFF:
+
+        work.review_mode({"work": {"require_review": "true"}})  ->  "off"
+
+    json_extract_string cannot tell the two apart -- a JSON boolean true and a JSON string
+    "true" both extract as the text 'true' -- so matching the bare literal folded a project the
+    loop treats as HAVING NO GATE into approval mode, and FAILed its merged PRs for a policy
+    that never blocks a merge. p8 is configured with the quoted string and has a real merged,
+    fetched, unapproved PR sitting there; population must still be 0 -> ABSENT."""
+    conn.execute(
+        "INSERT INTO dim_project (project_id, config_json) VALUES "
+        "('p8', '{\"work\":{\"require_review\":\"true\"}}')"
+    )
+    conn.execute(
+        "INSERT INTO fact_merge_lead_time (project_id, merge_sha, pr_number) VALUES "
+        "('p8', 's801', 801)"
+    )
+    conn.execute(
+        "INSERT INTO fact_pr_review (project_id, pr_number, source, event_id, verdict) VALUES "
+        "('p8', 801, 'gh', 'e1', 'CHANGES_REQUESTED')"
+    )
+    rule = registry["coverage_review_missing"]
+    assert evaluate_rule(conn, rule) == {
+        "class": "Coverage", "metric": "pr_review_coverage", "action": rule["action"],
+        "severity": "ABSENT", "evidence": [],
+    }

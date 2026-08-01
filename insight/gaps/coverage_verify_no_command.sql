@@ -8,7 +8,7 @@
 SELECT g.project_id, g.goal_id
 FROM fact_goal g
 LEFT JOIN dim_project dp ON dp.project_id = g.project_id
-WHERE g.verify_command IS NULL
+WHERE (g.verify_command IS NULL OR g.verify_command = '')
   AND (json_extract_string(dp.config_json, '$.verify.command') IS NULL
        OR json_extract_string(dp.config_json, '$.verify.command') = '')
 ORDER BY g.project_id, g.goal_id
