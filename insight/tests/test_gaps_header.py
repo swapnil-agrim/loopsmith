@@ -175,3 +175,14 @@ def test_comment_markers_inside_a_string_literal_are_not_comments():
     body = "SELECT goal_id FROM fact_goal WHERE note = 'a -- b /* c'\n"
     rule = parse_header("".join(_BASE_FIELDS.values()) + body, source="literal.sql")
     assert rule["class"] == "Definition"
+
+
+def test_a_comment_marker_inside_a_double_quoted_identifier_is_not_a_comment():
+    """POST-PR-REVIEW should-fix: the scanner honoured single-quoted literals but not
+    double-quoted IDENTIFIERS, so an unmatched `/*` inside one read as a block comment that never
+    closed and a VALID query was REJECTED -- the mirror image of the two bugs this scanner was
+    written to fix, and just as wrong. Verified against real DuckDB: `SELECT 1 AS "col/*name"`
+    executes fine."""
+    body = 'SELECT 1 AS "col/*name", goal_id FROM fact_goal\n'
+    rule = parse_header("".join(_BASE_FIELDS.values()) + body, source="ident.sql")
+    assert rule["class"] == "Definition"

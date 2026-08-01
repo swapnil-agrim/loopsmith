@@ -69,8 +69,14 @@ def _strip_sql_comments(text, source):
     a duckdb.ParserException: a rule whose evidence query is swallowed by a comment that never
     closes has no evidence query, which is a load-time rejection by name.
 
-    Single-quoted string literals are honoured, so a `--` or `/*` INSIDE a literal is not
-    mistaken for a comment (`WHERE note = 'a -- b'` is a real query, not an empty body)."""
+    Single-quoted string literals AND double-quoted identifiers are honoured, so a `--` or `/*`
+    inside either is not mistaken for a comment -- `WHERE note = 'a -- b'` and
+    `SELECT 1 AS "col/*name"` are both real queries, not empty bodies. The double-quote half is a
+    post-PR-review fix: without it an unmatched `/*` inside a quoted identifier read as a block
+    comment that never closed, and a VALID query was REJECTED -- the mirror image of the two bugs
+    this scanner replaced, and just as wrong. `$$`-style dollar-quoting is NOT tracked; it has
+    the same false-rejection shape, no shipped rule or metric uses it, and adding a tag-matching
+    branch for it is only worth doing if a real rule ever needs one."""
     out = []
     i, n, depth = 0, len(text), 0
     while i < n:
@@ -90,16 +96,18 @@ def _strip_sql_comments(text, source):
         elif text.startswith("--", i):
             end = text.find("\n", i)
             i = n if end == -1 else end
-        elif text[i] == "'":
+        elif text[i] in ("'", '"'):
+            quote = text[i]
+            doubled = quote * 2
             out.append(text[i])
             i += 1
             while i < n:
                 out.append(text[i])
-                # '' is an escaped quote inside a literal, not the end of one.
-                if text[i] == "'" and not text.startswith("''", i):
+                # A doubled quote is an escaped one inside the literal, not the end of it.
+                if text[i] == quote and not text.startswith(doubled, i):
                     i += 1
                     break
-                i += 2 if text.startswith("''", i) else 1
+                i += 2 if text.startswith(doubled, i) else 1
         else:
             out.append(text[i])
             i += 1
