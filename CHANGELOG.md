@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### work: refuse to merge a PR head that is not what was reviewed (0.9.18)
+`work.py commit` is LOCAL; only `work.py pr` pushes. After a `loopsmith:block`, a fix committed and
+re-reviewed in the worktree could leave the PR head at the PRE-FIX commit — and because every GitHub
+answer is about the REMOTE head, `mergeable`, `mergeStateStatus` and all required checks then passed
+**correctly** about code nobody approved, letting an armed auto-merge squash it. A green check on a
+head you did not review is indistinguishable from a real pass.
+
+Observed **three times in one autonomous run**; two shipped defects to a protected `main` past four
+green checks (one of them five wrong metric views, whose recovery PR then sat conflicting for 15
+hours). `gate()` now reads `headRefOid` and compares it to the worktree's own tip **first** — before
+any GitHub verdict is believed, since with a stale head `CONFLICTING`/`BEHIND`/failing-check are all
+answers about the wrong tree — and **fails closed** when either head is unreadable. `/sdlc-loop`'s
+fix cycle now says to push, which it never did.
+
 ### alignment-collect: the cumulative-drift audit runs on evidence, not recall (0.9.17)
 `sdlc-align` (the window-level drift check) was judgment-only prose — the model re-derived the facts from
 the git log each time. `skills/sdlc-align/scripts/alignment-collect.sh` grounds it: a read-only, jq-free,
