@@ -65,6 +65,29 @@ def test_metric_33_is_unaffected_by_the_resolved_then_redeferred_divergence(conn
     assert 102 not in issues
 
 
+def test_metric_33_excludes_issue_less_handoffs_and_their_orphaned_acks(conn):
+    """BLOCKING-finding regression (post-review, issue #112 PR #190): fact_handoff has no
+    goal_id column (store.py:126-138), so an issue-less hand-off (handoff.py's own hand_off()
+    falls back to issue=None whenever the backlog source has no create_dependency) can never be
+    durably re-matched to its own later ack -- the ack lands instead as a second, orphaned
+    fact_handoff row (issue NULL, only ack_ts/ack_state populated, every other column NULL).
+
+    The fixture's 6th and 7th rows pin exactly this: a goal-only hand-off (from_actor='z1',
+    to_actor='z2', area='ops', issue=None, never acked in its own row) plus its orphaned ack
+    (issue=None, ack_ts/ack_state='deferred' populated, from_actor/to_actor/area/opened_ts all
+    NULL). Before the issue IS NOT NULL fix, the first row satisfied "unanswered" (settled_ts,
+    ack_ts, and ack_state are all NULL on that row) and stayed that way FOREVER, even though the
+    real-world hand-off it represents may have been genuinely acked -- the ack just landed on a
+    different, orphaned row this view could never join back to it. Both rows must now be absent
+    from metric_33's output entirely -- excluded, not miscounted as answered or unanswered."""
+    load_fixture_jsonl(conn, FIXTURE)
+    load_metrics(conn)
+    rows = rows_as_dicts(conn.execute("SELECT issue, area, from_actor FROM metric_33"))
+    assert all(r["issue"] is not None for r in rows)
+    assert "ops" not in {r["area"] for r in rows}
+    assert [r["issue"] for r in rows] == [101]
+
+
 def test_metric_33_declares_itself_dark(conn):
     load_fixture_jsonl(conn, FIXTURE)
     registry = load_metrics(conn)
