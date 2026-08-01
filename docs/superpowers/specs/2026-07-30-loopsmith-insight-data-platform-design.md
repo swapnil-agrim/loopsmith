@@ -533,8 +533,16 @@ Three properties inherited deliberately from `pipeline.py`:
 
 1. **No instrument ⇒ ABSENT, never PASS.** A gap engine that cannot tell "checked and fine" from "never
    checked" is worse than none.
-2. **Derived baselines, not magic numbers.** A threshold gap fires against the project's own trailing history.
-   A hardcoded "cycle time > 5 days is bad" is wrong for most teams and destroys trust on first render.
+2. **Derived baselines, not magic numbers — but a percentile crossing is not an alert.** A threshold gap
+   fires against the project's own trailing history, never a hardcoded "cycle time > 5 days", which is wrong
+   for most teams and destroys trust on first render. **CORRECTED 2026-08-01, measured in #119:** the original
+   rule here was a single crossing of the trailing p85, which is self-defeating — ~15% of any series exceeds
+   its own p85 *by construction*, and over 500 trials per shape a healthy stationary project fired a false
+   WARN 91–99% of the time (78–93% even with a derived materiality margin; a ≥40-point minimum-history cutoff
+   still left 76.2%). The rule is now **k consecutive breaches, k=3** — 0.15³ ≈ 0.34% on a stationary series.
+   k is a RUN LENGTH, not a magnitude: it encodes no domain expectation, so the property this rule was
+   protecting survives. Sensitivity was never the problem — a 4× sustained step-up and a 10,000× spike both
+   still fire.
 3. **`--compare` semantics.** Gaps diff run-over-run into `regressed / improved / still-failing`, and
    **still-failing is the recurrence signal — systemic, not incidental; it goes to the backlog, not to a
    one-off fix.** That sentence is already in `pipeline.py`'s docstring; the gap engine adopts it.

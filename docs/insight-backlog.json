@@ -283,12 +283,15 @@
         {
           "id": "E3.S4",
           "title": "Threshold gap class with derived baselines",
-          "done_when": "Fires when a metric crosses its OWN trailing p85; no hardcoded constants anywhere in the rules; evidence shows the series, the baseline, and the breach",
+          "done_when": "Fires only when a metric breaches its OWN trailing p85 on k CONSECUTIVE evaluations (k=3), never on a single crossing; no hardcoded MAGNITUDE constants anywhere in the rules -- the baseline stays the project's own history; evidence shows the series, the baseline, and every breach in the run.",
           "tasks": [
-            "Trailing-baseline helper",
-            "Rules referencing it, never a literal",
-            "Test: a project with a slow-but-stable series produces no gap",
-            "Grep test: no numeric literal thresholds in gaps/"
+            "Trailing-baseline helper (windowed quantile_cont over the metric's own history)",
+            "Require k=3 CONSECUTIVE breaches before firing -- a single crossing is not a signal",
+            "k is a RUN LENGTH, not a magnitude: it does not encode any domain expectation, which is what 'no hardcoded constants' was protecting against",
+            "Rules reference the helper, never a literal magnitude",
+            "Test: a stationary healthy series must NOT fire -- measure the false-positive rate over >=500 trials and assert it is low",
+            "Test: a sustained 4x step-up MUST fire, so the fix does not buy quiet by going blind",
+            "Grep test: no numeric magnitude literals in gaps/"
           ]
         },
         {
