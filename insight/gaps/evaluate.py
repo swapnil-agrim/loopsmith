@@ -51,11 +51,26 @@ def make_finding(*, gap_class, metric, action, severity, evidence):
     """The one enforcement point for Decision 3's second invariant -- revised for the ABSENT
     branch above: ABSENT is legitimately evidence-free (that is its entire meaning), so the
     guard excludes it explicitly, alongside PASS, rather than treating every non-PASS severity
-    alike."""
+    alike.
+
+    The guard runs in BOTH directions (post-PR-review blocking fix). Excluding PASS and ABSENT
+    from the empty-evidence check left the other half open: nothing stopped an ABSENT finding
+    from carrying evidence rows, which is the same collapse read backwards -- a measured,
+    evidenced finding wearing the token reserved for "never measured". ABSENT is no longer
+    author-declarable (insight/gaps/header.py's VALID_TRIGGERED_SEVERITIES), so evaluate_rule
+    cannot reach that state today; this guard is what keeps it unreachable for the five gap
+    classes that will call make_finding directly."""
     if severity not in ("PASS", "ABSENT") and not evidence:
         raise GapEvaluationError(
             f"a finding at severity {severity!r} was constructed with zero evidence rows -- "
             "a WARN or FAIL finding must always be backed by at least one evidence row"
+        )
+    if severity in ("PASS", "ABSENT") and evidence:
+        raise GapEvaluationError(
+            f"a finding at severity {severity!r} was constructed WITH {len(evidence)} evidence "
+            "row(s) -- PASS means the population was checked and clean, ABSENT means there was "
+            "nothing to check at all; neither can carry evidence, and a consumer that saw one "
+            "could not tell it from a genuinely never-measured finding (spec:534)"
         )
     return {"class": gap_class, "metric": metric, "action": action,
             "severity": severity, "evidence": evidence}
