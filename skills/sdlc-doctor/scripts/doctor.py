@@ -244,15 +244,24 @@ def _detail(found, why):
 def _ledger_entries(base):
     """Count committed ledger lines. Read-only and fail-open — the dashboard never breaks on a
     half-written file."""
+    return _count_jsonl_lines(pathlib.Path(base) / "ledger" / "entries")
+
+
+def _count_jsonl_lines(directory):
+    """Non-blank lines across a directory's *.jsonl, or 0 if it isn't there. `errors="replace"`
+    is load-bearing, not defensive dressing: a process killed mid-append truncates a multi-byte
+    UTF-8 sequence, and the resulting UnicodeDecodeError is a ValueError, NOT an OSError, so it
+    would sail past the catch and take the WHOLE dashboard down — every other row with it — on
+    the next run. A half-written file is exactly what this is here to survive."""
     total = 0
-    entries = pathlib.Path(base) / "ledger" / "entries"
-    if not entries.exists():
+    if not directory.exists():
         return 0
-    for path in sorted(entries.glob("*.jsonl")):
+    for path in sorted(directory.glob("*.jsonl")):
         try:
-            total += sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        total += sum(1 for line in text.splitlines() if line.strip())
     return total
 
 
@@ -264,7 +273,7 @@ def _any_goal_verify_command(base):
         return False
     for path in goals.glob("*.md"):
         try:
-            if "verify_command:" in path.read_text(encoding="utf-8"):
+            if "verify_command:" in path.read_text(encoding="utf-8", errors="replace"):
                 return True
         except OSError:
             continue
@@ -279,7 +288,7 @@ def _ignore_mechanism(repo_root):
 
     def covers(path):
         try:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return False
         for raw in text.splitlines():
@@ -307,6 +316,28 @@ def _ledger_feature_state(base, cfg):
     if n == 0 and not (base / "ledger" / ".git").exists():
         return "ON but NOT set up — run /sdlc-ledger to create + push the ops branch"
     return "ON — %d entr%s in .sdlc/ledger/entries/" % (n, "y" if n == 1 else "ies")
+
+
+def _telemetry_events_count(base):
+    """Committed+local event lines under .sdlc/ledger/events/. Shares _ledger_entries' counter, so
+    the fail-open behaviour can't drift between the two rows."""
+    return _count_jsonl_lines(pathlib.Path(base) / "ledger" / "events")
+
+
+def _telemetry_feature_state(base, cfg):
+    """'is on' alone doesn't say where events land or whether share is actually honored yet — see
+    plan .sdlc/plans/138.md Decision 3/4. A non-dict telemetry value degrades to off (fail-open),
+    same convention as every other block reader in this file."""
+    t = cfg.get("telemetry")
+    t = t if isinstance(t, dict) else {}
+    if t.get("enabled") is not True:
+        return "off (nothing is recorded)"
+    n = _telemetry_events_count(base)
+    where = "%d event%s in .sdlc/ledger/events/" % (n, "" if n == 1 else "s")
+    if t.get("share") is False:
+        return (f"ON, share:false — NOT YET HONORED: still lands in .sdlc/ledger/events/ and still "
+                f"publishes with the ledger, same as share:true — {where}")
+    return f"ON, share:true — {where}, publishes to the ops branch alongside ledger entries"
 
 
 def _decision_gate_state(base, cfg):
@@ -420,6 +451,9 @@ def features(sdlc_dir=".sdlc"):
         ("team ledger",
          _ledger_feature_state(base, cfg),
          'config: "ledger": {"enabled": true}, then /sdlc-ledger to create + push it'),
+        ("telemetry (agent-emitted events)",
+         _telemetry_feature_state(base, cfg),
+         'config: "telemetry": {"enabled": true, "share": true|false}'),
         ("slice parallelism",
          ("ON — up to %s concurrent slices per wave" % par.get("max_concurrent", 3))
          if par.get("enabled") is True else "off (a goal's slices run one after another)",
