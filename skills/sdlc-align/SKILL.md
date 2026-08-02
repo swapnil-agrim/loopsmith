@@ -121,6 +121,12 @@ Dominant themes: <theme> → <the bet it serves>; …
 Stated priorities with no work this window: <none | the list>
 ```
 
+Record the verdict too (optional, `telemetry.enabled`) — clean → `pass`, drift found → `warn`;
+align never blocks a merge (it's read-only/advisory, see above), so `block` is never used here.
+There is no single goal for a window check, so use the sentinel `(alignment)`, the same
+convention `(discovery-scan)` and `(decision-gate)` already use elsewhere in this stream:
+`python3 "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/loop.py" emit .sdlc "(alignment)" gate --gate alignment --verdict pass|warn`
+
 ## Constraints
 - **Cap findings at four.** More than that and you are logging tactical defects, not strategic drift.
   Rank by effort committed to the divergence, not by how tidy the finding is.

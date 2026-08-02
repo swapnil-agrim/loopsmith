@@ -525,3 +525,342 @@ def test_run_loop_survives_a_raising_ledger_append(monkeypatch):
         monkeypatch.setattr(lp.ledger, "append", raiser)
         res = lp.run_loop(base, lambda g: ("done", ""))
         assert res["done"] == 3 and res["parked"] == 0 and res["stopped"] == "backlog-empty"
+
+
+# ---------------------------------------------------------------- #140: `emit` verb + `spend` extension
+# Every emit test below reuses `_telemetry_base` (ledger+telemetry ON) unless a test is specifically
+# about the default-off behaviour, in which case it builds its own config.
+
+
+def _events(base, kind=None):
+    lp = _loop()
+    evs = lp.ledger.read_all(base, stream=lp.ledger.EVENTS)
+    return [e for e in evs if kind is None or e["kind"] == kind]
+
+
+def test_emit_writes_phase_event_and_reads_back():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "phase", "--phase", "implement", "--state", "start"])
+        assert rc == 0
+        evs = _events(base, "phase")
+        assert len(evs) == 1
+        assert evs[0]["phase"] == "implement" and evs[0]["state"] == "start" and evs[0]["goal"] == "g.md"
+
+
+def test_emit_writes_gate_event_plan_review():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "gate", "--gate", "plan_review", "--verdict", "pass"])
+        assert rc == 0
+        evs = _events(base, "gate")
+        assert len(evs) == 1 and evs[0]["gate"] == "plan_review" and evs[0]["verdict"] == "pass"
+
+
+def test_emit_writes_gate_event_alignment():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "(alignment)", "gate", "--gate", "alignment", "--verdict", "warn"])
+        assert rc == 0
+        evs = _events(base, "gate")
+        assert len(evs) == 1 and evs[0]["gate"] == "alignment" and evs[0]["verdict"] == "warn"
+
+
+def test_emit_writes_retro_event():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "retro", "--grade", "achieved"])
+        assert rc == 0
+        evs = _events(base, "retro")
+        assert len(evs) == 1 and evs[0]["grade"] == "achieved"
+
+
+def test_emit_writes_spend_event():
+    """#140 owns `spend` as one of `emit`'s four allowed kinds too (amendment A's allowlist),
+    even though the prose only ever instructs it through the extended `spend` verb (design
+    decision 3) — `emit ... spend` must still work and stay in-vocabulary."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "spend", "--model", "sonnet",
+                      "--tokens_in", "10", "--tokens_out", "20"])
+        assert rc == 0
+        evs = _events(base, "spend")
+        assert len(evs) == 1 and evs[0]["model"] == "sonnet" and evs[0]["tokens_in"] == "10"
+
+
+def test_emit_rejects_unknown_kind():
+    """`ValueError` from `append()` itself (kind not in EVENT_KINDS at all) — one source of
+    truth for that message, per design decision 1."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "scan", "--category", "x"])
+        assert rc == 2
+        assert _events(base) == []
+
+
+def test_emit_rejects_a_class1_kind_not_in_the_140_allowlist(capsys):
+    """Amendment A: `emit` must not be able to forge Class-1 events. `verify` is a real
+    `EVENT_KINDS` member (so `append()` alone would happily accept it) but it belongs to the
+    deterministic `verify_goal` emitter, not to anything an agent should be able to type."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "verify", "--ok", "true", "--exit", "0"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "phase" in err and "gate" in err and "retro" in err and "spend" in err  # names what IS allowed
+        assert _events(base) == []
+
+
+def test_emit_rejects_a_forged_merge_gate():
+    """Amendment A: `--gate merge --verdict pass` must not be forgeable through `emit` even
+    though `merge` is a real `ledger.GATE_KINDS` member — `emit` only owns plan_review/alignment."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "gate", "--gate", "merge", "--verdict", "pass"])
+        assert rc == 2
+        assert _events(base) == []
+
+
+def test_emit_rejects_unknown_flag_name():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "phase", "--phase", "implement", "--bogus", "x"])
+        assert rc == 2
+        assert _events(base) == []
+
+
+def test_emit_rejects_out_of_vocabulary_phase():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "phase", "--phase", "sleeping"])
+        assert rc == 2
+        assert _events(base) == []
+
+
+def test_emit_rejects_out_of_vocabulary_gate():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "gate", "--gate", "bogus"])
+        assert rc == 2
+        assert _events(base) == []
+
+
+def test_emit_rejects_out_of_vocabulary_retro_grade():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "retro", "--grade", "meh"])
+        assert rc == 2
+        assert _events(base) == []
+
+
+def test_emit_caps_and_flattens_why():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        why = ("line one\nline two " + "x" * 300)
+        rc = lp.main(["loop.py", "emit", base, "g.md", "gate", "--gate", "plan_review",
+                      "--verdict", "warn", "--why", why])
+        assert rc == 0
+        evs = _events(base, "gate")
+        assert len(evs) == 1
+        assert len(evs[0]["why"]) <= 200
+        assert "\n" not in evs[0]["why"]
+
+
+def test_emit_is_off_when_telemetry_disabled(capsys):
+    """Default-off: `ledger.enabled` on but `telemetry.enabled` NOT `is True` → `emit` is a
+    clean no-op (exit 0), never a refusal — the events gate is inherited from `append()`,
+    not re-implemented by `emit`."""
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "state").mkdir(parents=True)
+        cfg = {"ledger": {"enabled": True, "actor": "rae"}}     # no telemetry block at all
+        (base / "config.json").write_text(json.dumps(cfg))
+        (base / "state" / "STATE.md").write_text("iteration: 0\nrun_iteration: 0\nlast_run: none\n")
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", str(base), "g.md", "phase", "--phase", "implement",
+                      "--state", "start"])
+        assert rc == 0
+        assert "OFF" in capsys.readouterr().out
+        assert not (base / "ledger").exists()
+
+
+def test_emit_survives_a_write_failure_after_valid_input(monkeypatch, capsys):
+    """Amendment B: fail-open even after validation passes. A write failure (full disk, an
+    unwritable directory — anything `OSError`) must not crash `emit`; it must degrade to a
+    non-fatal warning and exit 0, exactly like every other fail-open ledger call site."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        def boom(*a, **k):
+            raise OSError("disk full")
+        monkeypatch.setattr(lp.ledger, "append", boom)
+        rc = lp.main(["loop.py", "emit", base, "g.md", "phase", "--phase", "implement", "--state", "start"])
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "entry skipped (non-fatal)" in err
+
+
+def test_spend_two_arg_form_writes_no_event():
+    """Non-regression: the 2-arg call (everything that exists today) touches budget only —
+    `test_spend_cli_verb_accumulates` already pins the CLI subprocess path; this pins the
+    in-process `main()` path plus the "no event" half amendment C's fix must not disturb."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "spend", base, "500"])
+        assert rc == 0
+        assert lp.state.load_cursor(base)["run_tokens"] == 500
+        assert _events(base) == []
+
+
+def test_spend_with_goal_and_flags_writes_a_spend_event():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "spend", base, "500", "g.md", "--phase", "implement",
+                      "--tokens_in", "10", "--tokens_out", "20"])
+        assert rc == 0
+        assert lp.state.load_cursor(base)["run_tokens"] == 500
+        evs = _events(base, "spend")
+        assert len(evs) == 1
+        assert evs[0]["goal"] == "g.md" and evs[0]["phase"] == "implement"
+        assert evs[0]["tokens_in"] == "10" and evs[0]["tokens_out"] == "20"
+
+
+def test_spend_flags_with_no_goal_does_not_misattribute_a_flag_as_the_goal():
+    """Amendment C: `spend .sdlc 500 --tokens_in 10 --tokens_out 20` previously made
+    `argv[4] == "--tokens_in"` the literal goal and silently dropped the bare `"10"`
+    (no `--` prefix), landing a `spend` event with `goal="--tokens_in"`, no `tokens_in`, and one
+    stray `tokens_out`. The fix: `argv[4]` is only a goal when it does NOT start with `--`.
+    Budget must still accumulate (the unconditional first line), and nothing may land with a
+    flag name masquerading as a goal."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "spend", base, "500", "--phase", "implement"])
+        assert rc == 0
+        assert lp.state.load_cursor(base)["run_tokens"] == 500
+        evs = _events(base, "spend")
+        assert not any(e.get("goal", "").startswith("--") for e in evs)
+
+
+def test_spend_cli_verb_accumulates_is_unmodified():
+    """Confirms the pre-existing subprocess-level test (`test_spend_cli_verb_accumulates`
+    above) still exists unedited and still passes — the plan's own non-regression demand."""
+    import inspect
+    src = inspect.getsource(test_spend_cli_verb_accumulates)
+    assert 'subprocess.run([sys.executable, str(S / "loop.py"), "spend", base, n]' in src
+
+
+# ---------------------------------------------------------------- #140 PR review gaps: shared validator
+# FINDING 1: `spend`'s `phase` field was never checked against PHASE_KINDS (only `emit ... phase`
+# was). FINDING 2: the extended `spend` verb bypassed every one of `emit`'s refusal checks — an
+# unknown flag NAME silently dropped instead of refusing. Both are fixed by one shared validator
+# (`_validate_event`) called from both `emit` and `spend`'s event path.
+
+
+def test_emit_spend_rejects_out_of_vocabulary_phase():
+    """Finding 1: `emit ... spend --phase <bogus>` must be refused — `EVENT_FIELDS["spend"]`
+    carries the same `phase` field (same PHASE_KINDS vocabulary) as `phase`-kind events, but the
+    per-kind branch in `emit` only ever checked `kind == "phase"`, not the `phase` field itself."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "spend",
+                      "--phase", "totally_bogus_phase", "--tokens_in", "5"])
+        assert rc == 2
+        assert _events(base) == []
+
+
+def test_emit_spend_accepts_valid_phase():
+    """The other half of finding 1: a legitimate `--phase implement` on `spend` must still work
+    — the fix must validate the vocabulary, not merely reject everything."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "spend",
+                      "--phase", "implement", "--tokens_in", "5"])
+        assert rc == 0
+        evs = _events(base, "spend")
+        assert len(evs) == 1 and evs[0]["phase"] == "implement"
+
+
+def test_spend_rejects_unknown_flag_name_but_still_counts_tokens():
+    """Finding 2: the extended `spend` verb called `ledger.safe_append` directly, so an unknown
+    flag NAME silently dropped instead of refusing — reintroducing the exact silent-drop failure
+    mode #140 exists to close. Budget accounting (`state.add_tokens`) is the FIRST thing `spend`
+    does and must run even when the event itself is refused, so both halves are asserted here."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "spend", base, "500", "goal.md", "--bogus_flag_name", "yes"])
+        assert rc == 2
+        assert lp.state.load_cursor(base)["run_tokens"] == 500     # tokens still counted
+        assert _events(base) == []                                 # but no event written
+
+
+def test_spend_rejects_out_of_vocabulary_phase_but_still_counts_tokens():
+    """Finding 1, exercised through the `spend` verb directly (not `emit`) — the reproduction
+    from the review. Tokens must still accumulate even though the event is refused."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "spend", base, "500", "goal.md", "--phase", "bogus"])
+        assert rc == 2
+        assert lp.state.load_cursor(base)["run_tokens"] == 500
+        assert _events(base) == []
+
+
+def test_spend_token_accumulation_across_every_arg_shape():
+    """Re-assert every arg shape's token accumulation still holds after the fix — the whole risk
+    of fixing the validation gap is breaking budget accounting. 500 -> 1000 -> 1500 -> 2000."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+
+        rc = lp.main(["loop.py", "spend", base, "500"])
+        assert rc == 0 and lp.state.load_cursor(base)["run_tokens"] == 500
+
+        rc = lp.main(["loop.py", "spend", base, "500", "goal.md"])
+        assert rc == 0 and lp.state.load_cursor(base)["run_tokens"] == 1000
+
+        rc = lp.main(["loop.py", "spend", base, "500", "goal.md", "--phase", "implement",
+                      "--model", "x", "--tokens_in", "1", "--tokens_out", "2"])
+        assert rc == 0 and lp.state.load_cursor(base)["run_tokens"] == 1500
+
+        rc = lp.main(["loop.py", "spend", base, "500", "--phase", "implement"])
+        assert rc == 0 and lp.state.load_cursor(base)["run_tokens"] == 2000
+
+
+def test_emit_and_spend_share_one_validator():
+    """The same unknown flag name is refused with the same message shape from both verbs —
+    proof the fix is one shared validator, not a third copy of the checks."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+
+        import subprocess as _sp
+
+        proc_emit = _sp.run([sys.executable, str(S / "loop.py"), "emit", base, "g.md",
+                             "spend", "--bogus_flag_name", "yes"], capture_output=True, text=True)
+        assert proc_emit.returncode == 2
+
+        proc_spend = _sp.run([sys.executable, str(S / "loop.py"), "spend", base, "500",
+                              "g.md", "--bogus_flag_name", "yes"], capture_output=True, text=True)
+        assert proc_spend.returncode == 2
+
+        # Same unknown-flag message shape (kind name + flag name + "expected one of") from both.
+        assert "bogus_flag_name" in proc_emit.stderr and "bogus_flag_name" in proc_spend.stderr
+        assert "unknown flag" in proc_emit.stderr and "unknown flag" in proc_spend.stderr

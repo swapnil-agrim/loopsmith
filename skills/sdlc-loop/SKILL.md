@@ -19,7 +19,10 @@ Then repeat until the helper says stop:
 2. If output is `DONE` (backlog empty) or `BUDGET` (a per-run budget hit: iterations always;
    wall-clock minutes / reported tokens when `config.json` sets them) → STOP. If the host surfaces
    token usage to you, report it between goals — `loop.py spend .sdlc <tokens>` — so
-   `budget.max_tokens` can actually enforce; never guess a number (no report = no token cap).
+   `budget.max_tokens` can actually enforce; never guess a number (no report = no token cap). If
+   the host breaks that usage down per phase (rare), attribute it instead of the plain form:
+   `loop.py spend .sdlc <tokens> "$goal" --phase <phase> --tokens_in N --tokens_out N` —
+   otherwise keep the two-argument form; never fabricate a per-phase number you don't have.
 3. Otherwise: first **recall prior art** — if the knowledge graph is enabled, run the `sdlc-context`
    pre-flight to pull a cited brief from the graph + past issues + conventions, so the goal starts
    informed by history instead of a flushed window (no-op when the KG is off).
@@ -106,6 +109,11 @@ Then repeat until the helper says stop:
 
    As you complete each phase, **record it** so the issue timeline is the audit trail:
    `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" note .sdlc "$goal" "<phase>: <key findings / decisions>"`.
+   Mark phase boundaries too (optional, `telemetry.enabled`):
+   `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" emit .sdlc "$goal" phase --phase <goal|research|plan|plan_review|implement|review|retro> --state start`
+   at the start of each phase, `--state end` when it finishes. Best-effort telemetry — never gates
+   progress, skip it rather than guess the phase name. Do not invent `ms`, `tokens_in`, or
+   `tokens_out` for a `phase` event — the loop cannot measure per-phase timing or spend from prose.
    For a decision/finding/fix worth keeping, record a 🔒 Critical Insight (the
    `.github/CRITICAL_INSIGHT_TEMPLATE.md` format) the same way. This comments the issue in github mode
    and appends to `.sdlc/journey/<goal>.md` in local mode; it's fail-open (never breaks the run).

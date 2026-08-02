@@ -30,7 +30,11 @@ counterpart to the autonomous `/sdlc-loop`).
    Each executor's resolution header encodes this — so it works on any host.
    Record each phase as you go — `python3 "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/loop.py" note .sdlc
    "<goal>" "<phase>: <findings / decisions>"` (and 🔒 Critical Insights for key decisions) — so the
-   issue timeline (github mode) or `.sdlc/journey/` (local) holds the audit trail.
+   issue timeline (github mode) or `.sdlc/journey/` (local) holds the audit trail. Mark phase
+   boundaries too (optional, `telemetry.enabled`):
+   `python3 "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/loop.py" emit .sdlc "<goal>" phase --phase <goal|research|plan|plan_review|implement|review|retro> --state start`
+   at the start of each phase, `--state end` when it finishes — same best-effort rule as
+   `/sdlc-loop`: never gates progress, and never invent `ms`/`tokens_in`/`tokens_out`.
 3. **Retrospective (Learn)** — after Review, run the **`sdlc-retro`** executor: reflect on the
    structural + product debt the fix left behind, grade intent-vs-shipped, and route durable lessons to
    the right store (audit trail / north-star / standing rule). It's **advisory** — it records the
