@@ -199,28 +199,26 @@ def test_absent_cell_is_visually_and_semantically_distinct_from_pass_warn_fail(c
     assert "did not apply here" in panel
     assert "not \"applied and nothing was recorded\"" in panel or "nothing was recorded" in panel
     assert '<span class="cell-pct">n/a</span>' in absent_cell  # never a fabricated percentage
-    # the hatch <defs> is emitted ONLY where it is referenced -- see below
-    assert "<defs>" in absent_cell
-    for other in (pass_cell, warn_cell, fail_cell):
-        assert "<defs>" not in other
 
 
-def test_the_hatch_pattern_defs_is_emitted_only_for_absent_cells(conn):
-    """Issue #133 review: _matrix_cell_svg emitted texture_defs() for EVERY cell, so a dozen
-    elements shared id="dash-absent-hatch" -- invalid HTML, and ~17% of the page was markup
-    nothing referenced. status_mark() references the pattern for no status but ABSENT. This pins
-    both directions: the id stays unique, AND ABSENT keeps its fourth channel."""
+def test_the_hatch_pattern_id_is_unique_across_the_whole_document(conn):
+    """Issue #133 review, second pass. The first fix gated the <defs> on ABSENT, which cut the
+    duplicates but did not remove them: several ABSENT states on one page is NORMAL here (three
+    matrix cells plus both not-measured panels, which are always ABSENT), and _absent_line in
+    charts.py emitted its own <defs> too -- a different code path entirely. The pattern's id is
+    "{id_prefix}-absent-hatch" and id_prefix ALSO names the CSS vars status_mark() reads, so it
+    cannot be varied per element. Defining it once per document is the only fix.
+
+    This asserts the whole page, not one panel slice -- scoping to panel-gate-matrix is what let
+    the previous version pass while the page still shipped five copies of the id."""
     from insight.dash.cross_functional import render_cross_functional_view
 
     load_fixture_jsonl(conn, FIXTURES / "24.jsonl")
     html_text, _ = render_cross_functional_view(conn, now=NOW)
-    panel = _sections(html_text)["panel-gate-matrix"]
-    absent_cells = re.findall(r'<td data-gate="\w+" data-status="ABSENT">.*?</td>', panel, re.DOTALL)
-    assert absent_cells, "fixture must contain at least one ABSENT cell or this is vacuous"
-    # one <defs> per ABSENT cell, and none anywhere else in the matrix
-    assert panel.count("<defs>") == len(absent_cells)
-    for c in absent_cells:
-        assert 'fill="url(#dash-absent-hatch)"' in c  # the fourth channel still lands
+    assert html_text.count('id="dash-absent-hatch"') == 1, "duplicate id -- invalid HTML"
+    # ...and it is genuinely load-bearing: several marks resolve against that one definition,
+    # so ABSENT keeps its fourth channel everywhere it appears.
+    assert html_text.count("url(#dash-absent-hatch)") > 1
 
 
 def test_negative_control_proves_the_absent_distinctness_check_has_teeth():

@@ -82,14 +82,14 @@ def _matrix_cell_svg(status, id_prefix="dash"):
     texture channel on top (Decision 6). The same composition insight.dash.charts._absent_line
     already does for a <p>, generalized to all four statuses and inlined in a <td> instead.
 
-    The <defs> block is emitted ONLY for ABSENT (issue #133 review): status_mark() references the
-    pattern for no other status, so emitting it per cell put a dozen elements sharing
-    id="dash-absent-hatch" on the page -- invalid HTML, and ~17% of the rendered bytes were dead
-    markup. Gating it here matches _absent_line, which is only ever called for an ABSENT state."""
-    defs = texture_defs(id_prefix) if status == "ABSENT" else ""
+    This emits NO <defs> of its own (issue #133 review). The pattern id is derived from id_prefix,
+    which also names the CSS vars status_mark() reads, so it cannot be varied per element to keep
+    the id unique -- render_cross_functional_view defines the pattern once for the document and
+    url(#...) resolves to it from every mark here."""
+    # No <defs> here: render_cross_functional_view emits texture_defs() once per document
+    # (issue #133 review -- per-cell defs put a dozen elements on one id).
     return (
         f'<svg width="90" height="16" viewBox="0 0 90 16" role="img" aria-label="{html.escape(status)}">'
-        + defs
         + status_mark(status, 6, 8, id_prefix=id_prefix)
         + "</svg>"
     )
@@ -105,6 +105,7 @@ def _render_gate_matrix(rows, id_prefix="dash"):
         return _absent_line(
             "no alignment-collect pack has ever been ingested -- metric #24 has zero rows.",
             id_prefix=id_prefix,
+            emit_defs=False,  # the page emits <defs> once -- see render_cross_functional_view
         )
     row_html = []
     for row in rows:
@@ -148,6 +149,7 @@ def _render_risk_review():
             "ingested: insight.ingest.collectors.SOURCES lists only alignment-collect, "
             "discovery-scan, and pipeline-card. There is no insight/metrics/*.sql view for "
             "this row. Wiring risk-detect in is a follow-up story, not this one.",
+            emit_defs=False,  # the page emits <defs> once
         )
         + "</div>"
     )
@@ -169,6 +171,7 @@ def _render_alignment_drift():
             "(insight/ingest/ledger_writer.py only ever populates project_id, goal_id, ts, "
             "actor_id, kind, reliability_class). There is no insight/metrics/*.sql view for "
             "this row either.",
+            emit_defs=False,  # the page emits <defs> once
         )
         + "</div>"
     )
@@ -211,6 +214,11 @@ def render_cross_functional_view(conn, now=None, metrics_dir=None):
 <style>{_STYLE}</style>
 </head>
 <body class="viz-root">
+<!-- The ABSENT hatch pattern, defined ONCE for the whole document (issue #133 review). Its id is
+     derived from id_prefix, which also names the CSS vars status_mark() reads, so it cannot be
+     varied per element -- defining it once is the only way a page with several ABSENT states
+     keeps a unique id. url(#...) resolves document-wide, so every mark below references this. -->
+<svg width="0" height="0" aria-hidden="true" focusable="false">{texture_defs()}</svg>
 <h1>LoopSmith Insight -- Cross-functional view</h1>
 <p>Generated {html.escape(generated_at)}. Aggregate only: no metric on this page renders at
 individual grain -- zero exceptions, same posture as the leadership view.</p>

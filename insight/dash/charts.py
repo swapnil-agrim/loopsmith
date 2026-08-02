@@ -61,16 +61,26 @@ def _absent_svg(aria_label, explain_text, id_prefix="dash"):
     )
 
 
-def _absent_line(explain_text, id_prefix="dash"):
+def _absent_line(explain_text, id_prefix="dash", emit_defs=True):
     """A one-line ABSENT marker for prose panels (not a chart) -- the same `status_mark()` +
     `texture_defs()` primitives every other ABSENT state in this codebase uses, just inlined as a
     `<p>` rather than inside an `<svg>`. Moved here from insight.dash.manager (.sdlc/plans/131.md
     Decision 8): insight.dash.leadership needs the identical primitive, and a second private copy
     would repeat the same near-duplicate smell .sdlc/plans/127.md Decision 4 already fixed once
-    for base_style()."""
+    for base_style().
+
+    `emit_defs=False` suppresses the `<defs>` block for callers that emit `texture_defs()` ONCE at
+    page level instead (issue #133 review). The pattern's id is `{id_prefix}-absent-hatch` and
+    `id_prefix` also names the CSS vars `status_mark()` reads, so it CANNOT be varied per element
+    to make the id unique -- the only way to keep the id unique on a page with more than one
+    ABSENT element is to define the pattern once. `url(#...)` resolves document-wide, so a single
+    page-level `<defs>` serves every mark. Default stays True so existing callers are unchanged;
+    insight.dash.manager and insight.dash.leadership still ship duplicate ids and are tracked
+    separately -- this parameter is what lets a page opt into being valid."""
+    defs = texture_defs(id_prefix) if emit_defs else ""
     return (
         '<p><svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="ABSENT">'
-        + texture_defs(id_prefix) + status_mark("ABSENT", 6, 8, id_prefix=id_prefix)
+        + defs + status_mark("ABSENT", 6, 8, id_prefix=id_prefix)
         + f'</svg> {explain_text}</p>'
     )
 
