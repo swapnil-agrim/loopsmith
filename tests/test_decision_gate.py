@@ -304,6 +304,36 @@ def test_deny_emits_a_block_gate_event():
         assert "timeout=120" in e["why"]
 
 
+def test_deny_gate_event_scrubs_a_planted_secret_in_the_message():
+    """#141: the deny path is one of the three deterministic, fail-open call sites — it must
+    NEVER reject (a raise here could silently turn a real `deny` into an allow), only sanitize.
+    `gate.why` is a declared prose field, so `ledger.append()` scrubs it automatically with zero
+    code change to decision_gate.py; this proves that end to end through the real hook subprocess."""
+    with tempfile.TemporaryDirectory() as d:
+        SECRET = "AKIAIOSFODNN7EXAMPLE"
+        root = _project(d, _inv(statement=f"Never hardcode {SECRET} in source."))
+        out = _run_hook(root, {"file_path": "src/a.py", "new_string": "timeout = 120"})
+        payload = json.loads(out.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"    # real deny, unchanged
+        events = _gate_events(root)
+        assert len(events) == 1
+        assert SECRET not in events[0]["why"] and "[REDACTED" in events[0]["why"]
+
+
+def test_deny_gate_event_flattens_rather_than_rejects_a_newline_in_the_message():
+    """#141 amendment A: the deny path is automatic, not agent-typed at a CLI — a newline in the
+    combined reason message must be FLATTENED (never a rejected/dropped event), unlike
+    `loop.py emit`/`spend` or `work.py post-review`'s CLI-level hard reject."""
+    with tempfile.TemporaryDirectory() as d:
+        root = _project(d, _inv(statement="Line one.\nLine two with more detail."))
+        out = _run_hook(root, {"file_path": "src/a.py", "new_string": "timeout = 120"})
+        payload = json.loads(out.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        events = _gate_events(root)
+        assert len(events) == 1
+        assert "\n" not in events[0]["why"]
+
+
 def test_ask_and_allow_emit_nothing():
     with tempfile.TemporaryDirectory() as d:
         root = _project(d, _inv(**{"class": "recipe"}))       # a recipe violation -> ask, not deny

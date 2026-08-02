@@ -537,3 +537,205 @@ def test_events_write_when_both_ledger_and_telemetry_are_on(tmp_path):
     entry = ledger.append(d, ON, "gate", "g.md", stream="events", gate="merge", verdict="pass")
     assert entry is not None
     assert ledger.read_all(d, stream=ledger.EVENTS)[0]["gate"] == "merge"
+
+
+# --------------------------------------------------------------------- #141: privacy caps + scrubbing
+# Cap+scrub lives once, inside append(), driven by the declared EVENT_FREE_TEXT_FIELDS map — every
+# test below calls append() directly (never a call-site helper) so it proves the treatment at the one
+# real chokepoint every write path (deterministic sites + emit + spend) already funnels through.
+
+
+def _raw_bytes(d, actor="dana", stream="events"):
+    """The written file's RAW bytes — not read_all()'s parsed view — so a scrub-bypass test that
+    only checked the parsed dict could not miss a leak sitting in some OTHER part of the line."""
+    return ledger.entry_file(d, actor, stream).read_bytes()
+
+
+def test_append_scrubs_a_planted_pem_block_in_gate_why(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    secret = "-----BEGIN PRIVATE KEY-----\nMIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT\n-----END PRIVATE KEY-----"
+    ledger.append(d, ON, "gate", "g.md", stream="events", gate="merge", verdict="block",
+                  why=f"leaked pem: {secret}")
+    disk = _raw_bytes(d).decode()
+    assert "BEGIN PRIVATE KEY" not in disk and "MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT" not in disk
+    assert "[REDACTED" in disk
+
+
+def test_append_scrubs_a_planted_aws_key_in_gate_why(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    ledger.append(d, ON, "gate", "g.md", stream="events", gate="merge", verdict="block",
+                  why=f"found a key {SECRET} in the diff")
+    disk = _raw_bytes(d).decode()
+    assert SECRET not in disk and "[REDACTED" in disk
+
+
+def test_append_scrubs_a_planted_github_token_in_park_why(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    SECRET = "ghp_ABCDEFGHIJ1234567890ABCD"
+    ledger.append(d, ON, "park", "g.md", stream="events", reason_class="unknown",
+                  why=f"blocked by a leaked token {SECRET}")
+    disk = _raw_bytes(d).decode()
+    assert SECRET not in disk and "[REDACTED" in disk
+
+
+def test_append_scrubs_a_planted_jwt_in_spend_model(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    SECRET = ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+              "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U")
+    ledger.append(d, ON, "spend", "g.md", stream="events", model=f"sonnet {SECRET}")
+    disk = _raw_bytes(d).decode()
+    assert SECRET not in disk and "[REDACTED" in disk
+
+
+def test_append_scrubs_a_planted_bearer_token_in_gate_why(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    SECRET = "Bearer abcdef1234567890ABCDEF"
+    ledger.append(d, ON, "gate", "g.md", stream="events", gate="merge", verdict="block",
+                  why=f"request used {SECRET} against a locked-down endpoint")
+    disk = _raw_bytes(d).decode()
+    assert SECRET not in disk and "[REDACTED" in disk
+
+
+def test_append_scrubs_a_planted_password_kv_in_gate_why(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    SECRET = "SuperSecretValue123"
+    ledger.append(d, ON, "gate", "g.md", stream="events", gate="merge", verdict="block",
+                  why=f"config leaked password={SECRET} in a log line")
+    disk = _raw_bytes(d).decode()
+    assert SECRET not in disk and "[REDACTED" in disk
+
+
+def test_append_caps_gate_why_at_200_chars_after_scrub(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    why = "x" * 300     # no secret shape: pure length test
+    e = ledger.append(d, ON, "gate", "g.md", stream="events", gate="merge", verdict="warn", why=why)
+    assert len(e["why"]) <= 200
+
+
+def test_append_flattens_a_raw_newline_in_park_why(tmp_path):
+    """append() itself NEVER rejects — only sanitizes — for a caller that isn't the two agent-
+    facing CLI verbs (those reject in loop.py's _validate_event, tested in test_loop.py). This is
+    the guarantee the three deterministic, fail-open call sites (a hook's deny, an autonomous park,
+    work.py's post-review) depend on."""
+    d = _sdlc(tmp_path, ON)
+    e = ledger.append(d, ON, "park", "g.md", stream="events", reason_class="unknown", why="a\nb")
+    assert "\n" not in e["why"]
+
+
+def test_entries_stream_why_is_untouched(tmp_path):
+    """The treatment is scoped to stream == EVENTS only — the ENTRIES stream's own `why` (hand-
+    offs/notes a lead reads in TEAM.md) is out of this story's scope and must be written verbatim,
+    uncapped and un-flattened."""
+    d = _sdlc(tmp_path, ON)
+    why = "a\nb" + "x" * 300
+    e = ledger.append(d, ON, "handoff", "g.md", why=why)
+    assert e["why"] == why
+
+
+def test_scan_file_and_slice_slice_are_not_in_the_declared_set():
+    """Pins Decision 4's 'declared safe' calls (amendment D: by convention, not enforcement) so a
+    later change can't silently start truncating a path or an id."""
+    assert "file" not in ledger.EVENT_FREE_TEXT_FIELDS.get("scan", ())
+    assert "slice" not in ledger.EVENT_FREE_TEXT_FIELDS.get("slice", ())
+
+
+def test_event_free_text_fields_is_the_declared_set():
+    assert ledger.EVENT_FREE_TEXT_FIELDS == {"gate": ("why",), "park": ("why",), "spend": ("model",)}
+
+
+def test_order_of_operations_scrub_before_cap_survives_a_late_secret(tmp_path):
+    """THE load-bearing regression. An independent review proved by execution that an AWS-shaped
+    key starting at char 195 of a 215-char string is fully redacted under flatten->scrub->cap, but
+    a cap-then-scrub order leaves the literal fragment `AKIAI` in the data (the cap truncates the
+    match before the scrubber ever sees the whole shape). This test uses the reviewer's exact case
+    and MUST fail if someone reorders cap before scrub."""
+    d = _sdlc(tmp_path, ON)
+    SECRET = "AKIAIOSFODNN7EXAMPLE"          # 20 chars
+    why = ("x" * 195) + SECRET               # secret starts at index 195, string is 215 chars total
+    assert len(why) == 215 and why.index(SECRET) == 195
+    e = ledger.append(d, ON, "gate", "g.md", stream="events", gate="merge", verdict="block", why=why)
+    assert SECRET not in e["why"]
+    assert "AKIAI" not in e["why"]           # the exact fragment a cap-then-scrub order would leak
+    assert len(e["why"]) <= 200
+    # the 200-char cap lands mid-way through the "[REDACTED:aws-key]" replacement token itself
+    # (195 leading chars + a 5-char slice of the replacement) — redaction visibly started, which is
+    # the whole point: the secret was replaced BEFORE the cap ever ran, not truncated as raw text.
+    assert e["why"].endswith("[REDA")
+
+
+def test_completeness_guard_fails_on_an_unclassified_field():
+    """Amendment B: a type check alone cannot catch a forgotten prose field (a forgotten field is
+    still a plain `str`, same as a properly-declared one) — only an explicit allowlist that fails
+    CLOSED on a name in neither list can. Proved here by temporarily adding an unclassified `notes`
+    field to a copy of retro's EVENT_FIELDS entry and confirming the same guard the module runs at
+    import time rejects it, rather than silently defaulting it to safe."""
+    import pytest as _pytest
+    broken_fields = dict(ledger.EVENT_FIELDS)
+    broken_fields["retro"] = broken_fields["retro"] + ("notes",)   # a future free-text field, forgotten
+    with _pytest.raises(AssertionError, match="unclassified"):
+        ledger._assert_event_fields_classified(
+            ledger.EVENT_KINDS, broken_fields, ledger.EVENT_FREE_TEXT_FIELDS, ledger.EVENT_NON_PROSE_FIELDS)
+
+
+def test_completeness_guard_passes_on_the_real_declared_maps():
+    """The real, shipped maps must NOT trip the guard — proves the test above is exercising a real
+    failure mode, not a check that always fails."""
+    ledger._assert_event_fields_classified(
+        ledger.EVENT_KINDS, ledger.EVENT_FIELDS, ledger.EVENT_FREE_TEXT_FIELDS, ledger.EVENT_NON_PROSE_FIELDS)
+
+
+def test_sanitize_free_text_flattens_scrubs_and_caps_directly():
+    """The helper, exercised directly (not just through append()) — Step 2 of the plan."""
+    assert "\n" not in ledger._sanitize_free_text("a\nb")
+    assert len(ledger._sanitize_free_text("x" * 300)) <= 200
+    scrubbed = ledger._sanitize_free_text("key: AKIAIOSFODNN7EXAMPLE")
+    assert "AKIAIOSFODNN7EXAMPLE" not in scrubbed and "[REDACTED" in scrubbed
+
+
+def test_sanitize_free_text_never_raises_when_the_scrub_module_is_unreachable(monkeypatch):
+    """Fail-open even past the scrub load itself: a broken/missing hooks/research_capture.py must
+    degrade to flatten+cap only, never raise — this is what keeps append() safe for the three
+    fail-open deterministic call sites."""
+    monkeypatch.setattr(ledger, "_scrub_module", lambda: None)
+    result = ledger._sanitize_free_text("a\nb" + "x" * 300)
+    assert "\n" not in result and len(result) <= 200
+
+
+def test_scrub_module_load_failure_is_observable_on_stderr(monkeypatch, capsys):
+    """Amendment C: a fail-open degrade to cap-only must never be SILENT — one line to stderr in
+    the loader's except branch, matching safe_append's own idiom (ledger.py's
+    'ledger: entry skipped (non-fatal): ...' message shape)."""
+    monkeypatch.setattr(ledger, "_SCRUB_MODULE", None)
+    monkeypatch.setattr(ledger, "_SCRUB_LOAD_ATTEMPTED", False)
+
+    def boom(name, path):
+        raise OSError("no such file")
+    import importlib.util as _ilu
+    monkeypatch.setattr(_ilu, "spec_from_file_location", boom)
+    mod = ledger._scrub_module()
+    assert mod is None
+    err = capsys.readouterr().err
+    assert "non-fatal" in err and "scrub" in err
+
+
+def test_command_sha256_never_carries_the_raw_command_in_a_verify_event(tmp_path):
+    """Regression pin (#139 already shipped this — no new logic here): the raw verify command
+    string never appears anywhere in a `verify` event, only its sha256."""
+    import hashlib
+    d = _sdlc(tmp_path, ON)
+    cmd = "echo super-secret-marker-xyz123"
+    e = ledger.append(d, ON, "verify", "g.md", stream="events", ok=True, exit=0, ms=5,
+                      command_sha256=hashlib.sha256(cmd.encode("utf-8")).hexdigest())
+    assert json.dumps(e).find(cmd) == -1
+    assert e["command_sha256"] == hashlib.sha256(cmd.encode("utf-8")).hexdigest()
+
+
+def test_files_declared_is_an_int_not_a_list(tmp_path):
+    """Regression pin (#139 already shipped this as a count): the events stream's `files_declared`
+    is a plain int, never a list — a later refactor that started passing `s["files"]` (the list)
+    instead of `len(s["files"])` would land a JSON array here, not a count."""
+    d = _sdlc(tmp_path, ON)
+    e = ledger.append(d, ON, "slice", "g.md", stream="events", slice="a", wave=1, mode="subagent",
+                      files_declared=3)
+    assert isinstance(e["files_declared"], int) and e["files_declared"] == 3

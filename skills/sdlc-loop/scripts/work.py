@@ -610,6 +610,16 @@ def main(argv):
         if argv[1] == "post-review":
             kwargs["verdict"] = _flag(argv, "--verdict")
             kwargs["reason"] = _flag(argv, "--reason")
+            # #141 amendment A: `post-review` is a synchronous, agent-typed CLI verb that already
+            # returns an exit code for bad input — the same shape as `loop.py emit`/`spend`, which
+            # hard-reject a newline rather than flatten it (see `_validate_event` there). Checked
+            # HERE, before dispatch, not inside `post_review()` itself: the two genuinely automatic
+            # ledger.append() call sites (a hook's `deny`, an autonomous park) must keep the
+            # flatten-only, never-reject treatment `append()` gives every prose field uniformly.
+            if "\n" in kwargs["reason"]:
+                print("work: newline not allowed in --reason (the events stream is single-line "
+                      "only)", file=sys.stderr)
+                return 2
         try:
             print(_COMMANDS[argv[1]](sdlc_dir, config, goal, **kwargs))
         except Exception as exc:            # noqa: BLE001 - report, never traceback at a user

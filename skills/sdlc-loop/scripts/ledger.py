@@ -73,6 +73,65 @@ EVENT_FIELDS = {
 #: entry raises immediately at import time instead of silently dropping every field it writes.
 assert set(EVENT_KINDS) == set(EVENT_FIELDS), "EVENT_KINDS and EVENT_FIELDS have drifted apart"
 
+#: #141: the closed set of EVENTS-stream fields that carry agent-/hook-authored free prose —
+#: append() flatten+scrub+caps exactly these, for every kind, at the one chokepoint every write
+#: path already funnels through. Nothing else in EVENT_FIELDS is prose: everything else is an
+#: enum, a count, a duration, a bool, or (`verify.command_sha256`) a hash.
+EVENT_FREE_TEXT_FIELDS = {
+    "gate": ("why",),
+    "park": ("why",),
+    "spend": ("model",),
+}
+
+#: #141 amendment B: the completeness half of the guard below. A field NOT listed in
+#: EVENT_FREE_TEXT_FIELDS is not automatically "safe" — the two look identical in Python (both are
+#: plain `str`), so a type check alone can never catch a forgotten prose field. Every field of
+#: every kind must be named HERE or above, on purpose, or the assertion below fails at import time
+#: instead of a future story shipping an uncapped/unscrubbed/newline-tolerant field for years with
+#: green tests. `scan.file`/`slice.slice` are here — declared safe BY CONVENTION (a filesystem path
+#: and a plan-authored short id, neither expected to carry a raw newline or a secret shape) rather
+#: than by any actual enforcement; nothing in this module checks their length or shape.
+EVENT_NON_PROSE_FIELDS = {
+    "phase": ("phase", "state", "ms", "tokens_in", "tokens_out"),
+    "gate": ("gate", "verdict", "cycle"),
+    "verify": ("ok", "exit", "ms", "command_sha256", "absent"),
+    "slice": ("slice", "wave", "mode", "files_declared", "ms"),
+    "spend": ("phase", "tokens_in", "tokens_out", "cost_cents"),
+    "retro": ("grade", "debt_count", "lessons_count"),
+    "park": ("reason_class",),
+    "scan": ("category", "file", "count"),
+}
+
+def _assert_event_fields_classified(event_kinds, event_fields, free_text_fields, non_prose_fields):
+    """The completeness check itself, as a function rather than inlined at import time — so a test
+    can call it directly against a deliberately-INCOMPLETE copy of the field maps (simulating a
+    future story that adds a free-text field and forgets to classify it) and prove the guard
+    actually fires, without needing to add a second real member to module-level EVENT_KINDS just
+    to exercise the failure path. Called once below, at import time, against the real constants."""
+    assert set(free_text_fields) <= set(event_kinds), \
+        "EVENT_FREE_TEXT_FIELDS names a kind that isn't in EVENT_KINDS"
+    assert set(non_prose_fields) <= set(event_kinds), \
+        "EVENT_NON_PROSE_FIELDS names a kind that isn't in EVENT_KINDS"
+    for kind in event_kinds:
+        prose = set(free_text_fields.get(kind, ()))
+        safe = set(non_prose_fields.get(kind, ()))
+        assert not (prose & safe), \
+            f"{kind!r}: a field cannot be both prose and declared-safe: {prose & safe}"
+        real = set(event_fields[kind])
+        assert prose <= real, f"EVENT_FREE_TEXT_FIELDS[{kind!r}] names a field not in EVENT_FIELDS"
+        assert safe <= real, f"EVENT_NON_PROSE_FIELDS[{kind!r}] names a field not in EVENT_FIELDS"
+        unclassified = real - (prose | safe)
+        assert not unclassified, (
+            f"EVENT_FIELDS[{kind!r}] has unclassified field(s) {unclassified} — declare each one in "
+            "EVENT_FREE_TEXT_FIELDS (prose: flatten+scrub+cap) or EVENT_NON_PROSE_FIELDS (safe as-is); "
+            "an unclassified field is a classification bug, not a safe default")
+
+
+_assert_event_fields_classified(EVENT_KINDS, EVENT_FIELDS, EVENT_FREE_TEXT_FIELDS, EVENT_NON_PROSE_FIELDS)
+
+#: #141: the length every declared prose field is capped to, after flatten+scrub.
+FREE_TEXT_CAP = 200
+
 #: Controlled vocabularies from spec §A.3. PHASE_KINDS/GATE_KINDS/REASON_CLASSES exist for
 #: downstream consumers (ingest, docs, future validation) but are NOT enforced by append() in
 #: #136 — see the "unknown phase/gate/reason_class" decision in the append() docstring.
@@ -180,6 +239,78 @@ def reset_actor_cache():
     _ACTOR_CACHE.clear()
 
 
+# --------------------------------------------------------------------------- free-text sanitizing (#141)
+
+_SCRUB_MODULE = None
+_SCRUB_LOAD_ATTEMPTED = False
+
+
+def _scrub_module():
+    """Lazily importlib-load `hooks/research_capture.py` so `ledger.py` reuses its `_scrub`/
+    `_SECRET_PATTERNS` — the one scrubber in the repo — instead of duplicating the pattern table
+    (two tables is exactly the drift this repo has already been bitten by). This is the REVERSE
+    direction of `hooks/decision_gate.py`'s own cross-load (that file loads THIS module the other
+    way, at its `_emit_decision_event`): both are the same `importlib.util.spec_from_file_location`
+    sibling-load idiom, and both are invisible to `tests/test_import_boundary.py`'s ast-based guard
+    (that checker only parses real `ast.Import`/`ast.ImportFrom` nodes; `spec_from_file_location`
+    produces neither — confirmed against the guard's own module docstring).
+
+    Cached after the FIRST attempt, success or failure — one load per process, not one per call.
+    Fails open to `None` (never raises) if `hooks/research_capture.py` is missing or broken in some
+    checkout; the caller then treats scrub as a no-op and degrades to flatten+cap only. That
+    degrade is a real privacy reduction on its own (flatten/cap are plain string ops right here in
+    `ledger.py` and never touch this loader, so the worst case becomes "<=200 chars, single line,
+    unredacted" instead of unbounded raw text) — but it must never be SILENT: one line to stderr,
+    the same idiom `safe_append` already uses for its own non-fatal failures (see that function's
+    "ledger: entry skipped (non-fatal): ..." message), so a broken install is visible in the log
+    even though no run ever breaks because of it."""
+    global _SCRUB_MODULE, _SCRUB_LOAD_ATTEMPTED
+    if _SCRUB_LOAD_ATTEMPTED:
+        return _SCRUB_MODULE
+    _SCRUB_LOAD_ATTEMPTED = True
+    try:
+        import importlib.util
+        # ledger.py lives at skills/sdlc-loop/scripts/ledger.py; hooks/ is a sibling of skills/ at
+        # the repo root — four `.parent`s up from this file, matching decision_gate.py's own
+        # two-`.parent`s-up-then-down-into-skills/sdlc-loop/scripts symmetry in the other direction.
+        repo_root = pathlib.Path(__file__).resolve().parent.parent.parent.parent
+        path = repo_root / "hooks" / "research_capture.py"
+        spec = importlib.util.spec_from_file_location("research_capture", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _SCRUB_MODULE = mod
+    except Exception as exc:                                    # noqa: BLE001 - fail-open by design
+        print(f"ledger: scrub unavailable, degrading to flatten+cap only (non-fatal): {exc}",
+              file=sys.stderr)
+        _SCRUB_MODULE = None
+    return _SCRUB_MODULE
+
+
+def _sanitize_free_text(value):
+    """flatten -> scrub -> cap, IN THAT EXACT ORDER — never reorder this. An independent review
+    proved by execution that a secret whose match starts near char 195 of a 215-char string is
+    fully redacted when scrub runs BEFORE the 200-char cap, but capping first truncates the match
+    mid-pattern and leaves an unredacted FRAGMENT (e.g. the literal `AKIAI...`) inside the capped
+    text, because the scrubber never gets to see the whole shape once it's been cut off. Flattening
+    first (not last) matters too: it turns a raw multi-line block into one line before either the
+    scrubber or the cap sees it, so a cap can never land mid-multi-line-secret in a way flatten
+    would otherwise have prevented.
+
+    Never raises on its own: a missing/broken scrub module (see `_scrub_module`) degrades to
+    flatten+cap only, and a scrub call that itself raises is caught here too — this function is
+    called from inside `append()`'s field-writing loop, which must stay exception-safe for the
+    fail-open call sites (a hook's `deny`, an autonomous park) that route through it."""
+    text = str(value).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    mod = _scrub_module()
+    if mod is not None:
+        try:
+            text = mod._scrub(text)
+        except Exception as exc:                                # noqa: BLE001 - fail-open by design
+            print(f"ledger: scrub failed, degrading to flatten+cap only (non-fatal): {exc}",
+                  file=sys.stderr)
+    return text[:FREE_TEXT_CAP]
+
+
 # --------------------------------------------------------------------------- write
 
 
@@ -258,6 +389,12 @@ def append(sdlc_dir, config, kind, goal, run=None, now=None, stream=ENTRIES, **f
     for name in field_whitelist:
         value = fields.get(name)
         if value not in (None, ""):
+            # #141: cap+scrub lives HERE, once, for every caller — never at a call site. Scoped to
+            # stream == EVENTS only (the ENTRIES stream's own `why` — hand-offs/notes a lead reads
+            # in TEAM.md — is unaffected, out of this story's scope) and to fields declared prose
+            # in EVENT_FREE_TEXT_FIELDS (empty for ENTRIES kinds, so this is a no-op there too).
+            if stream == EVENTS and name in EVENT_FREE_TEXT_FIELDS.get(kind, ()):
+                value = _sanitize_free_text(value)
             entry[name] = value
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")

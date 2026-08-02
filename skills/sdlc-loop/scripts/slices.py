@@ -115,6 +115,10 @@ def _normalise(item, index, path):
     if not isinstance(item, dict):
         raise ValueError(f"{path}: slice #{index} is a {type(item).__name__}, expected an object")
     return {
+        # #141: `id` lands verbatim in the `slice` telemetry event (ledger.py `EVENT_NON_PROSE_
+        # FIELDS["slice"]`) with no length/shape check here — declared safe by CONVENTION (a
+        # plan-authored short DAG-key identifier, not agent-typed prose), not by any enforcement;
+        # nothing below or in ledger.py caps or scrubs it.
         "id": str(item.get("id") or "").strip(),
         "title": str(item.get("title") or "").strip(),
         "needs": _as_list(item.get("needs")),

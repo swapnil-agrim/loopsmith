@@ -502,6 +502,10 @@ def test_plan_emits_one_slice_event_per_planned_slice(tmp_path):
     assert len(events) == 3
     by_id = {e["slice"]: e for e in events}
     assert by_id["a"]["wave"] == 1 and by_id["a"]["mode"] == "subagent" and by_id["a"]["files_declared"] == 1
+    # #141 regression pin: `files_declared` stays a COUNT (int), never the list itself — the value
+    # check above (`== 1`) alone wouldn't catch a later `files_declared=s["files"]` slip that
+    # happened to land a single-item list comparing equal-ish in some contexts.
+    assert isinstance(by_id["a"]["files_declared"], int)
     assert by_id["c"]["wave"] == 2
 
 
