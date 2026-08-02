@@ -125,6 +125,41 @@ def _render_speed_quality(speed_row, quality_row, speed_coverage=None, quality_c
     return "".join(parts)
 
 
+def _impact_coverage(rows, reliability_class):
+    """Coverage denominator for the Impact tile, aggregated across EVERY metric_9 row -- not
+    extract_coverage() on a single arbitrary row (PR #223 review). _render_impact's own tile
+    value sums goal_count across ALL (source, lane) rows (Decision 3); a coverage figure read
+    from just impact_rows[0] would describe one row's population sitting next to a total spanning
+    every row -- the exact denominator/value-population mismatch issue #129's coverage mechanism
+    exists to prevent. Dormant today only because metric_9 declares reliability_class 1 (see
+    extract_coverage below, which short-circuits to None before class1_count/etc are ever read) --
+    this must not silently misbehave the day metric_9 is reclassified to 2.
+
+    No other tile on this page needs this treatment: _speed_row/_quality_row each already read
+    exactly ONE row (`LIMIT 1`), so extract_coverage's single-row contract already matches what's
+    rendered beside it there.
+
+    Delegates the class/None/raise decision to extract_coverage on the first row -- same
+    contract, same CoverageDenominatorMissing wording (.sdlc/plans/129.md Decision D8); a class-2
+    row missing the four coverage columns still raises, it is never swallowed here. Only once
+    that confirms a real class-2 coverage figure applies does this re-sum class1_count/
+    class2_count/total_count across every row and recompute coverage_pct from the summed totals,
+    rather than carrying row[0]'s own value. coverage_pct is None when the summed total_count is
+    0, matching reliability.py's own NULLIF guard -- a real "n/a", not a missing column."""
+    first_row = rows[0] if rows else None
+    first = extract_coverage("9", reliability_class, first_row)
+    if first is None:
+        return None
+    class1_count = sum(r["class1_count"] for r in rows)
+    class2_count = sum(r["class2_count"] for r in rows)
+    total_count = sum(r["total_count"] for r in rows)
+    coverage_pct = round(class1_count / total_count, 4) if total_count else None
+    return {
+        "class1_count": class1_count, "class2_count": class2_count,
+        "total_count": total_count, "coverage_pct": coverage_pct,
+    }
+
+
 def _render_impact(rows, coverage=None, id_prefix="dash"):
     """Section body for panel-impact (Decision 6: tile + its own "no counterweight" statement
     share this ONE section). Impact itself never says "new capability" (Decision 3)."""
@@ -200,8 +235,10 @@ def render_leadership_view(conn, now=None, metrics_dir=None):
 
     speed_coverage = extract_coverage("1", registry["1"]["reliability_class"], speed_row)
     quality_coverage = extract_coverage("5", registry["5"]["reliability_class"], quality_row)
-    impact_first_row = impact_rows[0] if impact_rows else None
-    impact_coverage = extract_coverage("9", registry["9"]["reliability_class"], impact_first_row)
+    # Aggregated across every impact_rows entry, not read from row[0] alone -- see
+    # _impact_coverage's own docstring (PR #223 review) for why this tile needs that and the
+    # other two on this page don't.
+    impact_coverage = _impact_coverage(impact_rows, registry["9"]["reliability_class"])
 
     speed_payload = (
         {k: speed_row[k] for k in _SPEED_PAYLOAD_KEYS if k in speed_row}

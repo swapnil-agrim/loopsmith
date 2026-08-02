@@ -36,6 +36,23 @@ def _sections(html_text):
     return dict(re.findall(r'<section id="([\w-]+)"[^>]*>(.*?)</section>', html_text, re.DOTALL))
 
 
+def _stat_tile_value_for_label(html_text, label_substring):
+    """Binds a rendered value to ITS OWN label, not merely "appears somewhere in the panel"
+    (issue #131 PR #223 review). render_stat_tile (insight/dash/charts.py) always emits
+    `<div class="stat-tile-label">...</div>` immediately followed by
+    `<div class="stat-tile-value">...</div>` with no separator -- this regex requires that exact
+    adjacency, so a regression that swapped Speed's and Quality's values between their labels (or
+    mislabelled either tile) fails here even though both values still appear somewhere in the
+    section."""
+    m = re.search(
+        r'<div class="stat-tile-label">[^<]*' + re.escape(label_substring) + r'[^<]*</div>'
+        r'<div class="stat-tile-value">([^<]*)</div>',
+        html_text,
+    )
+    assert m, f"no stat-tile found with label containing {label_substring!r} in {html_text!r}"
+    return m.group(1)
+
+
 def test_speed_and_quality_render_absent_on_the_empty_store(conn):
     load_metrics(conn)
     html_text, _ = render_leadership_view(conn, now=NOW)
@@ -63,8 +80,11 @@ def test_speed_and_quality_render_live_values_adjacent_in_one_section(conn):
     load_fixture_jsonl(conn, FIXTURES / "5.jsonl")
     html_text, _ = render_leadership_view(conn, now=NOW)
     panel = _sections(html_text)["panel-speed-quality"]
-    assert '<div class="stat-tile-value">1</div>' in panel
-    assert "12.5%" in panel
+    # Tied to their OWN label's markup (not "appears somewhere in the panel", issue #131 PR #223
+    # review) -- a swap between Speed's and Quality's values would pass the old, untied assertions
+    # but fails these.
+    assert _stat_tile_value_for_label(panel, "Speed (goals shipped/week") == "1"
+    assert _stat_tile_value_for_label(panel, "Quality (change-failure rate, proxy)") == "12.5%"
     assert "counterweight to Speed" in panel
 
 
