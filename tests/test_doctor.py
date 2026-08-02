@@ -230,6 +230,22 @@ def test_features_telemetry_malformed_jsonl_line_does_not_crash():
         assert "2 events" in rows[_ROW]
 
 
+def test_features_survives_a_half_written_non_utf8_line_in_either_stream():
+    """A process killed mid-append truncates a multi-byte UTF-8 sequence. The resulting
+    UnicodeDecodeError is a ValueError, NOT an OSError, so it used to sail past the counter's
+    catch and crash the WHOLE dashboard — every row, not just this one. Both streams share one
+    counter now, so neither can regress alone."""
+    d = _doc()
+    for stream in ("entries", "events"):
+        with tempfile.TemporaryDirectory() as t:
+            base = _sdlc(t, {"telemetry": {"enabled": True, "share": True},
+                             "ledger": {"enabled": True, "actor": "dana"}})
+            files = pathlib.Path(base) / "ledger" / stream; files.mkdir(parents=True)
+            (files / "dana.jsonl").write_bytes(b'{"kind":"note"}\n\xff\xfe truncated mid-sequence\n')
+            rows = {name: state for name, state, _ in d.features(base)}   # must not raise
+            assert "2" in rows[_ROW if stream == "events" else "team ledger"]
+
+
 # --- ledger setup: enabled-but-not-created is a real gap doctor can fix -----------------------
 
 def test_flags_ledger_enabled_but_not_initialised():

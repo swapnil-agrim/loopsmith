@@ -244,15 +244,24 @@ def _detail(found, why):
 def _ledger_entries(base):
     """Count committed ledger lines. Read-only and fail-open — the dashboard never breaks on a
     half-written file."""
+    return _count_jsonl_lines(pathlib.Path(base) / "ledger" / "entries")
+
+
+def _count_jsonl_lines(directory):
+    """Non-blank lines across a directory's *.jsonl, or 0 if it isn't there. `errors="replace"`
+    is load-bearing, not defensive dressing: a process killed mid-append truncates a multi-byte
+    UTF-8 sequence, and the resulting UnicodeDecodeError is a ValueError, NOT an OSError, so it
+    would sail past the catch and take the WHOLE dashboard down — every other row with it — on
+    the next run. A half-written file is exactly what this is here to survive."""
     total = 0
-    entries = pathlib.Path(base) / "ledger" / "entries"
-    if not entries.exists():
+    if not directory.exists():
         return 0
-    for path in sorted(entries.glob("*.jsonl")):
+    for path in sorted(directory.glob("*.jsonl")):
         try:
-            total += sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        total += sum(1 for line in text.splitlines() if line.strip())
     return total
 
 
@@ -264,7 +273,7 @@ def _any_goal_verify_command(base):
         return False
     for path in goals.glob("*.md"):
         try:
-            if "verify_command:" in path.read_text(encoding="utf-8"):
+            if "verify_command:" in path.read_text(encoding="utf-8", errors="replace"):
                 return True
         except OSError:
             continue
@@ -279,7 +288,7 @@ def _ignore_mechanism(repo_root):
 
     def covers(path):
         try:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return False
         for raw in text.splitlines():
@@ -310,18 +319,9 @@ def _ledger_feature_state(base, cfg):
 
 
 def _telemetry_events_count(base):
-    """Committed+local event lines under .sdlc/ledger/events/. Same shape as _ledger_entries:
-    read-only, fail-open on a half-written file."""
-    total = 0
-    d = pathlib.Path(base) / "ledger" / "events"
-    if not d.exists():
-        return 0
-    for path in sorted(d.glob("*.jsonl")):
-        try:
-            total += sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
-        except OSError:
-            continue
-    return total
+    """Committed+local event lines under .sdlc/ledger/events/. Shares _ledger_entries' counter, so
+    the fail-open behaviour can't drift between the two rows."""
+    return _count_jsonl_lines(pathlib.Path(base) / "ledger" / "events")
 
 
 def _telemetry_feature_state(base, cfg):
