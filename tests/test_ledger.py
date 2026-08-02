@@ -382,3 +382,88 @@ def test_summary_line_calls_out_unanswered_handoffs(tmp_path, capsys):
     ledger.append(d, ON, "ack", "g.md", issue=61, state="accepted")
     ledger.main(["ledger.py", "summary", str(d)])
     assert "all answered" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------- events stream (#136)
+
+
+def test_vocabulary_constants_match_spec_table():
+    """Pins the literal CONTENT (order + case) of all five vocabulary constants against spec
+    §A.3, verbatim. EVENT_KINDS is enforced by append() and so is indirectly covered elsewhere,
+    but PHASE_KINDS/GATE_KINDS/REASON_CLASSES are deliberately NOT enforced at write time (see
+    plan Step 3) — without this test a typo, a dropped member, or a case flip drifts silently
+    from the spec with nothing to catch it."""
+    assert ledger.EVENT_KINDS == ("phase", "gate", "verify", "slice", "spend", "retro", "park", "scan")
+    assert ledger.PHASE_KINDS == ("goal", "research", "plan", "plan_review", "implement", "review", "retro")
+    assert ledger.GATE_KINDS == (
+        "plan_review", "code_review", "post_review", "merge", "decision", "alignment",
+        "verify", "risk_security", "risk_contract", "risk_migration", "risk_release", "risk_debug")
+    assert ledger.VERDICTS == ("pass", "block", "warn", "absent")
+    assert ledger.REASON_CLASSES == (
+        "irreversible", "needs_decision", "merge_conflict", "failing_check",
+        "no_evidence", "dependency", "review_cap", "budget", "unknown")
+
+
+def test_team_md_byte_identical_with_events_stream_present(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    ledger.append(d, ON, "claimed", "g.md")
+    before = ledger.render(ledger.read_all(d))
+    ledger.append(d, ON, "phase", "g.md", stream="events", phase="implement", state="start")
+    after = ledger.render(ledger.read_all(d))
+    assert after == before
+
+
+def test_unknown_event_kind_raises(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    with pytest.raises(ValueError):
+        ledger.append(d, ON, "banana", "g.md", stream="events")
+
+
+def test_unknown_event_verdict_raises(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    with pytest.raises(ValueError):
+        # lowercase "block" is a valid verdict; "fail" is the trap — pipeline.py's uppercase
+        # "FAIL" must not leak in as a valid lowercase alias.
+        ledger.append(d, ON, "gate", "g.md", stream="events", gate="merge", verdict="fail")
+
+
+def test_event_ids_monotonic_per_actor_and_stream(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    e1 = ledger.append(d, ON, "claimed", "g.md")
+    e2 = ledger.append(d, ON, "done", "g.md")
+    e3 = ledger.append(d, ON, "phase", "g.md", stream="events", phase="implement", state="start")
+    e4 = ledger.append(d, ON, "phase", "g.md", stream="events", phase="implement", state="end")
+    assert e1["id"] == "dana:1" and e2["id"] == "dana:2"
+    assert e3["id"] == "dana:1" and e4["id"] == "dana:2"          # independent per-stream counter
+
+
+def test_default_stream_unchanged(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    ledger.append(d, ON, "note", "g.md")
+    assert ledger.entry_file(d, "dana").exists()
+    assert ledger.entry_file(d, "dana") == ledger.entries_dir(d) / "dana.jsonl"
+    assert len(ledger.read_all(d)) == 1
+
+
+def test_event_fields_land_in_the_jsonl(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    ledger.append(d, ON, "gate", "g.md", stream="events",
+                  gate="merge", verdict="pass", cycle=2, why="looked fine")
+    path = ledger.entry_file(d, "dana", "events")
+    line = json.loads(path.read_text().strip().splitlines()[0])
+    assert line["gate"] == "merge" and line["verdict"] == "pass"
+    assert line["cycle"] == 2 and line["why"] == "looked fine"
+
+
+def test_phase_event_state_start_does_not_raise(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    e = ledger.append(d, ON, "phase", "g.md", stream="events", phase="implement", state="start")
+    assert e is not None and e["state"] == "start"
+
+
+def test_unknown_stream_raises(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    with pytest.raises(ValueError):
+        ledger.append(d, ON, "note", "g.md", stream="bogus")
+    with pytest.raises(ValueError):
+        ledger.read_all(d, stream="bogus")

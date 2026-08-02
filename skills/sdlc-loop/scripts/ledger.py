@@ -46,6 +46,45 @@ SHARED_KINDS = ("claimed", "done", "parked", "failed", "handoff", "ack", "releas
 #: reader ignores a field it does not know rather than failing. `pr` carries a pull-request number.
 OPTIONAL_FIELDS = ("area", "to", "issue", "priority", "why", "state", "ref", "pr")
 
+ENTRIES, EVENTS = "entries", "events"
+STREAMS = (ENTRIES, EVENTS)
+
+#: The event-stream analogue of KINDS. Deliberately separate from KINDS/SHARED_KINDS
+#: (untouched, per spec A.1) so the entries vocabulary a lead reads in TEAM.md can never
+#: be diluted by adding a telemetry kind here.
+EVENT_KINDS = ("phase", "gate", "verify", "slice", "spend", "retro", "park", "scan")
+
+#: Per-kind field whitelist for the events stream — the events-stream equivalent of
+#: OPTIONAL_FIELDS. A closed list per kind, not one shared list, because event kinds do not
+#: share a field namespace (e.g. `gate.verdict` vs `retro.grade`) the way entries kinds do.
+EVENT_FIELDS = {
+    "phase": ("phase", "state", "ms", "tokens_in", "tokens_out"),
+    "gate": ("gate", "verdict", "cycle", "why"),
+    "verify": ("ok", "exit", "ms", "command_sha256", "absent"),
+    "slice": ("slice", "wave", "mode", "files_declared", "ms"),
+    "spend": ("phase", "model", "tokens_in", "tokens_out", "cost_cents"),
+    "retro": ("grade", "debt_count", "lessons_count"),
+    "park": ("reason_class", "why"),
+    "scan": ("category", "file", "count"),
+}
+
+#: Every EVENT_KINDS value must have a whitelist entry — append() indexes EVENT_FIELDS[kind]
+#: directly (not .get(kind, ())) so a future EVENT_KINDS addition with no matching whitelist
+#: entry raises immediately at import time instead of silently dropping every field it writes.
+assert set(EVENT_KINDS) == set(EVENT_FIELDS), "EVENT_KINDS and EVENT_FIELDS have drifted apart"
+
+#: Controlled vocabularies from spec §A.3. PHASE_KINDS/GATE_KINDS/REASON_CLASSES exist for
+#: downstream consumers (ingest, docs, future validation) but are NOT enforced by append() in
+#: #136 — see the "unknown phase/gate/reason_class" decision in the append() docstring.
+#: VERDICTS IS enforced (issue requires it).
+PHASE_KINDS = ("goal", "research", "plan", "plan_review", "implement", "review", "retro")
+GATE_KINDS = ("plan_review", "code_review", "post_review", "merge", "decision", "alignment",
+              "verify", "risk_security", "risk_contract", "risk_migration", "risk_release",
+              "risk_debug")
+VERDICTS = ("pass", "block", "warn", "absent")
+REASON_CLASSES = ("irreversible", "needs_decision", "merge_conflict", "failing_check",
+                   "no_evidence", "dependency", "review_cap", "budget", "unknown")
+
 _ACTOR_CACHE = {}
 
 
@@ -75,12 +114,14 @@ def ledger_dir(sdlc_dir):
     return pathlib.Path(sdlc_dir) / "ledger"
 
 
-def entries_dir(sdlc_dir):
-    return ledger_dir(sdlc_dir) / "entries"
+def entries_dir(sdlc_dir, stream=ENTRIES):
+    if stream not in STREAMS:
+        raise ValueError(f"unknown ledger stream {stream!r} (expected one of {', '.join(STREAMS)})")
+    return ledger_dir(sdlc_dir) / stream
 
 
-def entry_file(sdlc_dir, who):
-    return entries_dir(sdlc_dir) / f"{_safe_name(who)}.jsonl"
+def entry_file(sdlc_dir, who, stream=ENTRIES):
+    return entries_dir(sdlc_dir, stream) / f"{_safe_name(who)}.jsonl"
 
 
 def _safe_name(who):
@@ -126,21 +167,50 @@ def reset_actor_cache():
 # --------------------------------------------------------------------------- write
 
 
-def append(sdlc_dir, config, kind, goal, run=None, now=None, **fields):
-    """Append one line to THIS actor's file. Returns the entry, or None when the ledger is off.
+def append(sdlc_dir, config, kind, goal, run=None, now=None, stream=ENTRIES, **fields):
+    """Append one line to THIS actor's file on the given stream. Returns the entry, or None
+    when the ledger is off.
 
-    `id` is `<actor>:<seq>` where seq counts this file's existing lines — monotonic per author,
-    which is exactly what a watcher needs for a resume cursor, and needs no shared counter."""
+    `id` is `<actor>:<seq>` where seq counts this file's existing lines — monotonic per
+    `(actor, stream)`, which is exactly what a watcher needs for a resume cursor, and needs no
+    shared counter.
+
+    `stream` defaults to `ENTRIES` (the pre-#136 behavior, byte-for-byte). `EVENTS` is a
+    separate closed vocabulary (`EVENT_KINDS`/`EVENT_FIELDS`) written to its own per-actor file,
+    so it can never collide with or dilute the entries kinds a lead reads in TEAM.md.
+
+    Unknown `phase`/`gate`/`reason_class` VALUE does not raise — only `kind` (both streams) and
+    `verdict` (events/`gate` only) are enforced, matching the issue's Done criteria verbatim.
+    `PHASE_KINDS`/`GATE_KINDS`/`REASON_CLASSES` are the documented vocabulary but tightening
+    them to enforced-at-write is a scope expansion later work can add, the same way `STATES`
+    already does for entries, without another signature change."""
     if not enabled(config):
         return None
-    if kind not in KINDS:
-        raise ValueError(f"unknown ledger kind {kind!r} (expected one of {', '.join(KINDS)})")
-    state = fields.get("state")
-    if state is not None and state not in STATES:
-        raise ValueError(f"unknown ledger state {state!r} (expected one of {', '.join(STATES)})")
+    if stream not in STREAMS:
+        raise ValueError(f"unknown ledger stream {stream!r} (expected one of {', '.join(STREAMS)})")
+
+    if stream == ENTRIES:
+        if kind not in KINDS:
+            raise ValueError(f"unknown ledger kind {kind!r} (expected one of {', '.join(KINDS)})")
+        state = fields.get("state")
+        if state is not None and state not in STATES:
+            raise ValueError(f"unknown ledger state {state!r} (expected one of {', '.join(STATES)})")
+        field_whitelist = OPTIONAL_FIELDS
+    else:  # EVENTS
+        if kind not in EVENT_KINDS:
+            raise ValueError(f"unknown event kind {kind!r} (expected one of {', '.join(EVENT_KINDS)})")
+        if kind == "gate":
+            verdict = fields.get("verdict")
+            if verdict is not None and verdict not in VERDICTS:
+                raise ValueError(f"unknown event verdict {verdict!r} (expected one of {', '.join(VERDICTS)})")
+        if kind == "phase":
+            state = fields.get("state")
+            if state is not None and state not in ("start", "end"):
+                raise ValueError(f"unknown phase state {state!r} (expected start or end)")
+        field_whitelist = EVENT_FIELDS[kind]
 
     who = actor(config, run)
-    path = entry_file(sdlc_dir, who)
+    path = entry_file(sdlc_dir, who, stream)
     path.parent.mkdir(parents=True, exist_ok=True)
     seq = _line_count(path) + 1
 
@@ -151,7 +221,7 @@ def append(sdlc_dir, config, kind, goal, run=None, now=None, **fields):
         "kind": kind,
         "goal": str(goal),
     }
-    for name in OPTIONAL_FIELDS:
+    for name in field_whitelist:
         value = fields.get(name)
         if value not in (None, ""):
             entry[name] = value
@@ -184,11 +254,12 @@ def _stamp(now=None):
 # --------------------------------------------------------------------------- read
 
 
-def read_all(sdlc_dir):
-    """The team view: the union of every author's file, oldest first. A malformed line is
-    skipped, never fatal — one bad append must not blind the whole team."""
+def read_all(sdlc_dir, stream=ENTRIES):
+    """The team view: the union of every author's file on the given stream, oldest first.
+    Reads one stream, `entries` by default. A malformed line is skipped, never fatal — one
+    bad append must not blind the whole team."""
     out = []
-    base = entries_dir(sdlc_dir)
+    base = entries_dir(sdlc_dir, stream)
     if not base.exists():
         return out
     for path in sorted(base.glob("*.jsonl")):
