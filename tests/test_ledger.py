@@ -16,7 +16,7 @@ def _mod(name):
 
 ledger = _mod("ledger")
 
-ON = {"ledger": {"enabled": True, "actor": "dana"}}
+ON = {"ledger": {"enabled": True, "actor": "dana"}, "telemetry": {"enabled": True}}
 OFF = {"ledger": {"enabled": False, "actor": "dana"}}
 
 
@@ -97,6 +97,19 @@ def test_safe_append_never_raises_and_never_writes_when_off(tmp_path, capsys):
 def test_safe_append_loads_config_itself(tmp_path):
     d = _sdlc(tmp_path, ON)
     assert ledger.safe_append(d, "note", "g.md")["actor"] == "dana"
+
+
+def test_safe_append_swallows_a_raising_append(tmp_path, capsys, monkeypatch):
+    """#139 capstone: the primitive-level guarantee every site-level `*_survives_a_raising_ledger_
+    append` test across loop.py/work.py/slices.py/pipeline.py/decision_gate.py already assumes —
+    even a raise from `append()` ITSELF (not just a bad kind/config) never escapes `safe_append`."""
+    d = _sdlc(tmp_path, ON)
+
+    def raiser(*a, **k):
+        raise RuntimeError("append broke")
+    monkeypatch.setattr(ledger, "append", raiser)
+    assert ledger.safe_append(d, "note", "g.md") is None
+    assert "non-fatal" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------- actor
@@ -467,3 +480,52 @@ def test_unknown_stream_raises(tmp_path):
         ledger.append(d, ON, "note", "g.md", stream="bogus")
     with pytest.raises(ValueError):
         ledger.read_all(d, stream="bogus")
+
+
+# ---------------------------------------------------------------- the EVENTS AND-gate (#139 Slice 0)
+# EVENTS-stream writes require BOTH ledger.enabled AND telemetry.enabled (strict `is True`, each).
+# ENTRIES is unaffected - still `ledger.enabled` alone. See ledger.py `append()`'s docstring for why
+# this is not an OR: an OR would let a repo with ledger.enabled:true and no telemetry block start
+# writing events with zero opt-in (the regression this gate exists to prevent), and would also make
+# telemetry-alone (ledger off) write into .sdlc/ledger/, a worktree that is only reliably gitignored
+# after /sdlc-ledger's ensure_ignore() has run.
+
+
+def test_events_are_a_noop_when_ledger_on_but_telemetry_absent(tmp_path):
+    """Bug A, the regression this gate exists to prevent: a repo that already has ledger.enabled:true
+    and has never touched the (new, #139-shipped) telemetry block must NOT start writing an events
+    stream just because emitters landed. ENTRIES, on the same config, is unaffected."""
+    cfg = {"ledger": {"enabled": True, "actor": "dana"}}   # no telemetry key at all
+    d = _sdlc(tmp_path, cfg)
+    assert ledger.append(d, cfg, "gate", "g.md", stream="events", gate="merge", verdict="pass") is None
+    assert not ledger.entry_file(d, "dana", "events").exists()
+    assert ledger.append(d, cfg, "note", "g.md") is not None    # entries stream: unaffected
+
+
+def test_events_are_still_a_noop_when_telemetry_on_but_ledger_off(tmp_path):
+    """Bug B, DELIBERATELY still open — owned by #244, not this issue. spec Section A.2 promises that
+    telemetry keeps writing locally even with the ledger off entirely, but there is no local-only
+    write path yet (`.sdlc/events/`); until #244 lands one, EVENTS still shares the ledger's own
+    gate and therefore its worktree. If #244 ever wires the local path, THIS test is the one that
+    should then change to expect a write."""
+    cfg = {"telemetry": {"enabled": True}}     # no ledger block at all -> ledger.enabled() is False
+    d = _sdlc(tmp_path, cfg)
+    assert ledger.append(d, cfg, "gate", "g.md", stream="events", gate="merge", verdict="pass") is None
+    cfg2 = {"ledger": {"enabled": False}, "telemetry": {"enabled": True}}
+    d2 = _sdlc(tmp_path.parent / (tmp_path.name + "-2"), cfg2)
+    assert ledger.append(d2, cfg2, "gate", "g.md", stream="events", gate="merge", verdict="pass") is None
+
+
+def test_telemetry_enabled_is_strict_true_not_truthy():
+    assert ledger.telemetry_enabled({"telemetry": {"enabled": "yes"}}) is False
+    assert ledger.telemetry_enabled({"telemetry": {"enabled": 1}}) is False
+    assert ledger.telemetry_enabled({"telemetry": {"enabled": True}}) is True
+    assert ledger.telemetry_enabled({}) is False
+    assert ledger.telemetry_enabled(None) is False
+
+
+def test_events_write_when_both_ledger_and_telemetry_are_on(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    entry = ledger.append(d, ON, "gate", "g.md", stream="events", gate="merge", verdict="pass")
+    assert entry is not None
+    assert ledger.read_all(d, stream=ledger.EVENTS)[0]["gate"] == "merge"

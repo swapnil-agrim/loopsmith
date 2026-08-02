@@ -394,3 +394,79 @@ def test_discover_end_to_end_and_fail_open():
     with tempfile.TemporaryDirectory() as d2:      # non-git tree -> fail-open, proposes nothing
         base2 = pathlib.Path(d2) / ".sdlc"; (base2 / "goals").mkdir(parents=True)
         assert pl.discover(str(base2), str(d2)) == []
+
+
+# ------------------------------------------------------------------ #139 Slice 4: site h (scan)
+# Needs ledger.enabled AND telemetry.enabled (the Slice 0 AND-gate) for an events-stream write to
+# actually land — see test_ledger.py's gate tests for the gate itself.
+
+TELEMETRY = {"ledger": {"enabled": True, "actor": "rae"}, "telemetry": {"enabled": True}}
+
+
+def _telemetry_project(root):
+    base = root / ".sdlc"
+    (base / "goals").mkdir(parents=True)
+    (base / "config.json").write_text(json.dumps(TELEMETRY))
+    return base
+
+
+def test_discover_emits_a_scan_event_per_candidate():
+    pl = _mod("pipeline")
+    ledger = _mod("ledger")
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, capture_output=True)
+        # 25 TODOs in one file: the collector caps `evidence` at 10 but tracks the real count in `cnt`
+        (root / "a.py").write_text("".join("# TODO line %d\n" % i for i in range(25)))
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
+        base = _telemetry_project(root)
+        pl.discover(str(base), str(root))
+        events = [e for e in ledger.read_all(str(base), stream=ledger.EVENTS) if e["kind"] == "scan"]
+        assert len(events) == 1
+        e = events[0]
+        assert e["category"] == "tech-debt"
+        assert e["file"] == "a.py"                 # stripped of the trailing :line
+        assert e["count"] == 25                    # the REAL total, not len(evidence) (capped at 10)
+        assert e["goal"] == "(discovery-scan)"
+
+
+def test_discover_tolerates_a_malformed_candidate_without_raising(monkeypatch):
+    """Independent review flag: Python evaluates call ARGUMENTS in the caller's frame, so a
+    non-dict candidate makes `c.get(...)` raise AttributeError straight out of `discover()` unless
+    each per-candidate body is individually guarded — a hole `discover()`'s own docstring
+    ('Fail-open... never raises') predates this story but was never actually proven for a
+    malformed candidate until now. Monkeypatching `ledger.append` to raise is NOT sufficient here
+    since that is the case `safe_append` already covers — this needs a bad LIST ITEM, not a bad
+    ledger."""
+    pl = _mod("pipeline")
+
+    class FakeProc:
+        returncode = 0
+        stdout = json.dumps({"schema": "discovery-scan/v1",
+                             "candidates": ["not-a-dict", {"category": "tech-debt",
+                                                            "evidence": ["a.py:1"]}]})
+        stderr = ""
+
+    monkeypatch.setattr(pl.subprocess, "run", lambda *a, **k: FakeProc())
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_project(pathlib.Path(d))
+        created = pl.discover(str(base), d)         # must not raise
+        assert isinstance(created, list) and len(created) == 1   # the one well-formed candidate survives
+
+
+def test_discover_survives_a_raising_ledger_append(monkeypatch):
+    """The site's fail-open test: would fail if `discover()` ever called `ledger.append` directly
+    instead of `ledger.safe_append`."""
+    pl = _mod("pipeline")
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, capture_output=True)
+        (root / "a.py").write_text("# TODO: rotate AKIALEAK00000000000 soon\n")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
+        base = _telemetry_project(root)
+
+        def raiser(*a, **k):
+            raise RuntimeError("ledger broke")
+        monkeypatch.setattr(pl.ledger, "append", raiser)
+        created = pl.discover(str(base), str(root))
+        assert len(created) == 1                     # the real discover outcome, unaffected by the raise
