@@ -37,6 +37,7 @@ _QUALITY_PAYLOAD_KEYS = (
     "change_failure_rate",
 )
 _IMPACT_PAYLOAD_KEYS = ("source", "lane", "goal_count", "share")
+_PORTFOLIO_PAYLOAD_KEYS = ("project_id", "done_count", "park_rate", "gate_coverage_pct")
 
 
 # --------------------------------------------------------------------------- page-specific fetchers
@@ -87,6 +88,36 @@ def _impact_source_shares(rows):
         ((src, cnt, cnt / total_count) for src, cnt in totals.items()),
         key=lambda t: (-t[2], str(t[0])),
     )
+
+
+def _portfolio_rows(conn):
+    """Every row of metric_41 (Portfolio table), one per known project (issue #132) -- the
+    dim_project LEFT JOIN spine in 41.sql guarantees a row for every ingested project even
+    when nothing was ever measured for it, with NULL (never 0) aggregates. Returns [] only
+    when dim_project itself has zero rows (no repo ever ingested)."""
+    cur = conn.execute("SELECT * FROM metric_41 ORDER BY project_id")
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def _fmt_count_or_absent(value):
+    """None (the LEFT JOIN spine's own "not measured" signal) -> "not measured"; any int -> its
+    plain string. done_count has no reachable real-zero case (see .sdlc/plans/132.md Decision 3)
+    but this helper is written generically so it also covers a future column with one."""
+    return "not measured" if value is None else str(value)
+
+
+def _fmt_fraction_pct_or_absent(value):
+    """park_rate is a 0-1 fraction (14.sql's own scale, inherited by 41.sql). None -> "not
+    measured"; 0.0 is a REAL measured zero (terminal goals exist, none ever parked) and renders
+    "0%", never merged with the None case (.sdlc/plans/132.md Decision 3)."""
+    return "not measured" if value is None else f"{value:.0%}"
+
+
+def _fmt_pct_or_absent(value):
+    """gate_coverage_pct is already a 0-100 percentage (24.sql's own scale, inherited by
+    41.sql) -- do not confuse with park_rate's 0-1 scale above. None -> "not measured"."""
+    return "not measured" if value is None else f"{value:.1f}%"
 
 
 # --------------------------------------------------------------------------- bespoke section renderers
@@ -217,11 +248,52 @@ def _render_effectiveness(id_prefix="dash"):
     return tile + disclaimer
 
 
+def _render_portfolio(rows, id_prefix="dash"):
+    """Section body for panel-portfolio (issue #132): one row per project from metric_41, with a
+    drill-through link on every row. THE HONESTY PROPERTY (.sdlc/plans/132.md Decision 2): every
+    link points to the SAME team-wide manager.html -- per-project drill-through is structurally
+    undeliverable today (1.sql/7.sql/14.sql carry no project_id), so the link text and an
+    adjoining note say so plainly rather than implying a per-project scope the data can't back.
+    NULL vs real zero (Decision 3): the three `_fmt_*_or_absent` helpers are the ONLY formatting
+    used here -- never a raw f-string, never COALESCE, so a genuine None always renders "not
+    measured" and a genuine 0.0 always renders as a real zero, never merged."""
+    if not rows:
+        return (
+            f'<div id="tile-portfolio">'
+            + _absent_line(
+                "no project has been ingested yet -- dim_project has zero rows.",
+                id_prefix=id_prefix,
+            )
+            + "</div>"
+        )
+    row_html = "".join(
+        "<tr><td>{project}</td><td>{done}</td><td>{park}</td><td>{gate}</td>"
+        '<td><a href="manager.html">Manager view (team-wide)</a></td></tr>'.format(
+            project=html.escape(str(r["project_id"])),
+            done=_fmt_count_or_absent(r["done_count"]),
+            park=_fmt_fraction_pct_or_absent(r["park_rate"]),
+            gate=_fmt_pct_or_absent(r["gate_coverage_pct"]),
+        )
+        for r in rows
+    )
+    return (
+        '<div id="tile-portfolio">'
+        '<p class="portfolio-note">Manager view is team-wide, not scoped to a single project -- '
+        "every drill-through link below opens the SAME manager.html.</p>"
+        "<table><thead><tr>"
+        "<th>Project</th><th>Throughput (done)</th><th>Park rate</th><th>Gate coverage</th>"
+        "<th>Drill-through</th>"
+        f"</tr></thead><tbody>{row_html}</tbody></table>"
+        "</div>"
+    )
+
+
 # --------------------------------------------------------------------------- page shell
 
 def render_leadership_view(conn, now=None, metrics_dir=None):
-    """Render the leadership persona's own page: the DX Core-4 rollup, three sections
-    (panel-speed-quality, panel-impact, panel-effectiveness). Returns (html_text, summary). No
+    """Render the leadership persona's own page: the DX Core-4 rollup plus the cross-project
+    Portfolio table, four sections (panel-speed-quality, panel-impact, panel-effectiveness,
+    panel-portfolio, issue #132). Returns (html_text, summary). No
     `actor` parameter (Decision 5, mirrors manager.py's own Decision 5). `metrics_dir` is
     test-only, mirrors render_manager_view's own convention -- the CLI never passes it."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
@@ -232,6 +304,7 @@ def render_leadership_view(conn, now=None, metrics_dir=None):
     speed_row = _speed_row(conn)
     quality_row = _quality_row(conn)
     impact_rows = _impact_rows(conn)
+    portfolio_rows = _portfolio_rows(conn)
 
     speed_coverage = extract_coverage("1", registry["1"]["reliability_class"], speed_row)
     quality_coverage = extract_coverage("5", registry["5"]["reliability_class"], quality_row)
@@ -251,6 +324,9 @@ def render_leadership_view(conn, now=None, metrics_dir=None):
     impact_payload = [
         {k: r[k] for k in _IMPACT_PAYLOAD_KEYS if k in r} for r in impact_rows
     ]
+    portfolio_payload = [
+        {k: r[k] for k in _PORTFOLIO_PAYLOAD_KEYS if k in r} for r in portfolio_rows
+    ]
 
     payload = {
         "generated_at": generated_at,
@@ -258,6 +334,7 @@ def render_leadership_view(conn, now=None, metrics_dir=None):
         "quality": quality_payload,
         "impact": impact_payload,
         "effectiveness_status": "absent",
+        "portfolio": portfolio_payload,
     }
 
     html_text = f"""<!doctype html>
@@ -287,6 +364,11 @@ individual grain -- zero exceptions (stricter than the manager view).</p>
 {_render_effectiveness()}
 </section>
 
+<section id="panel-portfolio">
+<h2>Portfolio (cross-project throughput, park rate, gate coverage, #41)</h2>
+{_render_portfolio(portfolio_rows)}
+</section>
+
 <script type="application/json" id="insight-leadership-data">{json_script(payload)}</script>
 <footer>Self-contained: no network fetch, no external script/style/font reference. Data is
 inlined above. No individual-grain metric appears anywhere on this page.</footer>
@@ -298,5 +380,6 @@ inlined above. No individual-grain metric appears anywhere on this page.</footer
         "quality_change_failure_rate": (quality_row or {}).get("change_failure_rate"),
         "impact_goal_count": sum(r["goal_count"] for r in impact_rows) if impact_rows else 0,
         "effectiveness_status": "absent",
+        "portfolio_project_count": len(portfolio_rows),
     }
     return html_text, summary
