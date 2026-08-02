@@ -391,8 +391,13 @@ def test_every_shipped_rule_renders_a_card_with_all_four_parts():
 
 @pytest.mark.parametrize("missing_key,broken_value", [
     ("name", ""), ("evidence", []), ("metric", ""), ("action", ""),
-    # [R3, from PR review] invisible-but-truthy values: a part that renders as a blank line is
-    # absent to a reader, so it must be absent to the check too.
+    # [R3, from PR review] invisible-but-truthy values -- a part that renders as a blank line is
+    # absent to a reader, so it must be absent to the check too. Only the three \u200b cases
+    # actually exercise that: ZWSP is category Cf, so it is truthy, not whitespace, and SURVIVES
+    # strip(). The two below it are redundant regression pins, NOT new coverage -- _gap_card_parts
+    # already strip()s, and both ASCII space and NBSP are isspace(), so they collapse to "" and
+    # would pass under the old bare-truthiness check too. Kept because they cost nothing and pin
+    # the boundary, labelled honestly so nobody reads five cases as five proofs.
     ("name", "\u200b"), ("metric", "\u200b"), ("action", "\u200b"),
     ("name", "   "), ("metric", "\u00a0"),
 ])
