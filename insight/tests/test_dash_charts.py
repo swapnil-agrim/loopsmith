@@ -167,6 +167,14 @@ def test_against_real_metric_10_row():
         table = charts.render_aging_wip_table(rows)
     finally:
         conn.close()
+    if not rows:
+        # The real store legitimately has zero open claims some of the time, and BOTH renderers
+        # have a deliberate ABSENT state for it: no <rect>, and one placeholder <tr> that is not
+        # a data row. Counting that placeholder as data made this test fail on real data whenever
+        # the WIP happened to be empty, which gated the whole repo's verify command.
+        assert chart.count("<rect") == 0
+        assert "ABSENT" in table
+        return
     n_table_rows = table.count("<tr>") - (1 if "<thead>" in table else 0)
     assert chart.count("<rect") == n_table_rows == len(rows)
 
