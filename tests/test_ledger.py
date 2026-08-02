@@ -417,6 +417,14 @@ def test_vocabulary_constants_match_spec_table():
         "no_evidence", "dependency", "review_cap", "budget", "unknown")
 
 
+def test_retro_grades_matches_sdlc_retro_skill_prose():
+    """#140: spec §A.3's `retro.grade` vocabulary (mirrors `sdlc-retro/SKILL.md` §3's
+    achieved/partial/diverged bullets) had no Python home until now — `emit` validates
+    against this tuple even though `append()` itself still leaves the value open
+    (same deliberately-deferred-enforcement pattern as PHASE_KINDS/GATE_KINDS above)."""
+    assert ledger.RETRO_GRADES == ("achieved", "partial", "diverged")
+
+
 def test_team_md_byte_identical_with_events_stream_present(tmp_path):
     d = _sdlc(tmp_path, ON)
     ledger.append(d, ON, "claimed", "g.md")

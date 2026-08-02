@@ -44,6 +44,10 @@ One of: **SOUND** (implement as-is) / **SOUND-WITH-REFINEMENTS** (list them) / *
 (blocking issues). Be specific and opinionated; don't pad with praise. If you didn't try to break
 it, you didn't review it.
 
+Record it as an event too (optional, `telemetry.enabled`) — SOUND → `pass`,
+SOUND-WITH-REFINEMENTS → `warn`, FIX-FIRST → `block`:
+`python3 "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/loop.py" emit .sdlc "$goal" gate --gate plan_review --verdict pass|warn|block`
+
 ## 5. Disposition — closing the loop on a FIX-FIRST
 A verdict that sends the plan back is only half the gate. When the revised plan returns, **give every
 finding an explicit disposition** — otherwise the loop either swallows findings silently or obeys a

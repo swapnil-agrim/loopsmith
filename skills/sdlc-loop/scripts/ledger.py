@@ -85,6 +85,12 @@ VERDICTS = ("pass", "block", "warn", "absent")
 REASON_CLASSES = ("irreversible", "needs_decision", "merge_conflict", "failing_check",
                    "no_evidence", "dependency", "review_cap", "budget", "unknown")
 
+#: #140: spec §A.3's `retro.grade` vocabulary, mirrored from `sdlc-retro/SKILL.md` §3's
+#: achieved/partial/diverged bullets — it had no Python home before this. Like
+#: PHASE_KINDS/GATE_KINDS above, documented but deliberately NOT enforced by append() itself;
+#: `loop.py emit` is what validates a `retro` event's `--grade` value against it.
+RETRO_GRADES = ("achieved", "partial", "diverged")
+
 _ACTOR_CACHE = {}
 
 

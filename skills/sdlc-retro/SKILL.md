@@ -54,6 +54,9 @@ Read what this specific repo offers; skip whatever's absent (never break the run
 - **partial** — realized for some of it; *name the residual gaps* and confirm each has a tracking item;
 - **diverged** — what shipped differs from the intent; say how and why.
 
+Record the grade as an event too (optional, `telemetry.enabled`):
+`python3 "${CLAUDE_SKILL_DIR}/../sdlc-loop/scripts/loop.py" emit .sdlc "$goal" retro --grade achieved|partial|diverged`
+
 **Route each durable lesson to the right store.** Most stop at the first; the rest are *proposed* and
 *parked* for approval:
 - **Audit trail** — rationale worth re-reading later → record it on the goal:

@@ -292,6 +292,41 @@ def run_loop(sdlc_dir, run_goal):
             "iterations": state.load_cursor(sdlc_dir)["iteration"], "stopped": stopped}
 
 
+def _flags(argv):
+    """`--name value` / bare `--flag` (-> `"true"`) scanner. A local copy of `ledger.py`'s own
+    `_flags` idiom (ledger.py `_flags`), not an import: it's a ~10-line idiom and `loop.py` /
+    `ledger.py` stay decoupled — neither imports the other's private helpers today."""
+    out = {}
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token.startswith("--"):
+            name = token[2:]
+            if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+                out[name] = argv[i + 1]
+                i += 2
+                continue
+            out[name] = "true"
+        i += 1
+    return out
+
+
+#: #140 (amendment A): the ONLY kinds `emit` will write — a POSITIVE allowlist, not merely
+#: "whatever ledger.EVENT_KINDS accepts". `verify`/`slice`/`park`/`scan` are Class-1 events
+#: written exclusively by deterministic code (verify_goal, slices.py, pipeline.py, `record`'s
+#: own park path) — an agent typing `emit ... verify --ok true --exit 0` must never be able to
+#: fabricate a "tests passed" record byte-indistinguishable from a real one. `emit` only ever
+#: owns the four kinds #140's SKILL.md prose actually instructs.
+_EMIT_KINDS = ("phase", "gate", "retro", "spend")
+
+#: Within `_EMIT_KINDS`, `gate` is narrowed AGAIN. `ledger.GATE_KINDS` has 12 members, but most
+#: (merge, decision, code_review, post_review, the risk_* gates...) are already emitted
+#: deterministically by shipped code (#246) — letting `emit` write `--gate merge --verdict
+#: pass` would forge a Class-1 "this PR merged clean" record. #140 owns exactly two: the
+#: plan-review verdict and the periodic alignment check.
+_EMIT_GATE_KINDS = ("plan_review", "alignment")
+
+
 def main(argv):
     if len(argv) >= 3 and argv[1] == "start":
         state.start_run(argv[2])
@@ -330,12 +365,77 @@ def main(argv):
         _record(argv[2], sources.get_source(argv[2], config), argv[3], argv[4],
                 argv[5] if len(argv) > 5 else ""); return 0
     if len(argv) >= 4 and argv[1] == "spend":       # host-reported token spend → budget.max_tokens
-        state.add_tokens(argv[2], argv[3]); return 0
+        state.add_tokens(argv[2], argv[3])
+        # Optional trailing goal + flags (spec §A.5 item 12: "extends the existing spend verb").
+        # amendment C: argv[4] is a GOAL only when it does not itself look like a flag — a bare
+        # `spend <dir> <tokens> --tokens_in 10 --tokens_out 20` (flags, no goal) must never let
+        # "--tokens_in" become the literal goal string (previously silent: wrong goal recorded,
+        # the bare "10" dropped, no error at all). With no goal there is nothing correct to
+        # attribute the flags to, so no event is written — budget-only, exactly like the
+        # untouched 2-arg form above.
+        if len(argv) >= 5 and not argv[4].startswith("--"):
+            sdlc_dir, goal = argv[2], argv[4]
+            flags = _flags(argv[5:])
+            ledger.safe_append(sdlc_dir, "spend", goal, config=state.load_config(sdlc_dir),
+                               stream=ledger.EVENTS, **flags)
+        return 0
+    if len(argv) >= 5 and argv[1] == "emit":        # agent-emitted telemetry (Class 2, best-effort)
+        sdlc_dir, goal, kind = argv[2], argv[3], argv[4]
+        flags = _flags(argv[5:])
+        if kind not in _EMIT_KINDS:
+            print(f"loop.py emit: unknown kind {kind!r} (expected one of {', '.join(_EMIT_KINDS)})",
+                  file=sys.stderr)
+            return 2
+        allowed = ledger.EVENT_FIELDS[kind]
+        bad = sorted(set(flags) - set(allowed))
+        if bad:
+            print(f"loop.py emit: unknown flag(s) {', '.join(bad)} for kind {kind!r} "
+                  f"(expected one of {', '.join(allowed)})", file=sys.stderr)
+            return 2
+        if kind == "phase" and flags.get("phase") not in (None, *ledger.PHASE_KINDS):
+            print(f"loop.py emit: unknown phase {flags.get('phase')!r} "
+                  f"(expected one of {', '.join(ledger.PHASE_KINDS)})", file=sys.stderr)
+            return 2
+        if kind == "gate" and flags.get("gate") not in (None, *_EMIT_GATE_KINDS):
+            print(f"loop.py emit: unknown gate {flags.get('gate')!r} "
+                  f"(expected one of {', '.join(_EMIT_GATE_KINDS)})", file=sys.stderr)
+            return 2
+        if kind == "retro" and flags.get("grade") not in (None, *ledger.RETRO_GRADES):
+            print(f"loop.py emit: unknown grade {flags.get('grade')!r} "
+                  f"(expected one of {', '.join(ledger.RETRO_GRADES)})", file=sys.stderr)
+            return 2
+        if flags.get("why"):
+            # Privacy stopgap only (spec §A.4) — 200 chars, newlines flattened. Does NOT scrub
+            # secret-shaped substrings (that's #141's job); it just shrinks the exposure of the
+            # first agent-controlled free-text path into the events stream. Three OTHER
+            # pre-existing paths already write `why` uncapped and are untouched by this story:
+            # hooks/decision_gate.py:330, loop.py's own `record parked "<text>"` path (line
+            # ~203 above), and work.py:562's post_review — see .sdlc/plans/140.md's
+            # Out-of-scope section (amendment D).
+            flags["why"] = flags["why"].replace("\n", " ")[:200]
+        config = state.load_config(sdlc_dir)
+        try:
+            entry = ledger.append(sdlc_dir, config, kind, goal, stream=ledger.EVENTS, **flags)
+        except ValueError as exc:                  # genuinely bad input — refuse loudly
+            print(f"loop.py emit: {exc}", file=sys.stderr)
+            return 2
+        except OSError as exc:
+            # amendment B: fail-open past this point. Validation already passed; a write
+            # failure now (full disk, an unwritable ledger dir) must never crash the caller —
+            # matching every other ledger call site's fail-open contract (safe_append's own
+            # message shape, reused here so the two read the same way in a log).
+            print(f"ledger: entry skipped (non-fatal): {exc}", file=sys.stderr)
+            return 0
+        print(entry["id"] if entry else
+              "OFF (config needs both \"ledger\": {\"enabled\": true} and "
+              "\"telemetry\": {\"enabled\": true})")
+        return 0
     if len(argv) >= 4 and argv[1] == "verify":      # machine done_when: run + persist evidence
         return verify_goal(argv[2], argv[3])
     print("usage: loop.py start <dir> | next <dir> | qc <dir> <goal> | "
           "note <dir> <goal> <text> | record <dir> <goal> done|parked|failed [reason] | "
-          "spend <dir> <tokens> | verify <dir> <goal>", file=sys.stderr)
+          "spend <dir> <tokens> [goal] [--k v ...] | emit <dir> <goal> <kind> [--k v ...] | "
+          "verify <dir> <goal>", file=sys.stderr)
     return 2
 
 
