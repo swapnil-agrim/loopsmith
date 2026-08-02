@@ -309,6 +309,37 @@ def _ledger_feature_state(base, cfg):
     return "ON — %d entr%s in .sdlc/ledger/entries/" % (n, "y" if n == 1 else "ies")
 
 
+def _telemetry_events_count(base):
+    """Committed+local event lines under .sdlc/ledger/events/. Same shape as _ledger_entries:
+    read-only, fail-open on a half-written file."""
+    total = 0
+    d = pathlib.Path(base) / "ledger" / "events"
+    if not d.exists():
+        return 0
+    for path in sorted(d.glob("*.jsonl")):
+        try:
+            total += sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+        except OSError:
+            continue
+    return total
+
+
+def _telemetry_feature_state(base, cfg):
+    """'is on' alone doesn't say where events land or whether share is actually honored yet — see
+    plan .sdlc/plans/138.md Decision 3/4. A non-dict telemetry value degrades to off (fail-open),
+    same convention as every other block reader in this file."""
+    t = cfg.get("telemetry")
+    t = t if isinstance(t, dict) else {}
+    if t.get("enabled") is not True:
+        return "off (nothing is recorded)"
+    n = _telemetry_events_count(base)
+    where = "%d event%s in .sdlc/ledger/events/" % (n, "" if n == 1 else "s")
+    if t.get("share") is False:
+        return (f"ON, share:false — NOT YET HONORED: still lands in .sdlc/ledger/events/ and still "
+                f"publishes with the ledger, same as share:true — {where}")
+    return f"ON, share:true — {where}, publishes to the ops branch alongside ledger entries"
+
+
 def _decision_gate_state(base, cfg):
     """Count the ACTIVE decisions, not the entries. A registry whose decisions are all superseded
     enforces nothing, and reporting it as ON would be exactly the false assurance this gate exists
@@ -420,6 +451,9 @@ def features(sdlc_dir=".sdlc"):
         ("team ledger",
          _ledger_feature_state(base, cfg),
          'config: "ledger": {"enabled": true}, then /sdlc-ledger to create + push it'),
+        ("telemetry (agent-emitted events)",
+         _telemetry_feature_state(base, cfg),
+         'config: "telemetry": {"enabled": true, "share": true|false}'),
         ("slice parallelism",
          ("ON — up to %s concurrent slices per wave" % par.get("max_concurrent", 3))
          if par.get("enabled") is True else "off (a goal's slices run one after another)",

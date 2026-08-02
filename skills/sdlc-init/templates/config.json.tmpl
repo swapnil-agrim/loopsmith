@@ -73,6 +73,14 @@
     "lease": { "ttl_hours": 12 },
     "_lease": "Claim lease: the loop skips a goal another actor holds an open `claimed` on (not yet done/parked/failed), so two people on one board don't start the same goal; a goal YOU hold is still yours to resume. Advisory (it sees claims already pulled to the ops branch, not a distributed lock), so keep assignee routing on too. ttl_hours expires a crashed claimer's hold so it can't block the team forever; 0 = never expire."
   },
+  "telemetry": {
+    "enabled": false,
+    "share": true,
+    "sample_phases": true,
+    "_comment": "Opt-in machine-emitted event stream for the analytics dashboard - phase timings, gate verdicts, verify results, counts and durations; never code, never diffs, never prose bodies. Off by default; absent or enabled:false, nothing is written and the loop behaves exactly as before. No emitter writes events in this build yet (epic #135) - turning this on now only declares the flag ahead of them; nothing appears on disk until they land. /sdlc-doctor features reports the live state.",
+    "_share": "true (default) publishes the events file on the ops branch alongside your ledger entries - same worktree, same union-merge, picked up by a teammate's next ledger pull. false asks to keep events local and out of the shared branch instead. NOT YET WIRED: until the local write path ships, every event still lands in .sdlc/ledger/events/<actor>.jsonl and still publishes with the rest of the ledger regardless of this flag - setting it to false today records your intent but changes nothing on disk yet.",
+    "_sample_phases": "Reserved for a future per-phase sampling ratio, so a noisy stream of phase-boundary events can be thinned under load. Does nothing until the emitters land; setting it today is a no-op."
+  },
   "parallel": { "enabled": false, "max_concurrent": 3 },
   "_parallel": "Run a goal's independent slices concurrently, from the declared manifest .sdlc/plans/<goal-stem>.slices.json: `slices.py plan` groups non-conflicting slices into waves (a slice that declares no files conflicts with everything and runs alone) and the loop dispatches each wave as subagents. Off by default; absent, every goal runs as one unit exactly as before.",
 

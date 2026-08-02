@@ -117,6 +117,119 @@ def test_features_reports_the_ledger_and_counts_its_entries(tmp_path):
     assert rows["team ledger"] == "ON — 1 entry in .sdlc/ledger/entries/"
 
 
+# --- telemetry: config block + doctor reporting (#138) ----------------------------------------
+
+_ROW = "telemetry (agent-emitted events)"
+
+
+def test_features_telemetry_absent_block_is_off():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {})
+        rows = {name: state for name, state, _ in d.features(base)}
+        assert rows[_ROW] == "off (nothing is recorded)"
+
+
+def test_features_telemetry_enabled_false_matches_absent_byte_for_byte():
+    """The headline behavior from the goal statement: an absent block and an explicit
+    enabled:false must read identically — not just both 'look off', the literal same string."""
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t1, tempfile.TemporaryDirectory() as t2:
+        absent = _sdlc(t1, {})
+        explicit_off = _sdlc(t2, {"telemetry": {"enabled": False}})
+        rows_absent = {name: state for name, state, _ in d.features(absent)}
+        rows_off = {name: state for name, state, _ in d.features(explicit_off)}
+        assert rows_absent[_ROW] == rows_off[_ROW] == "off (nothing is recorded)"
+
+
+def test_features_telemetry_enabled_is_strict_true_not_truthy():
+    """Guards the same is-True idiom as ledger.enabled() — a truthy string or int must not
+    silently switch this on."""
+    d = _doc()
+    for bad in ("yes", 1):
+        with tempfile.TemporaryDirectory() as t:
+            base = _sdlc(t, {"telemetry": {"enabled": bad}})
+            rows = {name: state for name, state, _ in d.features(base)}
+            assert rows[_ROW] == "off (nothing is recorded)", f"enabled={bad!r} must not turn telemetry on"
+
+
+def test_features_telemetry_on_share_true_reports_ops_branch_path():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t1, tempfile.TemporaryDirectory() as t2, tempfile.TemporaryDirectory() as t3:
+        explicit_share_true = _sdlc(t1, {"telemetry": {"enabled": True, "share": True}})
+        default_share = _sdlc(t2, {"telemetry": {"enabled": True}})       # share omitted -> defaults to on
+        malformed_share = _sdlc(t3, {"telemetry": {"enabled": True, "share": "sure"}})
+        for base in (explicit_share_true, default_share, malformed_share):
+            rows = {name: state for name, state, _ in d.features(base)}
+            assert "ON, share:true" in rows[_ROW]
+            assert ".sdlc/ledger/events/" in rows[_ROW]
+        rows1 = {name: state for name, state, _ in d.features(explicit_share_true)}
+        rows2 = {name: state for name, state, _ in d.features(default_share)}
+        assert rows1[_ROW] == rows2[_ROW]          # omitted share == share:true, byte for byte
+
+
+def test_features_telemetry_on_share_false_says_not_yet_honored():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"telemetry": {"enabled": True, "share": False}})
+        rows = {name: state for name, state, _ in d.features(base)}
+        assert "share:false" in rows[_ROW]
+        assert "NOT YET HONORED" in rows[_ROW]
+        assert ".sdlc/ledger/events/" in rows[_ROW]          # the real landing path, not .sdlc/events/
+        assert ".sdlc/events/" not in rows[_ROW].replace(".sdlc/ledger/events/", "")
+
+
+def test_features_telemetry_counts_existing_events():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"telemetry": {"enabled": True, "share": True}})
+        events = pathlib.Path(base) / "ledger" / "events"; events.mkdir(parents=True)
+        (events / "dana.jsonl").write_text('{"kind":"phase"}\n{"kind":"gate"}\n')
+        rows = {name: state for name, state, _ in d.features(base)}
+        assert "2 events" in rows[_ROW]
+
+
+def test_features_telemetry_malformed_block_does_not_crash():
+    """Fail-open against a non-dict `telemetry` value — the one shape a bare `or {}` idiom
+    would not catch (a non-empty string/list is truthy)."""
+    d = _doc()
+    for bad in ("oops", ["a", "b"], None, True):
+        with tempfile.TemporaryDirectory() as t:
+            base = _sdlc(t, {"telemetry": bad})
+            rows = {name: state for name, state, _ in d.features(base)}
+            assert rows[_ROW] == "off (nothing is recorded)", f"telemetry={bad!r} must fail open, not crash"
+
+
+def test_features_telemetry_no_events_dir_at_all():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"telemetry": {"enabled": True, "share": True}})
+        # .sdlc/ledger/events/ never created
+        rows = {name: state for name, state, _ in d.features(base)}
+        assert "0 events" in rows[_ROW]
+
+
+def test_features_telemetry_empty_events_dir():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"telemetry": {"enabled": True, "share": True}})
+        (pathlib.Path(base) / "ledger" / "events").mkdir(parents=True)
+        rows = {name: state for name, state, _ in d.features(base)}
+        assert "0 events" in rows[_ROW]
+
+
+def test_features_telemetry_malformed_jsonl_line_does_not_crash():
+    """A garbage line still counts as a non-blank line (doctor only counts lines, it never
+    parses JSON — same convention as _ledger_entries) and must not raise."""
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"telemetry": {"enabled": True, "share": True}})
+        events = pathlib.Path(base) / "ledger" / "events"; events.mkdir(parents=True)
+        (events / "dana.jsonl").write_text('not valid json at all\n{"kind":"phase"}\n')
+        rows = {name: state for name, state, _ in d.features(base)}
+        assert "2 events" in rows[_ROW]
+
+
 # --- ledger setup: enabled-but-not-created is a real gap doctor can fix -----------------------
 
 def test_flags_ledger_enabled_but_not_initialised():
