@@ -232,3 +232,51 @@ def test_ingest_goal_lifecycle_is_a_noop_in_local_mode(tmp_path, conn):
 
     assert result == {"goals": 0, "purged": 0}
     assert before == after
+
+
+# --------------------------------------------------------------------------- coverage gaps closed
+# after PR review MUTATION-TESTED the two claims below and found both invisible: deleting the
+# purge's own `reliability_class = 1` filter, and flipping arg_max to arg_min, each left the whole
+# suite green. The shipped SQL was correct both times -- these pin it so a future edit cannot
+# weaken it silently. (Issue #217 review, findings 1 and 2.)
+
+def test_purge_ignores_a_reliability_class_2_only_goal(tmp_path, conn):
+    """The purge's subquery carries its own `reliability_class = 1` filter, separate from the
+    upsert's. A goal whose ONLY events are class-2 (agent-emitted, best-effort) must not count as
+    "backed by fact_event" -- otherwise a stale local row survives on the strength of evidence the
+    upsert itself refuses to derive from, and fact_goal keeps a row no metric can trust."""
+    pid = project_id_for(tmp_path)
+    write_goal(conn, pid, {
+        "goal_id": "0001", "title": "stale local", "lane": None, "source": None,
+        "status": None, "verify_command": None,
+        "done_when_present": False, "plan_artifact_present": False,
+    })
+    _event(conn, pid, "0001", "2026-01-01T00:00:00", "claimed", reliability_class=2)
+    _event(conn, pid, "0001", "2026-01-01T01:00:00", "done", reliability_class=2)
+    _write_config(tmp_path / ".sdlc", {"discovery": {"source": "github"}})
+
+    ingest_goal_lifecycle(conn, tmp_path)
+
+    assert not [r for r in _rows(conn, "fact_goal") if r["goal_id"] == "0001"], (
+        "a class-2-only goal must not shield a stale row from the purge"
+    )
+
+
+@pytest.mark.parametrize("first,second,expected", [
+    ("done", "failed", "failed"),
+    ("failed", "done", "done"),
+])
+def test_derive_terminal_outcome_follows_the_LATER_event_not_the_first(conn, first, second,
+                                                                      expected):
+    """arg_max(kind, ts) means the LATEST terminal event wins. The pre-existing two-`done` test
+    cannot detect a wrong direction -- both values are "done" either way, which is exactly why
+    flipping arg_max to arg_min passed it. Two DIFFERENT terminal kinds are the only shape that
+    distinguishes them."""
+    pid = "p1"
+    _event(conn, pid, "900", "2026-01-01T00:00:00", "claimed")
+    _event(conn, pid, "900", "2026-01-01T01:00:00", first)
+    _event(conn, pid, "900", "2026-01-01T02:00:00", second)
+    derive_goals_from_events(conn, pid)
+    row = [r for r in _rows(conn, "fact_goal") if r["goal_id"] == "900"][0]
+    assert row["outcome"] == expected
+    assert str(row["terminal_ts"]) == "2026-01-01 02:00:00"
