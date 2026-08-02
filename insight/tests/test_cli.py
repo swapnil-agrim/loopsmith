@@ -460,6 +460,50 @@ def test_ingest_ledger_writer_is_idempotent_via_cli(tmp_path, monkeypatch, isola
     conn.close()
 
 
+# --------------------------------------------------------------------------- goal lifecycle derive (issue #217)
+
+
+def test_ingest_derives_fact_goal_from_events_under_github_mode_and_joins(
+    tmp_path, monkeypatch, capsys, isolate_path_empty
+):
+    """The issue's own required test: under discovery.source == "github", fact_goal's
+    lifecycle columns are derived from fact_event (already ingested by ingest_ledger, which
+    runs earlier in the same call) -- and fact_goal JOIN fact_event USING (project_id, goal_id)
+    is non-empty, the exact join that returns 0 on the unmodified code (see .sdlc/plans/217.md
+    Research recap)."""
+    duckdb = pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    sdlc = tmp_path / ".sdlc"
+    sdlc.mkdir(parents=True)
+    (sdlc / "config.json").write_text('{"discovery": {"source": "github"}}', encoding="utf-8")
+    entries = sdlc / "ledger" / "entries"
+    entries.mkdir(parents=True)
+    (entries / "alice.jsonl").write_text(
+        '{"id":"alice:1","ts":"2026-01-01T00:00:00Z","actor":"alice","kind":"claimed","goal":"42"}\n'
+        '{"id":"alice:2","ts":"2026-01-01T01:00:00Z","actor":"alice","kind":"merged","goal":"42"}\n'
+        '{"id":"alice:3","ts":"2026-01-01T02:00:00Z","actor":"alice","kind":"done","goal":"42"}\n',
+        encoding="utf-8",
+    )
+
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "goal(s) derived from event replay" in out
+
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    row = conn.execute(
+        "SELECT goal_id, outcome, claimed_ts IS NOT NULL, terminal_ts IS NOT NULL "
+        "FROM fact_goal WHERE goal_id = '42'"
+    ).fetchone()
+    assert row == ("42", "done", True, True)
+
+    joined = conn.execute(
+        "SELECT count(*) FROM fact_goal g JOIN fact_event e USING (project_id, goal_id)"
+    ).fetchone()[0]
+    assert joined > 0
+    conn.close()
+
+
 # --------------------------------------------------------------------------- --repos glob + adoption gate (issue #106)
 
 

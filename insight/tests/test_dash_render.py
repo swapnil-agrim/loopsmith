@@ -76,6 +76,34 @@ def test_live_measured_count_overrides_the_stale_dark_label(tmp_path, conn):
     assert metric_35["has_data"] is True
 
 
+def test_metric_2_cycle_time_stops_reading_absent_over_real_rows_issue_217(tmp_path, conn):
+    """Issue #217: after #217's own fix, fact_goal genuinely has real done goals with both
+    timestamps populated (this repo: ~36 rows) -- but metric_2's final SELECT list dropped the
+    population CTE's own `total_count`, leaving `excluded_negative_duration_count` (a legitimate
+    0 when nothing was excluded) as the ONLY `_count`-suffixed column reaching _measured(). Two
+    real, non-negative-duration done goals below reproduce exactly that: zero exclusions, real
+    scatter rows -- pre-fix this asserts has_data False (the bug); post-fix it must read True,
+    and since metric 2's own catalog header still says `-- data_status: dark`, the '(label
+    stale)' marker (render.py's own labelled_dark and has_data check) must fire next to metric 2
+    in the rendered table -- the dashboard visibly correcting its own stale claim over live data,
+    not just a payload flag nobody looks at."""
+    conn.execute(
+        "INSERT INTO fact_goal (project_id, goal_id, outcome, claimed_ts, terminal_ts) VALUES "
+        "('p1','g1','done','2026-01-01T00:00:00','2026-01-01T01:00:00'),"
+        "('p1','g2','done','2026-01-01T00:00:00','2026-01-01T02:00:00')"
+    )
+    html_text, _ = render_dashboard(conn, "s.duckdb")
+    payload = _data_script(html_text)
+    metric_2 = next(m for m in payload["metrics"] if m["id"] == "2")
+    assert metric_2["labelled_dark"] is True
+    assert metric_2["has_data"] is True
+    row_match = re.search(
+        r"<tr><td>2</td><td>Cycle time</td>.*?</tr>", html_text,
+    )
+    assert row_match, "metric 2's own row not found in the rendered catalog table"
+    assert "(label stale)" in row_match.group(0)
+
+
 def test_escaping_survives_a_script_breakout_payload(tmp_path, conn):
     """Reuses .sdlc/plans/124.md section F's exact </script> breakout payload, planted as a
     metric's own `-- name:` header field -- the simplest hermetic route to attacker-controlled

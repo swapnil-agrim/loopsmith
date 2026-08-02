@@ -33,6 +33,25 @@ from insight.ingest.packs import project_id_for, remote_identity_for
 _FENCE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
 
 
+def _discovery_source(sdlc_dir):
+    """.sdlc/config.json's discovery.source, or "local-goals" on anything missing/unreadable/
+    malformed -- a DELIBERATE second copy of the same seven-line read as
+    insight.ingest.goal_lifecycle._discovery_source / gh_reader._repo_from_config /
+    ledger_reader._telemetry_share_is_off (issue #217 Decision 3): the plugin/product boundary
+    tests/test_import_boundary.py enforces means insight/ cannot import a
+    skills/sdlc-loop/scripts/*.py config reader, and insight/ has no shared internal config
+    module either -- so each read site reimplements the same shape rather than share one.
+    Never raises."""
+    try:
+        raw = (pathlib.Path(sdlc_dir) / "config.json").read_text(encoding="utf-8-sig", errors="replace")
+        config = json.loads(raw)
+    except (OSError, ValueError):
+        return "local-goals"
+    discovery = config.get("discovery") if isinstance(config, dict) else None
+    source = discovery.get("source") if isinstance(discovery, dict) else None
+    return source if isinstance(source, str) and source else "local-goals"
+
+
 def parse_frontmatter(text):
     """Flat `key: value` frontmatter block -> dict of whatever keys actually appeared. Absence
     is `"key" not in result`, never a guessed default -- callers must check membership, not
@@ -74,7 +93,15 @@ def discover_goal_files(sdlc_dir):
     see .sdlc/plans/118.md Design decision 2 for why, and for what this deliberately does not
     catch (a differently-named, hand-added prose file would still slip through). Scope is
     otherwise unchanged: LOCAL FILE goals only -- a discovery.source == "github" goal has no
-    frontmatter text at all, out of scope for a frontmatter reader (#102 Design decision E)."""
+    frontmatter text at all, out of scope for a frontmatter reader (#102 Design decision E).
+
+    Issue #217 Decision 3: gated on discovery.source. Under github mode, fact_goal is derived
+    from replaying fact_event (insight.ingest.goal_lifecycle) -- github-mode goal_ids share no
+    key with any local .sdlc/goals/*.md file, so globbing them here would only ever produce
+    stale rows (the exact bug #217 exists to fix). Returns [] immediately in that case, before
+    ever touching the filesystem's goals/ directory."""
+    if _discovery_source(sdlc_dir) == "github":
+        return []
     goals_dir = pathlib.Path(sdlc_dir) / "goals"
     if not goals_dir.is_dir():
         return []

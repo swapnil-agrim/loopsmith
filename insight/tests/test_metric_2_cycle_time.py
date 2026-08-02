@@ -29,7 +29,17 @@ from empty), exactly 1 row (goal_id/percentiles NULL, excluded_negative_duration
 Restructured as a `population` CTE (done-and-both-timestamps-present count, split good/excluded)
 LEFT JOINed to the good rows, gated by `population.total_count > 0` -- this is what keeps the
 genuinely-empty-table case at exactly 0 rows while giving the all-excluded case its one
-surviving placeholder row."""
+surviving placeholder row.
+
+POST-#217 fold-in (round 5): `population.total_count` was computed all along but never reached
+the final SELECT list, leaving `excluded_negative_duration_count` -- a legitimate 0 whenever
+nothing was excluded -- as the ONLY `_count`-suffixed column insight.dash.render._measured()
+could see. On this repo's own real post-#217 ingest (~36 genuinely-measured done goals, zero of
+them negative-duration), that 0 made the dashboard render 'no data yet' over real rows: the
+exact inverted-dishonesty failure this product forbids. Added `total_count` to the final SELECT
+(the comment on that line explains why); this test file's own pinned all-excluded-population
+shape assertion below now includes it, and a new test right after proves the zero-exclusion,
+real-data case _measured() actually cares about."""
 import pathlib
 import pytest
 
@@ -102,7 +112,32 @@ def test_metric_2_an_all_excluded_population_still_surfaces_the_count(conn):
         "goal_id": None, "cycle_time_seconds": None,
         "p50_seconds": None, "p85_seconds": None,
         "excluded_negative_duration_count": 2,
+        "total_count": 2,
     }]
+
+
+def test_metric_2_total_count_gives_measured_a_real_signal_with_zero_exclusions(conn):
+    """Issue #217: the actual repro. Two real done goals, both timestamps present, NEITHER
+    negative-duration -- excluded_negative_duration_count is a legitimate 0 here, exactly the
+    state that made insight.dash.render._measured() read 0 (no data) over genuinely-measured
+    rows before total_count was added to the SELECT list. total_count must equal the real
+    population size (2) on every row, giving _measured() a live, non-zero signal even when the
+    exclusion counter itself is 0."""
+    conn.execute(
+        "INSERT INTO fact_goal (project_id, goal_id, outcome, claimed_ts, terminal_ts) VALUES "
+        "('p1','g1','done','2026-01-01T00:00:00','2026-01-01T01:00:00'),"
+        "('p1','g2','done','2026-01-01T00:00:00','2026-01-01T02:00:00')"
+    )
+    load_metrics(conn)
+    rows = rows_as_dicts(conn.execute("SELECT * FROM metric_2 ORDER BY goal_id"))
+    assert [r["goal_id"] for r in rows] == ["g1", "g2"]
+    assert [r["excluded_negative_duration_count"] for r in rows] == [0, 0]
+    assert [r["total_count"] for r in rows] == [2, 2]
+
+    from insight.dash.render import _measured
+    cur = conn.execute("SELECT * FROM metric_2")
+    cols = [d[0] for d in cur.description]
+    assert _measured(cols, cur.fetchall()) == 2
 
 
 def test_metric_2_a_genuinely_empty_table_still_returns_zero_rows(conn):

@@ -67,6 +67,28 @@ def test_discover_goal_files_sorted(tmp_path):
     assert names == ["0001.md", "0002.md"]
 
 
+def test_discover_goal_files_returns_empty_under_github_mode(tmp_path):
+    """Issue #217 Decision 3: a discovery.source == "github" project's fact_goal comes from
+    replaying fact_event (insight.ingest.goal_lifecycle), never from local .sdlc/goals/*.md
+    frontmatter -- even when real goal files are sitting on disk."""
+    _goal(tmp_path, "0001-x.md", "---\nid: 0001\ntitle: T\n---\n")
+    (tmp_path / "config.json").write_text(
+        '{"discovery": {"source": "github"}}', encoding="utf-8"
+    )
+    assert discover_goal_files(tmp_path) == []
+
+
+def test_ingest_artifacts_writes_no_fact_goal_rows_under_github_mode(conn, tmp_path):
+    _goal(tmp_path, "0001-x.md", "---\nid: 0001\ntitle: T\n---\n")
+    (tmp_path / "config.json").write_text(
+        '{"discovery": {"source": "github"}}', encoding="utf-8"
+    )
+    summary = ingest_artifacts(conn, tmp_path, sdlc_dir=tmp_path)
+    assert summary["goals"] == 0
+    assert conn.execute("select count(*) from fact_goal").fetchone()[0] == 0
+    assert conn.execute("select count(*) from dim_project").fetchone()[0] == 1
+
+
 def test_discover_goal_files_excludes_the_scaffolded_readme(tmp_path):
     """Issue #118 Design decision 2: the sdlc-init scaffold's README.md
     (skills/sdlc-init/templates/goals/README.md.tmpl, copied verbatim into every project's
