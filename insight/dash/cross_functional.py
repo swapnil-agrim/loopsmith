@@ -80,10 +80,16 @@ def _matrix_cell_svg(status, id_prefix="dash"):
     """One <svg> per table cell: status_mark()'s colour + icon + label (three channels), plus
     texture_defs()'s hatch pattern -- ONLY status_mark() itself layers the fourth, ABSENT-only
     texture channel on top (Decision 6). The same composition insight.dash.charts._absent_line
-    already does for a <p>, generalized to all four statuses and inlined in a <td> instead."""
+    already does for a <p>, generalized to all four statuses and inlined in a <td> instead.
+
+    The <defs> block is emitted ONLY for ABSENT (issue #133 review): status_mark() references the
+    pattern for no other status, so emitting it per cell put a dozen elements sharing
+    id="dash-absent-hatch" on the page -- invalid HTML, and ~17% of the rendered bytes were dead
+    markup. Gating it here matches _absent_line, which is only ever called for an ABSENT state."""
+    defs = texture_defs(id_prefix) if status == "ABSENT" else ""
     return (
         f'<svg width="90" height="16" viewBox="0 0 90 16" role="img" aria-label="{html.escape(status)}">'
-        + texture_defs(id_prefix)
+        + defs
         + status_mark(status, 6, 8, id_prefix=id_prefix)
         + "</svg>"
     )

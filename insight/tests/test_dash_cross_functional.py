@@ -199,6 +199,28 @@ def test_absent_cell_is_visually_and_semantically_distinct_from_pass_warn_fail(c
     assert "did not apply here" in panel
     assert "not \"applied and nothing was recorded\"" in panel or "nothing was recorded" in panel
     assert '<span class="cell-pct">n/a</span>' in absent_cell  # never a fabricated percentage
+    # the hatch <defs> is emitted ONLY where it is referenced -- see below
+    assert "<defs>" in absent_cell
+    for other in (pass_cell, warn_cell, fail_cell):
+        assert "<defs>" not in other
+
+
+def test_the_hatch_pattern_defs_is_emitted_only_for_absent_cells(conn):
+    """Issue #133 review: _matrix_cell_svg emitted texture_defs() for EVERY cell, so a dozen
+    elements shared id="dash-absent-hatch" -- invalid HTML, and ~17% of the page was markup
+    nothing referenced. status_mark() references the pattern for no status but ABSENT. This pins
+    both directions: the id stays unique, AND ABSENT keeps its fourth channel."""
+    from insight.dash.cross_functional import render_cross_functional_view
+
+    load_fixture_jsonl(conn, FIXTURES / "24.jsonl")
+    html_text, _ = render_cross_functional_view(conn, now=NOW)
+    panel = _sections(html_text)["panel-gate-matrix"]
+    absent_cells = re.findall(r'<td data-gate="\w+" data-status="ABSENT">.*?</td>', panel, re.DOTALL)
+    assert absent_cells, "fixture must contain at least one ABSENT cell or this is vacuous"
+    # one <defs> per ABSENT cell, and none anywhere else in the matrix
+    assert panel.count("<defs>") == len(absent_cells)
+    for c in absent_cells:
+        assert 'fill="url(#dash-absent-hatch)"' in c  # the fourth channel still lands
 
 
 def test_negative_control_proves_the_absent_distinctness_check_has_teeth():
