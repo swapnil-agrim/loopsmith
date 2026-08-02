@@ -106,6 +106,68 @@ def assert_self_contained(html_text):
         raise AssertionError(f"rendered page references an external origin: {m.group(0)!r}")
 
 
+class CoverageDenominatorMissing(RuntimeError):
+    """Raised when a metric declares reliability_class 2 but its own view's result row does not
+    carry all four coverage-denominator columns (insight.metrics.reliability's
+    COVERAGE_DENOMINATOR_COLUMNS). Spec lines 125-127: 'A Class-2 metric with no coverage figure
+    is a bug, not a number' -- caught loudly here, not degraded around, same posture as
+    HeaderError/MetricLoadError. Raise, not a rendered ABSENT marker: this is a first-party
+    authoring-contract violation, not a data-absence state -- see .sdlc/plans/129.md Decision D8
+    for the full reasoning."""
+
+
+#: Exact four names from insight.metrics.reliability.COVERAGE_DENOMINATOR_COLUMNS (issue #129).
+_COVERAGE_COLUMNS = ("class1_count", "class2_count", "total_count", "coverage_pct")
+
+
+def extract_coverage(metric_id, reliability_class, row):
+    """Returns None if reliability_class != 2 or row is None (class-1, or a class-2 metric with
+    nothing measured yet -- no value is being shown, so nothing needs qualifying). Otherwise
+    returns the four coverage-denominator columns as a dict when all four are present as KEYS in
+    `row` (presence, not truthiness -- coverage_pct may legitimately be NULL/None when
+    total_count is 0, per reliability.py's own NULLIF guard; that is a real 'n/a', not a missing
+    column). Raises CoverageDenominatorMissing when reliability_class == 2, a row exists, and any
+    of the four columns is absent from row's keys (.sdlc/plans/129.md Decision D1/D8)."""
+    if reliability_class != 2 or row is None:
+        return None
+    missing = [c for c in _COVERAGE_COLUMNS if c not in row]
+    if missing:
+        raise CoverageDenominatorMissing(
+            f"metric {metric_id}: declares reliability_class 2 but its own view is missing "
+            f"coverage-denominator column(s) {missing} -- spec lines 125-127: a class-2 metric "
+            "with no coverage figure is a bug, not a number. Paste "
+            "insight.metrics.reliability.COVERAGE_DENOMINATOR_COLUMNS into its SELECT list."
+        )
+    return {c: row[c] for c in _COVERAGE_COLUMNS}
+
+
+def coverage_denominator_html(coverage):
+    """Pure formatter, never raises. coverage=None -> "". Otherwise the one literal
+    <span class="coverage-denom"> shape every embed site (this file's _render_metric_table,
+    insight.dash.manager's WIP stat and park-rate stat) reuses unmodified -- one shape, three call
+    sites, one regex (.sdlc/plans/129.md Decision D1). Leading space is deliberate: callers
+    concatenate this directly onto the preceding value/markup with no extra separator."""
+    if coverage is None:
+        return ""
+    pct = coverage["coverage_pct"]
+    if pct is None:
+        pct_text = "n/a"
+    else:
+        try:
+            pct_text = f"{float(pct):.0%}"
+        except (TypeError, ValueError):
+            pct_text = html.escape(str(pct))
+    # issue #129 review: escape all three, matching pct_text's own fallback above and every other
+    # data-derived value in this file -- extract_coverage checks column PRESENCE only, not type,
+    # so a .sql aliasing something non-numeric into these names must not inject unescaped content.
+    return (
+        ' <span class="coverage-denom">&mdash; coverage '
+        f'{pct_text} ({html.escape(str(coverage["class1_count"]))} of '
+        f'{html.escape(str(coverage["total_count"]))} rows class-1, '
+        f'{html.escape(str(coverage["class2_count"]))} class-2)</span>'
+    )
+
+
 def _measured(cols, rows):
     """The live, shape-aware 'was anything real measured' signal for one metric view's own
     result (.sdlc/plans/124.md section K -- fixes a real bug this story's own first draft had:
@@ -135,12 +197,15 @@ def _metric_rows(conn, metrics_dir=None):
         cols = [d[0] for d in cur.description]
         view_rows = cur.fetchall()
         measured = _measured(cols, view_rows)
+        first_row = dict(zip(cols, view_rows[0])) if view_rows else None
+        coverage = extract_coverage(metric_id, meta["reliability_class"], first_row)
         rows.append({
             "id": metric_id, "name": meta["name"], "personas": meta["personas"],
             "reliability_class": meta["reliability_class"], "measured": measured,
             "has_data": measured > 0,
             "labelled_dark": meta["extra"].get("data_status") == "dark",
             "proxy": meta["extra"].get("proxy") == "true",
+            "coverage": coverage,
         })
     return rows
 
@@ -208,7 +273,7 @@ def _render_metric_table(rows):
         out.append(
             f"<tr><td>{html.escape(m['id'])}</td><td>{html.escape(m['name'])}</td>"
             f"<td>{html.escape(', '.join(m['personas']))}</td><td>{m['reliability_class']}</td>"
-            f"<td>{m['measured']}</td>"
+            f"<td>{m['measured']}{coverage_denominator_html(m['coverage'])}</td>"
             f"<td class='{status_class}'>{status_text}{stale}</td></tr>"
         )
     return "".join(out)
