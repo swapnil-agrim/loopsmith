@@ -3,6 +3,7 @@
 per tile. The privacy guardrail and the DXI structural test are NOT here -- see
 insight/tests/test_dash_leadership_guardrail.py, this story's own proving tests."""
 import datetime
+import json
 import pathlib
 import re
 
@@ -15,6 +16,7 @@ from insight.metrics.loader import load_metrics  # noqa: E402
 from insight.metrics.testing import load_fixture_jsonl  # noqa: E402
 from insight.dash.render import assert_self_contained  # noqa: E402
 from insight.dash.leadership import (  # noqa: E402
+    _portfolio_rows,
     _quality_row,
     _speed_row,
     render_leadership_view,
@@ -130,11 +132,97 @@ def test_effectiveness_always_renders_absent_never_a_computed_value(conn):
     assert "never calls it a DXI" in panel  # the disclaimer legitimately says this
 
 
-def test_render_leadership_view_has_exactly_the_three_expected_sections(conn):
+def test_portfolio_rows_reads_metric_41_ordered_by_project(conn):
+    load_fixture_jsonl(conn, FIXTURES / "41.jsonl")
+    load_metrics(conn)
+    rows = _portfolio_rows(conn)
+    assert [r["project_id"] for r in rows] == ["projA", "projB"]
+    assert rows[0]["done_count"] == 2
+    assert rows[1]["gate_coverage_pct"] is None
+
+
+def test_portfolio_format_helpers_distinguish_null_from_a_real_zero():
+    from insight.dash.leadership import (
+        _fmt_count_or_absent, _fmt_fraction_pct_or_absent, _fmt_pct_or_absent,
+    )
+    assert _fmt_count_or_absent(None) == "not measured"
+    assert _fmt_count_or_absent(2) == "2"
+    assert _fmt_fraction_pct_or_absent(None) == "not measured"
+    assert _fmt_fraction_pct_or_absent(0.0) == "0%"      # REAL zero, not absent
+    assert _fmt_fraction_pct_or_absent(0.3333) == "33%"
+    assert _fmt_pct_or_absent(None) == "not measured"
+    assert _fmt_pct_or_absent(0.0) == "0.0%"             # REAL zero, not absent
+    assert _fmt_pct_or_absent(100.0) == "100.0%"
+
+
+def test_portfolio_renders_absent_on_the_empty_store(conn):
+    load_metrics(conn)
+    html_text, _ = render_leadership_view(conn, now=NOW)
+    panel = _sections(html_text)["panel-portfolio"]
+    assert "no project has been ingested yet" in panel
+
+
+def _portfolio_row(panel_html, project_id):
+    m = re.search(r'<tr><td>' + re.escape(project_id) + r'</td>(.*?)</tr>', panel_html, re.DOTALL)
+    assert m, f"no portfolio row found for project {project_id!r}"
+    return m.group(1)
+
+
+def test_portfolio_projA_and_projB_render_as_distinct_rows_with_hand_computed_values(conn):
+    load_fixture_jsonl(conn, FIXTURES / "41.jsonl")
+    html_text, _ = render_leadership_view(conn, now=NOW)
+    panel = _sections(html_text)["panel-portfolio"]
+
+    row_a = _portfolio_row(panel, "projA")
+    assert "<td>2</td>" in row_a           # done_count
+    assert "<td>33%</td>" in row_a         # park_rate 0.3333 -> 33%
+    assert "<td>100.0%</td>" in row_a      # gate_coverage_pct 100.0
+
+    row_b = _portfolio_row(panel, "projB")
+    assert "<td>1</td>" in row_b            # done_count
+    assert "<td>0%</td>" in row_b           # park_rate 0.0 -- a REAL zero, not "not measured"
+    assert "<td>not measured</td>" in row_b  # gate_coverage_pct is NULL
+
+
+def test_portfolio_drill_through_links_all_point_to_manager_html_labelled_team_wide(conn):
+    load_fixture_jsonl(conn, FIXTURES / "41.jsonl")
+    html_text, _ = render_leadership_view(conn, now=NOW)
+    panel = _sections(html_text)["panel-portfolio"]
+    links = re.findall(r'<a href="([^"]+)">([^<]*)</a>', panel)
+    assert len(links) == 2  # one per project row -- projA, projB
+    for href, text in links:
+        assert href == "manager.html"
+        assert "team-wide" in text
+    assert "not scoped to a single project" in panel  # the adjoining note, outside the links too
+
+
+def test_portfolio_payload_is_present_and_sits_outside_every_section(conn):
+    load_fixture_jsonl(conn, FIXTURES / "41.jsonl")
+    html_text, summary = render_leadership_view(conn, now=NOW)
+    assert summary["portfolio_project_count"] == 2
+    m = re.search(
+        r'<script type="application/json" id="insight-leadership-data">(.*?)</script>',
+        html_text, re.DOTALL,
+    )
+    payload = json.loads(m.group(1))
+    assert len(payload["portfolio"]) == 2
+    from insight.dash.leadership import _PORTFOLIO_PAYLOAD_KEYS
+    assert set(payload["portfolio"][0]) <= set(_PORTFOLIO_PAYLOAD_KEYS)
+
+
+def test_render_leadership_view_has_exactly_the_four_expected_sections(conn):
     html_text, _ = render_leadership_view(conn, now=NOW)
     assert set(_sections(html_text)) == {
-        "panel-speed-quality", "panel-impact", "panel-effectiveness",
+        "panel-speed-quality", "panel-impact", "panel-effectiveness", "panel-portfolio",
     }
+
+
+def test_metric_41_is_still_reliability_class_1_so_no_coverage_denominator_is_needed(conn):
+    """Canary for .sdlc/plans/132.md Decision 4: portfolio deliberately calls neither
+    extract_coverage nor coverage_denominator_html. If #41 is ever reclassified to class 2 this
+    must fail loudly here, not silently under-render a required denominator."""
+    registry = load_metrics(conn)
+    assert registry["41"]["reliability_class"] == 1  # int, not "1" -- header.py:139 casts
 
 
 def test_render_leadership_view_passes_assert_self_contained(conn):

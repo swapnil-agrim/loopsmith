@@ -18,6 +18,7 @@ from insight.metrics.loader import load_metrics  # noqa: E402
 from insight.metrics.testing import load_fixture_jsonl  # noqa: E402
 from insight.dash.leadership import (  # noqa: E402
     _impact_rows,
+    _portfolio_rows,
     _quality_row,
     _speed_row,
     render_leadership_view,
@@ -60,6 +61,9 @@ def conn(tmp_path):
         "opened_ts) VALUES ('p1', 'carol', 'dave', 'insight', 601, 'p1', ?)", [NOW],
     )
     load_fixture_jsonl(c, FIXTURES / "9.jsonl")  # gives panel-impact real content to leak into
+    # issue #132: one dim_project row so panel-portfolio renders its live branch (not ABSENT,
+    # which trivially can't leak anything) when the whole-page leak check runs.
+    c.execute("INSERT INTO dim_project (project_id, repo) VALUES ('p1', 'org/p1')")
     yield c
     c.close()
 
@@ -75,6 +79,14 @@ def _assert_no_individual_grain_leak(html_text, actor_identifiers):
 def test_no_actor_identifier_appears_anywhere_on_the_leadership_page(conn):
     html_text, _ = render_leadership_view(conn, now=NOW)
     _assert_no_individual_grain_leak(html_text, ["carol", "dave"])
+
+
+def test_portfolio_rows_carry_no_person_identifying_column(conn):
+    load_metrics(conn)
+    rows = _portfolio_rows(conn)
+    assert rows  # fixture regression guard -- Step 3.1's dim_project insert must be present
+    for row in rows:
+        assert not any("actor" in k.lower() for k in row)
 
 
 def test_every_raw_row_leadership_reads_carries_no_person_identifying_column(conn):
