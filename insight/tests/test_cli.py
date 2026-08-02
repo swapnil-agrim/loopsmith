@@ -747,6 +747,7 @@ def test_dash_builds_index_html_and_exits_zero(tmp_path, monkeypatch):
     assert (tmp_path / "out" / "index.html").exists()
     assert (tmp_path / "out" / "manager.html").exists()
     assert (tmp_path / "out" / "leadership.html").exists()
+    assert (tmp_path / "out" / "cross-functional.html").exists()
 
 
 def test_dash_reports_coverage_denominator_missing_as_a_clean_error_not_a_traceback(
@@ -820,6 +821,27 @@ def test_dash_reports_coverage_denominator_missing_from_leadership_view_as_a_cle
     assert "Traceback" not in captured.err
 
 
+def test_dash_reports_coverage_denominator_missing_from_cross_functional_view_as_a_clean_error(
+    tmp_path, monkeypatch, capsys,
+):
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    import insight.dash.cross_functional as cf_mod
+    import insight.dash.render as render_mod
+
+    def _boom(conn, now=None, metrics_dir=None):
+        raise render_mod.CoverageDenominatorMissing(
+            "metric 900: missing coverage-denominator column(s)"
+        )
+
+    monkeypatch.setattr(cf_mod, "render_cross_functional_view", _boom)
+    code = main(["dash", "--db", str(tmp_path / "x.duckdb"), "--out", str(tmp_path / "out")])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "insight dash: metric catalog failed to load" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_dash_prints_to_stdout_not_stderr_on_success(tmp_path, monkeypatch, capsys):
     pytest.importorskip("duckdb")
     monkeypatch.chdir(tmp_path)
@@ -830,6 +852,7 @@ def test_dash_prints_to_stdout_not_stderr_on_success(tmp_path, monkeypatch, caps
     assert "wrote" in out
     assert (tmp_path / "out" / "manager.html").exists()
     assert (tmp_path / "out" / "leadership.html").exists()
+    assert (tmp_path / "out" / "cross-functional.html").exists()
 
 
 def test_dash_default_out_dir_is_under_dot_sdlc(tmp_path, monkeypatch):
@@ -840,6 +863,7 @@ def test_dash_default_out_dir_is_under_dot_sdlc(tmp_path, monkeypatch):
     assert (tmp_path / ".sdlc" / "insight-dash" / "index.html").exists()
     assert (tmp_path / ".sdlc" / "insight-dash" / "manager.html").exists()
     assert (tmp_path / ".sdlc" / "insight-dash" / "leadership.html").exists()
+    assert (tmp_path / ".sdlc" / "insight-dash" / "cross-functional.html").exists()
 
 
 def test_dash_against_a_never_ingested_store_still_exits_zero_but_warns(tmp_path, monkeypatch, capsys):
@@ -857,6 +881,7 @@ def test_dash_against_a_never_ingested_store_still_exits_zero_but_warns(tmp_path
     assert "Ingested, nothing measurable yet" not in html_text
     assert (tmp_path / "out" / "manager.html").exists()
     assert (tmp_path / "out" / "leadership.html").exists()
+    assert (tmp_path / "out" / "cross-functional.html").exists()
 
 
 def test_dash_against_an_onboarding_week_store_warns_differently_and_never_says_never_ingested(
@@ -886,6 +911,7 @@ def test_dash_against_an_onboarding_week_store_warns_differently_and_never_says_
     assert "this store has never been ingested" not in html_text
     assert (tmp_path / "out" / "manager.html").exists()
     assert (tmp_path / "out" / "leadership.html").exists()
+    assert (tmp_path / "out" / "cross-functional.html").exists()
 
 
 def test_dash_index_html_has_no_external_reference(tmp_path, monkeypatch):
@@ -900,6 +926,7 @@ def test_dash_index_html_has_no_external_reference(tmp_path, monkeypatch):
     assert_self_contained(html_text)  # must not raise
     assert (tmp_path / "out" / "manager.html").exists()
     assert (tmp_path / "out" / "leadership.html").exists()
+    assert (tmp_path / "out" / "cross-functional.html").exists()
 
 
 # --------------------------------------------------------------------------- dash IC view (issue #126, E4.S3)
