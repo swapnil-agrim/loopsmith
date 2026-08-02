@@ -453,7 +453,7 @@ is two different conversations.
 
 | # | Metric | Question | ⚙ |
 |---|---|---|---|
-| 39 | DX Core-4 rollup | Speed (#1 per engineer) · Quality (#5) · Impact (#9, % new capability) · **Effectiveness = declared gap** | mixed |
+| 39 | DX Core-4 rollup | Speed (#1, **aggregate**) · Quality (#5) · Impact (#9, **source/lane distribution**) · **Effectiveness = declared gap** | mixed |
 | 40 | Cost per project per week; $/landed-goal trend | Unit economics at portfolio altitude | NOW (actor-day) → AGT |
 | 41 | Portfolio table | projects × throughput × park rate × gate coverage, one row each | NOW |
 | 42 | Adoption & flag correlation | Which flags correlate with which outcomes? | NOW — `config.json` is committed |
@@ -468,11 +468,23 @@ therefore which to keep.
 
 ### Guardrails — binding, not advisory
 
+**Corrected 2026-08-02 (issue #224), found while building #131.** Three defects sat in this one section —
+the section carrying the privacy and no-performance-review guardrails, which I had already flagged as
+unusually load-bearing. Two were internal contradictions a mechanical cross-check would have caught: the
+rollup row said *"Speed (#1 per engineer)"* while the rule below categorically bans individual grain outside
+#10 and #32, and it said *"Impact (#9, % new capability)"* when `metric_9`'s actual schema is
+`(source, lane, goal_count, share)` and `lane` is goal SIZE, not a capability axis — so the stated figure
+was uncomputable. The third, #9's missing counterweight, needed the decision now recorded below. Density in
+one small section is a signal, not luck.
+
 * No metric renders at **individual grain** in the manager or leadership views, with two deliberate exceptions:
   **aging WIP (#10)** and **handoff response (#32)** — both are about unblocking a person, not ranking one.
 * The IC view shows an individual **only their own** data.
-* Every throughput metric is rendered adjacent to a quality counterweight (#1 next to #5, #12 next to #24).
-  DX Core-4's own rule: a throughput metric shipped alone gets gamed.
+* Every **throughput** metric is rendered adjacent to a quality counterweight (#1 next to #5, #12 next to
+  #24). DX Core-4's own rule: a throughput metric shipped alone gets gamed. **Impact (#9) is deliberately
+  exempt and needs no pairing** — it is a *distribution*, not a throughput number. You cannot game a share
+  by working faster; you game it by misclassifying, which a counterweight metric does not detect. Render it
+  unpaired and say so, rather than inventing a pairing to satisfy the shape of the rule.
 * No metric is exported into a performance-review surface. This is a product constraint; it is what keeps the
   tool from being read as surveillance, which is the failure mode that kills adoption.
 
