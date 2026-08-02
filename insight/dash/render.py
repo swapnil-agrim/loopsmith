@@ -29,12 +29,42 @@ import datetime
 import html
 import json
 import re
+import urllib.parse
 
+from insight.dash.colors import status_mark, texture_defs
 from insight.dash.shell import base_style
 from insight.gaps.report import build_report, json_default
 from insight.metrics.loader import load_metrics
 
 DEFAULT_OUT_DIR = "insight-dash"  # joined under .sdlc/ by the CLI layer, mirrors DEFAULT_DB_PATH
+
+#: issue #134 (E5.S4), Decision 4: the config-UI deep-link contract, authored here because E8 has
+#: no code yet. `CONFIG_UI_PATH` is a bare relative sibling filename, matching every existing
+#: dash page's own cross-page convention (`ic.html`, `manager.html`, `leadership.html`,
+#: `cross-functional.html` -- insight/__main__.py) -- `assert_self_contained`'s regex only
+#: rejects an absolute `https?://` / protocol-relative `//` origin (or `@import`/`url()` pointing
+#: at one), never a bare relative filename, so this link shape is untouched by that guard and a
+#: static `file://` page can still form it.
+CONFIG_UI_PATH = "config.html"
+
+
+def config_deep_link(field):
+    """The URL contract for "the card deep-links into the configuration UI with the field
+    pre-selected" (spec line 566). Returns a RELATIVE url: `config.html?field=<field>`, `field`
+    URL-encoded via stdlib `urllib.parse.quote` (its default-safe unreserved set already includes
+    `.`, so a dotted path like `work.require_review` round-trips untouched; a value needing
+    escaping, e.g. a literal space, is percent-encoded). `field` is a dotted path into a
+    project's own `config_json` (e.g. `work.require_review`, `verify.command` -- see
+    insight/gaps/coverage_review_missing.sql and coverage_verify_no_command.sql's own
+    `-- config_field:` header lines). "Pre-selected" means: the config UI (E8, not built by this
+    goal) opens with this field focused/scrolled-to -- E8.S5 is the real integration point; this
+    function only authors and tests the URL shape it will consume.
+
+    This docstring IS the contract's home -- .sdlc/plans/134.md Decision 4: this repo's own
+    convention for a cross-epic contract is a docstring promoted to "durable, reusable" status in
+    place (see assert_self_contained's own docstring, "promoted to a durable, reusable build-time
+    guard for S2-S4"), not a new markdown file."""
+    return f"{CONFIG_UI_PATH}?field={urllib.parse.quote(field)}"
 
 #: Task 7 (issue #125, E4.S2, Decision 6): the badge/dot colours below used to be literal,
 #: light-mode-only hex baked straight into this string, with no dark-mode variant at all. They now
@@ -43,19 +73,24 @@ DEFAULT_OUT_DIR = "insight-dash"  # joined under .sdlc/ by the CLI layer, mirror
 #: colour systems for the same four PASS/WARN/FAIL/ABSENT states. `.viz-root` (the class the
 #: <body> carries below) is the scope viz_css_vars()'s custom properties are declared under; the
 #: `body` selector itself picks up `--dash-ink`/`--dash-surface` for the page's own text/background,
-#: gaining dark-mode support the shell never had. `_ICON_CLASS` (below) is unchanged -- only the
-#: hex values these class names resolve to moved here.
+#: gaining dark-mode support the shell never had.
+#:
+#: issue #134 (E5.S4): `.badge*` (below, now removed) and `_ICON_CLASS` (below, now removed) were
+#: only ever used by `_render_gaps_table`'s one-`<tr>`-per-finding badge -- confirmed by grep, no
+#: other module references either. `_render_gap_findings` replaces that table with real four-part
+#: cards (`.gap-card*`) for WARN/FAIL, using `_gap_status_svg`/`status_mark()` for the status
+#: mark instead of a CSS badge class; PASS/ABSENT keep a compact table, styled by `.gap-quiet-table`.
 _STYLE = f"""
 {base_style()}
 .dot-has {{ color: var(--dash-status-pass); }} .dot-empty {{ color: var(--dash-muted); }}
-.badge {{ display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px; }}
-.badge-warn {{ background: var(--dash-status-warn); color: var(--dash-on-status); }}
-.badge-fail {{ background: var(--dash-status-fail); color: var(--dash-on-status); }}
-.badge-pass {{ background: var(--dash-status-pass); color: var(--dash-on-status); }}
-.badge-absent {{ background: var(--dash-status-absent); color: var(--dash-on-status); }}
+.gap-card {{ border: 1px solid var(--dash-gridline); border-radius: 6px; padding: .75rem 1rem; margin-bottom: .75rem; }}
+.gap-card-what {{ margin: 0 0 .4rem; font-size: 1rem; }}
+.gap-card-evidence {{ margin: 0 0 .4rem; padding-left: 1.2rem; font-size: 12px; color: var(--dash-ink2); }}
+.gap-card-metric {{ margin: 0 0 .3rem; font-size: 12px; color: var(--dash-ink2); }}
+.gap-card-action {{ margin: 0; }}
+.gap-card-config-link {{ margin-left: .5rem; }}
+.gap-quiet-table td {{ font-size: 12px; }}
 """
-
-_ICON_CLASS = {"PASS": "badge-pass", "WARN": "badge-warn", "FAIL": "badge-fail", "ABSENT": "badge-absent"}
 
 #: The 8 collector-derived metrics available with zero setup on day zero -- no ledger, no
 #: config change, nothing turned on (spec: docs/superpowers/specs/2026-07-30-loopsmith-insight-
@@ -279,16 +314,77 @@ def _render_metric_table(rows):
     return "".join(out)
 
 
-def _render_gaps_table(findings):
-    out = []
-    for f in findings:
-        cls = _ICON_CLASS[f["severity"]]
-        out.append(
-            f"<tr><td>{html.escape(f['rule_id'])}</td><td>{html.escape(f['class'])}</td>"
-            f"<td><span class='badge {cls}'>{f['severity']}</span></td>"
-            f"<td>{html.escape(str(f['metric']))}</td></tr>"
+def _gap_status_svg(status, id_prefix="dash"):
+    """One <svg> per card/row: status_mark()'s colour + icon + label (three channels), plus
+    texture_defs()'s hatch pattern for ABSENT -- mirrors insight.dash.cross_functional's own
+    `_matrix_cell_svg` exactly (issue #134, E5.S4). Emits NO <defs> of its own: `render_dashboard`
+    emits `texture_defs()` ONCE, immediately after `<body class="viz-root">` (issue #231's fix,
+    applied here by direct precedent rather than re-derived) -- a per-element <defs> would put a
+    whole page of gap cards on one duplicated id."""
+    return (
+        f'<svg width="90" height="16" viewBox="0 0 90 16" role="img" aria-label="{html.escape(status)}">'
+        + status_mark(status, 6, 8, id_prefix=id_prefix)
+        + "</svg>"
+    )
+
+
+def _render_gap_card(f):
+    """One WARN/FAIL finding -> one four-part card: what (name) / evidence rows / metric this
+    gap would move / one action, config-fixable ones deep-linking via config_deep_link (issue
+    #134, E5.S4). Evidence rows are `html.escape(str(row))` -- the same `str(dict)` convention
+    `render_report()` (insight/gaps/report.py, `f"    evidence: {row}"`) already uses; no cap on
+    row count, mirroring `render_report`'s own unconditional loop.
+
+    MARKUP SHAPE IS LOAD-BEARING -- see .sdlc/plans/134.md "Corrected anchors": every part gets a
+    data-ONLY element, never a container that also holds fixed chrome (a status SVG's own
+    `<text>`, or a literal label like "Metric this gap would move:"). The plan's own Task-4
+    negative control caught a first draft where the anchor was the whole `<h3>`/`<p>` -- dropping
+    `name` or `metric` still "passed" because those tags' own fixed text was mistaken for the
+    part's data. `<span class="gap-card-name">` and the `<code>` inside `.gap-card-metric` exist
+    for exactly that reason -- do not collapse them back into their parent tag."""
+    config_link = ""
+    if f["config_field"]:
+        config_link = (
+            f' <a class="gap-card-config-link" href="{html.escape(config_deep_link(f["config_field"]))}">'
+            "Fix in config</a>"
         )
-    return "".join(out)
+    evidence_rows = "".join(f"<li>{html.escape(str(row))}</li>" for row in f["evidence"])
+    return (
+        f'<div class="gap-card" data-rule-id="{html.escape(f["rule_id"])}">'
+        f'<h3 class="gap-card-what">{_gap_status_svg(f["severity"])} '
+        f'<span class="gap-card-name">{html.escape(f["name"])}</span></h3>'
+        f'<ul class="gap-card-evidence">{evidence_rows}</ul>'
+        f'<p class="gap-card-metric">Metric this gap would move: '
+        f'<code>{html.escape(str(f["metric"]))}</code></p>'
+        f'<p class="gap-card-action">{html.escape(f["action"])}{config_link}</p>'
+        f"</div>"
+    )
+
+
+def _render_gap_findings(findings):
+    """Splits `findings` by severity (issue #134, E5.S4): PASS/ABSENT never reach
+    `_render_gap_card` (evidence is guaranteed empty by evaluate.py's own invariant, so a card is
+    not even possible) -- they render as one compact `<tr>` each in a quiet table instead,
+    mirroring `render_report()`'s own text-form PASS/ABSENT-vs-WARN/FAIL split. WARN/FAIL render
+    as real cards, or a `<p class="gap-cards-empty">` fallback when there are none."""
+    actionable = [f for f in findings if f["severity"] in ("WARN", "FAIL")]
+    quiet = [f for f in findings if f["severity"] not in ("WARN", "FAIL")]
+
+    if actionable:
+        cards_html = "".join(_render_gap_card(f) for f in actionable)
+    else:
+        cards_html = '<p class="gap-cards-empty">No actionable gap findings.</p>'
+
+    quiet_rows = "".join(
+        f"<tr><td>{_gap_status_svg(f['severity'])}</td>"
+        f"<td>{html.escape(f['name'])}</td><td>{html.escape(f['class'])}</td></tr>"
+        for f in quiet
+    )
+    quiet_table = (
+        '<table class="gap-quiet-table"><thead><tr><th>status</th><th>name</th><th>class</th>'
+        f"</tr></thead><tbody>{quiet_rows}</tbody></table>"
+    )
+    return cards_html + quiet_table
 
 
 def render_dashboard(conn, db_path_label, metrics_dir=None):
@@ -342,6 +438,14 @@ def render_dashboard(conn, db_path_label, metrics_dir=None):
 <style>{_STYLE}</style>
 </head>
 <body class="viz-root">
+<!-- The ABSENT hatch pattern, defined ONCE for the whole document (issue #231 -- a per-element
+     <defs> puts a whole page of gap-status marks on one duplicated id). Its id is derived from
+     id_prefix ("dash", _gap_status_svg's own default), which also names the CSS vars
+     status_mark() reads, so it cannot be varied per element -- defining it once here is the only
+     way a page with several ABSENT/WARN/FAIL marks keeps a unique id. url(#...) resolves
+     document-wide, so every mark below references this. Mirrors insight.dash.cross_functional's
+     own render_cross_functional_view, by direct precedent. -->
+<svg width="0" height="0" aria-hidden="true" focusable="false">{texture_defs()}</svg>
 {banner}
 <h1>LoopSmith Insight -- Dashboard (shell)</h1>
 <p>Generated {html.escape(generated_at)} from <code>{html.escape(db_path_label)}</code>.
@@ -355,10 +459,7 @@ plain tables. Chart primitives (S2) and persona-specific views (S3/S4) land on t
 </table>
 
 <h2>Gap findings -- verdict: {html.escape(verdict['overall'])}{' (errors present)' if verdict['errored'] else ''}</h2>
-<table>
-<thead><tr><th>rule</th><th>class</th><th>severity</th><th>metric</th></tr></thead>
-<tbody>{_render_gaps_table(gaps_report['findings'])}</tbody>
-</table>
+{_render_gap_findings(gaps_report['findings'])}
 
 <script type="application/json" id="insight-dash-data">{json_script(payload)}</script>
 <footer>Self-contained: no network fetch, no external script/style/font reference. Data is inlined above.</footer>

@@ -3,6 +3,7 @@
 the two plan-review blocking findings these tests pin as regressions (a bare `count(*)` being
 fooled by a bare-aggregate metric view's phantom row; a single "cold" signal conflating "never
 ingested" with a real onboarding-week store), and section F for the escaping proof."""
+import html
 import json
 import re
 
@@ -248,6 +249,148 @@ def test_fully_warm_store_with_ledger_data_renders_no_banner_at_all(conn):
     assert "this store has never been ingested" not in html_text
     assert "Ingested, nothing measurable yet" not in html_text
     assert "Ledger not enabled" not in html_text
+
+
+# --------------------------------------------------------------------------- issue #134 (E5.S4):
+# the config.html?field=<dotted.path> deep-link contract (Decision 4, .sdlc/plans/134.md).
+
+
+def test_config_deep_link_builds_a_relative_url_with_the_field_pre_selected():
+    from insight.dash.render import CONFIG_UI_PATH, config_deep_link
+    assert CONFIG_UI_PATH == "config.html"
+    assert config_deep_link("work.require_review") == "config.html?field=work.require_review"
+
+
+def test_config_deep_link_url_encodes_a_field_value_needing_escaping():
+    from insight.dash.render import config_deep_link
+    assert config_deep_link("a b") == "config.html?field=a%20b"
+
+
+def test_assert_self_contained_passes_on_a_config_deep_link():
+    assert_self_contained('<a href="config.html?field=work.require_review">Fix in config</a>')
+
+
+# --------------------------------------------------------------------------- issue #134 (E5.S4):
+# the four-part gap card (what / evidence / metric / action), replacing _render_gaps_table.
+
+#: Matches the finding shape build_report now produces (rule_id/name/config_field on top of
+#: make_finding's class/metric/action/severity/evidence).
+_FINDING = {
+    "rule_id": "coverage_verify_no_command",
+    "name": "Goal has no verify command",
+    "class": "Coverage",
+    "metric": "26",
+    "action": "set the goal's verify_command frontmatter field, or the project's verify.command config",
+    "severity": "WARN",
+    "evidence": [{"project_id": "p2", "goal_id": "g3"}],
+    "config_field": None,
+}
+
+
+def test_render_gap_card_contains_all_four_parts():
+    from insight.dash.render import _render_gap_card
+    card = _render_gap_card(_FINDING)
+    assert 'class="gap-card-what"' in card and _FINDING["name"] in card
+    # evidence rows are html.escape(str(row)) -- same str(dict) convention render_report() uses,
+    # HTML-escaped since (unlike render_report's plain text) this is markup (.sdlc/plans/134.md
+    # "Concretely, what the card HTML is").
+    assert 'class="gap-card-evidence"' in card
+    assert html.escape(str(_FINDING["evidence"][0])) in card
+    assert 'class="gap-card-metric"' in card and _FINDING["metric"] in card
+    assert 'class="gap-card-action"' in card
+    assert html.escape(_FINDING["action"]) in card
+    assert f'data-rule-id="{_FINDING["rule_id"]}"' in card
+
+
+def test_render_gap_card_omits_the_config_link_when_not_config_fixable():
+    from insight.dash.render import _render_gap_card
+    card = _render_gap_card(_FINDING)  # config_field=None
+    assert "gap-card-config-link" not in card
+
+
+def test_render_gap_card_includes_the_config_link_when_config_fixable():
+    from insight.dash.render import _render_gap_card
+    card = _render_gap_card({**_FINDING, "config_field": "verify.command"})
+    assert 'class="gap-card-config-link"' in card
+    assert 'href="config.html?field=verify.command"' in card
+
+
+def test_a_real_config_fixable_warn_finding_renders_as_a_complete_card_through_render_dashboard(conn):
+    """Task 4's integration test: the same fixture test_gap_rule_coverage_verify_no_command.py's
+    own test_an_empty_string_verify_command_is_no_command_not_covered uses, run through the FULL
+    render_dashboard pipeline (not just the standalone _render_gap_card unit) -- proves the
+    wiring in the actual HTML template, not only the function in isolation."""
+    conn.execute("INSERT INTO dim_project (project_id, config_json) VALUES ('p9', '{}')")
+    conn.execute(
+        "INSERT INTO fact_goal (project_id, goal_id, verify_command) VALUES ('p9', 'g9', '')"
+    )
+    html_text, _ = render_dashboard(conn, "s.duckdb")
+    m = re.search(
+        r'<div class="gap-card" data-rule-id="coverage_verify_no_command">.*?</div>',
+        html_text, re.DOTALL,
+    )
+    assert m, "coverage_verify_no_command card not found in rendered page"
+    card = m.group(0)
+    assert 'class="gap-card-what"' in card
+    assert 'class="gap-card-evidence"' in card
+    assert 'class="gap-card-metric"' in card
+    assert 'class="gap-card-action"' in card
+    assert 'href="config.html?field=verify.command"' in card
+    assert_self_contained(html_text)  # still passes with the new deep link present
+
+
+# [R2] Anchors corrected -- see .sdlc/plans/134.md's "How a test locates each part". Each regex
+# must capture a node holding ONLY that part's data, never a container that also holds a label or
+# an icon: the ORIGINAL draft anchored "what" on the whole <h3> (which also carries the status
+# SVG's own <text>) and "metric" on the whole <p> (which also carries the fixed "Metric this gap
+# would move:" label) -- both cases silently passed even when name/metric were blanked, which is
+# exactly the vacuity this test exists to prevent.
+def _gap_card_parts(card_html):
+    parts = {}
+    what_m = re.search(r'<span class="gap-card-name">(.*?)</span>', card_html, re.DOTALL)
+    parts["what"] = re.sub(r"<[^>]+>", "", what_m.group(1)).strip() if what_m else ""
+    evidence_m = re.search(r'<ul class="gap-card-evidence">(.*?)</ul>', card_html, re.DOTALL)
+    parts["evidence"] = re.sub(r"<[^>]+>", "", evidence_m.group(1)).strip() if evidence_m else ""
+    metric_m = re.search(r'<p class="gap-card-metric">.*?<code>(.*?)</code>', card_html, re.DOTALL)
+    parts["metric"] = re.sub(r"<[^>]+>", "", metric_m.group(1)).strip() if metric_m else ""
+    action_m = re.search(r'<p class="gap-card-action">(.*?)</p>', card_html, re.DOTALL)
+    action_text = action_m.group(1) if action_m else ""
+    # strip the optional trailing <a class="gap-card-config-link">...</a> before checking
+    # non-empty -- or a card with ONLY a config link (no action text) would pass.
+    action_text = re.sub(r'<a class="gap-card-config-link".*?</a>', "", action_text, flags=re.DOTALL)
+    parts["action"] = re.sub(r"<[^>]+>", "", action_text).strip()
+    return parts
+
+
+def _card_has_all_four_parts(card_html):
+    return all(v for v in _gap_card_parts(card_html).values())
+
+
+def test_every_shipped_rule_renders_a_card_with_all_four_parts():
+    """Task 3's own done_when, proven over the REAL catalog: for every one of the 11 shipped
+    rules, a synthetic finding built from that rule's own real header (name/class/metric/
+    action/severity) plus one fabricated evidence row renders a card carrying all four parts.
+    Proves the wiring holds catalog-wide, not just for one hand-picked example."""
+    from insight.dash.render import _render_gap_card
+    from insight.gaps.loader import load_gap_rules
+    for rule_id, rule in load_gap_rules().items():
+        finding = {**rule, "rule_id": rule_id, "evidence": [{"x": "1"}],
+                   "config_field": rule["extra"].get("config_field")}
+        assert _card_has_all_four_parts(_render_gap_card(finding)), rule_id
+
+
+@pytest.mark.parametrize("missing_key,broken_value", [
+    ("name", ""), ("evidence", []), ("metric", ""), ("action", ""),
+])
+def test_a_card_missing_any_one_part_is_detected_as_missing(missing_key, broken_value):
+    """The negative control: proves _card_has_all_four_parts is not vacuously True. Each
+    sub-case breaks exactly one part; the other three stay intact, so a helper that always
+    returned True (or checked the wrong tag) would still pass the positive test above but
+    fail here. [R2] This is the corrected version -- the FIRST draft's version (anchored on the
+    whole <h3>/<p>) silently passed for name and metric; see .sdlc/plans/134.md."""
+    from insight.dash.render import _render_gap_card
+    finding = {**_FINDING, missing_key: broken_value}
+    assert not _card_has_all_four_parts(_render_gap_card(finding))
 
 
 def test_a_broken_metrics_catalog_raises_metric_load_error(tmp_path, conn):

@@ -65,7 +65,13 @@ def build_report(conn, rules_dir=None):
         except Exception as e:                       # never fatal -- see module docstring
             errors.append({"rule_id": rule_id, "error": f"{type(e).__name__}: {e}"})
             continue
-        findings.append(dict(finding, rule_id=rule_id))
+        # issue #134 (E5.S4), Decision 2: `name` threads here, not in evaluate.py's make_finding
+        # -- test_gaps_evaluate.py pins make_finding's exact return-dict shape with no `name` key,
+        # and `rule` (the full header dict, including `extra`) is already bound above with zero
+        # new lookup. `config_field` is Decision 3's optional forward-compatible `extra` line --
+        # None for every rule that doesn't declare one, never a KeyError.
+        findings.append(dict(finding, rule_id=rule_id, name=rule["name"],
+                              config_field=rule["extra"].get("config_field")))
     return {"schema": SCHEMA, "findings": findings, "errors": errors,
             "verdict": _verdict(findings, errors)}
 
