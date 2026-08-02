@@ -86,10 +86,89 @@ def test_most_urgent_first_then_oldest():
 def test_cursor_round_trips_and_survives_a_corrupt_file(tmp_path):
     path = tmp_path / "cursor.json"
     assert classify.load_cursor(path) == classify.EMPTY_CURSOR          # absent
-    classify.save_cursor(path, {"seen": {"amy": 3}, "signatures": ["x"]})
-    assert classify.load_cursor(path)["seen"] == {"amy": 3}
+    classify.save_cursor(path, {"seen": {"amy": {"entries": 3}}, "signatures": ["x"]})
+    assert classify.load_cursor(path)["seen"] == {"amy": {"entries": 3}}
     path.write_text("{not json")
     assert classify.load_cursor(path) == classify.EMPTY_CURSOR          # corrupt = start over, not crash
+
+
+def test_cursor_round_trips_the_nested_per_stream_shape(tmp_path):
+    path = tmp_path / "cursor.json"
+    cursor = {"seen": {"amy": {"entries": 3, "events": 7}}, "signatures": ["x"]}
+    classify.save_cursor(path, cursor)
+    assert classify.load_cursor(path) == cursor
+
+
+def test_load_cursor_migrates_the_pre_137_flat_seen_shape(tmp_path):
+    """Before #137 the only stream that ever existed was entries, so an old flat {actor: seq}
+    cursor's baseline can only ever have meant entries."""
+    path = tmp_path / "cursor.json"
+    path.write_text(json.dumps({"seen": {"amy": 5, "bo": 2}, "signatures": []}))
+    assert classify.load_cursor(path)["seen"] == {"amy": {"entries": 5}, "bo": {"entries": 2}}
+
+
+def test_migrated_cursor_baseline_prevents_a_full_history_refire(tmp_path):
+    path = tmp_path / "cursor.json"
+    path.write_text(json.dumps({"seen": {"amy": 5}, "signatures": []}))
+    cursor = classify.load_cursor(path)
+    entries = [_entry("amy", n, to=ME, issue=n) for n in range(1, 6)]
+    items, _ = classify.classify(entries, cursor, ME)
+    assert items == []                                       # nothing older than the baseline re-fires
+
+
+def test_classify_baseline_is_not_mutated_by_later_entries_in_the_same_call():
+    """seen[actor] and baseline[actor] must be independent dicts, or the second entry would
+    wrongly suppress itself against the first's just-written seq."""
+    entries = [_entry("amy", 1, to=ME, issue=1), _entry("amy", 2, to=ME, issue=2)]
+    items, _ = classify.classify(entries, dict(classify.EMPTY_CURSOR), ME)
+    assert [e["issue"] for e in items] == [1, 2]
+
+
+def test_entries_and_events_cursors_for_the_same_actor_are_independent():
+    entries = [_entry("amy", 1, to=ME, issue=1)]
+    events = [dict(id="amy:9", ts="2026-07-25T09:09:00Z", actor="amy", kind="phase")
+              for _ in range(1)]
+    _, cursor = classify.classify(entries, dict(classify.EMPTY_CURSOR), ME)
+    _, cursor = classify.classify(events, cursor, ME, stream=classify.EVENTS)
+    assert cursor["seen"]["amy"] == {"entries": 1, "events": 9}
+
+
+def test_classify_keys_the_seen_baseline_on_actor_and_stream():
+    """No EVENT_FIELDS kind carries a `to`, so events structurally never surface — but the
+    cursor's advancement must still be real and independent per (actor, stream)."""
+    phase_events = [dict(id="amy:1", ts="2026-07-25T09:01:00Z", actor="amy", kind="phase"),
+                    dict(id="amy:2", ts="2026-07-25T09:02:00Z", actor="amy", kind="phase")]
+    items, cursor = classify.classify(phase_events, dict(classify.EMPTY_CURSOR), ME,
+                                      stream=classify.EVENTS)
+    assert items == []
+    assert cursor["seen"] == {"amy": {"events": 2}}
+
+
+def test_classify_does_not_raise_on_a_garbage_seen_value_after_migration(tmp_path):
+    """A corrupted pre-137 cursor value (`"garbage"`) must migrate to baseline 0, not to
+    {"entries": "garbage"} — the latter makes classify() raise TypeError comparing int to str
+    on every subsequent tick until someone deletes the cursor file by hand."""
+    path = tmp_path / "cursor.json"
+    path.write_text(json.dumps({"seen": {"amy": "garbage"}, "signatures": []}))
+    cursor = classify.load_cursor(path)
+    items, cursor2 = classify.classify([_entry("amy", 1, to=ME)], cursor, ME)
+    assert len(items) == 1                                   # baseline 0, not a crash
+    assert cursor2["seen"]["amy"]["entries"] == 1             # self-heals to a real int
+
+
+def test_load_cursor_survives_a_top_level_json_null(tmp_path):
+    path = tmp_path / "cursor.json"
+    path.write_text("null")
+    assert classify.load_cursor(path) == classify.EMPTY_CURSOR
+
+
+def test_classify_survives_a_nested_baseline_value_that_is_not_an_int():
+    """Hardens the nested case too: a dict whose inner values aren't ints (however it got that
+    way) must not crash classify() either."""
+    cursor = {"seen": {"amy": {"entries": "bad"}}, "signatures": []}
+    items, cursor2 = classify.classify([_entry("amy", 1, to=ME)], cursor, ME)
+    assert len(items) == 1                                   # corrupt baseline treated as 0
+    assert cursor2["seen"]["amy"]["entries"] == 1             # self-heals on the next write
 
 
 def test_render_and_summarise():
@@ -252,6 +331,57 @@ def test_publish_renders_and_stages_team_md(tmp_path, monkeypatch):
     assert "TEAM.md" in staged and f"entries/{ME}.jsonl" in staged    # committed alongside my entries
 
 
+def test_ensure_gitattributes_is_additive_and_idempotent(tmp_path):
+    d = tmp_path / "wt"
+    d.mkdir()
+    assert sync._ensure_gitattributes(d) is True
+    text = (d / ".gitattributes").read_text()
+    assert "entries/*.jsonl merge=union" in text and "events/*.jsonl merge=union" in text
+    assert sync._ensure_gitattributes(d) is False              # second call: nothing to add
+    assert (d / ".gitattributes").read_text() == text          # unchanged
+
+    (d / ".gitattributes").write_text("entries/*.jsonl merge=union\n")   # pre-#137 worktree
+    assert sync._ensure_gitattributes(d) is True
+    repaired = (d / ".gitattributes").read_text()
+    assert "entries/*.jsonl merge=union" in repaired and "events/*.jsonl merge=union" in repaired
+
+
+def test_publish_stages_my_events_file_when_present(tmp_path, monkeypatch):
+    d = _sdlc(tmp_path)
+    ledger.entries_dir(d).mkdir(parents=True)
+    ledger.entry_file(d, ME).write_text("{}\n")
+    ledger.entries_dir(d, ledger.EVENTS).mkdir(parents=True)
+    ledger.entry_file(d, ME, ledger.EVENTS).write_text("{}\n")
+    monkeypatch.setattr(sync, "is_worktree", lambda _d: True)
+    calls = []
+
+    def git(cwd, args):
+        calls.append(list(args))
+        return "x" if args[0] == "diff" else ""
+
+    assert sync.publish(d, ON, run=git) == "published"
+    staged = next(a for a in calls if a[0] == "add")
+    assert f"events/{ME}.jsonl" in staged
+    assert f"entries/{ME}.jsonl" in staged
+    assert "TEAM.md" in staged
+
+
+def test_publish_does_not_stage_a_phantom_events_path_when_absent(tmp_path, monkeypatch):
+    d = _sdlc(tmp_path)
+    ledger.entries_dir(d).mkdir(parents=True)
+    ledger.entry_file(d, ME).write_text("{}\n")
+    monkeypatch.setattr(sync, "is_worktree", lambda _d: True)
+    calls = []
+
+    def git(cwd, args):
+        calls.append(list(args))
+        return "x" if args[0] == "diff" else ""
+
+    assert sync.publish(d, ON, run=git) == "published"
+    staged = next(a for a in calls if a[0] == "add")
+    assert f"events/{ME}.jsonl" not in staged
+
+
 def test_pull_aborts_a_bad_rebase_instead_of_wedging(tmp_path, monkeypatch):
     d = _sdlc(tmp_path)
     monkeypatch.setattr(sync, "is_worktree", lambda _d: True)
@@ -312,7 +442,8 @@ def test_init_creates_an_empty_orphan_branch_as_a_worktree(tmp_path):
                             capture_output=True, text=True).stdout.split()
     assert "code.py" not in listed                        # started from the EMPTY tree
     assert ".gitattributes" in listed and "README.md" in listed
-    assert "merge=union" in (repo / ".sdlc" / "ledger" / ".gitattributes").read_text()
+    attrs = (repo / ".sdlc" / "ledger" / ".gitattributes").read_text()
+    assert "entries/*.jsonl merge=union" in attrs and "events/*.jsonl merge=union" in attrs
     assert "already a worktree" in sync.init(d, ON, run=git)      # idempotent
 
 
@@ -335,6 +466,83 @@ def test_init_carries_over_entries_written_before_the_worktree_existed(tmp_path)
 
     sync.init(d, ON, run=git)
     assert ledger.read_all(d)[0]["goal"] == "g.md"        # the pre-existing entry survived
+
+
+def test_publish_leaves_no_uncommitted_events_in_the_worktree(tmp_path):
+    """The mutation test the done-when demands: if publish() ever stopped staging events, this
+    fails — `git status --porcelain` would show `?? events/rae.jsonl`. init()'s scaffold commit
+    runs BEFORE the events fixture file is written below, so it starts genuinely untracked."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "code.py").write_text("x = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init")
+    _git(repo, "remote", "add", "origin", str(bare))
+
+    d = repo / ".sdlc"
+    (d / "state").mkdir(parents=True)
+    (d / "config.json").write_text(json.dumps(ON))
+
+    def git(cwd, args):
+        return subprocess.run(
+            ["git", "-C", str(cwd), "-c", "user.email=t@e", "-c", "user.name=t", *args],
+            capture_output=True, text=True, check=True).stdout.strip()
+
+    sync.init(d, ON, run=git)
+    wt = sync.worktree(d)
+    (wt / ledger.ENTRIES / f"{ME}.jsonl").write_text(
+        '{"id":"rae:1","ts":"2026-07-25T09:00:00Z","actor":"rae","kind":"claimed","goal":"7"}\n')
+    (wt / ledger.EVENTS).mkdir(parents=True, exist_ok=True)
+    (wt / ledger.EVENTS / f"{ME}.jsonl").write_text(
+        '{"id":"rae:1","ts":"2026-07-25T09:00:00Z","actor":"rae","kind":"phase","goal":"7"}\n')
+
+    assert sync.publish(d, ON, run=git) == "published"
+    status = subprocess.run(["git", "-C", str(wt), "status", "--porcelain"],
+                            capture_output=True, text=True).stdout
+    assert status.strip() == ""
+
+
+def test_publish_adds_the_missing_events_union_merge_line_to_an_existing_worktree(tmp_path):
+    """Decision 3's own mutation test: a worktree initialized before #137 (only the entries
+    union-merge line) gets repaired the first time anyone publishes after upgrading."""
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "code.py").write_text("x = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@e", "-c", "user.name=t", "commit", "-qm", "init")
+    _git(repo, "remote", "add", "origin", str(bare))
+
+    d = repo / ".sdlc"
+    (d / "state").mkdir(parents=True)
+    (d / "config.json").write_text(json.dumps(ON))
+
+    def git(cwd, args):
+        return subprocess.run(
+            ["git", "-C", str(cwd), "-c", "user.email=t@e", "-c", "user.name=t", *args],
+            capture_output=True, text=True, check=True).stdout.strip()
+
+    sync.init(d, ON, run=git)
+    wt = sync.worktree(d)
+    (wt / ".gitattributes").write_text("entries/*.jsonl merge=union\n")   # simulate a pre-#137 worktree
+    git(wt, ["add", "-A"])
+    git(wt, ["commit", "-qm", "downgrade simulation"])
+
+    (wt / ledger.ENTRIES / f"{ME}.jsonl").write_text('{}\n')
+
+    assert sync.publish(d, ON, run=git) == "published"
+    attrs = (wt / ".gitattributes").read_text()
+    assert "entries/*.jsonl merge=union" in attrs and "events/*.jsonl merge=union" in attrs
+    status = subprocess.run(["git", "-C", str(wt), "status", "--porcelain"],
+                            capture_output=True, text=True).stdout
+    assert status.strip() == ""                                # the repair itself is committed
 
 
 def test_bootstrap_e2e_creates_the_worktree_and_seeds_my_file(tmp_path):

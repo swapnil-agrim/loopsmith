@@ -44,6 +44,10 @@ def tick(sdlc_dir, config=None, me=None):
         return ""
     me = me or ledger.actor(config)
     cursor = classify.load_cursor(cursor_path(sdlc_dir))
+    # ponytail: entries only for now. read_all()/classify() are cursor-aware for `events` too
+    # (#137), but no call site writes real events yet (#139/#140) and EVENT_FIELDS has no `to`
+    # for any kind, so reading events here would double per-tick I/O for a consumer that
+    # provably surfaces nothing. Wire the events loop in when the first real emitter lands.
     items, cursor = classify.classify(ledger.read_all(sdlc_dir), cursor, me)
     classify.save_cursor(cursor_path(sdlc_dir), cursor)
     if not items:
