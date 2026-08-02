@@ -363,7 +363,17 @@ def _gap_card_parts(card_html):
 
 
 def _card_has_all_four_parts(card_html):
-    return all(v for v in _gap_card_parts(card_html).values())
+    # `all(v)` alone still reports a part PRESENT when its value is only invisible characters:
+    # "\u200b" (zero-width space) is truthy, is not whitespace, and survives strip(), so the part
+    # renders as a visually blank line while the check says it is there. That is the same
+    # "technically present, semantically absent" bug the anchor fix above addressed, one layer
+    # down at content instead of markup -- found by #134's PR review. insight.gaps.header's own
+    # required-field gate had the identical blind spot and is fixed at the root there.
+    return all(_printable(v) for v in _gap_card_parts(card_html).values())
+
+
+def _printable(value):
+    return any(ch.isprintable() and not ch.isspace() for ch in value)
 
 
 def test_every_shipped_rule_renders_a_card_with_all_four_parts():
@@ -381,6 +391,10 @@ def test_every_shipped_rule_renders_a_card_with_all_four_parts():
 
 @pytest.mark.parametrize("missing_key,broken_value", [
     ("name", ""), ("evidence", []), ("metric", ""), ("action", ""),
+    # [R3, from PR review] invisible-but-truthy values: a part that renders as a blank line is
+    # absent to a reader, so it must be absent to the check too.
+    ("name", "\u200b"), ("metric", "\u200b"), ("action", "\u200b"),
+    ("name", "   "), ("metric", "\u00a0"),
 ])
 def test_a_card_missing_any_one_part_is_detected_as_missing(missing_key, broken_value):
     """The negative control: proves _card_has_all_four_parts is not vacuously True. Each
