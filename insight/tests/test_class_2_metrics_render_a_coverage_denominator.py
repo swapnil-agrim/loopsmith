@@ -22,6 +22,7 @@ from insight.ingest.store import ensure_schema  # noqa: E402
 from insight.metrics.loader import DEFAULT_METRICS_DIR  # noqa: E402
 from insight.dash.render import CoverageDenominatorMissing, render_dashboard  # noqa: E402
 from insight.dash.manager import render_manager_view  # noqa: E402
+from insight.dash.leadership import render_leadership_view  # noqa: E402
 
 import datetime
 
@@ -215,3 +216,68 @@ def test_ic_view_has_no_metrics_catalog_surface_this_invariant_could_apply_to():
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
     assert not any(m.endswith("metrics.loader") for m in imported), imported
+
+
+# --------------------------------------------------------------------------- leadership.py: the
+# Impact tile's coverage denominator must describe the SAME population as the total it sits next
+# to (issue #131 PR #223 review), not just row[0] of metric_9
+
+def _leadership_metrics_dir(tmp_path, metric_9_sql):
+    """Same copytree-the-real-catalog-and-overwrite-one-file approach as _manager_metrics_dir
+    above (its own D6 rationale applies identically here): render_leadership_view's own
+    load_metrics() call loads the WHOLE catalog, so metric_1/metric_5/etc. must stay the real,
+    always-valid files or an unrelated fetcher errors before metric_9 is ever reached."""
+    d = tmp_path / "metrics"
+    shutil.copytree(DEFAULT_METRICS_DIR, d)
+    (d / "9.sql").write_text(metric_9_sql, encoding="utf-8")
+    return d
+
+
+def test_leadership_impact_coverage_is_summed_across_every_row_not_just_the_first(tmp_path, conn):
+    """metric_9 (hypothetically reclassified class-2) gets TWO rows with deliberately different
+    coverage counts. row[0] alone would report "25 of 100 rows class-1, 75 class-2"; the correct,
+    aggregated denominator -- matching the population _render_impact's own total (goal_count
+    summed across every row, Decision 3) actually covers -- is "75 of 300 rows class-1, 225
+    class-2". Before the #131 fix, impact_coverage was extract_coverage() on impact_rows[0]
+    alone, so this asserts the SUMMED figures specifically (not just percentage, which coincides
+    at 25% for both rows by construction -- the counts are what prove aggregation happened)."""
+    metric_9_sql = (
+        "-- name: Flow distribution synthetic class-2 (fixture, issue #131)\n"
+        "-- question: ?\n"
+        "-- personas: manager, leadership\n"
+        "-- reliability_class: 2\n"
+        "-- guardrail: synthetic fixture only, proves render_leadership_view's Impact tile "
+        "aggregates its coverage denominator across every metric_9 row rather than reading "
+        "impact_rows[0] alone; not a real shipped metric\n"
+        "SELECT 'goal' AS source, 'new' AS lane, 5 AS goal_count, 0.5 AS share,\n"
+        "  25 AS class1_count, 75 AS class2_count, 100 AS total_count, 0.25::DOUBLE AS coverage_pct\n"
+        "UNION ALL\n"
+        "SELECT 'handoff' AS source, 'debt' AS lane, 5 AS goal_count, 0.5 AS share,\n"
+        "  50 AS class1_count, 150 AS class2_count, 200 AS total_count, 0.25::DOUBLE AS coverage_pct\n"
+    )
+    metrics_dir = _leadership_metrics_dir(tmp_path, metric_9_sql)
+    html_text, _ = render_leadership_view(conn, now=NOW, metrics_dir=metrics_dir)
+    panel = _sections(html_text)["panel-impact"]
+    assert 'class="coverage-denom"' in panel
+    assert "25%" in panel
+    assert "75 of 300 rows class-1" in panel
+    assert "225 class-2" in panel
+
+
+def test_leadership_view_raises_when_metric_9_is_class_2_with_no_coverage_denominator(tmp_path, conn):
+    """The aggregation in _impact_coverage must not swallow CoverageDenominatorMissing -- a
+    class-2 metric_9 with no coverage columns at all still raises, exactly like the pre-#131
+    single-row extract_coverage() call did (.sdlc/plans/129.md Decision D8)."""
+    metric_9_sql = (
+        "-- name: Flow distribution synthetic class-2, no coverage cols (fixture, issue #131)\n"
+        "-- question: ?\n"
+        "-- personas: manager, leadership\n"
+        "-- reliability_class: 2\n"
+        "-- guardrail: synthetic fixture only, proves render_leadership_view raises "
+        "CoverageDenominatorMissing when metric_9 is class-2 with no coverage figure; not a "
+        "real shipped metric\n"
+        "SELECT 'goal' AS source, 'new' AS lane, 5 AS goal_count, 1.0 AS share\n"
+    )
+    metrics_dir = _leadership_metrics_dir(tmp_path, metric_9_sql)
+    with pytest.raises(CoverageDenominatorMissing):
+        render_leadership_view(conn, now=NOW, metrics_dir=metrics_dir)

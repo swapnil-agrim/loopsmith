@@ -41,6 +41,7 @@ import datetime
 import html
 
 from insight.dash.charts import (
+    _absent_line,
     _aging_wip_rows,
     _burndown_weekly_remaining_rows,
     _handoff_by_area_rows,
@@ -51,7 +52,6 @@ from insight.dash.charts import (
     render_handoff_graph_by_area,
     render_stat_tile,
 )
-from insight.dash.colors import status_mark, texture_defs
 from insight.dash.render import coverage_denominator_html, extract_coverage, json_script
 from insight.dash.shell import base_style
 from insight.metrics.loader import load_metrics
@@ -122,17 +122,6 @@ def _reason_class_measured_count(conn):
 
 
 # --------------------------------------------------------------------------- bespoke ABSENT-text renderers
-
-def _absent_line(explain_text, id_prefix="dash"):
-    """A one-line ABSENT marker for prose panels (not a chart) -- the same `status_mark()` +
-    `texture_defs()` primitives every other ABSENT state in this codebase uses, just inlined as a
-    `<p>` rather than inside an `<svg>`."""
-    return (
-        '<p><svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="ABSENT">'
-        + texture_defs(id_prefix) + status_mark("ABSENT", 6, 8, id_prefix=id_prefix)
-        + f'</svg> {explain_text}</p>'
-    )
-
 
 def _render_park_taxonomy(rate_row, reason_class_count, coverage=None, id_prefix="dash"):
     """TWO DISTINCT ABSENCE CLAIMS on one panel (Decision 2), never collapsed into one generic

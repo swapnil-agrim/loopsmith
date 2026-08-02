@@ -61,6 +61,20 @@ def _absent_svg(aria_label, explain_text, id_prefix="dash"):
     )
 
 
+def _absent_line(explain_text, id_prefix="dash"):
+    """A one-line ABSENT marker for prose panels (not a chart) -- the same `status_mark()` +
+    `texture_defs()` primitives every other ABSENT state in this codebase uses, just inlined as a
+    `<p>` rather than inside an `<svg>`. Moved here from insight.dash.manager (.sdlc/plans/131.md
+    Decision 8): insight.dash.leadership needs the identical primitive, and a second private copy
+    would repeat the same near-duplicate smell .sdlc/plans/127.md Decision 4 already fixed once
+    for base_style()."""
+    return (
+        '<p><svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="ABSENT">'
+        + texture_defs(id_prefix) + status_mark("ABSENT", 6, 8, id_prefix=id_prefix)
+        + f'</svg> {explain_text}</p>'
+    )
+
+
 def _categorical_slots(names, cap=ALL_PAIRS_CAP):
     """Rank the distinct, ordered-by-first-appearance `names` (a `kind`/lane vocabulary) into at
     most `cap` categorical slots: the first `cap - 1` distinct names each get their own dedicated
