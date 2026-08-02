@@ -162,6 +162,19 @@ def test_load_cursor_survives_a_top_level_json_null(tmp_path):
     assert classify.load_cursor(path) == classify.EMPTY_CURSOR
 
 
+def test_load_cursor_survives_a_truthy_non_dict_seen_or_signatures(tmp_path):
+    """`or {}` only substitutes on a FALSY value, so a truthy non-dict `seen` reached `.items()`
+    and a truthy non-list `signatures` reached `list()`. load_cursor runs BEFORE save_cursor, so
+    either raise disabled every later tick rather than self-healing on the next write."""
+    for bad in ('{"seen": "garbage"}', '{"seen": 5}', '{"seen": [1, 2]}', '{"seen": true}'):
+        path = tmp_path / "cursor.json"
+        path.write_text(bad)
+        assert classify.load_cursor(path) == classify.EMPTY_CURSOR
+    path = tmp_path / "cursor.json"
+    path.write_text('{"seen": {"amy": 3}, "signatures": 7}')
+    assert classify.load_cursor(path) == {"seen": {"amy": {"entries": 3}}, "signatures": []}
+
+
 def test_classify_survives_a_nested_baseline_value_that_is_not_an_int():
     """Hardens the nested case too: a dict whose inner values aren't ints (however it got that
     way) must not crash classify() either."""

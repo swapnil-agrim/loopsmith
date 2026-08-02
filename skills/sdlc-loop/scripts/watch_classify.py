@@ -34,22 +34,31 @@ def load_cursor(path):
     baseline: a non-dict top-level value (e.g. a JSON `null`) resets to EMPTY_CURSOR, and a
     per-actor value that is neither a dict (new shape) nor an int (old shape — e.g. hand-edited
     garbage) becomes baseline `{}` (== 0 for every stream) rather than `{"entries": <garbage>}`,
-    which would make classify() raise TypeError comparing int to str on every later tick."""
+    which would make classify() raise TypeError comparing int to str on every later tick.
+    `seen` and `signatures` are type-checked rather than `or`-defaulted, because `or` only
+    substitutes on a FALSY value: a truthy non-dict `seen` would reach `.items()` and a truthy
+    non-iterable `signatures` would reach `list()`, and load_cursor runs BEFORE save_cursor, so
+    either raise disables every later tick instead of self-healing on the next write.
+
+    Downgrade is not supported: pre-#137 code reading this nested shape does max({...}, seq) and
+    raises. The cursor is per-machine local state, never on the shared ledger branch, so reverting
+    the plugin just means deleting `.sdlc/state/watch-cursor.json`."""
     try:
         data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return dict(EMPTY_CURSOR)
     if not isinstance(data, dict):
         return dict(EMPTY_CURSOR)
+    seen, signatures = data.get("seen"), data.get("signatures")
     migrated = {}
-    for who, value in (data.get("seen") or {}).items():
+    for who, value in (seen if isinstance(seen, dict) else {}).items():
         if isinstance(value, dict):
             migrated[who] = dict(value)                     # already the new shape
         elif isinstance(value, int):
             migrated[who] = {ENTRIES: value}                # pre-#137: entries was the only stream
         else:
             migrated[who] = {}                               # corrupt: baseline 0, not a crash
-    return {"seen": migrated, "signatures": list(data.get("signatures") or [])}
+    return {"seen": migrated, "signatures": list(signatures) if isinstance(signatures, list) else []}
 
 
 def save_cursor(path, cursor):
