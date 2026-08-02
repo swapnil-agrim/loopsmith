@@ -10,6 +10,7 @@ Like #114's guard, every check here runs against a SYNTHETIC fixture: zero real 
 exist in the shipped catalog today (verified: all 25 insight/metrics/*.sql declare
 `reliability_class: 1`), so without a synthetic negative control the "fails a test" half of #129's
 done_when would be unfalsifiable."""
+import json
 import re
 import shutil
 
@@ -39,15 +40,30 @@ def _sections(html_text):
     return dict(re.findall(r'<section id="([\w-]+)"[^>]*>(.*?)</section>', html_text, re.DOTALL))
 
 
-def _manager_metrics_dir(tmp_path, metric_7_sql):
+def _manager_metrics_dir(tmp_path, metric_7_sql=None, **other_sql):
     """D6: manager.py's render_manager_view also reads metric_10/metric_11/metric_14 via real
     fetchers -- every one of them must exist on `conn` or an unrelated panel blows up with a
     DuckDB catalog error before the metric_7 fixture under test is ever reached. Reuse the real,
-    always-valid catalog wholesale and mutate only the one file under test."""
+    always-valid catalog wholesale and mutate only the one file under test.
+
+    `other_sql` takes `metric_14=...` for the payload-allowlist tests below, which need to widen a
+    DIFFERENT metric than 7."""
     d = tmp_path / "metrics"
     shutil.copytree(DEFAULT_METRICS_DIR, d)
-    (d / "7.sql").write_text(metric_7_sql, encoding="utf-8")
+    if metric_7_sql is not None:
+        (d / "7.sql").write_text(metric_7_sql, encoding="utf-8")
+    for name, sql in other_sql.items():
+        (d / (name.replace("metric_", "") + ".sql")).write_text(sql, encoding="utf-8")
     return d
+
+
+def _manager_payload(html_text):
+    m = re.search(
+        r'<script type="application/json" id="insight-manager-data">(.*?)</script>',
+        html_text, re.DOTALL,
+    )
+    assert m, "manager JSON payload not found"
+    return json.loads(m.group(1))
 
 
 # --------------------------------------------------------------------------- render.py side (Task 1's
@@ -131,6 +147,46 @@ def test_manager_view_raises_when_metric_7_is_class_2_with_no_coverage_denominat
     metrics_dir = _manager_metrics_dir(tmp_path, metric_7_sql)
     with pytest.raises(CoverageDenominatorMissing):
         render_manager_view(conn, now=NOW, metrics_dir=metrics_dir)
+
+
+# --------------------------------------------------------------------------- the payload allowlists
+# (issue #129 re-review). _wip_row and _park_rate_row both `SELECT *` so a reclassified metric's
+# coverage columns surface with no second code change -- but both rows land in the JSON payload
+# OUTSIDE every <section>, which this module's docstring says only ever carries COUNT-ONLY shapes.
+# These prove the allowlist is what keeps that true, structurally, rather than the query's shape.
+
+_LEAKY_HEADER = (
+    "-- name: {name} widened fixture (issue #129 re-review)\n"
+    "-- question: ?\n"
+    "-- personas: manager\n"
+    "-- reliability_class: 1\n"
+    "-- guardrail: synthetic fixture only, proves a column added to this view never reaches the\n"
+    "--   inlined manager payload; not a real shipped metric\n"
+)
+
+
+@pytest.mark.parametrize("metric,key,sql", [
+    (
+        "7", "wip",
+        _LEAKY_HEADER.format(name="WIP")
+        + "SELECT DATE '2026-01-01' AS week_start, 3 AS wip_count, 'alice' AS actor_id\n",
+    ),
+    (
+        "14", "park_rate",
+        _LEAKY_HEADER.format(name="Park rate")
+        + "SELECT 1 AS parked_terminal_count, 4 AS terminal_count,\n"
+        "  0.25::DOUBLE AS park_rate, 'alice' AS actor_id\n",
+    ),
+])
+def test_a_new_column_on_a_widened_manager_read_never_reaches_the_inlined_payload(
+    tmp_path, conn, metric, key, sql,
+):
+    metrics_dir = _manager_metrics_dir(tmp_path, **{"metric_" + metric: sql})
+    html_text, _ = render_manager_view(conn, now=NOW, metrics_dir=metrics_dir)
+    payload = _manager_payload(html_text)
+    assert payload[key] is not None, "fixture should populate this read, else the test is vacuous"
+    assert "actor_id" not in payload[key]
+    assert "alice" not in json.dumps(payload)
 
 
 # --------------------------------------------------------------------------- ic.py: explicit

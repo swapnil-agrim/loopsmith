@@ -75,6 +75,11 @@ h3 {{ font-size: 1rem; margin-top: 1.25rem; }}
 #: gets embedded in the page stays a structural allowlist, not a byproduct of the query's shape.
 _WIP_PAYLOAD_KEYS = ("week_start", "wip_count")
 
+#: Same guarantee for _park_rate_row, which `SELECT *`s metric_14 for the same reason (issue #129
+#: re-review). Both rows land in the JSON payload OUTSIDE every <section>, so both need the gate --
+#: allowlisting only one of two identically-widened reads restores the invariant for neither.
+_PARK_RATE_PAYLOAD_KEYS = ("parked_terminal_count", "terminal_count", "park_rate")
+
 
 # --------------------------------------------------------------------------- page-specific fetchers
 
@@ -242,6 +247,10 @@ def render_manager_view(conn, now=None, metrics_dir=None):
     wip_payload = (
         {k: wip_row[k] for k in _WIP_PAYLOAD_KEYS if k in wip_row} if wip_row is not None else None
     )
+    park_rate_payload = (
+        {k: park_rate_row[k] for k in _PARK_RATE_PAYLOAD_KEYS if k in park_rate_row}
+        if park_rate_row is not None else None
+    )
 
     payload = {
         "generated_at": generated_at,
@@ -253,7 +262,7 @@ def render_manager_view(conn, now=None, metrics_dir=None):
         # See this module's own docstring for why this is a named, tested invariant.
         "aging_wip_count": len(aging_rows),
         "handoff_by_area": handoff_rows,
-        "park_rate": park_rate_row,
+        "park_rate": park_rate_payload,
         "reason_class_measured_count": reason_class_count,
     }
 
