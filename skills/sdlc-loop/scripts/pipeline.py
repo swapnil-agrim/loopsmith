@@ -29,7 +29,17 @@ or an LLM, and it NEVER gates the run it examines (it reports; the loop decides)
 still-failing (still-failing across runs is the recurrence signal — systemic,
 not incidental; feed it to the backlog, not to a one-off fix).
 """
-import glob, json, os, pathlib, subprocess, sys
+import glob, importlib.util, json, os, pathlib, subprocess, sys
+
+_HERE = pathlib.Path(__file__).resolve().parent
+
+
+def _load(name):
+    spec = importlib.util.spec_from_file_location(name, _HERE / f"{name}.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+
+
+ledger = _load("ledger")            # team record (config-gated, default OFF; every call is fail-open)
 
 PASS, WARN, FAIL, ABSENT = "PASS", "WARN", "FAIL", "ABSENT"
 _ORDER = {PASS: 0, ABSENT: 1, WARN: 2, FAIL: 3}
@@ -201,34 +211,69 @@ def propose_goals(sdlc_dir, card):
     return created
 
 
+def _candidate_file(c):
+    """The file a candidate is about, stripped of its trailing `:line` — shared by
+    `propose_from_discovery` (dedup id) and `_emit_scan_events` (the `file` field), so the two
+    never drift on what "the file" means for one candidate."""
+    ev = c.get("evidence") or []
+    first = ev[0] if ev else ""
+    return first.rsplit(":", 1)[0] if ":" in first else first
+
+
 def propose_from_discovery(sdlc_dir, candidates):
     """Turn discovery-scan candidates (tech-debt / test-gap) into `proposed` goal files — the same inert,
     human-promotes-to-`pending` contract as propose_goals (discovery.py skips `proposed`). The dedup id
     is per (category, file), NOT per marker count, so a changed count never spawns a duplicate; an
-    existing file with that id — whatever its status — is never overwritten. Returns the created paths."""
+    existing file with that id — whatever its status — is never overwritten. Returns the created paths.
+
+    Fail-open per candidate: one malformed entry (e.g. a non-dict item in a hand-mocked or corrupted
+    candidates list) is skipped, never fatal to the rest — matching `ledger.read_all`'s own "one bad
+    line is skipped" convention, and required for `discover()`'s own "never raises" guarantee."""
     import hashlib
     goals_dir = pathlib.Path(sdlc_dir) / "goals"
     goals_dir.mkdir(parents=True, exist_ok=True)
     created = []
     for c in candidates or []:
-        ev = c.get("evidence") or []
-        first = ev[0] if ev else ""
-        f = first.rsplit(":", 1)[0] if ":" in first else first   # strip the trailing :line
-        cat = c.get("category", "")
-        gid = "disc-" + hashlib.sha256((cat + "/" + f).encode()).hexdigest()[:10]
-        path = goals_dir / f"{gid}.md"
-        if path.exists():
+        try:
+            f = _candidate_file(c)
+            cat = c.get("category", "")
+            ev = c.get("evidence") or []
+            gid = "disc-" + hashlib.sha256((cat + "/" + f).encode()).hexdigest()[:10]
+            path = goals_dir / f"{gid}.md"
+            if path.exists():
+                continue
+            title = c.get("title") or (f"address {cat} in {f}")
+            locs = "".join("\n- " + e for e in ev)
+            path.write_text("---\n"
+                            f"id: {gid}\ntitle: {title}\nstatus: proposed\nsource: discovery\n"
+                            f"done_when: the {cat} in {f} is resolved\n---\n"
+                            f"Detected by the discovery scan (category: {cat}, priority: "
+                            f"{c.get('priority', '')}). Locations:{locs}\n"
+                            "Promote to `status: pending` to let the loop work it.\n")
+            created.append(str(path))
+        except Exception:            # noqa: BLE001 - one bad candidate must not blind the rest
             continue
-        title = c.get("title") or (f"address {cat} in {f}")
-        locs = "".join("\n- " + e for e in ev)
-        path.write_text("---\n"
-                        f"id: {gid}\ntitle: {title}\nstatus: proposed\nsource: discovery\n"
-                        f"done_when: the {cat} in {f} is resolved\n---\n"
-                        f"Detected by the discovery scan (category: {cat}, priority: "
-                        f"{c.get('priority', '')}). Locations:{locs}\n"
-                        "Promote to `status: pending` to let the loop work it.\n")
-        created.append(str(path))
     return created
+
+
+#: Sentinel `goal` for every `scan` event: discovery runs before any goal exists, exactly like
+#: decision_gate's `_NO_GOAL` for site f — a different domain, deliberately a different string, so
+#: an events-stream reader filtering by `goal` can tell the two apart at a glance.
+_NO_GOAL = "(discovery-scan)"
+
+
+def _emit_scan_events(sdlc_dir, candidates):
+    """One `scan` event per candidate. Fail-open PER CANDIDATE: `category`/`file`/`count` are
+    computed as call ARGUMENTS in THIS frame, not inside `safe_append`'s own try/except (Python
+    evaluates arguments before the call happens) — so a single malformed candidate (non-dict, from
+    a future .sh bug or a hand-mocked fixture) must not take the whole loop down with it."""
+    for c in candidates or []:
+        try:
+            ledger.safe_append(sdlc_dir, "scan", _NO_GOAL, stream=ledger.EVENTS,
+                               category=c.get("category", ""), file=_candidate_file(c),
+                               count=c.get("count", len(c.get("evidence") or [])))
+        except Exception:            # noqa: BLE001 - fail-open; telemetry must never break discovery
+            continue
 
 
 def discover(sdlc_dir, repo_root="."):
@@ -241,7 +286,9 @@ def discover(sdlc_dir, repo_root="."):
         data = json.loads(proc.stdout or "{}")
     except Exception:
         return []
-    return propose_from_discovery(sdlc_dir, data.get("candidates") or [])
+    candidates = data.get("candidates") or []
+    _emit_scan_events(sdlc_dir, candidates)
+    return propose_from_discovery(sdlc_dir, candidates)
 
 
 def main(argv):

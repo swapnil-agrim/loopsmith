@@ -107,6 +107,16 @@ def enabled(config):
     return settings(config).get("enabled") is True
 
 
+def telemetry_settings(config):
+    return (config or {}).get("telemetry") or {}
+
+
+def telemetry_enabled(config):
+    """Strict `is True`, mirroring enabled() — a truthy string or a stray 1 must not switch a
+    second write surface on silently."""
+    return telemetry_settings(config).get("enabled") is True
+
+
 # --------------------------------------------------------------------------- paths
 
 
@@ -183,13 +193,29 @@ def append(sdlc_dir, config, kind, goal, run=None, now=None, stream=ENTRIES, **f
     `verdict` (events/`gate` only) are enforced, matching the issue's Done criteria verbatim.
     `PHASE_KINDS`/`GATE_KINDS`/`REASON_CLASSES` are the documented vocabulary but tightening
     them to enforced-at-write is a scope expansion later work can add, the same way `STATES`
-    already does for entries, without another signature change."""
-    if not enabled(config):
-        return None
+    already does for entries, without another signature change.
+
+    THE EVENTS GATE IS `enabled(config) AND telemetry_enabled(config)` — BOTH, not either. This
+    looks like it should be an OR against spec Section A.2's promise that telemetry keeps writing
+    locally even with the ledger off entirely, and someone will be tempted to "fix" it. Don't:
+    `append()` does `path.parent.mkdir(parents=True, ...)` below and needs no ledger worktree to
+    write, so an OR/telemetry-alone gate would happily create `.sdlc/ledger/events/<actor>.jsonl`
+    on a repo where `.sdlc/ledger/` is a git WORKTREE that is only reliably gitignored once
+    `/sdlc-ledger`'s `ensure_ignore()` has run (`doctor.py`'s own `_ignore_mechanism()` reports
+    "NOT ignored" as a live state) — i.e. it would risk leaking event files into a commit. Spec
+    A.2's independence promise needs #244's real `.sdlc/events/` local path first; that is a
+    sequencing dependency, not something this gate expression can fix. And on the OTHER side, an
+    OR would make every repo that already ships with `ledger.enabled: true` and no `telemetry`
+    block (the overwhelmingly common shape once callers land) start writing an events stream with
+    zero opt-in — directly contradicting the `_comment` shipped alongside the `telemetry` block.
+    So: strict `is True` on both, matching `enabled()`'s own idiom. ENTRIES stays gated on
+    `enabled(config)` alone, unchanged."""
     if stream not in STREAMS:
         raise ValueError(f"unknown ledger stream {stream!r} (expected one of {', '.join(STREAMS)})")
 
     if stream == ENTRIES:
+        if not enabled(config):
+            return None
         if kind not in KINDS:
             raise ValueError(f"unknown ledger kind {kind!r} (expected one of {', '.join(KINDS)})")
         state = fields.get("state")
@@ -197,6 +223,8 @@ def append(sdlc_dir, config, kind, goal, run=None, now=None, stream=ENTRIES, **f
             raise ValueError(f"unknown ledger state {state!r} (expected one of {', '.join(STATES)})")
         field_whitelist = OPTIONAL_FIELDS
     else:  # EVENTS
+        if not (enabled(config) and telemetry_enabled(config)):
+            return None
         if kind not in EVENT_KINDS:
             raise ValueError(f"unknown event kind {kind!r} (expected one of {', '.join(EVENT_KINDS)})")
         if kind == "gate":

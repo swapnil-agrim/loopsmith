@@ -142,6 +142,50 @@ def _config_warnings(config):
     return out
 
 
+# Ordered, first match wins, case-insensitive, matched against a lowercased `detail`. Every needle
+# below (other than "irreversible") is a verbatim substring of real work.py PARK: text, verified
+# against the live source — see .sdlc/plans/139.md Design decision 4 for the file:line each one
+# comes from. Unmatched text (including every agent-supplied `loop.py record ... parked "<free
+# text>"`) maps to "unknown", never guessed. None of these needles is currently a substring of
+# another, so the ordering is defensive rather than load-bearing.
+_REASON_CLASS_RULES = (
+    ("irreversible", "irreversible"),                       # SKILL.md's own park-for-irreversible
+                                                              # prose — best-effort only, see _reason_class's docstring
+    ("no pr for this goal", "dependency"),
+    ("no fresh verify evidence", "no_evidence"),
+    ("rebase deferred", "merge_conflict"),
+    ("conflicts with the base branch", "merge_conflict"),
+    ("stale head", "merge_conflict"),
+    ("could not compute mergeability", "unknown"),
+    ("not safe to merge", "failing_check"),
+    ("changes requested", "needs_decision"),
+    ("unresolved review thread", "needs_decision"),
+    ("not approved yet", "needs_decision"),
+    ("loopsmith:block", "needs_decision"),
+    ("did not converge", "review_cap"),
+)
+
+
+def _reason_class(detail):
+    """Classify a park `detail` string into one of `ledger.REASON_CLASSES`, by ordered substring
+    match — pure, no I/O. Two of the nine documented classes are honestly NOT guaranteed reachable
+    from here, and that is stated rather than silently absent:
+
+    - `irreversible` is best-effort only. It matches SKILL.md's own park-for-irreversible prose,
+      but that prose gives no fixed wording contract for what an agent actually writes into
+      `detail` when it parks for an irreversible action, so this rule has a real chance of firing
+      but is a heuristic, not a proof.
+    - `budget` is PROVABLY unreachable by this function. `run_loop`'s BUDGET branch breaks the run
+      loop before `_next` ever returns a goal to record against, so `_record` (and therefore this
+      classifier) is never called on the budget path at all — there is no `detail` string for it
+      to classify."""
+    text = (detail or "").lower()
+    for needle, cls in _REASON_CLASS_RULES:
+        if needle in text:
+            return cls
+    return "unknown"
+
+
 def _record(sdlc_dir, source, goal, result, detail=""):
     if result == "done":
         source.complete(goal)
@@ -153,8 +197,11 @@ def _record(sdlc_dir, source, goal, result, detail=""):
     state.save_cursor(sdlc_dir, cur["iteration"] + 1, cur["run_iteration"] + 1,
                       f"last: {pathlib.Path(goal).name} -> {result}")
     # The outcome, once, on the single chokepoint both the CLI and run_loop paths pass through.
-    ledger.safe_append(sdlc_dir, result if result in ("done", "failed") else "parked", goal,
-                       why=detail or None)
+    outcome = result if result in ("done", "failed") else "parked"
+    ledger.safe_append(sdlc_dir, outcome, goal, why=detail or None)
+    if outcome == "parked":
+        ledger.safe_append(sdlc_dir, "park", goal, stream=ledger.EVENTS,
+                           reason_class=_reason_class(detail), why=detail or None)
 
 
 _evidence_path = state.evidence_path       # both live in state.py so work.py can require the same
@@ -166,7 +213,7 @@ def verify_goal(sdlc_dir, goal):
     prose gate, made checkable). Command source: goal frontmatter `verify_command`
     (local mode), else config `verify.command`.
     Exit: 0 verified · 1 the command failed · 3 no command declared (honest absence)."""
-    import json as _json, subprocess
+    import hashlib, json as _json, subprocess
     config = state.load_config(sdlc_dir)
     cmd = None
     goal_path = pathlib.Path(str(goal))
@@ -176,18 +223,32 @@ def verify_goal(sdlc_dir, goal):
     if not cmd:
         print("NO-COMMAND (set goal frontmatter `verify_command` or config `verify.command`)",
               file=sys.stderr)
+        ledger.safe_append(sdlc_dir, "verify", goal, config=config, stream=ledger.EVENTS,
+                           ok=False, exit=3, absent=True)
         return 3
     # Proving commands run where THIS GOAL'S CODE IS — its worktree when `work` is on, else the
     # project root, exactly as before (same injectable-root rule as pipeline.py's `repo_root`).
     # Deriving it from sdlc_dir alone would test the main checkout while the change sits in the
     # worktree: a green that proves nothing, and one that `record done` would happily accept.
     root = work.root(sdlc_dir, goal)
+    start = time.perf_counter()
     proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=root)
+    ms = int((time.perf_counter() - start) * 1000)
     ev = _evidence_path(sdlc_dir, goal)
     ev.parent.mkdir(parents=True, exist_ok=True)
     tail = (proc.stdout + proc.stderr).strip().splitlines()[-5:]
     ev.write_text(_json.dumps({"command": cmd, "exit": proc.returncode,
                                "at": int(time.time()), "tail": tail}, indent=2))
+    # `cmd` is externally-derived (goal frontmatter or config) and `.encode()`/`hashlib.sha256`
+    # are evaluated as call ARGUMENTS in THIS frame, not inside `safe_append`'s own try/except — a
+    # raise there would take down verify_goal itself unless guarded here too, not just at the
+    # append() call (Python evaluates arguments before the call happens).
+    try:
+        ledger.safe_append(sdlc_dir, "verify", goal, config=config, stream=ledger.EVENTS,
+                           ok=(proc.returncode == 0), exit=proc.returncode, ms=ms,
+                           command_sha256=hashlib.sha256(cmd.encode("utf-8")).hexdigest())
+    except Exception:                # noqa: BLE001 - fail-open; a telemetry hash must never break verify_goal
+        pass
     print(f"{'VERIFIED' if proc.returncode == 0 else 'FAILED'} exit={proc.returncode} evidence={ev}")
     return 0 if proc.returncode == 0 else 1
 

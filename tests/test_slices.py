@@ -484,3 +484,58 @@ def test_loop_skill_documents_the_dispatch_rules():
             / "SKILL.md").read_text()
     assert "slices.py" in text and "isolation: worktree" in text
     assert "claude --worktree" in text and "claude -p" in text
+
+
+# --------------------------------------------------------------------------- #139 Slice 3: site g (slice)
+# Needs ledger.enabled AND telemetry.enabled (the Slice 0 AND-gate) for an events-stream write to
+# actually land — see test_ledger.py's gate tests for the gate itself; these prove the CLI's `plan`
+# verb uses it correctly.
+
+TELEMETRY = {"parallel": {"enabled": True, "max_concurrent": 2},
+             "ledger": {"enabled": True, "actor": "rae"}, "telemetry": {"enabled": True}}
+
+
+def test_plan_emits_one_slice_event_per_planned_slice(tmp_path):
+    d = _sdlc(tmp_path, [_slice("a"), _slice("b"), _slice("c", needs=["a"])], config=TELEMETRY)
+    assert slices.main(["slices.py", "plan", str(d), GOAL]) == 0
+    events = [e for e in slices.ledger.read_all(d, stream=slices.ledger.EVENTS) if e["kind"] == "slice"]
+    assert len(events) == 3
+    by_id = {e["slice"]: e for e in events}
+    assert by_id["a"]["wave"] == 1 and by_id["a"]["mode"] == "subagent" and by_id["a"]["files_declared"] == 1
+    assert by_id["c"]["wave"] == 2
+
+
+def test_plan_emits_session_mode_for_large_slices(tmp_path):
+    d = _sdlc(tmp_path, [_slice("s3", size="large")], config=TELEMETRY)
+    assert slices.main(["slices.py", "plan", str(d), GOAL]) == 0
+    events = [e for e in slices.ledger.read_all(d, stream=slices.ledger.EVENTS) if e["kind"] == "slice"]
+    assert len(events) == 1 and events[0]["mode"] == "session"
+
+
+def test_check_and_frontier_emit_nothing(tmp_path):
+    d = _sdlc(tmp_path, [_slice("a"), _slice("b")], config=TELEMETRY)
+    assert slices.main(["slices.py", "check", str(d), GOAL]) == 0
+    assert slices.main(["slices.py", "frontier", str(d), GOAL]) == 0
+    events = [e for e in slices.ledger.read_all(d, stream=slices.ledger.EVENTS) if e["kind"] == "slice"]
+    assert events == []
+
+
+def test_plan_emits_no_events_when_telemetry_is_off(tmp_path):
+    d = _sdlc(tmp_path, [_slice("a")])          # default ON fixture: parallel only, no telemetry
+    assert slices.main(["slices.py", "plan", str(d), GOAL]) == 0
+    events = [e for e in slices.ledger.read_all(d, stream=slices.ledger.EVENTS) if e["kind"] == "slice"]
+    assert events == []
+
+
+def test_slices_plan_survives_a_raising_ledger_append(tmp_path, capsys, monkeypatch):
+    """The module's fail-open test: would fail if `main`'s plan verb ever called `ledger.append`
+    directly instead of `ledger.safe_append`, and would also fail if the per-slice field
+    computation (`s["id"]`, `dispatch(s)`, `len(s["files"])`) were left unguarded outside
+    `safe_append`'s own try/except — those run in the CALLER's frame, not inside it."""
+    d = _sdlc(tmp_path, [_slice("a"), _slice("b")], config=TELEMETRY)
+    def raiser(*a, **k):
+        raise RuntimeError("ledger broke")
+    monkeypatch.setattr(slices.ledger, "append", raiser)
+    assert slices.main(["slices.py", "plan", str(d), GOAL]) == 0
+    out = capsys.readouterr().out
+    assert "Wave 1" in out

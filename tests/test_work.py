@@ -701,6 +701,106 @@ def test_post_review_default_cap_is_three(tmp_path):
     assert work.post_review(d, ON, goal, run=run, verdict="block", reason="3rd").startswith("PARK:")
 
 
+# --------------------------------------------------------------------------- #139 Slice 2: events
+# Site c (post_review -> gate{post_review}), site d (gate/merge -> gate{merge}), site e
+# (review_gate -> gate{code_review}). All need ledger.enabled AND telemetry.enabled — the Slice 0
+# AND-gate — to actually land a write; see test_ledger.py's gate tests for the gate itself.
+
+TELEMETRY = {"ledger": {"enabled": True, "actor": "rae"}, "telemetry": {"enabled": True}}
+
+
+def _gate_events(entries, gate_name):
+    return [e for e in entries if e.get("kind") == "gate" and e.get("gate") == gate_name]
+
+
+def test_post_review_approve_emits_a_pass_gate_event_with_no_cycle(tmp_path):
+    ledger = _load("ledger")
+    cfg = {**ON, **TELEMETRY}
+    d = _sdlc(tmp_path, cfg); goal = _started(d)
+    work.post_review(d, cfg, goal, run=_runner([]), verdict="approve")
+    events = _gate_events(ledger.read_all(d, stream=ledger.EVENTS), "post_review")
+    assert len(events) == 1
+    assert events[0]["verdict"] == "pass"
+    assert "cycle" not in events[0]
+
+
+def test_post_review_block_emits_a_block_gate_event_with_the_cycle_count(tmp_path):
+    """The metric this task exists to unlock: `review_cycles` currently only reaches
+    `state/work/<goal>.json`, which `work.py finish` deletes — the event is what makes it survive."""
+    ledger = _load("ledger")
+    cfg = {**ON, **TELEMETRY}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); run = _runner([])
+    work.post_review(d, cfg, goal, run=run, verdict="block", reason="missing null check")
+    events = _gate_events(ledger.read_all(d, stream=ledger.EVENTS), "post_review")
+    assert len(events) == 1 and events[0]["verdict"] == "block" and events[0]["cycle"] == 1
+    work.post_review(d, cfg, goal, run=run, verdict="block", reason="still broken")
+    events = _gate_events(ledger.read_all(d, stream=ledger.EVENTS), "post_review")
+    assert events[-1]["cycle"] == 2
+
+
+def test_merge_emits_a_pass_gate_event_on_a_clean_and_safe_merge(tmp_path):
+    ledger = _load("ledger")
+    cfg = {**ALWAYS, **TELEMETRY}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); _evidence(d, goal)
+    run = _runner(_rights() + _protected() + [("pr view", _view())])
+    out = work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("auto-merge armed")
+    events = _gate_events(ledger.read_all(d, stream=ledger.EVENTS), "merge")
+    assert len(events) == 1 and events[0]["verdict"] == "pass"
+
+
+def test_merge_emits_a_block_gate_event_with_the_verdict_as_why(tmp_path):
+    ledger = _load("ledger")
+    cfg = {**ALWAYS, **TELEMETRY}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); _evidence(d, goal)
+    run = _runner(_rights() + [("pr view", _view(mergeable="CONFLICTING"))])
+    out = work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("PARK: conflicts with the base branch")
+    events = _gate_events(ledger.read_all(d, stream=ledger.EVENTS), "merge")
+    assert len(events) == 1 and events[0]["verdict"] == "block"
+    assert "conflicts with the base branch" in events[0]["why"]
+
+
+def test_merge_review_gate_emits_code_review_gate_event_when_require_review_is_on(tmp_path):
+    cfg = {"work": {"enabled": True, "auto_merge": "always", "require_review": "approval"}, **TELEMETRY}
+    ledger = _load("ledger")
+    d = _sdlc(tmp_path, cfg); goal = _started(d); _evidence(d, goal)
+    run = _runner(_rights() + _review(decision="APPROVED") + [("pr view", _view())])
+    out = work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
+    assert not out.startswith("PARK")
+    events = _gate_events(ledger.read_all(d, stream=ledger.EVENTS), "code_review")
+    assert len(events) == 1 and events[0]["verdict"] == "pass"
+
+
+def test_merge_emits_no_code_review_event_when_require_review_is_off(tmp_path):
+    """Proves the `review_mode(config) != REVIEW_OFF` guard actually suppresses it — `review_gate`
+    itself returns (True, "") uniformly for both 'mode off' and 'on and clean', so without the
+    guard an off repo would wrongly log a pass event for a gate that never ran."""
+    ledger = _load("ledger")
+    cfg = {**ALWAYS, **TELEMETRY}       # require_review unset -> off
+    d = _sdlc(tmp_path, cfg); goal = _started(d); _evidence(d, goal)
+    run = _runner(_rights() + _protected() + [("pr view", _view())])
+    work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
+    assert _gate_events(ledger.read_all(d, stream=ledger.EVENTS), "code_review") == []
+
+
+def test_work_survives_a_raising_ledger_append(tmp_path, monkeypatch):
+    """The module's fail-open test: would fail if post_review/merge/review_gate ever called
+    `ledger.append` directly instead of `ledger.safe_append`."""
+    cfg = {**ALWAYS, **TELEMETRY}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); _evidence(d, goal)
+    run = _runner(_rights() + _protected() + [("pr view", _view())])
+
+    def raiser(*a, **k):
+        raise RuntimeError("ledger broke")
+    monkeypatch.setattr(work.ledger, "append", raiser)
+
+    out = work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("auto-merge armed on PR #7")
+    out2 = work.post_review(d, cfg, goal, run=_runner([]), verdict="approve")
+    assert "posted loopsmith:approve" in out2
+
+
 # --------------------------------------------------------------------------- stale head (#197)
 
 

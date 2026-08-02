@@ -1,4 +1,4 @@
-import json, pathlib, importlib.util, tempfile, subprocess, sys
+import hashlib, json, pathlib, importlib.util, tempfile, subprocess, sys
 
 S = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts"
 
@@ -377,3 +377,151 @@ def test_next_ignores_the_lease_when_the_ledger_is_off():
         lp = _loop(); src = _Queue(["a", "b"])
         kind, goal = lp._next(base, src, lp.state.load_config(base))
         assert (kind, goal) == ("goal", "a")             # no ledger, no lock — byte-identical to before
+
+
+# ---------------------------------------------------------------- #139 Slice 1: site a (verify) + site b (park)
+# Both need ledger.enabled AND telemetry.enabled (the Slice 0 AND-gate) for an events-stream write
+# to actually land — see test_ledger.py's gate tests for the gate itself; these prove the two call
+# sites use it correctly.
+
+
+def _telemetry_backlog(d, verify_command=None):
+    base = pathlib.Path(d) / ".sdlc"
+    (base / "goals").mkdir(parents=True); (base / "state").mkdir()
+    cfg = {"budget": {"max_iterations": 10}, "verify": {"command": ""},
+           "ledger": {"enabled": True, "actor": "rae"}, "telemetry": {"enabled": True}}
+    (base / "config.json").write_text(json.dumps(cfg))
+    (base / "state" / "STATE.md").write_text("iteration: 0\nrun_iteration: 0\nlast_run: none\n")
+    (base / "state" / "review-queue.md").write_text("# Q\n")
+    fm = "---\nid: 0001\nstatus: pending\n"
+    if verify_command:
+        fm += f"verify_command: {verify_command}\n"
+    (base / "goals" / "0001.md").write_text(fm + "---\nx\n")
+    return str(base), str(base / "goals" / "0001.md")
+
+
+def _telemetry_base(d):
+    """A bare .sdlc with ledger+telemetry on but no goals backlog — for tests that drive `_record`
+    directly instead of through `run_loop`."""
+    base = pathlib.Path(d) / ".sdlc"; (base / "state").mkdir(parents=True)
+    cfg = {"ledger": {"enabled": True, "actor": "rae"}, "telemetry": {"enabled": True}}
+    (base / "config.json").write_text(json.dumps(cfg))
+    (base / "state" / "STATE.md").write_text("iteration: 0\nrun_iteration: 0\nlast_run: none\n")
+    return str(base)
+
+
+class _Sink:
+    """A source stub with just enough surface for `_record` to drive (complete/fail/park)."""
+    def complete(self, g): pass
+    def fail(self, g, r): pass
+    def park(self, g, r): pass
+
+
+def test_verify_goal_emits_a_verify_event_with_timing_and_command_hash():
+    with tempfile.TemporaryDirectory() as d:
+        base, goal = _telemetry_backlog(d, verify_command="true")
+        lp = _loop()
+        assert lp.verify_goal(base, goal) == 0
+        events = [e for e in lp.ledger.read_all(base, stream=lp.ledger.EVENTS) if e["kind"] == "verify"]
+        assert len(events) == 1
+        e = events[0]
+        assert e["ok"] is True and e["exit"] == 0
+        assert isinstance(e["ms"], int) and e["ms"] >= 0
+        assert e["command_sha256"] == hashlib.sha256(b"true").hexdigest()
+
+
+def test_verify_goal_emits_absent_when_no_command_is_declared():
+    with tempfile.TemporaryDirectory() as d:
+        base, goal = _telemetry_backlog(d, verify_command=None)
+        lp = _loop()
+        assert lp.verify_goal(base, goal) == 3
+        events = [e for e in lp.ledger.read_all(base, stream=lp.ledger.EVENTS) if e["kind"] == "verify"]
+        assert len(events) == 1
+        e = events[0]
+        assert e["absent"] is True and e["exit"] == 3 and "command_sha256" not in e
+
+
+def test_verify_goal_survives_a_raising_command_hash(monkeypatch):
+    """Python evaluates call ARGUMENTS in the caller's frame, so `hashlib.sha256(cmd.encode(...))`
+    runs in `verify_goal`'s own frame, not inside `safe_append`'s try/except — a raise there would
+    take down `verify_goal` itself unless the field computation is guarded too, not just the
+    append() call. This is the fail-open hole an independent plan review flagged for site a."""
+    with tempfile.TemporaryDirectory() as d:
+        base, goal = _telemetry_backlog(d, verify_command="true")
+        lp = _loop()
+        def boom(*a, **k):
+            raise RuntimeError("a weird cmd broke the hash")
+        monkeypatch.setattr(hashlib, "sha256", boom)
+        assert lp.verify_goal(base, goal) == 0     # the real verify outcome, unaffected by the crash
+
+
+def test_record_emits_a_park_event_with_reason_class():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        detail = "PARK: no fresh verify evidence for this run (no verify evidence for this goal)"
+        lp._record(base, _Sink(), "g.md", "parked", detail)
+        events = [e for e in lp.ledger.read_all(base, stream=lp.ledger.EVENTS) if e["kind"] == "park"]
+        assert len(events) == 1
+        assert events[0]["reason_class"] == "no_evidence"
+        assert events[0]["why"] == detail
+
+
+def test_record_unmatched_park_reason_is_unknown():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        lp._record(base, _Sink(), "g.md", "parked", "some free text nobody wrote a rule for")
+        events = [e for e in lp.ledger.read_all(base, stream=lp.ledger.EVENTS) if e["kind"] == "park"]
+        assert len(events) == 1 and events[0]["reason_class"] == "unknown"
+
+
+def test_record_emits_no_park_event_for_done_or_failed():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        lp._record(base, _Sink(), "g.md", "done", "")
+        lp._record(base, _Sink(), "g2.md", "failed", "boom")
+        events = [e for e in lp.ledger.read_all(base, stream=lp.ledger.EVENTS) if e["kind"] == "park"]
+        assert events == []
+
+
+def test_reason_class_table_matches_every_documented_park_source():
+    """One assertion per row of #139's verified needle table (Design decision 4, as corrected by
+    plan review), pinning the mapping against regressions if work.py's park wording ever drifts."""
+    lp = _loop()
+    cases = [
+        ("this action is irreversible, parking for a human", "irreversible"),
+        ("no PR for this goal — run `work.py pr` first", "dependency"),
+        ("no fresh verify evidence for this run (no verify evidence for this goal)", "no_evidence"),
+        ("rebase deferred: could not apply", "merge_conflict"),
+        ("conflicts with the base branch — a human has to resolve them", "merge_conflict"),
+        ("STALE HEAD — the PR is at abc1234 but this worktree is at def5678", "merge_conflict"),
+        ("GitHub could not compute mergeability (still UNKNOWN after retries)", "unknown"),
+        ("not safe to merge (mergeStateStatus=BLOCKED)", "failing_check"),
+        ("changes requested by someone on PR #1 — address them", "needs_decision"),
+        ("2 unresolved review thread(s) on PR #1 — resolve them", "needs_decision"),
+        ("PR #1 is not approved yet (reviewDecision=none)", "needs_decision"),
+        ("a `loopsmith:block` comment is on PR #1 — address it", "needs_decision"),
+        ("post-PR review did not converge after 3 cycles on PR #1", "review_cap"),
+        ("something totally unrelated to any known park reason", "unknown"),
+    ]
+    for detail, expected in cases:
+        assert lp._reason_class(detail) == expected, detail
+
+
+def test_run_loop_survives_a_raising_ledger_append(monkeypatch):
+    """The module's fail-open test: would fail if `_next`/`_record`/`verify_goal` ever called
+    `ledger.append` directly instead of `ledger.safe_append`."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 3)
+        cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+        cfg["ledger"] = {"enabled": True, "actor": "rae"}
+        cfg["telemetry"] = {"enabled": True}
+        (pathlib.Path(base) / "config.json").write_text(json.dumps(cfg))
+        lp = _loop()
+        def raiser(*a, **k):
+            raise RuntimeError("ledger broke")
+        monkeypatch.setattr(lp.ledger, "append", raiser)
+        res = lp.run_loop(base, lambda g: ("done", ""))
+        assert res["done"] == 3 and res["parked"] == 0 and res["stopped"] == "backlog-empty"

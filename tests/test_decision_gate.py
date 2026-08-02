@@ -4,14 +4,22 @@ DENIED before the edit happens, by a script that does not negotiate.
 The value of a gate like this is entirely in its precision. A gate that cries wolf gets clicked
 through, and then it protects nothing — so most of these test the cases where it must STAY SILENT,
 not the ones where it fires."""
-import json, pathlib, importlib.util, tempfile, subprocess, sys
+import io, json, pathlib, importlib.util, tempfile, subprocess, sys
+
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 G = ROOT / "hooks" / "decision_gate.py"
+LEDGER_PATH = ROOT / "skills" / "sdlc-loop" / "scripts" / "ledger.py"
 
 
 def _gate():
     spec = importlib.util.spec_from_file_location("decision_gate", G)
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+
+
+def _ledger_mod():
+    spec = importlib.util.spec_from_file_location("ledger", LEDGER_PATH)
     m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
 
 
@@ -250,3 +258,89 @@ def test_a_violating_value_quoted_inside_prose_is_not_a_false_deny():
     # ...while a genuine string-valued assignment is still checked
     d = _inv(protected_params=[{"name": "region", "op": "in", "value": ["eu"]}])
     assert m.evaluate(*_edit("/repo/src/a.py", 'region = "cn"'), _reg(d), "/repo")[0] == "deny"
+
+
+# --- #139 Slice 5: site f (gate{decision}) -------------------------------------------------------
+# Needs ledger.enabled AND telemetry.enabled (the Slice 0 AND-gate) for an events-stream write to
+# actually land — see test_ledger.py's gate tests for the gate itself. Emission is on `deny` ONLY —
+# not `ask`, not `allow` — since `evaluate()` runs on every Edit/Write in every session and
+# instrumenting the overwhelming-majority `allow` case would flood the events stream.
+
+def _project(d, *decisions, telemetry=True):
+    root = pathlib.Path(d)
+    base = root / ".sdlc"
+    base.mkdir()
+    (base / "decisions.json").write_text(json.dumps(_reg(*decisions)))
+    cfg = {"ledger": {"enabled": True, "actor": "rae"}}
+    if telemetry:
+        cfg["telemetry"] = {"enabled": True}
+    (base / "config.json").write_text(json.dumps(cfg))
+    return root
+
+
+def _run_hook(root, tool_input, tool_name="Edit"):
+    return subprocess.run([sys.executable, str(G)], cwd=str(root),
+                          input=json.dumps({"tool_name": tool_name, "tool_input": tool_input}),
+                          capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
+
+
+def _gate_events(root):
+    ledger = _ledger_mod()
+    return [e for e in ledger.read_all(str(root / ".sdlc"), stream=ledger.EVENTS) if e["kind"] == "gate"]
+
+
+def test_deny_emits_a_block_gate_event():
+    with tempfile.TemporaryDirectory() as d:
+        root = _project(d, _inv())
+        out = _run_hook(root, {"file_path": "src/a.py", "new_string": "timeout = 120"})
+        payload = json.loads(out.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"     # real deny, unchanged
+        events = _gate_events(root)
+        assert len(events) == 1
+        e = events[0]
+        assert e["gate"] == "decision" and e["verdict"] == "block"
+        assert e["goal"] == "(decision-gate)"                # the sentinel: no real goal exists here
+        assert e["why"].startswith("src/a.py: ")              # file path, then evaluate()'s full reason
+        assert "timeout=120" in e["why"]
+
+
+def test_ask_and_allow_emit_nothing():
+    with tempfile.TemporaryDirectory() as d:
+        root = _project(d, _inv(**{"class": "recipe"}))       # a recipe violation -> ask, not deny
+        ask_out = _run_hook(root, {"file_path": "src/a.py", "new_string": "timeout = 120"})
+        assert json.loads(ask_out.stdout)["hookSpecificOutput"]["permissionDecision"] == "ask"
+        allow_out = _run_hook(root, {"file_path": "src/a.py", "new_string": "timeout = 10"})
+        assert allow_out.stdout.strip() == ""                  # silence = allow
+        assert _gate_events(root) == []
+
+
+def test_no_event_when_telemetry_is_off():
+    with tempfile.TemporaryDirectory() as d:
+        root = _project(d, _inv(), telemetry=False)
+        out = _run_hook(root, {"file_path": "src/a.py", "new_string": "timeout = 120"})
+        assert json.loads(out.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert _gate_events(root) == []
+
+
+def test_a_raising_telemetry_call_still_denies(monkeypatch, capsys):
+    """The most important test in this plan. `main()`'s outer handler is `except Exception:
+    sys.exit(0)` with NO print — byte-identical to what a genuine `allow` emits — so a raising
+    telemetry call sitting in the SAME try block as `_emit(...)` would silently turn a real `deny`
+    into what the harness reads as an allow. Proves the emit call is wrapped in its OWN local
+    try/except and `_emit(decision, reason)` is always reached regardless."""
+    m = _gate()
+    with tempfile.TemporaryDirectory() as d:
+        root = _project(d, _inv())
+        monkeypatch.chdir(root)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(
+            {"tool_name": "Edit", "tool_input": {"file_path": "src/a.py", "new_string": "timeout = 120"}})))
+
+        def boom(*a, **k):
+            raise RuntimeError("telemetry broke")
+        monkeypatch.setattr(m, "_emit_decision_event", boom)
+
+        with pytest.raises(SystemExit) as exc:
+            m.main(["decision_gate.py"])
+        assert exc.value.code == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"        # the real deny survives

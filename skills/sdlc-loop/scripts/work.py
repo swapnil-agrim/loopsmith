@@ -473,6 +473,12 @@ def merge(sdlc_dir, config, goal, run=None, sleep=time.sleep):
         if out != "rebased":
             return f"PARK: {out}"
         ok, verdict, _ = gate(sdlc_dir, config, goal, run=run, sleep=sleep)
+    # Site d (#139): the clean-AND-safe gate's own verdict, once, on its FINAL read (post-rebase
+    # when a rebase happened). The earlier BEHIND-and-rebase-failed early return is deliberately
+    # NOT instrumented here — it is a git-mechanics failure, not a verdict from gate() itself.
+    ledger.safe_append(sdlc_dir, "gate", goal, config=config, stream=ledger.EVENTS,
+                       gate="merge", verdict=("pass" if ok else "block"),
+                       why=None if ok else verdict)
     if not ok:
         return f"PARK: {verdict}"
 
@@ -482,6 +488,13 @@ def merge(sdlc_dir, config, goal, run=None, sleep=time.sleep):
     # A real review, independent of branch protection — so a human 'Request changes' on an unprotected
     # base stops the auto-merge instead of being invisible to it. Off unless `require_review` is set.
     rok, rverdict = review_gate(sdlc_dir, config, goal, run=run)
+    # Site e (#139): only emit when the gate actually ran — `review_gate` itself returns (True, "")
+    # uniformly for both "mode off" and "on and clean", so this guard is what tells them apart from
+    # the caller's side without touching review_gate's own body.
+    if review_mode(config) != REVIEW_OFF:
+        ledger.safe_append(sdlc_dir, "gate", goal, config=config, stream=ledger.EVENTS,
+                           gate="code_review", verdict=("pass" if rok else "block"),
+                           why=None if rok else rverdict)
     if not rok:
         return f"PARK: {rverdict}"
     guarded, detail = protection(sdlc_dir, config, goal, run=run)
@@ -540,6 +553,13 @@ def post_review(sdlc_dir, config, goal, run=None, verdict="", reason=""):
         run(rec["worktree"], ["gh", "pr", "comment", str(rec["pr"]), "--body", body])
     except Exception as exc:                # noqa: BLE001 - report, never traceback at the loop
         return f"could not post review on PR #{rec['pr']}: {exc}"
+    # Site c (#139): `cycle` is the same `rec["review_cycles"]` just persisted above — the whole
+    # point of counting it here, since that value otherwise only reaches `state/work/<goal>.json`,
+    # which `work.py finish` deletes once the goal is done.
+    ledger.safe_append(sdlc_dir, "gate", goal, config=config, stream=ledger.EVENTS,
+                       gate="post_review", verdict=("pass" if v == "approve" else "block"),
+                       cycle=(rec.get("review_cycles") if v == "block" else None),
+                       why=reason or None)
     if over_cap:
         return (f"PARK: post-PR review did not converge after {rec['review_cycles']} cycles on PR "
                 f"#{rec['pr']} — a human is needed")

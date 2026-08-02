@@ -25,9 +25,20 @@ Default OFF (`parallel.enabled`): with no `parallel` block, and with no manifest
 loop behaves exactly as it did before this module existed. Zero deps.
 """
 import fnmatch
+import importlib.util
 import json
 import pathlib
 import sys
+
+_HERE = pathlib.Path(__file__).resolve().parent
+
+
+def _load(name):
+    spec = importlib.util.spec_from_file_location(name, _HERE / f"{name}.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+
+
+ledger = _load("ledger")            # team record (config-gated, default OFF; every call is fail-open)
 
 #: Manifest suffix, written beside the goal's plan so the two are groomed together.
 SUFFIX = ".slices.json"
@@ -426,7 +437,21 @@ def main(argv):
             print('slices: parallelism is off (config: "parallel": {"enabled": true}) — '
                   "showing the plan anyway; run the waves in order until you turn it on",
                   file=sys.stderr)
-        print(render(schedule(slices, cap), goal), end="")
+        plan = schedule(slices, cap)
+        # Site g (#139): one `slice` event per planned slice, across every wave. Each field
+        # computation (`s["id"]`, `dispatch(s)`, `len(s["files"])`) runs in THIS frame, not inside
+        # `safe_append`'s own try/except — Python evaluates call arguments before the call happens
+        # — so each slice gets its own guard: one malformed manifest entry must never break the
+        # rest of the plan, matching `ledger.read_all`'s own "one bad line is skipped" convention.
+        for wave_index, wave in enumerate(plan, start=1):
+            for s in wave:
+                try:
+                    ledger.safe_append(sdlc_dir, "slice", goal, config=config, stream=ledger.EVENTS,
+                                       slice=s["id"], wave=wave_index, mode=dispatch(s),
+                                       files_declared=len(s["files"]))
+                except Exception:    # noqa: BLE001 - fail-open; telemetry must never break planning
+                    continue
+        print(render(plan, goal), end="")
         return 0
 
     print("usage: slices.py plan <sdlc-dir> <goal> [--max N] | frontier <sdlc-dir> <goal> | "

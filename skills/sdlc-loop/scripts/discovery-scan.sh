@@ -61,8 +61,8 @@ scan_category() { # regex category title_fmt priority
     done < <(git -C "$PROJECT_DIR" grep -nI -E "$re" -- "$file" 2>/dev/null)
     [ "$cnt" -gt 0 ] || continue
     title="$(printf "$fmt" "$cnt" "$file")"
-    append CANDS "$(printf '{"title":%s,"category":%s,"source":"discovery","priority":%s,"evidence":[%s]}' \
-      "$(json_string "$title")" "$(json_string "$cat")" "$(json_string "$prio")" "$ev")"
+    append CANDS "$(printf '{"title":%s,"category":%s,"source":"discovery","priority":%s,"count":%s,"evidence":[%s]}' \
+      "$(json_string "$title")" "$(json_string "$cat")" "$(json_string "$prio")" "$cnt" "$ev")"
   done < <(git -C "$PROJECT_DIR" grep -lI -E "$re" "${EXCL[@]}" 2>/dev/null | LC_ALL=C sort)
 }
 

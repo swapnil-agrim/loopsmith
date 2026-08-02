@@ -42,8 +42,9 @@ def test_detects_tech_debt_and_test_gap(tmp_path):
     assert "tech-debt" in cats and "test-gap" in cats
     td = cats["tech-debt"]
     assert "a.py" in td["title"] and td["priority"] == "low"
-    assert set(td.keys()) == {"title", "category", "source", "priority", "evidence"}
+    assert set(td.keys()) == {"title", "category", "source", "priority", "count", "evidence"}
     assert td["evidence"] == ["a.py:2", "a.py:3"]      # location only, in order
+    assert td["count"] == 2
 
 
 def test_marker_text_is_never_emitted(tmp_path):
@@ -62,6 +63,7 @@ def test_evidence_capped_at_ten(tmp_path):
     _git(repo, "add", "-A")
     td = _by_cat(_run(repo))["tech-debt"]
     assert len(td["evidence"]) == 10 and "25 TODO" in td["title"]   # count reflects all, evidence capped
+    assert td["count"] == 25             # the REAL total, not the capped evidence length (the undercount bug)
 
 
 def test_fail_open_on_non_git_dir(tmp_path):

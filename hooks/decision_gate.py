@@ -41,6 +41,14 @@ REGISTRY_REL = ".sdlc/decisions.json"
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 OPS = ("eq", "ge", "le", "in")
 
+#: #139 site f. No goal exists in this hook's call chain — it only ever sees a bare PreToolUse
+#: payload on stdin, no goal id anywhere in it — so every `gate{decision}` event this module emits
+#: carries this fixed sentinel instead. Visually distinct from every real goal identity this kit
+#: uses (a `.md` path or a bare issue number), and — since nothing downstream (ledger.py's
+#: open_claims/handoff_key/etc.) reads the `goal` field on the EVENTS stream — carries no risk of
+#: colliding with real lease/handoff logic, which only ever looks at the ENTRIES stream.
+_NO_GOAL = "(decision-gate)"
+
 #: A literal on the right-hand side of an assignment. Anything else (an expression, a name, a call)
 #: is deliberately NOT matched — the gate only judges values it can actually read.
 _LITERAL = re.compile(r"(-?\d+\.\d+|-?\d+|True|False|true|false|\"[^\"]*\"|'[^']*')")
@@ -290,6 +298,39 @@ def validate(registry):
     return problems
 
 
+def _emit_decision_event(data, root, reason):
+    """#139 site f: `gate{decision, verdict:"block"}`, on `deny` ONLY — `evaluate()` runs on every
+    Edit/Write/MultiEdit/NotebookEdit tool call once a repo authors a registry, and `ask`/`allow`
+    are the overwhelming majority of outcomes (silence is the documented, desired steady state);
+    instrumenting those would flood the events stream with near-zero-value noise.
+
+    Lazily imports ledger.py (a sibling of loop.py/work.py/slices.py/pipeline.py in
+    skills/sdlc-loop/scripts/ — a DIFFERENT directory from this hook, not shipped as a package) so
+    a checkout where those scripts are absent or broken can never break this otherwise
+    self-contained module — `project_dir()`/`load_registry()`/`enabled()` all already swallow their
+    own errors for exactly this reason. The caller (main()'s hook branch) wraps this ENTIRE call in
+    its own local try/except, ahead of the always-reached `_emit(decision, reason)` — see that call
+    site for why: this is the one telemetry call in the whole plan where a raise, left unguarded,
+    could silently turn a real `deny` into what the harness reads as an `allow`.
+
+    `why` carries the edited file's repo-relative path, then `evaluate()`'s full combined `reason`
+    string (built from every violating decision's `ident` = f"{d.get('id')} {d.get('title')}", plus
+    the violated param/value/statement/rationale, joined with " | " — see evaluate() ~:214/:221-226).
+    Re-parsing it to extract just the `ident` would couple this to evaluate()'s internal message
+    format for no reader benefit; the full text is what a human debugging a denial actually wants,
+    and the file path (not otherwise present in `reason`) says WHERE it fired."""
+    import importlib.util
+    ti = data.get("tool_input") or {}
+    fp = ti.get("file_path") or ti.get("filePath") or ti.get("notebook_path")
+    rel = _rel(fp, root) if fp else "?"
+    spec = importlib.util.spec_from_file_location(
+        "ledger", Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts" / "ledger.py")
+    ledger = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ledger)
+    ledger.safe_append(str(Path(root) / ".sdlc"), "gate", _NO_GOAL, stream=ledger.EVENTS,
+                       gate="decision", verdict="block", why=f"{rel}: {reason}")
+
+
 def _emit(decision, reason):
     if decision == "allow":
         sys.exit(0)
@@ -329,6 +370,16 @@ def main(argv):
             return 0
         decision, reason = evaluate(data.get("tool_name", ""), data.get("tool_input") or {},
                                     load_registry(root), root)
+        # #139 site f. The telemetry call is wrapped in its OWN local try/except, never merged into
+        # the outer `except Exception: sys.exit(0)` below — that outer handler prints nothing, byte-
+        # identical to a genuine allow, so a raise from the emit call left unguarded here would
+        # silently convert a real deny into what the harness reads as an allow. `_emit(...)` always
+        # runs regardless of whether the emit above succeeded.
+        if decision == "deny":
+            try:
+                _emit_decision_event(data, root, reason)
+            except Exception:           # noqa: BLE001 - telemetry must never turn a deny into a silent allow
+                pass
         _emit(decision, reason)
     except Exception:
         sys.exit(0)      # fail open: never block real work because the gate itself errored
