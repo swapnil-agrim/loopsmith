@@ -762,3 +762,105 @@ def test_spend_cli_verb_accumulates_is_unmodified():
     import inspect
     src = inspect.getsource(test_spend_cli_verb_accumulates)
     assert 'subprocess.run([sys.executable, str(S / "loop.py"), "spend", base, n]' in src
+
+
+# ---------------------------------------------------------------- #140 PR review gaps: shared validator
+# FINDING 1: `spend`'s `phase` field was never checked against PHASE_KINDS (only `emit ... phase`
+# was). FINDING 2: the extended `spend` verb bypassed every one of `emit`'s refusal checks — an
+# unknown flag NAME silently dropped instead of refusing. Both are fixed by one shared validator
+# (`_validate_event`) called from both `emit` and `spend`'s event path.
+
+
+def test_emit_spend_rejects_out_of_vocabulary_phase():
+    """Finding 1: `emit ... spend --phase <bogus>` must be refused — `EVENT_FIELDS["spend"]`
+    carries the same `phase` field (same PHASE_KINDS vocabulary) as `phase`-kind events, but the
+    per-kind branch in `emit` only ever checked `kind == "phase"`, not the `phase` field itself."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "spend",
+                      "--phase", "totally_bogus_phase", "--tokens_in", "5"])
+        assert rc == 2
+        assert _events(base) == []
+
+
+def test_emit_spend_accepts_valid_phase():
+    """The other half of finding 1: a legitimate `--phase implement` on `spend` must still work
+    — the fix must validate the vocabulary, not merely reject everything."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "spend",
+                      "--phase", "implement", "--tokens_in", "5"])
+        assert rc == 0
+        evs = _events(base, "spend")
+        assert len(evs) == 1 and evs[0]["phase"] == "implement"
+
+
+def test_spend_rejects_unknown_flag_name_but_still_counts_tokens():
+    """Finding 2: the extended `spend` verb called `ledger.safe_append` directly, so an unknown
+    flag NAME silently dropped instead of refusing — reintroducing the exact silent-drop failure
+    mode #140 exists to close. Budget accounting (`state.add_tokens`) is the FIRST thing `spend`
+    does and must run even when the event itself is refused, so both halves are asserted here."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "spend", base, "500", "goal.md", "--bogus_flag_name", "yes"])
+        assert rc == 2
+        assert lp.state.load_cursor(base)["run_tokens"] == 500     # tokens still counted
+        assert _events(base) == []                                 # but no event written
+
+
+def test_spend_rejects_out_of_vocabulary_phase_but_still_counts_tokens():
+    """Finding 1, exercised through the `spend` verb directly (not `emit`) — the reproduction
+    from the review. Tokens must still accumulate even though the event is refused."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "spend", base, "500", "goal.md", "--phase", "bogus"])
+        assert rc == 2
+        assert lp.state.load_cursor(base)["run_tokens"] == 500
+        assert _events(base) == []
+
+
+def test_spend_token_accumulation_across_every_arg_shape():
+    """Re-assert every arg shape's token accumulation still holds after the fix — the whole risk
+    of fixing the validation gap is breaking budget accounting. 500 -> 1000 -> 1500 -> 2000."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+
+        rc = lp.main(["loop.py", "spend", base, "500"])
+        assert rc == 0 and lp.state.load_cursor(base)["run_tokens"] == 500
+
+        rc = lp.main(["loop.py", "spend", base, "500", "goal.md"])
+        assert rc == 0 and lp.state.load_cursor(base)["run_tokens"] == 1000
+
+        rc = lp.main(["loop.py", "spend", base, "500", "goal.md", "--phase", "implement",
+                      "--model", "x", "--tokens_in", "1", "--tokens_out", "2"])
+        assert rc == 0 and lp.state.load_cursor(base)["run_tokens"] == 1500
+
+        rc = lp.main(["loop.py", "spend", base, "500", "--phase", "implement"])
+        assert rc == 0 and lp.state.load_cursor(base)["run_tokens"] == 2000
+
+
+def test_emit_and_spend_share_one_validator():
+    """The same unknown flag name is refused with the same message shape from both verbs —
+    proof the fix is one shared validator, not a third copy of the checks."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+
+        import subprocess as _sp
+
+        proc_emit = _sp.run([sys.executable, str(S / "loop.py"), "emit", base, "g.md",
+                             "spend", "--bogus_flag_name", "yes"], capture_output=True, text=True)
+        assert proc_emit.returncode == 2
+
+        proc_spend = _sp.run([sys.executable, str(S / "loop.py"), "spend", base, "500",
+                              "g.md", "--bogus_flag_name", "yes"], capture_output=True, text=True)
+        assert proc_spend.returncode == 2
+
+        # Same unknown-flag message shape (kind name + flag name + "expected one of") from both.
+        assert "bogus_flag_name" in proc_emit.stderr and "bogus_flag_name" in proc_spend.stderr
+        assert "unknown flag" in proc_emit.stderr and "unknown flag" in proc_spend.stderr

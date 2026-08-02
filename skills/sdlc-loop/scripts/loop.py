@@ -327,6 +327,48 @@ _EMIT_KINDS = ("phase", "gate", "retro", "spend")
 _EMIT_GATE_KINDS = ("plan_review", "alignment")
 
 
+def _validate_event(kind, flags, kind_allowlist=None):
+    """The one refusal check shared by `emit` and the extended `spend` verb's event path (#140
+    PR-review findings 1+2). `spend` calls this with `kind_allowlist=None` — it legitimately
+    always writes the `spend` kind, chosen by code, never by an agent-supplied argument, so
+    there is nothing to allowlist there; `emit` passes `_EMIT_KINDS` because its `kind` IS
+    agent-supplied.
+
+    Checks, in order:
+      1. kind allowlist (only when `kind_allowlist` is given)
+      2. unknown flag NAMES against `ledger.EVENT_FIELDS[kind]`
+      3. out-of-vocabulary VALUES, checked by FIELD name (not by `kind`) for every
+         vocabulary-bearing field present in `flags` — `phase`/`gate`/`verdict`/`grade`/`state`.
+         By-field (not by-kind) is what closes finding 1: `EVENT_FIELDS["spend"]` carries a
+         `phase` field with the identical `PHASE_KINDS` vocabulary as `phase`-kind events, so a
+         future kind that also carries `phase` inherits this check automatically instead of
+         needing its own `kind == "..."` branch.
+
+    Returns an error message (no "emit:"/"spend:" prefix — the caller adds its own), or None."""
+    if kind_allowlist is not None and kind not in kind_allowlist:
+        return f"unknown kind {kind!r} (expected one of {', '.join(kind_allowlist)})"
+    allowed = ledger.EVENT_FIELDS[kind]
+    bad = sorted(set(flags) - set(allowed))
+    if bad:
+        return (f"unknown flag(s) {', '.join(bad)} for kind {kind!r} "
+                f"(expected one of {', '.join(allowed)})")
+    if "phase" in flags and flags["phase"] not in ledger.PHASE_KINDS:
+        return (f"unknown phase {flags['phase']!r} "
+                f"(expected one of {', '.join(ledger.PHASE_KINDS)})")
+    if "gate" in flags and flags["gate"] not in _EMIT_GATE_KINDS:
+        return (f"unknown gate {flags['gate']!r} "
+                f"(expected one of {', '.join(_EMIT_GATE_KINDS)})")
+    if "verdict" in flags and flags["verdict"] not in ledger.VERDICTS:
+        return (f"unknown verdict {flags['verdict']!r} "
+                f"(expected one of {', '.join(ledger.VERDICTS)})")
+    if "grade" in flags and flags["grade"] not in ledger.RETRO_GRADES:
+        return (f"unknown grade {flags['grade']!r} "
+                f"(expected one of {', '.join(ledger.RETRO_GRADES)})")
+    if "state" in flags and flags["state"] not in ("start", "end"):
+        return f"unknown state {flags['state']!r} (expected start or end)"
+    return None
+
+
 def main(argv):
     if len(argv) >= 3 and argv[1] == "start":
         state.start_run(argv[2])
@@ -365,6 +407,12 @@ def main(argv):
         _record(argv[2], sources.get_source(argv[2], config), argv[3], argv[4],
                 argv[5] if len(argv) > 5 else ""); return 0
     if len(argv) >= 4 and argv[1] == "spend":       # host-reported token spend → budget.max_tokens
+        # `state.add_tokens` runs FIRST and unconditionally — `budget.max_tokens` enforcement
+        # depends on it, so an invalid event flag below must never skip the budget accounting.
+        # On a validation failure, the tokens above are still counted; we just refuse to write
+        # the (invalid) event, print the same usable message `emit` would, and exit 2 — matching
+        # the story's own done-when ("an invalid flag is refused with a usable message") without
+        # ever making budget tracking conditional on the event succeeding.
         state.add_tokens(argv[2], argv[3])
         # Optional trailing goal + flags (spec §A.5 item 12: "extends the existing spend verb").
         # amendment C: argv[4] is a GOAL only when it does not itself look like a flag — a bare
@@ -376,33 +424,23 @@ def main(argv):
         if len(argv) >= 5 and not argv[4].startswith("--"):
             sdlc_dir, goal = argv[2], argv[4]
             flags = _flags(argv[5:])
+            # #140 PR-review finding 2: this used to call `ledger.safe_append` directly, so an
+            # unknown flag NAME silently dropped instead of refusing. Shares `emit`'s validator
+            # (`_validate_event`) — no kind allowlist, since `spend` always writes the `spend`
+            # kind by code, never by agent-supplied argument.
+            err = _validate_event("spend", flags)
+            if err:
+                print(f"loop.py spend: {err}", file=sys.stderr)
+                return 2
             ledger.safe_append(sdlc_dir, "spend", goal, config=state.load_config(sdlc_dir),
                                stream=ledger.EVENTS, **flags)
         return 0
     if len(argv) >= 5 and argv[1] == "emit":        # agent-emitted telemetry (Class 2, best-effort)
         sdlc_dir, goal, kind = argv[2], argv[3], argv[4]
         flags = _flags(argv[5:])
-        if kind not in _EMIT_KINDS:
-            print(f"loop.py emit: unknown kind {kind!r} (expected one of {', '.join(_EMIT_KINDS)})",
-                  file=sys.stderr)
-            return 2
-        allowed = ledger.EVENT_FIELDS[kind]
-        bad = sorted(set(flags) - set(allowed))
-        if bad:
-            print(f"loop.py emit: unknown flag(s) {', '.join(bad)} for kind {kind!r} "
-                  f"(expected one of {', '.join(allowed)})", file=sys.stderr)
-            return 2
-        if kind == "phase" and flags.get("phase") not in (None, *ledger.PHASE_KINDS):
-            print(f"loop.py emit: unknown phase {flags.get('phase')!r} "
-                  f"(expected one of {', '.join(ledger.PHASE_KINDS)})", file=sys.stderr)
-            return 2
-        if kind == "gate" and flags.get("gate") not in (None, *_EMIT_GATE_KINDS):
-            print(f"loop.py emit: unknown gate {flags.get('gate')!r} "
-                  f"(expected one of {', '.join(_EMIT_GATE_KINDS)})", file=sys.stderr)
-            return 2
-        if kind == "retro" and flags.get("grade") not in (None, *ledger.RETRO_GRADES):
-            print(f"loop.py emit: unknown grade {flags.get('grade')!r} "
-                  f"(expected one of {', '.join(ledger.RETRO_GRADES)})", file=sys.stderr)
+        err = _validate_event(kind, flags, kind_allowlist=_EMIT_KINDS)
+        if err:
+            print(f"loop.py emit: {err}", file=sys.stderr)
             return 2
         if flags.get("why"):
             # Privacy stopgap only (spec §A.4) — 200 chars, newlines flattened. Does NOT scrub
