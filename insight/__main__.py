@@ -146,6 +146,7 @@ def _ingest_one_repo(conn, project_root, args, label=None):
     from insight.ingest.git_reader import ingest_git_facts, ingest_merge_lead_time
     from insight.ingest.gh_reader import ingest_gh_reader
     from insight.ingest.ledger_writer import ingest_ledger
+    from insight.ingest.goal_lifecycle import ingest_goal_lifecycle
 
     prefix = "%s: " % label if label else ""
     results = ingest_collectors(conn, project_root, collectors_root=args.collectors_root)
@@ -154,6 +155,9 @@ def _ingest_one_repo(conn, project_root, args, label=None):
     lead_time = ingest_merge_lead_time(conn, project_root, days=args.git_window_days)
     gh_pack = ingest_gh_reader(conn, project_root, days=args.gh_window_days)
     ledger_result = ingest_ledger(conn, project_root)
+    # issue #217: must run AFTER ingest_ledger -- it derives fact_goal's lifecycle columns by
+    # replaying the fact_event rows ingest_ledger just wrote; order matters.
+    lifecycle_result = ingest_goal_lifecycle(conn, project_root)
     for r in results:
         codes = r["degraded_collector"] + r["degraded_adapter"]
         suffix = " (degraded: %s)" % ", ".join(codes) if codes else ""
@@ -171,6 +175,8 @@ def _ingest_one_repo(conn, project_root, args, label=None):
           % (prefix, gh_pack["review_events"], gh_pack["check_rows"]))
     print("insight ingest: %s%d ledger event(s), %d hand-off(s) (%d skipped)"
           % (prefix, ledger_result["events"], ledger_result["handoffs"], ledger_result["skipped"]))
+    print("insight ingest: %s%d goal(s) derived from event replay (%d stale row(s) purged)"
+          % (prefix, lifecycle_result["goals"], lifecycle_result["purged"]))
 
 
 def main(argv=None):
