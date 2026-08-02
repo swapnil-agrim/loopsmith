@@ -39,6 +39,19 @@ deliberately not a bare "is the file non-empty" check."""
 import re
 
 REQUIRED_FIELDS = ("name", "class", "metric", "action", "severity", "guardrail", "population")
+
+
+def _has_printable(value):
+    """True iff `value` contains at least one character that actually renders. Guards the
+    required-field gate against values that are truthy and survive `strip()` but show as nothing:
+    zero-width space, zero-width joiner, the bidi marks, and friends are format characters (Unicode
+    category Cf), so `"\u200b".isspace()` is False and `"\u200b".strip()` returns it unchanged.
+    `str.isprintable()` excludes exactly that category, which is the distinction wanted here."""
+    if not isinstance(value, str):
+        return bool(value)
+    return any(ch.isprintable() and not ch.isspace() for ch in value)
+
+
 VALID_GAP_CLASSES = ("Coverage", "Definition", "Threshold", "Consistency", "Debt")
 # PASS and ABSENT are both COMPUTED at evaluation time and neither is author-declarable.
 # POST-PR-REVIEW BLOCKING FIX: ABSENT used to be declarable here, and evaluate_rule's third
@@ -167,7 +180,14 @@ def parse_header(text, source="<unknown>"):
         raise GapHeaderError(
             f"{source}: duplicate header field(s): {', '.join(sorted(set(duplicates)))}"
         )
-    missing = set(k for k in REQUIRED_FIELDS if not fields.get(k))
+    # `not fields.get(k)` alone treats a value that is only invisible characters as PRESENT --
+    # `"​"` (zero-width space) is truthy and `str.strip()` does not remove it, since it is a
+    # format character, not whitespace. A rule whose `name:` degraded to one of those (a paste from
+    # a rich-text source is the realistic route) would load fine and then render a visually blank
+    # gap card. Require at least one character that actually prints. Found by #134's PR review,
+    # which reached this gate from the rendering side: the card's own four-part check had the
+    # identical blind spot, and this is the root of it -- fix it once, where every rule loads.
+    missing = set(k for k in REQUIRED_FIELDS if not _has_printable(fields.get(k)))
 
     if missing:
         # Same "displaced vs truly absent" distinction as insight.metrics.header.parse_header:

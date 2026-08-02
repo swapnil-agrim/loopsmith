@@ -157,6 +157,36 @@ def test_render_report_never_hides_a_crashed_rule():
     assert "(rule error(s) present)" in out
 
 
+# --------------------------------------------------------------------------- issue #134 (E5.S4):
+# threading `name` + `config_field` into every finding, in build_report (Decision 2/3, .sdlc/
+# plans/134.md) -- NOT in make_finding, whose exact-dict-equality assertions elsewhere in this
+# file (test_a_warn_finding_carries_its_rule_id_and_full_evidence etc.) never pin these two keys.
+
+
+def test_a_finding_carries_its_rules_declared_name_and_config_field(conn):
+    conn.execute(
+        "INSERT INTO fact_collector_pack (project_id, schema, collected_ts, raw_payload) "
+        "VALUES ('p1', 'alignment-collect/v1', '2026-01-01', "
+        "'{\"schema\":\"alignment-collect/v1\",\"dimensions\":{\"d1\":"
+        "{\"commits_with_source\":3,\"files_changed_outside_any_plan\":[\"scratch.py\"],"
+        "\"files_outside_plan_confidence\":\"low\"}}}')"
+    )
+    report = build_report(conn)
+    finding = next(f for f in report["findings"] if f["rule_id"] == "consistency_files_outside_plan")
+    assert finding["name"] == "Files touched outside any declared plan"
+    assert finding["config_field"] is None
+
+
+def test_a_config_fixable_finding_carries_its_config_field(conn):
+    conn.execute("INSERT INTO dim_project (project_id, config_json) VALUES ('p9', '{}')")
+    conn.execute(
+        "INSERT INTO fact_goal (project_id, goal_id, verify_command) VALUES ('p9', 'g9', '')"
+    )
+    report = build_report(conn)
+    finding = next(f for f in report["findings"] if f["rule_id"] == "coverage_verify_no_command")
+    assert finding["config_field"] == "verify.command"
+
+
 def test_render_report_shows_every_delta_bucket_by_its_own_name():
     """Each bucket renders as its own distinguishable line -- a still-failing recurrence must
     never be confused with a rule whose visibility was merely lost to a crash."""
