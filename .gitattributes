@@ -1,1 +1,2 @@
 entries/*.jsonl merge=union
+events/*.jsonl merge=union
