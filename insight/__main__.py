@@ -411,6 +411,28 @@ def main(argv=None):
         leadership_path.write_text(leadership_html, encoding="utf-8", errors="replace")
         print("insight dash: wrote %s (leadership view)" % leadership_path)
 
+        # Cross-functional persona view (issue #133, E5.S3): a FIFTH, team-wide file,
+        # cross-functional.html, built from yet another fresh connection (leadership_conn above
+        # is already closed). UNCONDITIONAL, like manager.html/leadership.html: no per-viewer
+        # identity to resolve, never touches resolve_actor (Decision 2 of .sdlc/plans/133.md,
+        # zero-exception privacy posture, matching leadership.py).
+        from insight.dash.cross_functional import render_cross_functional_view
+
+        cross_functional_conn = open_store(args.db)
+        try:
+            cross_functional_html, _cross_functional_summary = render_cross_functional_view(
+                cross_functional_conn
+            )
+        except (MetricLoadError, CoverageDenominatorMissing) as e:
+            print("insight dash: metric catalog failed to load: %s" % e, file=sys.stderr)
+            return 1
+        finally:
+            cross_functional_conn.close()
+        assert_self_contained(cross_functional_html)
+        cross_functional_path = out_dir / "cross-functional.html"
+        cross_functional_path.write_text(cross_functional_html, encoding="utf-8", errors="replace")
+        print("insight dash: wrote %s (cross-functional view)" % cross_functional_path)
+
         if args.serve:
             try:
                 serve_forever_until_interrupted(out_dir, port=args.port)
