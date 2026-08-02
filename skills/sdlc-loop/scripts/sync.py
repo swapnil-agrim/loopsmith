@@ -47,7 +47,7 @@ DEFAULT_BRANCH = "sdlc-ledger"
 DEFAULT_REMOTE = "origin"
 PUSH_ATTEMPTS = 5
 
-GITATTRIBUTES = "entries/*.jsonl merge=union\n"
+GITATTRIBUTES_LINES = (f"{ledger.ENTRIES}/*.jsonl merge=union", f"{ledger.EVENTS}/*.jsonl merge=union")
 BRANCH_README = """\
 # SDLC ledger — ops branch
 
@@ -125,11 +125,10 @@ def init(sdlc_dir, config, run=None):
     else:
         git(root, ["worktree", "add", str(path), name])
 
-    for rel, text in ((".gitattributes", GITATTRIBUTES), ("README.md", BRANCH_README)):
-        dest = path / rel
-        if not dest.exists():
-            dest.write_text(text, encoding="utf-8")
-    (path / "entries").mkdir(exist_ok=True)
+    _ensure_gitattributes(path)
+    if not (path / "README.md").exists():
+        (path / "README.md").write_text(BRANCH_README, encoding="utf-8")
+    (path / ledger.ENTRIES).mkdir(exist_ok=True)
     git(path, ["add", "-A"])
     try:
         git(path, ["commit", "-m", "ledger: scaffold the ops branch"])
@@ -142,6 +141,23 @@ def _prune(directory):
     for child in sorted(directory.rglob("*"), reverse=True):
         child.rmdir() if child.is_dir() else child.unlink()
     directory.rmdir()
+
+
+def _ensure_gitattributes(path):
+    """Idempotent, additive: adds whichever union-merge line is missing without disturbing
+    anything else already in the file. Called from BOTH init() (fresh worktree) and publish()
+    (repairs a worktree that predates events/*.jsonl merge=union — init() alone can't reach it,
+    since it early-returns once a worktree already exists). Returns True iff it wrote."""
+    dest = path / ".gitattributes"
+    lines = dest.read_text(encoding="utf-8").splitlines() if dest.exists() else []
+    changed = False
+    for line in GITATTRIBUTES_LINES:
+        if line not in lines:
+            lines.append(line)
+            changed = True
+    if changed:
+        dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return changed
 
 
 def pull(sdlc_dir, config, run=None):
@@ -174,11 +190,19 @@ def publish(sdlc_dir, config, run=None, attempts=PUSH_ATTEMPTS):
     path, name, rem = worktree(sdlc_dir), branch(config), remote(config)
     if not is_worktree(sdlc_dir):
         return "not a worktree — run `sync.py init` first (nothing published)"
-    mine = f"entries/{ledger.actor(config)}.jsonl"
+    who = ledger.actor(config)
+    mine = f"{ledger.ENTRIES}/{who}.jsonl"
     if not (path / mine).exists():
         return "nothing to publish"
+    to_stage = [mine]
+    events = f"{ledger.EVENTS}/{who}.jsonl"
+    if (path / events).exists():
+        to_stage.append(events)
+    if _ensure_gitattributes(path):
+        to_stage.append(".gitattributes")
     _write_team(sdlc_dir, path)
-    git(path, ["add", mine, "TEAM.md"])
+    to_stage.append("TEAM.md")
+    git(path, ["add", *to_stage])
     if not git(path, ["diff", "--cached", "--name-only"]):
         return "nothing to publish"
     git(path, ["commit", "-m", f"ledger: {ledger.actor(config)}"])
@@ -223,7 +247,7 @@ def bootstrap(sdlc_dir, config, run=None):
     in their own clone to join."""
     git = run or _run_git
     first = init(sdlc_dir, config, run=git)
-    mine = worktree(sdlc_dir) / "entries" / f"{ledger.actor(config)}.jsonl"
+    mine = worktree(sdlc_dir) / ledger.ENTRIES / f"{ledger.actor(config)}.jsonl"
     mine.parent.mkdir(parents=True, exist_ok=True)
     if not mine.exists():
         mine.touch()            # an empty file is enough for publish to land your presence + the branch
