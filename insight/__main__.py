@@ -392,6 +392,25 @@ def main(argv=None):
         manager_path.write_text(manager_html, encoding="utf-8", errors="replace")
         print("insight dash: wrote %s (manager view)" % manager_path)
 
+        # Leadership persona view (issue #131, E5.S1): a FOURTH, team-wide file,
+        # leadership.html, built from yet another fresh connection (manager_conn above is
+        # already closed). UNCONDITIONAL, like manager.html: no per-viewer identity to resolve,
+        # never touches resolve_actor (Decision 5 of .sdlc/plans/131.md).
+        from insight.dash.leadership import render_leadership_view
+
+        leadership_conn = open_store(args.db)
+        try:
+            leadership_html, _leadership_summary = render_leadership_view(leadership_conn)
+        except (MetricLoadError, CoverageDenominatorMissing) as e:
+            print("insight dash: metric catalog failed to load: %s" % e, file=sys.stderr)
+            return 1
+        finally:
+            leadership_conn.close()
+        assert_self_contained(leadership_html)
+        leadership_path = out_dir / "leadership.html"
+        leadership_path.write_text(leadership_html, encoding="utf-8", errors="replace")
+        print("insight dash: wrote %s (leadership view)" % leadership_path)
+
         if args.serve:
             try:
                 serve_forever_until_interrupted(out_dir, port=args.port)
