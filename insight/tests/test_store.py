@@ -453,10 +453,11 @@ def test_fact_pr_check_pk_upserts_not_duplicates(tmp_path):
 #: and _PACK_EXTRA_COLUMNS (#103/#104). See .sdlc/plans/106.md Design decision D.
 _DIM_PROJECT_EXTRA_COLUMNS = ["adopted", "skip_reason"]
 
-#: fact_event.model (issue #146) is NOT part of spec §B.3's 17-column fact_event -- a
-#: #146-owned EXTENSION, same pattern as _GOAL_EXTRA_COLUMNS (#102) / _DIM_PROJECT_EXTRA_
-#: COLUMNS (#106). See .sdlc/plans/146.md Design decision 4.
-_EVENT_EXTRA_COLUMNS = ["model"]
+#: fact_event.model (issue #146), fact_event.why and fact_event.grade (issue #147) are NOT part
+#: of spec §B.3's 17-column fact_event -- a #146/#147-owned EXTENSION, same pattern as
+#: _GOAL_EXTRA_COLUMNS (#102) / _DIM_PROJECT_EXTRA_COLUMNS (#106). See .sdlc/plans/146.md
+#: Design decision 4 and .sdlc/plans/147.md Design decision 1.
+_EVENT_EXTRA_COLUMNS = ["model", "why", "grade"]
 
 
 def test_dim_project_adopted_and_skip_reason_columns_are_issue_106_additions(tmp_path):
@@ -523,6 +524,47 @@ def test_ensure_schema_upgrades_a_pre_146_fact_event_table_in_place(tmp_path):
         "select project_id, kind, reliability_class, model from fact_event"
     ).fetchone()
     assert row == ("p", "spend", 2, None)
+    conn.close()
+
+
+def test_fact_event_why_and_grade_columns_are_the_issue_147_additions(tmp_path):
+    """Metric 27 ("decision-gate denials") needs `why` as its best-effort id-extraction source
+    and metric 29 ("retro grade mix") needs `grade` as its trend source -- neither is part of
+    spec §B.3's 17-column fact_event -- see .sdlc/plans/147.md Design decision 1. Same pattern
+    as #106's two-column-at-once dim_project test above: a fresh ensure_schema call adds both,
+    in order, as a suffix after #146's own `model` column."""
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    assert _columns(conn, "fact_event") == _SPEC_COLUMNS["fact_event"] + _EVENT_EXTRA_COLUMNS
+    conn.close()
+
+
+def test_ensure_schema_upgrades_a_pre_147_fact_event_table_in_place(tmp_path):
+    """Mirrors #102/#103/#104/#106/#146's identical regression tests: CREATE TABLE IF NOT
+    EXISTS is a no-op against a file that already has a pre-#147, 18-column fact_event (spec's
+    17 + #146's own `model`) -- only the new ALTER statements add the two missing columns,
+    without touching existing data, and a second ensure_schema call on the same connection does
+    not raise or duplicate them."""
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    conn.execute("""
+        CREATE TABLE fact_event (
+            project_id VARCHAR, goal_id VARCHAR, ts TIMESTAMP, actor_id VARCHAR, kind VARCHAR,
+            phase VARCHAR, gate VARCHAR, verdict VARCHAR, cycle INTEGER, ms BIGINT,
+            tokens_in BIGINT, tokens_out BIGINT, cost_cents BIGINT, reason_class VARCHAR,
+            ok BOOLEAN, exit_code INTEGER, reliability_class TINYINT, model VARCHAR
+        )
+    """)
+    conn.execute(
+        "insert into fact_event (project_id, kind, reliability_class, model) "
+        "values ('p', 'spend', 2, 'claude')"
+    )
+    ensure_schema(conn)  # must ADD why/grade, not error, not touch existing data
+    ensure_schema(conn)  # idempotent: a second call must not raise or duplicate the columns
+    assert _columns(conn, "fact_event") == _SPEC_COLUMNS["fact_event"] + _EVENT_EXTRA_COLUMNS
+    row = conn.execute(
+        "select project_id, kind, reliability_class, model, why, grade from fact_event"
+    ).fetchone()
+    assert row == ("p", "spend", 2, "claude", None, None)
     conn.close()
 
 

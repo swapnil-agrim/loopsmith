@@ -4,12 +4,14 @@
 Scope is schema bootstrap plus a narrow, additive schema evolution — no collector
 adapter, no ledger reading, no rows written, no `phase_trace_completeness`
 computation. `ensure_schema` runs eleven `CREATE TABLE IF NOT EXISTS` statements,
-then nine idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements — two
+then eleven idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements — two
 added by issue #102, a third by issue #103, three more by issue #104, two
-(dim_project.adopted/skip_reason) by issue #106, and a final one
-(fact_event.model) by issue #146 (see .sdlc/plans/102.md §B, .sdlc/plans/103.md
-§C, .sdlc/plans/104.md §A, .sdlc/plans/106.md Design decision D, and
-.sdlc/plans/146.md Design decision 4 for why a plain CREATE-only approach can't
+(dim_project.adopted/skip_reason) by issue #106, a ninth (fact_event.model) by
+issue #146, and a final two (fact_event.why, fact_event.grade) by issue #147
+(see .sdlc/plans/102.md §B, .sdlc/plans/103.md
+§C, .sdlc/plans/104.md §A, .sdlc/plans/106.md Design decision D,
+.sdlc/plans/146.md Design decision 4, and .sdlc/plans/147.md Design decision 1
+for why a plain CREATE-only approach can't
 add a column to a store file an earlier story already created). This ALTER set
 is additive-only — no type changes, no drops, no `information_schema` diffing —
 and is NOT a general migration framework: a future story that needs to change a
@@ -225,7 +227,10 @@ _DDL = (
 #: mechanism's origin. Statements 3 is issue #103's; 4-6 are issue #104's (fact_collector_pack's
 #: gh-facts/v1 summary columns) -- see .sdlc/plans/104.md §A. Statement 9 is issue #146's
 #: (fact_event.model, needed by metric 17's "cost per landed goal, by lane and model") -- see
-#: .sdlc/plans/146.md Design decision 4.
+#: .sdlc/plans/146.md Design decision 4. Statements 10-11 are issue #147's own
+#: (fact_event.why, fact_event.grade) -- `why` is metric 27's decision-gate-denial id extraction
+#: source, `grade` is metric 29's retro-grade-mix trend source; see .sdlc/plans/147.md
+#: Design decision 1.
 _ALTER = (
     "ALTER TABLE fact_goal ADD COLUMN IF NOT EXISTS status VARCHAR",
     "ALTER TABLE fact_goal ADD COLUMN IF NOT EXISTS verify_command VARCHAR",
@@ -236,6 +241,8 @@ _ALTER = (
     "ALTER TABLE dim_project ADD COLUMN IF NOT EXISTS adopted BOOLEAN",
     "ALTER TABLE dim_project ADD COLUMN IF NOT EXISTS skip_reason VARCHAR",
     "ALTER TABLE fact_event ADD COLUMN IF NOT EXISTS model VARCHAR",
+    "ALTER TABLE fact_event ADD COLUMN IF NOT EXISTS why VARCHAR",
+    "ALTER TABLE fact_event ADD COLUMN IF NOT EXISTS grade VARCHAR",
 )
 
 
@@ -246,11 +253,12 @@ def resolve_db_path(db_path=None):
 
 
 def ensure_schema(conn):
-    """Run the eleven idempotent `CREATE TABLE IF NOT EXISTS` statements, then the nine
+    """Run the eleven idempotent `CREATE TABLE IF NOT EXISTS` statements, then the eleven
     idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements (issues
-    #102/#103/#104/#106/#146 -- see the module docstring and .sdlc/plans/102.md §B /
+    #102/#103/#104/#106/#146/#147 -- see the module docstring and .sdlc/plans/102.md §B /
     .sdlc/plans/103.md §C / .sdlc/plans/104.md §A / .sdlc/plans/106.md Design decision D /
-    .sdlc/plans/146.md Design decision 4), against an already-open DuckDB connection. Safe to
+    .sdlc/plans/146.md Design decision 4 / .sdlc/plans/147.md Design decision 1), against an
+    already-open DuckDB connection. Safe to
     call repeatedly against the same connection or file, including a file created by an
     earlier story before these columns existed."""
     for ddl in _DDL:

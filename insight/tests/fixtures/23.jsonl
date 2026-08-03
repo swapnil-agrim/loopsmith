@@ -1,0 +1,11 @@
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g1", "ts": "2026-01-01T00:00:10", "kind": "gate", "gate": "plan_review", "verdict": "block", "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g2", "ts": "2026-01-01T00:00:10", "kind": "gate", "gate": "plan_review", "verdict": "pass", "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g3", "ts": "2026-01-01T00:00:10", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 2, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g3", "ts": "2026-01-01T00:00:20", "kind": "gate", "gate": "post_review", "verdict": "pass", "cycle": 3, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g4", "ts": "2026-01-01T00:00:10", "kind": "gate", "gate": "code_review", "verdict": "block", "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g5", "ts": "2026-01-01T00:00:10", "kind": "gate", "gate": "merge", "verdict": "block", "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "(decision-gate)", "ts": "2026-01-01T00:00:10", "kind": "gate", "gate": "decision", "verdict": "block", "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "(alignment)", "ts": "2026-01-01T00:00:10", "kind": "gate", "gate": "alignment", "verdict": "block", "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g8", "ts": "2026-01-01T00:00:10", "kind": "gate", "gate": "verify", "verdict": "block", "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p2", "goal_id": "g3", "ts": "2026-01-01T00:00:10", "kind": "gate", "gate": "plan_review", "verdict": "block", "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p2", "goal_id": "g9", "ts": "2026-01-01T00:00:10", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 5, "reliability_class": 2}
