@@ -11,6 +11,8 @@ _Nothing is blocked on another person._
 
 | when | who | did | goal | detail |
 |---|---|---|---|---|
+| 2026-08-03T23:08:28Z | swapnil-agrim | claimed | 262 |  |
+| 2026-08-03T23:08:09Z | swapnil-agrim | done | 147 |  |
 | 2026-08-03T23:01:24Z | swapnil-agrim | merged | 147 | auto-merge (squash) armed on PR #270 |
 | 2026-08-03T21:44:13Z | swapnil-agrim | claimed | 147 |  |
 | 2026-08-03T21:43:52Z | swapnil-agrim | done | 146 |  |
@@ -34,5 +36,3 @@ _Nothing is blocked on another person._
 | 2026-08-02T23:19:48Z | swapnil-agrim | merged | 140 | auto-merge (squash) armed on PR #247 |
 | 2026-08-02T22:28:10Z | swapnil-agrim | claimed | 140 |  |
 | 2026-08-02T22:27:52Z | swapnil-agrim | done | 139 |  |
-| 2026-08-02T22:27:38Z | swapnil-agrim | merged | 139 | auto-merge (squash) armed on PR #246 |
-| 2026-08-02T21:19:48Z | swapnil-agrim | parked | 93 | Claimed in error and never worked: #93 is the E0 EPIC tracking issue, not a story. It briefly carried sdlc:goal during a bulk re-queue that matched on the title prefix instead of the epic label, and loop.py next selected it before the label was removed. No worktree, no branch, no PR was ever created. Recorded as parked to release the lease so the claim cannot look live to a future run. |
