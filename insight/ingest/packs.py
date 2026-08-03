@@ -118,12 +118,43 @@ def _normalize_windowless(payload):
     return out
 
 
+def _normalize_claude_analytics(payload):
+    """claude-analytics/v1 (issue #146, E7.S3): insight/ingest/analytics_reader.py's own
+    in-process pack -- a NEW HYBRID shape, not a copy of either existing candidate, verified by
+    reading both directly this session (.sdlc/plans/146.md Design decision 11):
+
+    - It has no commit/PR-window concept at all (no oldest/newest sha+date, no commit_count,
+      no PR/review/check counts) -- matching _normalize_windowless's own reasoning for
+      discovery-scan/v1 and pipeline-card/v1, so all six window_* fields are NULL here too.
+    - UNLIKE _normalize_windowless, it does NOT hardcode degraded_collector = [] -- that
+      function never reads its payload at all (verified: no payload.get(...) call anywhere in
+      it), so if this normalizer copied it literally, every claude-analytics/v1 pack row would
+      report "nothing wrong" forever regardless of what ingest_analytics_reader actually
+      degraded to -- a normalizer that always says "nothing wrong" would make insight/gaps/
+      coverage_degraded_collector.sql (which filters on len(degraded_collector) > 0)
+      permanently blind to this collector's real state, the exact failure mode the
+      no-fabricated-signal doctrine forbids. (--claude-analytics defaults OFF, and a
+      non-adopter's `insight ingest` run now writes NO claude-analytics/v1 row at all rather
+      than one claiming "disabled" -- see insight.ingest.analytics_reader's own module
+      docstring and insight.__main__._ingest_one_repo for the caller-side gate; this
+      normalizer only ever runs when the reader itself was actually called.)
+    - Instead, degraded_collector is read FOR REAL from the payload, exactly like
+      _normalize_gh_facts does (payload.get("degraded"), guarded by _as_list against a
+      collector that regresses to a bare string instead of a list -- see _as_list's own
+      docstring: list("oops") explodes per-character with no crash, silent garbage, which only
+      a real-list check prevents)."""
+    out = dict(_EMPTY_WINDOW)
+    out["degraded_collector"] = [str(c) for c in _as_list(payload.get("degraded"))]
+    return out
+
+
 _NORMALIZERS = {
     "alignment-collect/v1": _normalize_alignment_collect,
     "discovery-scan/v1": _normalize_windowless,
     "pipeline-card/v1": _normalize_windowless,
     "git-facts/v1": _normalize_git_facts,
     "gh-facts/v1": _normalize_gh_facts,
+    "claude-analytics/v1": _normalize_claude_analytics,
 }
 
 

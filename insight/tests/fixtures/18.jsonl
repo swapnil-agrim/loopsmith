@@ -1,0 +1,4 @@
+{"_table": "fact_event", "project_id": "p1", "ts": "2026-01-01T00:00:10", "kind": "spend", "phase": "implement", "tokens_in": 100, "tokens_out": 40, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "ts": "2026-01-01T00:00:20", "kind": "spend", "phase": "implement", "tokens_in": 50, "tokens_out": 10, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "ts": "2026-01-01T00:00:30", "kind": "spend", "phase": null, "tokens_in": 20, "tokens_out": null, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "ts": "2026-01-01T00:00:40", "kind": "spend", "phase": "review", "tokens_in": null, "tokens_out": null, "reliability_class": 2}

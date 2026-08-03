@@ -4,17 +4,18 @@
 Scope is schema bootstrap plus a narrow, additive schema evolution — no collector
 adapter, no ledger reading, no rows written, no `phase_trace_completeness`
 computation. `ensure_schema` runs eleven `CREATE TABLE IF NOT EXISTS` statements,
-then eight idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements — two
-added by issue #102, a third by issue #103, three more by issue #104, and a final
-two (dim_project.adopted/skip_reason) by issue #106 (see .sdlc/plans/102.md §B,
-.sdlc/plans/103.md §C, .sdlc/plans/104.md §A, and .sdlc/plans/106.md Design
-decision D for why a plain CREATE-only approach can't add a column to a store
-file an earlier story already created). This ALTER set is additive-only — no
-type changes, no drops, no `information_schema` diffing — and is NOT a general
-migration framework: a future story that needs to change a column's TYPE, or drop
-one, still needs to introspect `information_schema.columns` and diff against the
-expected shape, exactly as this docstring said before #102; that remains
-explicitly not built here.
+then nine idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements — two
+added by issue #102, a third by issue #103, three more by issue #104, two
+(dim_project.adopted/skip_reason) by issue #106, and a final one
+(fact_event.model) by issue #146 (see .sdlc/plans/102.md §B, .sdlc/plans/103.md
+§C, .sdlc/plans/104.md §A, .sdlc/plans/106.md Design decision D, and
+.sdlc/plans/146.md Design decision 4 for why a plain CREATE-only approach can't
+add a column to a store file an earlier story already created). This ALTER set
+is additive-only — no type changes, no drops, no `information_schema` diffing —
+and is NOT a general migration framework: a future story that needs to change a
+column's TYPE, or drop one, still needs to introspect `information_schema.columns`
+and diff against the expected shape, exactly as this docstring said before #102;
+that remains explicitly not built here.
 
 `ingest_ledger_cursor` (issue #105, E1.S7) is the eleventh table, a NEW CREATE
 rather than an ALTER (same footing as fact_collector_pack/fact_slice/
@@ -222,7 +223,9 @@ _DDL = (
 
 #: Narrow, additive-only schema evolution -- see .sdlc/plans/102.md Design decision B for the
 #: mechanism's origin. Statements 3 is issue #103's; 4-6 are issue #104's (fact_collector_pack's
-#: gh-facts/v1 summary columns) -- see .sdlc/plans/104.md §A.
+#: gh-facts/v1 summary columns) -- see .sdlc/plans/104.md §A. Statement 9 is issue #146's
+#: (fact_event.model, needed by metric 17's "cost per landed goal, by lane and model") -- see
+#: .sdlc/plans/146.md Design decision 4.
 _ALTER = (
     "ALTER TABLE fact_goal ADD COLUMN IF NOT EXISTS status VARCHAR",
     "ALTER TABLE fact_goal ADD COLUMN IF NOT EXISTS verify_command VARCHAR",
@@ -232,6 +235,7 @@ _ALTER = (
     "ALTER TABLE fact_collector_pack ADD COLUMN IF NOT EXISTS window_check_row_count INTEGER",
     "ALTER TABLE dim_project ADD COLUMN IF NOT EXISTS adopted BOOLEAN",
     "ALTER TABLE dim_project ADD COLUMN IF NOT EXISTS skip_reason VARCHAR",
+    "ALTER TABLE fact_event ADD COLUMN IF NOT EXISTS model VARCHAR",
 )
 
 
@@ -242,13 +246,13 @@ def resolve_db_path(db_path=None):
 
 
 def ensure_schema(conn):
-    """Run the eleven idempotent `CREATE TABLE IF NOT EXISTS` statements, then the eight
+    """Run the eleven idempotent `CREATE TABLE IF NOT EXISTS` statements, then the nine
     idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements (issues
-    #102/#103/#104/#106 -- see the module docstring and .sdlc/plans/102.md §B /
-    .sdlc/plans/103.md §C / .sdlc/plans/104.md §A / .sdlc/plans/106.md Design decision D),
-    against an already-open DuckDB connection. Safe to call repeatedly against the same
-    connection or file, including a file created by an earlier story before these columns
-    existed."""
+    #102/#103/#104/#106/#146 -- see the module docstring and .sdlc/plans/102.md §B /
+    .sdlc/plans/103.md §C / .sdlc/plans/104.md §A / .sdlc/plans/106.md Design decision D /
+    .sdlc/plans/146.md Design decision 4), against an already-open DuckDB connection. Safe to
+    call repeatedly against the same connection or file, including a file created by an
+    earlier story before these columns existed."""
     for ddl in _DDL:
         conn.execute(ddl)
     for ddl in _ALTER:

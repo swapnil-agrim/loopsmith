@@ -93,6 +93,61 @@ def test_a_pack_degraded_only_by_a_null_array_column_is_not_flagged(conn, regist
     }
 
 
+def test_a_non_adopters_ingest_leaves_the_verdict_unaffected(tmp_path, monkeypatch):
+    """The test the reviewer asked for, verified live (BLOCKING finding on issue #146, now
+    fixed): before this fix, `insight ingest` with `--claude-analytics` OMITTED still wrote one
+    claude-analytics/v1 fact_collector_pack row on EVERY run, degraded with "analytics_disabled"
+    -- and because this rule is deliberately all-schema with no exclusion (see the module
+    docstring above), that row alone was enough to permanently drag every previously-clean
+    project's `insight gaps` verdict from PASS to WARN, via an "action" (fix the underlying
+    condition) that had nothing to fix: the collector was never asked to run in the first place.
+
+    This runs the REAL `insight ingest` CLI path (not a hand-built fixture) with the flag off,
+    then evaluates THIS rule, via the same evaluate_rule() path every other test in this file
+    uses, over the resulting store -- proving the fix end to end, not just at the unit level.
+
+    Deliberately does NOT assert the overall severity is PASS: `insight ingest` in this hermetic,
+    gh-less sandbox also writes a genuinely, pre-existingly degraded gh-facts/v1 row (no `gh` on
+    PATH -- unrelated to this issue, see insight/tests/test_cli.py's own isolate_path_empty
+    fixture for why that is expected and correct), so the rule's overall verdict is legitimately
+    WARN here regardless of the analytics fix. The claim this test pins is narrower and more
+    precise: schema='claude-analytics/v1' contributes NEITHER a fact_collector_pack row NOR an
+    evidence entry -- i.e. a non-adopter's verdict is unaffected BY THIS FEATURE, whatever it
+    otherwise is for unrelated reasons."""
+    duckdb = pytest.importorskip("duckdb")
+    from insight.__main__ import main
+
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.delenv("ANTHROPIC_ADMIN_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc").mkdir()
+
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
+    assert code == 0
+
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    try:
+        # Store-level proof: no claude-analytics/v1 row exists at all -- a non-adopter's ingest
+        # never called ingest_analytics_reader (post-#146 fix), so there is nothing for it to
+        # write, not even a degraded one.
+        pack_count = conn.execute(
+            "select count(*) from fact_collector_pack where schema = 'claude-analytics/v1'"
+        ).fetchone()[0]
+        assert pack_count == 0
+
+        # Gap-rule-level proof, via the SAME evaluate_rule() path every other test in this file
+        # exercises: whatever this rule's overall verdict is, it is never because of
+        # claude-analytics/v1 -- that schema contributes zero evidence rows.
+        registry = load_gap_rules()
+        finding = evaluate_rule(conn, registry["coverage_degraded_collector"])
+        evidence_schemas = {row["schema"] for row in finding["evidence"]}
+        assert "claude-analytics/v1" not in evidence_schemas
+    finally:
+        conn.close()
+
+
 def test_a_non_alignment_collect_schema_still_counts_toward_population_and_can_be_flagged(
     conn, registry
 ):

@@ -1,0 +1,9 @@
+{"_table": "fact_goal", "project_id": "p1", "goal_id": "g1", "outcome": "done", "lane": "medium"}
+{"_table": "fact_goal", "project_id": "p1", "goal_id": "g2", "outcome": "done", "lane": "medium"}
+{"_table": "fact_goal", "project_id": "p1", "goal_id": "g3", "outcome": "done", "lane": "small"}
+{"_table": "fact_goal", "project_id": "p1", "goal_id": "g4", "outcome": null, "lane": "medium"}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g1", "ts": "2026-01-01T00:00:10", "kind": "spend", "model": "sonnet", "cost_cents": 500, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g1", "ts": "2026-01-01T00:00:20", "kind": "spend", "model": "sonnet", "cost_cents": 300, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g2", "ts": "2026-01-01T00:00:10", "kind": "spend", "model": "sonnet", "cost_cents": 200, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g3", "ts": "2026-01-01T00:00:10", "kind": "spend", "model": null, "cost_cents": 150, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g4", "ts": "2026-01-01T00:00:10", "kind": "spend", "model": "sonnet", "cost_cents": 999, "reliability_class": 2}

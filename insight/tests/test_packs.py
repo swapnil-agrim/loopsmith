@@ -160,6 +160,33 @@ def test_write_pack_persists_gh_facts_counts(conn):
     assert row == ("gh-facts/v1", 3, 2, 8)
 
 
+def test_normalize_claude_analytics_reads_real_degraded_codes_not_hardcoded_empty():
+    """The load-bearing test named in .sdlc/plans/146.md Step 8: _normalize_claude_analytics
+    must NOT mirror _normalize_windowless's own hardcoded `degraded_collector = []` -- if it did,
+    every claude-analytics/v1 pack row would report 'nothing wrong' forever regardless of what
+    ingest_analytics_reader actually degraded to, and coverage_degraded_collector.sql (which
+    filters on len(degraded_collector) > 0) would never see this reader's real failure state.
+    See Design decision 11."""
+    fields, extra = normalize("claude-analytics/v1", {
+        "schema": "claude-analytics/v1", "degraded": ["analytics_no_key"],
+    })
+    assert fields["degraded_collector"] == ["analytics_no_key"]  # NOT []
+    assert extra == []
+    for key in ("window_since_days", "window_oldest_sha", "window_oldest_date",
+                "window_newest_sha", "window_newest_date", "window_commit_count",
+                "window_merge_count", "window_pr_count", "window_review_event_count",
+                "window_check_row_count"):
+        assert fields[key] is None
+
+
+def test_normalize_claude_analytics_empty_degraded_list_when_undegraded():
+    fields, extra = normalize("claude-analytics/v1", {
+        "schema": "claude-analytics/v1", "degraded": [],
+    })
+    assert fields["degraded_collector"] == []
+    assert extra == []
+
+
 def test_normalize_discovery_scan_is_all_null_window():
     fields, extra = normalize("discovery-scan/v1", {"schema": "discovery-scan/v1", "candidates": []})
     assert fields["window_since_days"] is None
