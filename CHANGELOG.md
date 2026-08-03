@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### board mirror: a token-free local snapshot of the backlog (0.9.20)
+First slice of the **pre-work backlog cross-check** — the loop today picks a goal blind to the rest of
+the backlog and to what's already done, so it can spend a full Research/Plan cycle on a logical
+duplicate, an unreferenced-blocked goal, or one already obsoleted by completed work. This lays the
+corpus the check needs. `skills/sdlc-loop/scripts/mirror.py` (+ `pipeline.py mirror <sdlc_dir>`) makes
+**one** batched `gh issue list` for OPEN `sdlc:goal` issues and **one** for recently-closed issues, and
+writes a normalized NDJSON snapshot to `.sdlc/state/board-mirror.ndjson`.
+- **Zero LLM tokens.** A plain REST snapshot (works where cloud sessions block GraphQL), TTL-cached
+  (`backlog_check.mirror.ttl_minutes`, default 60) so the one API call is amortized across picks.
+- **Secret-safe + gitignored.** `.sdlc/state/` is already gitignored, so the mirror never rides a PR;
+  body excerpts are additionally scrubbed of secret-shaped substrings (shared `scrub.py`, the same rule
+  the research-capture hook follows, with a parity test) — defense in depth against client strings.
+- **Fail-open + hermetic.** Not github mode / no `gh` / offline / bad config / unwritable `.sdlc` / any
+  error => no mirror written, returns None (the cross-check degrades to the ledger + local goal files).
+  Reaches GitHub only through an injectable runner, so it is fully unit-tested without the network.
+  Closed issues are NOT goal-filtered (prior completed work can obsolete a goal without ever carrying
+  the label).
+
 ### telemetry: the loop records what its own gates caught (0.9.19, opt-in)
 Epic #135, seven stories. Everything the SDLC spine already computed and then discarded is now an
 optional, append-only event stream — `work.py` counted review cycles to enforce `max_review_cycles`

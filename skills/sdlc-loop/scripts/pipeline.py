@@ -291,7 +291,20 @@ def discover(sdlc_dir, repo_root="."):
     return propose_from_discovery(sdlc_dir, candidates)
 
 
+def _load_sibling(name):
+    """Load a peer script module lazily, so importing pipeline.py never drags in the mirror's deps."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, pathlib.Path(__file__).resolve().parent / f"{name}.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+
+
 def main(argv):
+    if len(argv) >= 2 and argv[1] == "mirror":
+        m = _load_sibling("mirror")
+        n = m.fetch_and_write(argv[2] if len(argv) > 2 else ".sdlc", force=("--force" in argv))
+        print("mirror: skipped (not github mode, fresh, or gh unavailable)" if n is None
+              else f"mirror: wrote {n} issue(s)")
+        return 0
     if len(argv) >= 3 and argv[1] == "discover":
         created = discover(argv[2], argv[3] if len(argv) > 3 else ".")
         print(f"proposed {len(created)} discovery goal(s)" + ("".join("\n  " + c for c in created)))
@@ -324,7 +337,8 @@ def main(argv):
             print(f"wrote {out}")
         return 0 if not card["verdict"]["failing_stages"] else 1
     print("usage: pipeline.py card <sdlc_dir> [--json out.json] [--compare prior.json] | "
-          "propose <sdlc_dir> | discover <sdlc_dir> [repo_root]", file=sys.stderr)
+          "propose <sdlc_dir> | discover <sdlc_dir> [repo_root] | mirror <sdlc_dir> [--force]",
+          file=sys.stderr)
     return 2
 
 
