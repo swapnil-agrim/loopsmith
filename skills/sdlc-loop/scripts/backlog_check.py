@@ -289,7 +289,12 @@ def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measur
             if d["completed"] and s >= obs_th and _within_window(d, window, now):
                 findings.append(_finding("obsoleted-by", d["ref"], s, d["source"], ev, s >= park_th))
             elif d["open"] and s >= dup_th:
-                findings.append(_finding("duplicate", d["ref"], s, d["source"], ev, s >= park_th))
+                # Of a duplicate PAIR, park only the LATER goal: a `duplicate` is park-confident only when
+                # the matched open issue is EARLIER in pick order (lower number / earlier filename). Else
+                # both #1↔#2 would park each other and neither would ever be worked — the first-filed
+                # survives and is worked; later duplicates park against it. (Reported either way.)
+                confident = s >= park_th and _earlier(d["ref"], goal_ref)
+                findings.append(_finding("duplicate", d["ref"], s, d["source"], ev, confident))
 
         findings += _explicit_blockers(goal_doc, docs)
         doc_by_ref = {d["ref"]: d for d in docs}
@@ -318,10 +323,21 @@ _KIND_PHRASE = {"duplicate": "duplicate of #{ref}", "obsoleted-by": "obsoleted b
                 "blocked-by": "blocked by #{ref}", "in-flight-elsewhere": "in flight elsewhere: #{ref}"}
 
 
+def _stem(ref):
+    return pathlib.Path(str(ref)).name          # github ref '42' -> '42'; local path -> filename (win-safe)
+
+
+def _earlier(a, b):
+    """Pick order (mirrors next_pending's oldest-first): lower issue number, else earlier filename. Used
+    so only the LATER goal of a duplicate pair parks — the first-filed survives and gets worked."""
+    try:
+        return int(a) < int(b)                  # github issue numbers compare numerically
+    except (TypeError, ValueError):
+        return _stem(a) < _stem(b)              # local goal paths compare by filename (glob order)
+
+
 def _phrase(f):
-    ref = f["ref"]
-    ref = pathlib.Path(ref).name if "/" in ref else ref     # local goals are paths; show the stem
-    base = _KIND_PHRASE.get(f["kind"], f["kind"] + " #{ref}").format(ref=ref)
+    base = _KIND_PHRASE.get(f["kind"], f["kind"] + " #{ref}").format(ref=_stem(f["ref"]))
     ev = ", ".join(f.get("evidence") or [])
     return f"{base} ({f['score']}" + (f"; shared: {ev}" if ev else "") + ")"
 

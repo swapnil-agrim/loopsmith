@@ -66,18 +66,38 @@ def test_duplicate_open_issue_flagged_distinct_not():
         assert pack["schema"] == "backlog-check/v1" and pack["goal"] == "1"
 
 
+def test_duplicate_pair_only_the_later_goal_is_park_confident():
+    # both #1 and #2 are open duplicates: the EARLIER (#1) survives + is worked; only the LATER (#2)
+    # parks. Without this, #1 parks as dup-of-#2 AND #2 parks as dup-of-#1 -> neither ever gets worked.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _GOAL)],
+                        dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
+        f1 = next(f for f in bc.cross_check(base, "1")["findings"] if f["ref"] == "2")
+        assert f1["kind"] == "duplicate" and f1["confident"] is False   # #1 is earliest -> survives
+        f2 = next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")
+        assert f2["confident"] is True                                  # #2 is later -> parks against #1
+
+
+def test_earlier_orders_github_numbers_and_local_paths():
+    bc = _mod("backlog_check")
+    assert bc._earlier("2", "10") is True and bc._earlier("10", "2") is False   # numeric, not lexical
+    assert bc._earlier("/a/goals/0001.md", "/b/goals/0002.md") is True          # local: by filename
+
+
 def test_confidence_gate_park_vs_annotate():
     bc = _mod("backlog_check")
+    # cross-check from the LATER goal (#2) so the earlier dup (#1) is the park-confident match
     with tempfile.TemporaryDirectory() as d1:
         # identical -> score ~1.0 >= park_threshold 0.9 -> confident (the loop would park)
         base = _gh_base(d1, [_rec(1, _GOAL), _rec(2, _GOAL)],
                         dup_threshold=0.4, park_threshold=0.9, closed_window_days=3650)
-        assert next(f for f in bc.cross_check(base, "1")["findings"] if f["ref"] == "2")["confident"] is True
+        assert next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")["confident"] is True
     with tempfile.TemporaryDirectory() as d2:
         # same score, but an unreachable park_threshold -> a finding, NOT confident (annotate + proceed)
         base = _gh_base(d2, [_rec(1, _GOAL), _rec(2, _GOAL)],
                         dup_threshold=0.4, park_threshold=1.01, closed_window_days=3650)
-        assert next(f for f in bc.cross_check(base, "1")["findings"] if f["ref"] == "2")["confident"] is False
+        assert next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")["confident"] is False
 
 
 # --- obsolescence (closed within the window) ---

@@ -215,10 +215,10 @@ def precheck(sdlc_dir, goal, config, source, run=None, now=None):
     (do not research it; take the next goal) | 'PROCEED[ (advisory)]' (carry on). FAIL-OPEN: any error
     returns 'PROCEED' — the cross-check must never block or crash the loop. Note: a PARKED goal goes
     through _record, so it advances the per-run iteration cursor like any other outcome."""
-    if (config.get("backlog_check") or {}).get("enabled") is not True:
-        return "OFF"
     try:
-        bc = _load("backlog_check")
+        if (config.get("backlog_check") or {}).get("enabled") is not True:
+            return "OFF"                                                 # gate inside the guard: a
+        bc = _load("backlog_check")                                      # malformed config -> PROCEED
         _load("mirror").fetch_and_write(sdlc_dir, config=config, run=run, now=now)
         decision = bc.decide(bc.cross_check(sdlc_dir, goal, config=config, run=run, now=now), config)
         if decision["action"] == "park":

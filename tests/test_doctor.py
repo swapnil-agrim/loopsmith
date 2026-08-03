@@ -432,6 +432,13 @@ def test_check_flags_park_threshold_below_dup_threshold(tmp_path):
     assert "park_threshold" in checks["backlog cross-check thresholds sane"]["fix"]
 
 
+def test_check_does_not_crash_on_a_non_dict_backlog_check_block(tmp_path):
+    d = _doc()
+    base = _sdlc(tmp_path, {"backlog_check": "yes please"})     # malformed -> reads as off, no crash
+    names = {c["name"] for c in d.check(base, run=_runner())}
+    assert "backlog cross-check thresholds sane" not in names
+
+
 def test_check_backlog_thresholds_ok_when_sane_and_absent_when_disabled(tmp_path):
     d = _doc()
     sane = _sdlc(tmp_path, {"backlog_check": {"enabled": True, "dup_threshold": 0.72, "park_threshold": 0.8}})

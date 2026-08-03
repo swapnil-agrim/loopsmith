@@ -148,7 +148,8 @@ def check(sdlc_dir=".sdlc", run=None):
 
     # A backlog cross-check whose park_threshold sits BELOW its candidate threshold parks EVERYTHING it
     # finds — the opposite of "confident hits only". Flag it (only when the feature is actually on).
-    bchk = cfg.get("backlog_check") or {}
+    bchk = cfg.get("backlog_check")
+    bchk = bchk if isinstance(bchk, dict) else {}       # a non-dict block reads as off, never crashes
     if bchk.get("enabled") is True:
         dup, park = bchk.get("dup_threshold", 0.72), bchk.get("park_threshold", 0.80)
         try:

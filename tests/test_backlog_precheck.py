@@ -51,12 +51,12 @@ def test_precheck_off_when_disabled_touches_nothing():
 def test_precheck_parks_a_confident_duplicate_with_proof_then_advances():
     lp = _mod("loop")
     with tempfile.TemporaryDirectory() as d:
-        # identical title -> cosine ~1.0 >= default park_threshold 0.80 -> confident -> park
+        # identical titles; cross-check the LATER goal #2 -> the earlier dup #1 is park-confident
         base, cfg = _sdlc(d, [_rec(1, _GOAL), _rec(2, _GOAL)], {"enabled": True})
         src = _FakeSource()
-        result = lp.precheck(base, "1", cfg, src, now=1000.0)
-        assert result.startswith("PARKED") and "duplicate of #2" in result
-        assert any(c[0] == "park" and "duplicate of #2" in c[2] for c in src.calls)   # proof on the issue
+        result = lp.precheck(base, "2", cfg, src, now=1000.0)
+        assert result.startswith("PARKED") and "duplicate of #1" in result
+        assert any(c[0] == "park" and "duplicate of #1" in c[2] for c in src.calls)   # proof on the issue
         # _record ran: the run cursor advanced (the park counts as an iteration)
         assert _mod("state").load_cursor(base)["run_iteration"] == 1
 
@@ -71,6 +71,17 @@ def test_precheck_annotates_a_weak_match_and_proceeds():
         assert lp.precheck(base, "1", cfg, src, now=1000.0) == "PROCEED (advisory)"
         assert any(c[0] == "note" and "advisory" in c[2] for c in src.calls)
         assert not any(c[0] == "park" for c in src.calls)          # good work is NOT parked on a weak hit
+
+
+def test_precheck_flag_mode_annotates_a_confident_hit_never_parks():
+    lp = _mod("loop")
+    with tempfile.TemporaryDirectory() as d:
+        # action:flag -> even an identical (confident) duplicate is only annotated, never parked
+        base, cfg = _sdlc(d, [_rec(1, _GOAL), _rec(2, _GOAL)], {"enabled": True, "action": "flag"})
+        src = _FakeSource()
+        # goal #2's match #1 WOULD be park-confident; flag mode annotates it instead of parking
+        assert lp.precheck(base, "2", cfg, src, now=1000.0) == "PROCEED (advisory)"
+        assert any(c[0] == "note" for c in src.calls) and not any(c[0] == "park" for c in src.calls)
 
 
 def test_precheck_proceeds_cleanly_when_nothing_matches():
@@ -92,8 +103,8 @@ def test_precheck_is_fail_open_when_the_action_raises():
 
     with tempfile.TemporaryDirectory() as d:
         base, cfg = _sdlc(d, [_rec(1, _GOAL), _rec(2, _GOAL)], {"enabled": True})
-        # a park that raises must not crash the loop — precheck swallows it and proceeds
-        assert lp.precheck(base, "1", cfg, _BoomSource(), now=1000.0) == "PROCEED"
+        # goal #2 parks against #1, but the park raises — precheck swallows it and proceeds
+        assert lp.precheck(base, "2", cfg, _BoomSource(), now=1000.0) == "PROCEED"
 
 
 def test_precheck_cli_in_process_local_mode(capsys):
@@ -106,6 +117,6 @@ def test_precheck_cli_in_process_local_mode(capsys):
         (base / "state" / "review-queue.md").write_text("# Q\n")
         for name, title in (("0001.md", _GOAL), ("0002.md", _GOAL)):
             (base / "goals" / name).write_text(f"---\nid: {name[:-3]}\nstatus: pending\ntitle: {title}\n---\nx\n")
-        goal = str(base / "goals" / "0001.md")
+        goal = str(base / "goals" / "0002.md")                     # the LATER dup parks against 0001.md
         assert lp.main(["loop.py", "precheck", str(base), goal]) == 0
         assert capsys.readouterr().out.startswith("PARKED")         # local park via LocalSource + review-queue
