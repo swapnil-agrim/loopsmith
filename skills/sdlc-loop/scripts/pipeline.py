@@ -305,6 +305,10 @@ def main(argv):
         print("mirror: skipped (not github mode, fresh, or gh unavailable)" if n is None
               else f"mirror: wrote {n} issue(s)")
         return 0
+    if len(argv) >= 4 and argv[1] == "crosscheck":
+        bc = _load_sibling("backlog_check")
+        print(json.dumps(bc.cross_check(argv[2], argv[3]), ensure_ascii=False, sort_keys=True))
+        return 0
     if len(argv) >= 3 and argv[1] == "discover":
         created = discover(argv[2], argv[3] if len(argv) > 3 else ".")
         print(f"proposed {len(created)} discovery goal(s)" + ("".join("\n  " + c for c in created)))
@@ -337,8 +341,8 @@ def main(argv):
             print(f"wrote {out}")
         return 0 if not card["verdict"]["failing_stages"] else 1
     print("usage: pipeline.py card <sdlc_dir> [--json out.json] [--compare prior.json] | "
-          "propose <sdlc_dir> | discover <sdlc_dir> [repo_root] | mirror <sdlc_dir> [--force]",
-          file=sys.stderr)
+          "propose <sdlc_dir> | discover <sdlc_dir> [repo_root] | mirror <sdlc_dir> [--force] | "
+          "crosscheck <sdlc_dir> <goal>", file=sys.stderr)
     return 2
 
 

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### backlog cross-check engine: catch a redundant goal before the loop works it (0.9.21)
+Second slice of the pre-work backlog cross-check (the mirror was 0.9.20). `backlog_check.py` (+
+`pipeline.py crosscheck <sdlc_dir> <goal>`) takes a just-picked goal and surfaces likely
+**duplicates / blockers / obsolete-by-completed-work** against the rest of the backlog + in-flight team
+work — so the loop doesn't spend a full Research/Plan cycle on work that's redundant, blocked, or already
+done. It EMITS EVIDENCE and renders no verdict; a later slice's hook decides what to do with it.
+- **Zero LLM tokens.** A stdlib TF-IDF cosine (title weighted 3×) over a candidate set generated from
+  shared rare terms — exact at a few-hundred-issue scale, so no MinHash/LSH and no numpy. Plus an
+  explicit `blocked by … #N` graph (high precision: only when N is a real OPEN issue) and the team
+  ledger (`open_claims` → a paraphrase a teammate is already working; an outstanding hand-off → a
+  recorded blocker). The lexical index is cheap to rebuild each run, so nothing is persisted; the vector
+  cache that needs content-hash incrementality arrives with the embedding layer.
+- **Velocity-scaled obsolescence window** (`backlog_check.closed_window_days: "auto"`): "recently closed"
+  tracks the repo's real merge pace via `velocity.py`, falling back to 90d on a fresh/non-git repo.
+- **Two corpora, one engine:** github mode reads the gitignored board mirror; local mode reads the goal
+  files (`status: done` = completed work that can obsolete a goal).
+- **Secret-safe:** findings carry issue refs + shared index TERMS (scrubbed, capped) — never a
+  title/body/secret; source text is scrubbed before tokenizing so a lowercased secret can't reach
+  `evidence`. **Fail-open:** no corpus / no git / any error → an empty `backlog-check/v1` pack with a
+  machine `degraded[]`, never a raise (a later slice calls this on the pick hot-path). Deterministic.
+
 ### board mirror: a token-free local snapshot of the backlog (0.9.20)
 First slice of the **pre-work backlog cross-check** — the loop today picks a goal blind to the rest of
 the backlog and to what's already done, so it can spend a full Research/Plan cycle on a logical
