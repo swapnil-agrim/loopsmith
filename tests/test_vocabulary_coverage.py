@@ -19,6 +19,17 @@ directly (loop.py:370), so the vocabulary table IS the allowlist, never a hand-m
 list. This file adds a PINNING test only (`test_emit_flag_check_reads_ledger_event_fields`) so a
 future refactor that swaps in a separate list is caught -- no production change.
 
+PINNED STRUCTURALLY, NOT BY TEXT SEARCH (post-review fix). An earlier version of this pin asserted
+`"ledger.EVENT_FIELDS[kind]" in <the whole file's text>` -- and `_validate_event`'s OWN docstring
+(loop.py:339) narrates that exact indexing in prose, directly above the code it describes. A
+reviewer proved by mutation that replacing the real line with a hand-maintained parallel dict left
+the substring check green, because the docstring phrase alone kept it satisfied; only deleting the
+coincidental prose too made it fail. `_validate_event_indexes_event_fields` (below) instead parses
+`_LOOP_PY_TEXT` and requires an `ast.Subscript` node on `ledger.EVENT_FIELDS` inside
+`_validate_event`'s own FunctionDef -- a docstring is an `ast.Constant` expression statement, so it
+produces no Subscript node regardless of what text it contains, immune to a docstring inside the
+function too. See test_flag_pin_fails_on_a_hand_maintained_allowlist for the fixture proof.
+
 PLUS a staleness check: the guard must fail if its own detection idiom goes stale. See the comment
 above `test_the_idiom_still_finds_the_prose_only_kinds` for exactly what it pins, and why the
 weaker "matches something" bar (tests/test_config_discoverability.py:32-35) is not enough here.
@@ -44,6 +55,28 @@ continuation line, separated from the `"spend"` literal by a nested-paren kwarg
 this real EVENTS site. Reading `stream=` off the SAME `ast.Call` node's `.keywords` is exactly as
 span-aware as the call itself, for free -- there is no separate "span" concept to get wrong (see
 test_span_aware_stream_kwarg_on_a_continuation_line).
+
+ALIAS-AWARE (post-review fix). The direct-attribute match above (`ledger.append(...)`, an
+`ast.Attribute` on `ast.Name(id="ledger")`) misses a call reached through a simple alias -- and this
+codebase's own house style already aliases module attributes this way: loop.py:205-206 assigns
+`_evidence_path = state.evidence_path` and `_done_refusal = state.done_refusal` two lines apart. A
+reviewer proved by mutation that `from ledger import safe_append as _sa` then
+`_sa(sdlc_dir, "gaet", goal, stream=ledger.EVENTS, ...)` -- a typo of the real kind `gate` -- was
+invisible to both directions: Direction B never saw a `ledger.safe_append` Call to inspect at all.
+`_ledger_aliases` (below) is a per-module pre-pass, stdlib `ast` only, resolving exactly two forms
+before the Call scan runs: `from ledger import safe_append as _sa` / `from ledger import append`
+(an `ast.ImportFrom` with `module == "ledger"`) and `_emit = ledger.safe_append` (a module-level
+`ast.Assign` of a bare `Name` to an `Attribute` on `ledger`) -- the identical two forms for the
+`EVENTS` constant. A `Call` whose `func` is one of the resolved names is then treated as a ledger
+append; a `stream=` kwarg naming a resolved `EVENTS` alias is treated as the events stream. See
+test_aliased_ledger_calls_are_detected and
+test_direction_b_fails_on_a_typo_d_kind_behind_an_aliased_call.
+
+NAMED LIMITATION, not silently assumed away: this pre-pass resolves ONE hop only. A re-aliased
+alias (`_sa2 = _sa`), an alias reassigned inside a function body, or indirection through anything
+other than a bare `ImportFrom`/module-level `Assign` (a dict of callables, a decorator-built
+wrapper, a class attribute) is out of scope. This narrows real coverage; it does not narrow the
+CLAIM this file makes about itself.
 
 SCOPE (spec §A.6 verbatim): every kind in `EVENT_KINDS` must have >=1 emitting call site under
 `skills/*/scripts/`, `hooks/`, or a `SKILL.md`; every `--k` flag `loop.py emit` accepts must appear
@@ -114,18 +147,56 @@ def _skill_md_sources(root):
     return sorted(root.glob("skills/*/SKILL.md"))
 
 
-def _is_ledger_append_call(node):
-    """True for a real `ledger.append(...)` / `ledger.safe_append(...)` ast.Call node -- never a
-    comment or docstring that merely contains that text (module docstring, AST-not-regex)."""
-    if not isinstance(node, ast.Call):
-        return False
+def _ledger_aliases(tree):
+    """Per-module pre-pass (module docstring: ALIAS-AWARE): local names that are simple aliases of
+    `ledger.append`/`ledger.safe_append`/`ledger.EVENTS`, resolved BEFORE the Call scan below.
+    Returns (call_aliases, events_aliases): `call_aliases` maps a local name to the real ledger
+    attribute name ("append"/"safe_append"), needed for `_KIND_POSITION`; `events_aliases` is the
+    set of local names that resolve to `ledger.EVENTS`. NAMED LIMITATION: only a bare
+    `ast.ImportFrom(module="ledger")` and a module-level `ast.Assign` of a single `Name` target to
+    an `Attribute` on `ledger` are resolved -- one hop, see module docstring for what's out of
+    scope."""
+    call_aliases = {}
+    events_aliases = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "ledger" and node.level == 0:
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if alias.name in ("append", "safe_append"):
+                    call_aliases[local] = alias.name
+                elif alias.name == "EVENTS":
+                    events_aliases.add(local)
+    for node in tree.body:  # module-level only, per the docstring's own spec for the Assign form
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Attribute)
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "ledger"):
+            local = node.targets[0].id
+            if node.value.attr in ("append", "safe_append"):
+                call_aliases[local] = node.value.attr
+            elif node.value.attr == "EVENTS":
+                events_aliases.add(local)
+    return call_aliases, events_aliases
+
+
+def _call_attr(node, call_aliases):
+    """The real ledger attribute ("append"/"safe_append") a Call node resolves to, direct or via a
+    `call_aliases`-resolved alias -- or None when the call is neither."""
     func = node.func
-    return (
-        isinstance(func, ast.Attribute)
-        and func.attr in ("append", "safe_append")
-        and isinstance(func.value, ast.Name)
-        and func.value.id == "ledger"
-    )
+    if (isinstance(func, ast.Attribute) and func.attr in ("append", "safe_append")
+            and isinstance(func.value, ast.Name) and func.value.id == "ledger"):
+        return func.attr
+    if isinstance(func, ast.Name) and func.id in call_aliases:
+        return call_aliases[func.id]
+    return None
+
+
+def _is_ledger_append_call(node, call_aliases=frozenset()):
+    """True for a real `ledger.append(...)` / `ledger.safe_append(...)` ast.Call node, direct or
+    through a resolved alias -- never a comment or docstring that merely contains that text (module
+    docstring, AST-not-regex)."""
+    return isinstance(node, ast.Call) and _call_attr(node, call_aliases) is not None
 
 
 def _const_str(expr):
@@ -136,23 +207,24 @@ def _const_str(expr):
     return None
 
 
-def _call_kind(node):
-    """The kind argument of a ledger.append/safe_append Call node, as a literal string, or None
-    when it is not a literal (a variable-dispatch site)."""
+def _call_kind(node, call_aliases=frozenset()):
+    """The kind argument of a ledger.append/safe_append Call node (direct or aliased), as a literal
+    string, or None when it is not a literal (a variable-dispatch site)."""
     for kw in node.keywords:
         if kw.arg == "kind":
             return _const_str(kw.value)
-    idx = _KIND_POSITION[node.func.attr]
+    idx = _KIND_POSITION[_call_attr(node, call_aliases)]
     if len(node.args) > idx:
         return _const_str(node.args[idx])
     return None
 
 
-def _call_is_events_stream(node):
+def _call_is_events_stream(node, events_aliases=frozenset()):
     """True only when the SAME call node carries `stream=ledger.EVENTS` (or the string-literal
-    equivalent `stream="events"`) -- read off the call's own keywords, so a kwarg wrapped onto a
-    continuation line (the real `spend` call, loop.py:467) is exactly as reachable as one on the
-    call's opening line. This is what makes Direction B span-aware, for free (module docstring)."""
+    equivalent `stream="events"`, or a resolved alias of either -- module docstring: ALIAS-AWARE)
+    -- read off the call's own keywords, so a kwarg wrapped onto a continuation line (the real
+    `spend` call, loop.py:467) is exactly as reachable as one on the call's opening line. This is
+    what makes Direction B span-aware, for free (module docstring)."""
     for kw in node.keywords:
         if kw.arg != "stream":
             continue
@@ -161,18 +233,22 @@ def _call_is_events_stream(node):
             return True
         if isinstance(v, ast.Constant) and v.value == "events":
             return True
+        if isinstance(v, ast.Name) and v.id in events_aliases:
+            return True
     return False
 
 
 def _ledger_calls(text, filename="<string>"):
-    """Every real `ledger.append`/`ledger.safe_append` Call node in `text`, as (kind, is_events)
-    pairs. `kind` is None when the kind argument isn't a literal string -- such a site names no
-    single kind and is excluded by both directions below, on purpose."""
+    """Every real `ledger.append`/`ledger.safe_append` Call node in `text`, direct or through a
+    resolved alias (`_ledger_aliases`, module docstring: ALIAS-AWARE), as (kind, is_events) pairs.
+    `kind` is None when the kind argument isn't a literal string -- such a site names no single kind
+    and is excluded by both directions below, on purpose."""
     tree = ast.parse(text, filename=filename)
+    call_aliases, events_aliases = _ledger_aliases(tree)
     return [
-        (_call_kind(node), _call_is_events_stream(node))
+        (_call_kind(node, call_aliases), _call_is_events_stream(node, events_aliases))
         for node in ast.walk(tree)
-        if _is_ledger_append_call(node)
+        if _is_ledger_append_call(node, call_aliases)
     ]
 
 
@@ -275,18 +351,61 @@ def test_every_events_stream_site_names_a_real_event_kind():
 # --------------------------------------------------------------------------- the flag clause, pinned
 
 
+def _validate_event_indexes_event_fields(text):
+    """True only when `_validate_event`'s own FunctionDef, walked as AST, contains an
+    `ast.Subscript` node on `ledger.EVENT_FIELDS` somewhere in its body -- module docstring:
+    PINNED STRUCTURALLY, NOT BY TEXT SEARCH. A docstring (the function's own, or any other string
+    constant in its body) is an `ast.Constant` expression statement; it produces no Subscript node
+    regardless of what text it contains, so this is immune to the coincidental-prose false-pass a
+    plain substring search over the whole file suffered. False (not an error) when no
+    `_validate_event` FunctionDef exists at all -- a rename would then correctly read as "does not
+    index EVENT_FIELDS" rather than crash."""
+    tree = ast.parse(text)
+    funcs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_validate_event"]
+    return any(
+        isinstance(sub, ast.Subscript)
+        and isinstance(sub.value, ast.Attribute)
+        and sub.value.attr == "EVENT_FIELDS"
+        and isinstance(sub.value.value, ast.Name)
+        and sub.value.value.id == "ledger"
+        for fn in funcs
+        for sub in ast.walk(fn)
+    )
+
+
 def test_emit_flag_check_reads_ledger_event_fields():
     """The flag clause: every `--k` flag `loop.py emit` accepts must appear in the vocabulary
     table. Already structurally guaranteed -- `_validate_event` indexes
     `ledger.EVENT_FIELDS[kind]` directly (loop.py:370) -- so this PINS the wiring two ways: a
-    source-text check (catches a refactor to a separate, driftable list before behavior even
-    changes) and a behavioral check (the refusal itself still works). No production change."""
-    assert "ledger.EVENT_FIELDS[kind]" in _LOOP_PY_TEXT, (
-        "loop.py's _validate_event no longer indexes ledger.EVENT_FIELDS[kind] directly -- the "
-        "flag-vocabulary clause may have grown a separate, hand-maintained allowlist")
+    structural AST check (catches a refactor to a separate, driftable list before behavior even
+    changes -- see test_flag_pin_fails_on_a_hand_maintained_allowlist for why this must be AST, not
+    a text search) and a behavioral check (the refusal itself still works). No production change."""
+    assert _validate_event_indexes_event_fields(_LOOP_PY_TEXT), (
+        "loop.py's _validate_event no longer indexes ledger.EVENT_FIELDS[kind] as a real Subscript "
+        "node in its own function body -- the flag-vocabulary clause may have grown a separate, "
+        "hand-maintained allowlist")
     err = loop._validate_event("phase", {"bogus_flag_xyz": "1"})
     assert err is not None and "bogus_flag_xyz" in err, (
         f"an unknown --flag for a known kind should be refused by name; got {err!r}")
+
+
+def test_flag_pin_fails_on_a_hand_maintained_allowlist():
+    """Mutation 5, the reviewer's exact finding, reproduced as a fixture that exercises the REAL
+    checking function (`_validate_event_indexes_event_fields`), not a parallel copy: swap
+    `allowed = ledger.EVENT_FIELDS[kind]` for a hand-maintained dict, while keeping the docstring
+    phrase (`ledger.EVENT_FIELDS[kind]`) that fooled the old plain-substring check -- proving the
+    AST-based check is not fooled by it either, because the docstring produces no Subscript node."""
+    mutated = (
+        'def _validate_event(kind, flags, kind_allowlist=None):\n'
+        '    "unknown flag NAMES against ledger.EVENT_FIELDS[kind] -- the phrase a substring '
+        'search would still match here"\n'
+        '    allowed = {"gate": ("verdict", "why")}[kind]\n'
+        '    bad = sorted(set(flags) - set(allowed))\n'
+        '    return "unknown flag(s) " + ", ".join(bad) if bad else None\n'
+    )
+    assert not _validate_event_indexes_event_fields(mutated), (
+        "a hand-maintained allowlist standing in for ledger.EVENT_FIELDS[kind] must fail the pin, "
+        "even with the docstring phrase intact")
 
 
 # --------------------------------------------------------------------------- staleness
@@ -311,6 +430,13 @@ def test_the_idiom_still_finds_the_prose_only_kinds():
     prose = _prose_kinds_at(ROOT)
     assert "phase" in prose, "SKILL.md prose detection stopped finding `phase`"
     assert "retro" in prose, "SKILL.md prose detection stopped finding `retro`"
+
+
+# NON-BLOCKING NOTE (PR review finding 3): unlike phase/retro above, `gate`'s two real prose sites
+# (sdlc-align's and sdlc-plan-review's SKILL.md) are NOT pinned the same way -- breaking both would
+# pass this guard silently, because `gate` also has Python call-site coverage elsewhere, so
+# Direction A's union stays satisfied. Deliberately not fixed with a per-kind prose-coverage pin;
+# see amendment C above for why that specific fix is the attrition trap this file already rejected.
 
 
 # --------------------------------------------------------------------------- mutation proof, on fixtures
@@ -361,6 +487,44 @@ def test_direction_b_fails_on_a_typo_d_kind_at_an_events_stream_site(tmp_path):
               'ledger.safe_append(d, "gaet", g, stream=ledger.EVENTS, verdict="pass")\n')
     python_kinds = _python_event_kinds_at(tmp_path)
     assert python_kinds == {"gaet"}
+    assert _bogus_event_kinds(python_kinds, ledger.EVENT_KINDS) == ["gaet"]
+
+
+def test_aliased_ledger_calls_are_detected(tmp_path):
+    """Finding 2 fix, the positive proof: `from ledger import safe_append as _sa`,
+    `_emit = ledger.safe_append`, `from ledger import EVENTS as _EV`, and `EV2 = ledger.EVENTS` are
+    all this codebase's own house style (loop.py:205-206 already assigns `_evidence_path =
+    state.evidence_path` / `_done_refusal = state.done_refusal` two lines apart, the identical
+    idiom applied to a different module). All four alias forms must resolve to a real EVENTS-stream
+    site, exactly as if written out directly, so neither direction goes blind on this codebase's
+    own idiom."""
+    _plant_py(tmp_path, "sdlc-loop", "aliased.py",
+              'from ledger import safe_append as _sa\n'
+              'from ledger import EVENTS as _EV\n'
+              '_emit = ledger.safe_append\n'
+              'EV2 = ledger.EVENTS\n'
+              '_sa(sdlc_dir, "gate", goal, stream=_EV, verdict="pass")\n'
+              '_emit(sdlc_dir, "spend", goal, stream=EV2, tokens_in="1")\n')
+    kinds = _python_event_kinds_at(tmp_path)
+    assert kinds == {"gate", "spend"}, (
+        "aliased ledger.safe_append call sites (via ast.ImportFrom-as and module-level ast.Assign, "
+        "for both the call and the EVENTS constant) were not detected")
+    assert _bogus_event_kinds(kinds, ledger.EVENT_KINDS) == []
+
+
+def test_direction_b_fails_on_a_typo_d_kind_behind_an_aliased_call(tmp_path):
+    """Finding 2's exact reviewer mutation, reproduced as a fixture:
+    `from ledger import safe_append as _sa` then `_sa(sdlc_dir, "gaet", goal,
+    stream=ledger.EVENTS, ...)` -- a typo of the real kind `gate` -- must be caught behind the
+    alias, the same as it already is behind the direct `ledger.safe_append` spelling
+    (test_direction_b_fails_on_a_typo_d_kind_at_an_events_stream_site above). Before the fix, this
+    site was invisible to Direction B: `_is_ledger_append_call` never matched `_sa(...)` at all, so
+    no Call node reached the kind check."""
+    _plant_py(tmp_path, "sdlc-loop", "site.py",
+              'from ledger import safe_append as _sa\n'
+              '_sa(sdlc_dir, "gaet", goal, stream=ledger.EVENTS, verdict="pass")\n')
+    python_kinds = _python_event_kinds_at(tmp_path)
+    assert python_kinds == {"gaet"}, "the aliased call site was not detected at all"
     assert _bogus_event_kinds(python_kinds, ledger.EVENT_KINDS) == ["gaet"]
 
 
