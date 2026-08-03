@@ -94,37 +94,173 @@ def test_metric_22_thin_history_fixture_returns_insufficient_data_not_a_guess(co
     assert row["avoided_cost_seconds"] is None
 
 
-def test_metric_22_returns_exactly_one_row_over_a_fully_empty_store(conn):
+def test_metric_22_returns_zero_rows_over_a_fully_empty_store(conn):
+    """SHAPE CHANGE (PR review, findings 1+2): now that the view is partitioned by project_id
+    (one row PER PROJECT, not one blended phantom row), a fully empty store -- zero projects --
+    has nothing to enumerate a row FOR. This is the same "no row without a real project to
+    attach it to" contract 30.sql already established (its own guardrail: "a project never
+    scanned at all... produces zero rows from this view, not a synthesized ABSENT row" --
+    there is no dimension table to drive a phantom row from). The pre-fix single-blended-row
+    shape is gone; this replaces test_metric_22_returns_exactly_one_row_over_a_fully_empty_store.
+    """
     # No fixture loaded at all -- schema-only store.
     load_metrics(conn)
+    rows = rows_as_dicts(conn.execute("SELECT * FROM metric_22"))
+    assert rows == []
+
+    # render_dashboard must still not raise CoverageDenominatorMissing over zero rows: with no
+    # row at all, extract_coverage's own `row is None` short-circuit applies (insight/dash/
+    # render.py) -- there being nothing to show is not the same failure as a row that hides its
+    # coverage columns.
+    render_dashboard(conn, "s.duckdb")
+
+
+def test_metric_22_goal_id_collision_across_projects_does_not_misclassify_looped(conn):
+    """REGRESSION TEST for PR review finding 1: looped_goals / the EXISTS join keyed on goal_id
+    alone, with no project_id, meant an unrelated project's goal sharing the same goal_id could
+    sweep a genuinely never-looped goal into the looped bucket. Reproduced here with the
+    reviewer's own fixture shape: p1 and p2 each have a goal literally named 'shared_g' -- p1's
+    never loops (zero post_review events), p2's does (one real post_review/cycle event) -- and
+    each must land in its OWN project's correct bucket, not the other's."""
+    load_metrics(conn)
+
+    conn.execute(
+        "INSERT INTO fact_goal (project_id, goal_id, outcome, claimed_ts, terminal_ts) VALUES "
+        "('p1', 'shared_g', 'done', '2026-01-01T00:00:00', '2026-01-01T00:01:00'),"  # 60s
+        "('p2', 'shared_g', 'done', '2026-01-01T00:00:00', '2026-01-01T00:10:00')"   # 600s
+    )
+    # Only p2's shared_g has a qualifying post_review/cycle>=1 event -- p1's shared_g has none.
+    conn.execute(
+        "INSERT INTO fact_event "
+        "(project_id, goal_id, ts, kind, gate, verdict, cycle, reliability_class) VALUES "
+        "('p2', 'shared_g', '2026-01-01T00:00:10', 'gate', 'post_review', 'block', 1, 2)"
+    )
+
+    rows = rows_as_dicts(
+        conn.execute("SELECT * FROM metric_22 ORDER BY project_id")
+    )
+    assert [r["project_id"] for r in rows] == ["p1", "p2"]
+    by_project = {r["project_id"]: r for r in rows}
+
+    # p1's shared_g is genuinely never looped -- it must NOT be swept into p2's looped bucket.
+    assert by_project["p1"]["looped_goal_count"] == 0
+    assert by_project["p1"]["non_looped_goal_count"] == 1
+    assert by_project["p1"]["non_looped_median_cost_seconds"] == 60.0
+    assert by_project["p1"]["looped_median_cost_seconds"] is None
+
+    # p2's shared_g is the one that actually looped.
+    assert by_project["p2"]["looped_goal_count"] == 1
+    assert by_project["p2"]["non_looped_goal_count"] == 0
+    assert by_project["p2"]["looped_median_cost_seconds"] == 600.0
+    assert by_project["p2"]["non_looped_median_cost_seconds"] is None
+
+
+def test_metric_22_partitions_by_project_no_blended_row_no_negative_avoided_cost(conn):
+    """REGRESSION TEST for PR review finding 2: with no CTE partitioned by project_id, a
+    multi-project store (the real --repos shape, insight/__main__.py) blended into ONE row --
+    reproduced live, pre-fix, as a NEGATIVE avoided_cost_seconds manufactured by pairing one
+    project's blocked_plan_review_count against a cost delta computed across BOTH projects'
+    goals. This fixture plants the reviewer's own numbers -- p1: non-looped [10, 20]s, looped
+    [1000]s, 2 plan_review blocks (true answer: delta=985s, avoided=1970s); p2: non-looped
+    [1000, 2000]s, looped [10]s, 0 blocks (true answer: avoided=0, regardless of p2's own,
+    legitimately negative, delta) -- and asserts each project's row shows ITS OWN answer, with
+    no negative avoided cost anywhere."""
+    load_metrics(conn)
+
+    conn.execute(
+        "INSERT INTO fact_goal (project_id, goal_id, outcome, claimed_ts, terminal_ts) VALUES "
+        "('p1', 'p1_nl_1', 'done', '2026-01-01T00:00:00', '2026-01-01T00:00:10'),"  # 10s
+        "('p1', 'p1_nl_2', 'done', '2026-01-01T00:00:00', '2026-01-01T00:00:20'),"  # 20s
+        "('p1', 'p1_l_1',  'done', '2026-01-01T00:00:00', '2026-01-01T00:16:40'),"  # 1000s
+        "('p2', 'p2_nl_1', 'done', '2026-01-01T00:00:00', '2026-01-01T00:16:40'),"  # 1000s
+        "('p2', 'p2_nl_2', 'done', '2026-01-01T00:00:00', '2026-01-01T00:33:20'),"  # 2000s
+        "('p2', 'p2_l_1',  'done', '2026-01-01T00:00:00', '2026-01-01T00:00:10')"   # 10s
+    )
+    conn.execute(
+        "INSERT INTO fact_event "
+        "(project_id, goal_id, ts, kind, gate, verdict, cycle, reliability_class) VALUES "
+        "('p1', 'p1_l_1', '2026-01-01T00:00:05', 'gate', 'post_review', 'block', 1, 2),"
+        "('p2', 'p2_l_1', '2026-01-01T00:00:05', 'gate', 'post_review', 'block', 1, 2)"
+    )
+    # p1 has 2 blocked plan_review events; p2 has none.
+    conn.execute(
+        "INSERT INTO fact_event "
+        "(project_id, goal_id, ts, kind, gate, verdict, reliability_class) VALUES "
+        "('p1', 'p1_nl_1', '2026-01-01T00:00:01', 'gate', 'plan_review', 'block', 2),"
+        "('p1', 'p1_nl_2', '2026-01-01T00:00:01', 'gate', 'plan_review', 'block', 2)"
+    )
+
+    rows = rows_as_dicts(
+        conn.execute("SELECT * FROM metric_22 ORDER BY project_id")
+    )
+    assert [r["project_id"] for r in rows] == ["p1", "p2"]
+    # One row per project, never blended -- exactly two distinct project_ids, no third row.
+    assert len({r["project_id"] for r in rows}) == 2
+    by_project = {r["project_id"]: r for r in rows}
+
+    assert by_project["p1"]["blocked_plan_review_count"] == 2
+    assert by_project["p1"]["non_looped_median_cost_seconds"] == 15.0
+    assert by_project["p1"]["looped_median_cost_seconds"] == 1000.0
+    assert by_project["p1"]["cost_delta_seconds"] == 985.0
+    assert by_project["p1"]["avoided_cost_seconds"] == 1970.0
+
+    assert by_project["p2"]["blocked_plan_review_count"] == 0
+    assert by_project["p2"]["non_looped_median_cost_seconds"] == 1500.0
+    assert by_project["p2"]["looped_median_cost_seconds"] == 10.0
+    # p2's own delta is legitimately negative (its looped goal happened to be cheap) -- that is
+    # NOT the bug. The bug would be letting that negative delta pair with p1's blocked count, or
+    # p1's delta pair with p2's blocked count.
+    assert by_project["p2"]["cost_delta_seconds"] == -1490.0
+    assert by_project["p2"]["avoided_cost_seconds"] == 0.0
+
+    # THE core assertion: no row anywhere reports a negative avoided cost.
+    for r in rows:
+        assert r["avoided_cost_seconds"] is None or r["avoided_cost_seconds"] >= 0, r
+
+
+def test_metric_22_coverage_pct_does_not_claim_full_coverage_when_multiplier_inputs_are_unmeasured(conn):
+    """Finding 3: coverage_pct only ever covered the blocked_plan_review_count numerator -- a
+    store where every block event is reliability_class=1 reports coverage_pct=1.0 (100%) while
+    the post_review reads that decide the ENTIRE looped/non-looped split (which drives the whole
+    multiplier) are reliability_class=2 and go unmeasured by that same figure. This pins the
+    fix's second coverage figure (multiplier_class1_count/class2_count/total_count/
+    multiplier_coverage_pct) so a reader can see the decisive half is NOT covered, instead of
+    reading a misleadingly-full 100%."""
+    load_metrics(conn)
+
+    conn.execute(
+        "INSERT INTO fact_goal (project_id, goal_id, outcome, claimed_ts, terminal_ts) VALUES "
+        "('p1', 'g1', 'done', '2026-01-01T00:00:00', '2026-01-01T00:01:40')"  # 100s
+    )
+    # The numerator's own block event is fully reliability_class=1.
+    conn.execute(
+        "INSERT INTO fact_event "
+        "(project_id, goal_id, ts, kind, gate, verdict, reliability_class) VALUES "
+        "('p1', 'g1', '2026-01-01T00:00:01', 'gate', 'plan_review', 'block', 1)"
+    )
+    # The post_review read that decides the looped bucket is reliability_class=2.
+    conn.execute(
+        "INSERT INTO fact_event "
+        "(project_id, goal_id, ts, kind, gate, verdict, cycle, reliability_class) VALUES "
+        "('p1', 'g1', '2026-01-01T00:00:02', 'gate', 'post_review', 'block', 1, 2)"
+    )
+
     rows = rows_as_dicts(conn.execute("SELECT * FROM metric_22"))
     assert len(rows) == 1
     row = rows[0]
 
-    for count_col in (
-        "blocked_plan_review_count",
-        "non_looped_goal_count",
-        "looped_goal_count",
-        "qualifying_pair_count",
-        "class1_count",
-        "class2_count",
-        "total_count",
-    ):
-        assert row[count_col] == 0, count_col
+    # The numerator is fully covered...
+    assert row["class1_count"] == 1
+    assert row["class2_count"] == 0
+    assert row["total_count"] == 1
+    assert row["coverage_pct"] == 1.0
 
-    for derived_col in (
-        "non_looped_median_cost_seconds",
-        "looped_median_cost_seconds",
-        "cost_delta_seconds",
-        "avoided_cost_seconds",
-        "coverage_pct",
-    ):
-        assert row[derived_col] is None, derived_col
-
-    # Pins the "phantom row" contract render_dashboard's CoverageDenominatorMissing check
-    # depends on: a result row exists, with all four coverage columns present as keys, even
-    # over an empty store.
-    render_dashboard(conn, "s.duckdb")
+    # ...but the multiplier's own input read is NOT -- the decisive half a reader must not miss.
+    assert row["multiplier_class1_count"] == 0
+    assert row["multiplier_class2_count"] == 1
+    assert row["multiplier_total_count"] == 1
+    assert row["multiplier_coverage_pct"] == 0.0
+    assert row["multiplier_coverage_pct"] != row["coverage_pct"]
 
 
 def test_metric_22_blocked_but_not_looped_goal_lands_in_the_non_looped_bucket(conn):
