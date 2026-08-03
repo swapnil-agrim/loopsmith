@@ -39,3 +39,16 @@ def test_scrub_does_not_over_redact_ordinary_prose():
 def test_scrub_empty_is_passthrough():
     scrub = _mod("scrub").scrub
     assert scrub("") == "" and scrub(None) is None
+
+
+def test_secret_patterns_stay_in_sync_with_the_research_capture_hook():
+    """scrub.py deliberately duplicates the hook's patterns (a skill script can't reliably import a
+    hook across the plugin layout). Without this, the next hardening of research_capture.py leaves
+    scrub.py behind — quietly weakening the mirror's redaction. Parity, enforced."""
+    scrub = _mod("scrub")
+    rc_path = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "research_capture.py"
+    spec = importlib.util.spec_from_file_location("research_capture", rc_path)
+    rc = importlib.util.module_from_spec(spec); spec.loader.exec_module(rc)
+    mine = [(p.pattern, repl) for p, repl in scrub._SECRET_PATTERNS]
+    theirs = [(p.pattern, repl) for p, repl in rc._SECRET_PATTERNS]
+    assert mine == theirs, "scrub.py and research_capture.py secret patterns drifted — re-sync them"

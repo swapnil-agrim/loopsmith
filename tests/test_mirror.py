@@ -106,6 +106,56 @@ def test_fetch_fail_open_on_gh_error():
         assert not (base / m.MIRROR_REL).exists()            # nothing half-written
 
 
+def test_fetch_fail_open_on_bad_closed_limit():
+    # a hand-edited config typo must not crash the pick path: "closed_limit": "all" -> None, not ValueError
+    m = _mod("mirror")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "state").mkdir(parents=True)
+        run = _gh_runner([{"number": 1, "title": "a", "state": "open"}], [])
+        cfg = _github_cfg(); cfg["backlog_check"] = {"mirror": {"closed_limit": "all"}}
+        assert m.fetch_and_write(str(base), config=cfg, run=run, now=1.0) is None
+        assert not (base / m.MIRROR_REL).exists()
+
+
+def test_fetch_fail_open_on_non_list_gh_payload_does_not_clobber():
+    # a gh error object ({"message": "Not Found"}) is not a backlog: return None, leave any prior mirror intact
+    m = _mod("mirror")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "state").mkdir(parents=True)
+        good = _gh_runner([{"number": 1, "title": "keep me", "state": "open"}], [])
+        m.fetch_and_write(str(base), config=_github_cfg(), run=good, now=1.0, force=True)
+        before = (base / m.MIRROR_REL).read_text()
+        def err(args):
+            return json.dumps({"message": "Not Found"})          # valid JSON, not a list
+        assert m.fetch_and_write(str(base), config=_github_cfg(), run=err, now=2.0, force=True) is None
+        assert (base / m.MIRROR_REL).read_text() == before        # prior good mirror untouched
+
+
+def test_build_records_skips_non_dict_rows_without_raising():
+    # a stray null / string row inside an otherwise-valid list is skipped, the good rows survive
+    m = _mod("mirror")
+    recs = m.build_records([{"number": 2, "title": "ok", "state": "open"}, None, "garbage"], [])
+    assert [r["number"] for r in recs] == [2]
+
+
+def test_fetch_fail_open_on_unreadable_config():
+    # config=None + a garbage config.json on disk -> _load_config returns {} -> not github mode -> None
+    m = _mod("mirror")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "state").mkdir(parents=True)
+        (base / "config.json").write_text("{ not json")
+        assert m.fetch_and_write(str(base), now=1.0) is None
+
+
+def test_mirror_not_wired_into_the_pick_path():
+    """Additive guarantee: the loop's goal-pick path never runs the mirror — only the explicit
+    `pipeline.py mirror` verb / module __main__ do. Locks the no-regression claim cheaply."""
+    for name in ("loop.py", "sources.py"):
+        text = (S / name).read_text()
+        assert "fetch_and_write" not in text
+        assert '"mirror"' not in text and "'mirror'" not in text   # not loaded/dispatched there
+
+
 def test_ttl_skips_refetch_until_forced():
     m = _mod("mirror")
     with tempfile.TemporaryDirectory() as d:

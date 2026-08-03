@@ -64,9 +64,9 @@ def build_records(open_raw, closed_raw):
     for raw in list(closed_raw or []) + list(open_raw or []):   # open appended last => wins the clash
         try:
             rec = normalize_issue(raw)
-        except (TypeError, ValueError):
-            continue                                             # malformed row: skip it, keep the rest
-        by_num[rec["number"]] = rec
+        except (TypeError, ValueError, AttributeError):
+            continue                        # a non-dict / number-less row (str/None -> AttributeError on
+        by_num[rec["number"]] = rec         # .get): skip it, keep the rest
     return [by_num[n] for n in sorted(by_num)]
 
 
@@ -128,40 +128,48 @@ def _write(sdlc_dir, records, repo, now=None):
 
 
 def fetch_and_write(sdlc_dir, config=None, run=None, now=None, force=False):
-    """FAIL-OPEN orchestrator. Returns the record count written, or None when no mirror was produced
-    (not github mode / fresh-and-not-forced / gh error / offline)."""
-    config = config if config is not None else _load_config(sdlc_dir)
-    if not is_github_mode(config):
-        return None                                       # local-files mode: the goals dir IS the corpus
-    gh = (config.get("discovery") or {}).get("github") or {}
-    mirror_cfg = ((config.get("backlog_check") or {}).get("mirror")) or {}
-    ttl = mirror_cfg.get("ttl_minutes", _DEFAULT_TTL_MINUTES)
-    if not force and is_fresh(sdlc_dir, ttl, now=now):
-        return None                                       # a fresh mirror amortizes the one API call
-    run = run or _load("sources")._run_gh
-    repo = gh.get("repo") or ""
-    goal_label = gh.get("goal_label", "sdlc:goal")
-    assignee = gh.get("assignee") or None
-    closed_limit = int(mirror_cfg.get("closed_limit", _DEFAULT_CLOSED_LIMIT))
-    repo_args = ["--repo", repo] if repo else []
+    """FAIL-OPEN orchestrator. Returns the record count written, or None when NO mirror was produced —
+    not github mode / fresh-and-not-forced / gh missing / offline / bad config / unwritable .sdlc / ANY
+    error. The whole body is guarded: this is a read-only pre-flight, so it must never raise into the
+    loop's pick path (a later slice calls it there). A None return means "no mirror this run", never a crash."""
     try:
+        config = config if config is not None else _load_config(sdlc_dir)
+        if not is_github_mode(config):
+            return None                                   # local-files mode: the goals dir IS the corpus
+        gh = (config.get("discovery") or {}).get("github") or {}
+        mirror_cfg = ((config.get("backlog_check") or {}).get("mirror")) or {}
+        ttl = mirror_cfg.get("ttl_minutes", _DEFAULT_TTL_MINUTES)
+        if not force and is_fresh(sdlc_dir, ttl, now=now):
+            return None                                   # a fresh mirror amortizes the one API call
+        run = run or _load("sources")._run_gh
+        repo = gh.get("repo") or ""
+        goal_label = gh.get("goal_label", "sdlc:goal")
+        assignee = gh.get("assignee") or None
+        closed_limit = int(mirror_cfg.get("closed_limit", _DEFAULT_CLOSED_LIMIT))   # bad value -> caught below
+        repo_args = ["--repo", repo] if repo else []
+        # The open query does NOT drop parked issues (unlike next_pending): a parked goal is still a valid
+        # dedup candidate, so the corpus is a deliberate superset of the loop's actual pick queue.
         open_args = ["issue", "list", *repo_args, "--label", goal_label, "--state", "open",
                      "--json", _FIELDS, "--limit", str(_OPEN_LIMIT)]
         if assignee:
             open_args += ["--assignee", assignee]
         open_raw = json.loads(run(open_args) or "[]")
         # Closed issues are NOT goal-filtered: work completed in a prior (often manual) session can
-        # obsolete an open goal even if it never carried the goal label. Bounded by closed_limit,
-        # most-recently-updated first; the cross-check engine applies the velocity-scaled window later.
+        # obsolete an open goal even if it never carried the goal label. Bounded by closed_limit; the
+        # `sort:updated-desc` search qualifier yields most-recently-updated-first (smoke-tested against
+        # real gh — `--state closed` alone does NOT sort by recency). The engine applies the window later.
         closed_args = ["issue", "list", *repo_args, "--state", "closed",
                        "--search", "sort:updated-desc", "--json", _FIELDS,
                        "--limit", str(closed_limit)]
         closed_raw = json.loads(run(closed_args) or "[]")
+        if not isinstance(open_raw, list) or not isinstance(closed_raw, list):
+            return None                                   # a gh error object ({"message":...}) is not a
+                                                          # backlog — don't clobber a good mirror with junk
+        records = build_records(open_raw, closed_raw)
+        _write(sdlc_dir, records, repo, now=now)
+        return len(records)
     except Exception:
-        return None                                       # offline / gh missing / bad json -> no mirror
-    records = build_records(open_raw, closed_raw)
-    _write(sdlc_dir, records, repo, now=now)
-    return len(records)
+        return None                                       # fail-open backstop: no mirror, never a raise
 
 
 def main(argv):
