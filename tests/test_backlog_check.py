@@ -302,6 +302,88 @@ def test_closed_window_days_loads_the_real_velocity_module():
 
 # --- CLI verb ---
 
+# --- similarity: bm25 + hybrid embedding layer (0.9.23) ---
+
+def test_bm25_similarity_still_finds_the_duplicate_not_the_distinct():
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _DUP), _rec(3, _DISTINCT)],
+                        similarity="bm25", dup_threshold=0.4, closed_window_days=3650)
+        kinds = {(f["kind"], f["ref"]) for f in bc.cross_check(base, "1")["findings"]}
+        assert ("duplicate", "2") in kinds and ("duplicate", "3") not in kinds
+
+
+def test_embed_disabled_is_byte_identical_even_with_an_embedder_passed():
+    # off by default: an embed_fn is ignored unless the config opts in -> identical pack
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _DUP), _rec(3, _DISTINCT)], **_LOOSE)
+        assert bc.cross_check(base, "1") == bc.cross_check(base, "1", embed_fn=lambda t: [1.0, 0.0])
+
+
+def test_embed_catches_a_zero_lexical_overlap_paraphrase():
+    bc = _mod("backlog_check")
+    para = "relocate persistence subsystem for the gadget"          # shares NO token with _GOAL
+    emb = lambda t: [1.0, 0.0] if ("widget" in t or "gadget" in t) else [0.0, 1.0]
+    with tempfile.TemporaryDirectory() as d1:
+        base = _gh_base(d1, [_rec(1, _GOAL), _rec(2, para)], dup_threshold=0.4, closed_window_days=3650)
+        assert not [f for f in bc.cross_check(base, "1")["findings"] if f["ref"] == "2"]   # lexical misses it
+    with tempfile.TemporaryDirectory() as d2:
+        base = _gh_base(d2, [_rec(1, _GOAL), _rec(2, para)],
+                        embed={"enabled": True, "weight": 1.0}, dup_threshold=0.4, closed_window_days=3650)
+        assert any(f["ref"] == "2" for f in bc.cross_check(base, "1", embed_fn=emb)["findings"])   # dense catches it
+
+
+def test_embed_cache_skips_reembedding_unchanged_texts():
+    bc = _mod("backlog_check")
+    calls = []
+    def emb(text):
+        calls.append(text)
+        return [1.0, 0.0] if "widget" in text else [0.0, 1.0]
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _DUP)],
+                        embed={"enabled": True, "weight": 1.0}, dup_threshold=0.4, closed_window_days=3650)
+        bc.cross_check(base, "1", embed_fn=emb)
+        first = len(calls)
+        assert first == 2                                  # both docs embedded on the first run
+        bc.cross_check(base, "1", embed_fn=emb)
+        assert len(calls) == first                         # second run reads the gitignored cache — no re-embed
+        assert (pathlib.Path(base) / "state" / "embeddings.json").exists()
+
+
+def test_embed_enabled_without_command_falls_back_to_lexical_with_degraded():
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _DUP)],
+                        embed={"enabled": True}, dup_threshold=0.4, closed_window_days=3650)
+        pack = bc.cross_check(base, "1")                   # no embed_fn, no command -> dense off
+        assert "no_embedder" in pack["degraded"]
+        assert ("duplicate", "2") in {(f["kind"], f["ref"]) for f in pack["findings"]}   # lexical still works
+
+
+def test_embed_via_real_subprocess_command():
+    # exercise _run_embedder + _embedder_from_config end-to-end (no injected embed_fn): a tiny embedder
+    # that reads stdin and prints a JSON vector varying by content
+    bc = _mod("backlog_check")
+    cmd = ("python3 -c \"import sys,json; t=sys.stdin.read(); "
+           "print(json.dumps([1.0,0.0] if 'widget' in t else [0.0,1.0]))\"")
+    para = "relocate persistence subsystem for the widget engine"   # shares no token but embeds same
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, para)],
+                        embed={"enabled": True, "command": cmd, "weight": 1.0},
+                        dup_threshold=0.4, closed_window_days=3650)
+        assert any(f["ref"] == "2" for f in bc.cross_check(base, "1")["findings"])
+
+
+def test_embed_fusion_is_deterministic():
+    bc = _mod("backlog_check")
+    emb = lambda t: [1.0, 0.0] if "widget" in t else [0.5, 0.5]
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _DUP)],
+                        embed={"enabled": True, "weight": 0.5}, dup_threshold=0.4, closed_window_days=3650)
+        assert bc.cross_check(base, "1", embed_fn=emb) == bc.cross_check(base, "1", embed_fn=emb)
+
+
 # --- decide(): pure pack -> loop-hook action ---
 
 def _mkpack(findings):

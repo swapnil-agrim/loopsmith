@@ -432,6 +432,15 @@ def test_check_flags_park_threshold_below_dup_threshold(tmp_path):
     assert "park_threshold" in checks["backlog cross-check thresholds sane"]["fix"]
 
 
+def test_check_flags_embed_enabled_with_no_command(tmp_path):
+    d = _doc()
+    dead = _sdlc(tmp_path, {"backlog_check": {"enabled": True, "embed": {"enabled": True, "command": ""}}})
+    assert {c["name"]: c for c in d.check(dead, run=_runner())}["backlog cross-check embedder configured"]["ok"] is False
+    live = _sdlc(tmp_path / "live",
+                 {"backlog_check": {"enabled": True, "embed": {"enabled": True, "command": "my-embedder"}}})
+    assert {c["name"]: c for c in d.check(live, run=_runner())}["backlog cross-check embedder configured"]["ok"] is True
+
+
 def test_check_does_not_crash_on_a_non_dict_backlog_check_block(tmp_path):
     d = _doc()
     base = _sdlc(tmp_path, {"backlog_check": "yes please"})     # malformed -> reads as off, no crash

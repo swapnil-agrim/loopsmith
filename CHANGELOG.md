@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### backlog cross-check: an opt-in embedding layer for paraphrases (0.9.23)
+Fourth and final slice. The lexical TF-IDF pass (0.9.21) misses a duplicate that shares no *words* — a
+goal described in entirely different vocabulary. This adds an **opt-in dense/embedding channel** fused
+with the lexical score, plus a **BM25** lexical option, in `backlog_check.py`. **Both off by default: with
+`embed.enabled:false` and `similarity:"tfidf"` the engine is byte-identical to 0.9.22** (the default path
+reduces line-for-line to the old lexical scoring).
+- **Hybrid retrieval.** `embed.enabled:true` + `embed.command` (a provider-agnostic embedder that reads
+  text on stdin and prints a JSON number array — no hardcoded vendor) adds a dense channel; the fused
+  score is `max(lexical, embed.weight · dense_cosine)`, so a zero-lexical-overlap paraphrase still surfaces
+  via the dense channel while lexical matches are unaffected.
+- **Token-free at query time.** Vectors are cached in gitignored `.sdlc/state/embeddings.json`, keyed by a
+  content hash and computed **incrementally** — only new/changed texts are ever embedded — so a run
+  re-embeds only deltas and the query itself is plain cosine over cached vectors.
+- **`similarity: "bm25"`** (opt-in) swaps TF-IDF for BM25-weighted cosine (saturation + length
+  normalization — the stronger bug-dedup baseline); `"tfidf"` stays the default.
+- **Fail-open + secret-safe, unchanged:** no `embed.command` / an embedder error / a read-only `.sdlc` →
+  the dense layer silently falls back to lexical-only (`degraded:['no_embedder']`), never a raise. The
+  embedder is injectable, so tests are hermetic (a stub vector map, no network). `/sdlc-doctor` flags
+  `embed.enabled` with no `embed.command`. Config documents `similarity` + `embed`.
+
 ### backlog cross-check: wire it into the loop, off by default (0.9.22)
 Third slice — the pre-work cross-check (0.9.20 mirror + 0.9.21 engine) now actually runs in `/sdlc-loop`,
 **opt-in and off by default**. New `loop.py precheck <sdlc_dir> <goal>` verb + a step at the very top of
