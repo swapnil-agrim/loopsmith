@@ -32,7 +32,18 @@ project_cap AS (
         project_id,
         CASE
             WHEN json_valid(config_json)
-                THEN CAST(json_extract(config_json, '$.work.max_review_cycles') AS INTEGER)
+                -- TRY_CAST, not CAST: json_valid only proves the text is JSON, not that the value
+                -- fits an INTEGER. A syntactically fine {"work":{"max_review_cycles":9999...9}}
+                -- raises ConversionException and takes down the WHOLE view and the whole catalog
+                -- with it, healthy sibling projects included -- the same blast radius the
+                -- json_valid guard was added to close, one layer in.
+                -- NULLIF(..., 0) because 0 means the cap is DISABLED, not "hit immediately":
+                -- work.py:536,542 does `cap = int(... or 0)` then `over_cap = cap and cycles >= cap`,
+                -- so a configured 0 is falsy and the loop never parks for the cap at all. Without
+                -- this, a project that switched the cap off rendered mass=1.0, status=FAIL -- a
+                -- confident alarm about a mechanism that is not running. Mirrors work.py's own
+                -- falsy-zero semantics rather than inventing a second reading of the same value.
+                THEN NULLIF(TRY_CAST(json_extract(config_json, '$.work.max_review_cycles') AS INTEGER), 0)
             ELSE NULL
         END AS cap
     FROM dim_project

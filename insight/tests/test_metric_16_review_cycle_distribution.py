@@ -225,3 +225,54 @@ def test_metric_16_malformed_config_json_degrades_to_null_cap_for_that_project_o
     assert by_project["p_bad"]["goals_at_cap_count"] is None
     assert by_project["p_bad"]["mass_at_cap_share"] is None
     assert by_project["p_bad"]["status"] == "ABSENT"
+
+
+def test_metric_16_a_cap_too_large_for_an_integer_does_not_crash_the_view(conn):
+    """json_valid() only proves the text IS JSON, not that the value fits an INTEGER. A
+    syntactically perfect {"work": {"max_review_cycles": 999...9}} passed the guard and then
+    raised ConversionException from CAST -- and not for that project alone: the WHOLE view, and
+    render_dashboard over the whole catalog, went down with it, healthy siblings included. Same
+    blast radius the json_valid guard was added to close, one layer further in. TRY_CAST closes
+    it: the overflowing project degrades to a NULL cap / ABSENT, the healthy one still renders."""
+    conn.execute(
+        "INSERT INTO dim_project (project_id, config_json) VALUES "
+        "('p_ok', '{\"work\": {\"max_review_cycles\": 3}}'),"
+        "('p_huge', '{\"work\": {\"max_review_cycles\": 99999999999999999999}}')"
+    )
+    conn.execute(
+        "INSERT INTO fact_event "
+        "(project_id, goal_id, ts, kind, gate, verdict, cycle, reliability_class) VALUES "
+        "('p_ok', 'g1', '2026-01-01T00:00:01', 'gate', 'post_review', 'block', 3, 2),"
+        "('p_huge', 'g2', '2026-01-01T00:00:01', 'gate', 'post_review', 'block', 1, 2)"
+    )
+    load_metrics(conn)
+    rows = {r["project_id"]: r for r in rows_as_dicts(conn.execute("SELECT * FROM metric_16"))}
+    assert rows["p_huge"]["cap"] is None
+    assert rows["p_huge"]["status"] == "ABSENT"
+    assert rows["p_ok"]["cap"] == 3                       # the healthy project is untouched
+    assert rows["p_ok"]["status"] == "FAIL"               # g1 is at its own cap
+
+
+def test_metric_16_a_zero_cap_reads_absent_because_zero_disables_the_cap(conn):
+    """A configured 0 does NOT mean "the cap is hit immediately" -- it means the cap is OFF.
+    work.py:536,542 does `cap = int(... or 0)` then `over_cap = cap and cycles >= cap`, so a
+    falsy 0 short-circuits and the loop never parks for the cap at all; reviews run unbounded.
+    Reporting mass=1.0 / FAIL for such a project would be a confident alarm about a mechanism
+    that is not running -- the exact "meaningful-looking but backwards" failure this metric
+    exists to avoid. NULLIF mirrors work.py's own falsy-zero reading rather than inventing a
+    second one."""
+    conn.execute(
+        "INSERT INTO dim_project (project_id, config_json) VALUES "
+        "('p_zero', '{\"work\": {\"max_review_cycles\": 0}}')"
+    )
+    conn.execute(
+        "INSERT INTO fact_event "
+        "(project_id, goal_id, ts, kind, gate, verdict, cycle, reliability_class) VALUES "
+        "('p_zero', 'g1', '2026-01-01T00:00:01', 'gate', 'post_review', 'block', 2, 2)"
+    )
+    load_metrics(conn)
+    row = rows_as_dicts(conn.execute("SELECT * FROM metric_16"))[0]
+    assert row["cap"] is None
+    assert row["status"] == "ABSENT"
+    assert row["goals_at_cap_count"] is None
+    assert row["mass_at_cap_share"] is None
