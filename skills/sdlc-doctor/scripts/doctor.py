@@ -163,7 +163,7 @@ def check(sdlc_dir=".sdlc", run=None):
         # The dense/embedding layer switched on but with no embedder command silently runs lexical-only.
         embed = bchk.get("embed")
         embed = embed if isinstance(embed, dict) else {}
-        if embed.get("enabled") is True or bchk.get("similarity") == "hybrid":
+        if embed.get("enabled") is True:
             out.append(_chk("backlog cross-check embedder configured",
                             bool((embed.get("command") or "").strip()),
                             "backlog_check.embed is on but embed.command is empty — the dense layer "

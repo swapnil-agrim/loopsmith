@@ -279,8 +279,9 @@ _EMBED_CACHE_REL = "state/embeddings.json"      # gitignored (.sdlc/state/), con
 
 
 def _embed_enabled(config):
-    cfg = config.get("backlog_check") or {}
-    return (cfg.get("embed") or {}).get("enabled") is True or cfg.get("similarity") == "hybrid"
+    # `embed.enabled` is the SOLE switch for the dense channel — `similarity` only picks the lexical
+    # scorer (tfidf | bm25). One switch, one meaning; no second, undocumented path.
+    return ((config.get("backlog_check") or {}).get("embed") or {}).get("enabled") is True
 
 
 def _run_embedder(text, command):
