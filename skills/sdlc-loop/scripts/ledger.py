@@ -251,14 +251,29 @@ BOUNDED_ID_CAP = 120
 #: trips in one legitimate `emit` call, and successive events cost nothing. That channel is
 #: inherent to "a bounded numeric field trusts its own digits" and no cap can remove it.
 #:
-#: It is out of scope rather than unsolved, and the threat model is the reason: this control exists
-#: to stop ACCIDENTAL leakage — an error string pasted into a park reason that happens to carry a
-#: token. It is not a boundary against an agent that WANTS to exfiltrate, and it cannot be: that
-#: agent can write `.sdlc/ledger/events/<actor>.jsonl` directly with a shell redirect and skip
-#: every check in this file (see #140's retro, which established the same about the emit
-#: allowlist). Encoding a secret into three token counts is strictly harder than that. The bound
-#: still earns its place — it closes the accidental unbounded-length case and forces deliberate
-#: effort — but it is a guardrail, not a boundary. Filed as part of #248's reliability_class work.
+#: The accepted risk, stated at its real size. A first version of this note argued the gap was
+#: cheap to accept because an agent that wants to exfiltrate can write
+#: `.sdlc/ledger/events/<actor>.jsonl` directly with a shell redirect anyway, so closing the CLI
+#: channel buys nothing. Review showed that reasoning is wrong, and the correction matters more
+#: than the mechanics: it assumes the blast radius is the writer's own machine. It is not. The
+#: events stream is PUSHED to the shared `sdlc-ledger` ops branch by the documented default path
+#: (`sync.py bootstrap` — "pushes it so the team can see it"), and `insight`'s manager dashboard
+#: reads it team-wide. There is currently no config that keeps it local: doctor reports that even
+#: `share: false` "still publishes with the ledger, same as share: true", because the write side of
+#: that flag is unimplemented (#244).
+#:
+#: So the honest statement is: a chunked secret entered through the SANCTIONED `loop.py emit` CLI
+#: — the exact command an agent is told to run — reaches a shared team branch and a manager
+#: dashboard whose readers trust it as sanitised. That is a different threat class from #140's
+#: allowlist precedent, which is about an agent lying to ITSELF on one machine. A raw shell
+#: redirect is unstoppable from in-process and genuinely out of scope; this is not that.
+#:
+#: It is still not fixed HERE, because no per-field bound can fix it — a `phase` event has three
+#: numeric fields and successive events are free — and tightening the cap to a few digits would
+#: break real values (a 27-hour `ms`, a seven-figure token count) while leaving the channel open.
+#: The real mitigations are elsewhere and owned: #244 makes `share: false` actually keep events
+#: local, and #248 covers whether ingested data can be trusted at all. Recorded on #141 so it is a
+#: known accepted risk with the right size attached, not an inherited "local, so low-stakes".
 NUMERIC_DIGIT_CAP = 20
 
 #: Controlled vocabularies from spec §A.3. PHASE_KINDS/GATE_KINDS/REASON_CLASSES exist for
