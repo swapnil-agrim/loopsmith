@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### telemetry: the loop records what its own gates caught (0.9.19, opt-in)
+Epic #135, seven stories. Everything the SDLC spine already computed and then discarded is now an
+optional, append-only event stream — `work.py` counted review cycles to enforce `max_review_cycles`
+and threw the count away; `verify_goal` persisted evidence the next run overwrote; decision-gate
+denials happened and vanished.
+
+`ledger.py` gains a second **stream** (`ledger/events/<actor>.jsonl`) on the transport the team
+ledger already uses — same per-author files, same fail-open append, same publish/watch path — and
+`render()` still reads `entries/` only, so `TEAM.md` cannot be drowned by telemetry **by
+construction**. Eight deterministic emitters (verify, park, the merge/review gates, decision-gate
+denials, slice dispatch, discovery-scan) plus a `loop.py emit` verb for the phase/gate/retro/spend
+events only the agent can observe — deliberately NOT `verify`, so an agent cannot emit a passing
+verify record it did not run.
+
+Prose is scrubbed and capped **once**, in `append`, where all nine call sites already pass through:
+`why` truncates at 200 chars, secret-shaped substrings never survive, and a newline cannot forge a
+second record. Events carry identifiers, counts, durations and verdicts — never code, never diffs.
+
+`"telemetry": {"enabled": false}` by default: installing changes nothing, and the flag's own comment
+says so rather than leaving an adopter to wonder why no files appear.
+
 ### work: refuse to merge a PR head that is not what was reviewed (0.9.18)
 `work.py commit` is LOCAL; only `work.py pr` pushes. After a `loopsmith:block`, a fix committed and
 re-reviewed in the worktree could leave the PR head at the PRE-FIX commit — and because every GitHub
