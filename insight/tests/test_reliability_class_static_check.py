@@ -23,6 +23,17 @@ the two counts are equal, per file. `2.sql` and `13.sql` contain literal `FROM m
 executable FROM clause -- .sdlc/plans/113.md Decision 1c) -- comment-stripping is what keeps
 those from being misread as a real `fact_event` reference or a real filter mention.
 
+CLASS-2 SKIP (issue #144, [E7.S1]): this parity check is written against spec line 563's "a NOW
+metric must not read any reliability_class=2 row" -- it does not apply, by construction, to a
+metric that IS a Class-2 read (`22.sql`, the first one this repo ships: it reads `fact_event`
+twice -- once for the plan_review-block numerator, once for the post_review/cycle "looped"
+population -- with zero `reliability_class = 1` filters on either, by design, not by omission).
+Any file whose header declares `-- reliability_class: 2` is skipped from this specific
+reads-equal-filters count, using the same header-conditional regex
+test_class_2_metrics_expose_a_coverage_denominator.py already established
+(`_CLASS_2_HEADER`) -- a class-2 file is still scanned by every OTHER static guard in this
+directory; only this one, class-1-specific rule does not apply to it.
+
 LIMITATION, stated explicitly, matching test_metrics_date_trunc_guard.py's own accepted-limitation
 shape: this is a regex heuristic, not a real SQL parser (no such dependency exists anywhere in
 this repo). It can be fooled by, e.g., a reversed comparison (`1 = reliability_class`) or an
@@ -43,6 +54,9 @@ METRICS_DIR = pathlib.Path(__file__).parent.parent / "metrics"
 
 _FACT_EVENT_READ = re.compile(r"(?:FROM|JOIN)\s+fact_event\b", re.IGNORECASE)
 _RELIABILITY_FILTER = re.compile(r"reliability_class\s*=\s*1\b", re.IGNORECASE)
+# Same regex test_class_2_metrics_expose_a_coverage_denominator.py already established --
+# duplicated, not imported, per this repo's no-test-imports-test convention.
+_CLASS_2_HEADER = re.compile(r"^--\s*reliability_class:\s*2\s*$", re.MULTILINE)
 
 
 def _sql_body_only(text):
@@ -57,7 +71,12 @@ def _sql_body_only(text):
 def test_every_fact_event_read_carries_its_own_reliability_class_1_filter():
     offenders = []
     for path in sorted(METRICS_DIR.glob("*.sql")):
-        body = _sql_body_only(path.read_text(encoding="utf-8-sig"))
+        text = path.read_text(encoding="utf-8-sig")
+        if _CLASS_2_HEADER.search(text):
+            # A class-2 metric reads fact_event deliberately without the class-1 filter --
+            # see this file's own module docstring, "CLASS-2 SKIP".
+            continue
+        body = _sql_body_only(text)
         reads = len(_FACT_EVENT_READ.findall(body))
         filters = len(_RELIABILITY_FILTER.findall(body))
         if reads != filters:

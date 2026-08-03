@@ -12,9 +12,14 @@ has no templating or `import` mechanism that could share a Python string INTO a 
 runtime. A human author copy-pastes this constant's value at authoring time -- this is
 documentation-as-code, not infrastructure a metric depends on at query time.
 
-WHY NO PERSISTED, JOINABLE VIEW EXISTS INSTEAD: zero metrics declare `-- reliability_class: 2`
-today (every one of the 25 files in `insight/metrics/` declares `1`, verified this session) --
-there is no live consumer for a coverage-denominator mechanism to serve yet. This repo already
+WHY NO PERSISTED, JOINABLE VIEW EXISTS INSTEAD: at the time this module was written, zero metrics
+declared `-- reliability_class: 2` (every one of the 25 files in `insight/metrics/` declared `1`)
+-- there was no live consumer for a coverage-denominator mechanism to serve yet. That is no longer
+true: `insight/metrics/22.sql` (issue #144, [E7.S1], "Prevented rework") is the first real class-2
+metric, and it pastes `COVERAGE_DENOMINATOR_COLUMNS` verbatim into its own `blocked` CTE -- the
+live consumer this paragraph originally said did not exist yet. The reasoning below (why a
+persisted view would repeat `phase_trace_completeness`'s mistake) still holds and is not
+revisited by #144 landing; only the "there is no live consumer" premise has changed. This repo already
 carries one dated, cautionary example of building exactly this kind of infrastructure ahead of
 any consumer: `fact_goal.phase_trace_completeness` (`insight/ingest/store.py`), a schema column
 added by issue #99 for this identical Class-2 coverage use case, still carrying zero writers and
