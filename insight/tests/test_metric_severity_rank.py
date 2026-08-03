@@ -112,7 +112,7 @@ def conn(tmp_path):
     c.close()
 
 
-@pytest.mark.parametrize("metric_id", ["24", "26", "30", "37"])
+@pytest.mark.parametrize("metric_id", ["24", "26", "30", "37", "16"])
 def test_severity_rank_matches_pipelines_own_order(conn, metric_id):
     load_fixture_jsonl(conn, FIXTURES_DIR / f"{metric_id}.jsonl")
     load_metrics(conn)
