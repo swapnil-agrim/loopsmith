@@ -50,7 +50,7 @@ def _onboarding_table(html_text):
 
 def test_render_dashboard_against_real_metric_catalog_and_gaps(conn):
     html_text, summary = render_dashboard(conn, "s.duckdb")
-    assert summary["metric_count"] == 28
+    assert summary["metric_count"] == 31
     expected_verdict = build_report(conn)["verdict"]["overall"]
     assert summary["gaps_verdict"] == expected_verdict
 

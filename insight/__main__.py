@@ -66,6 +66,24 @@ def build_parser():
              "degrades, never fails ingest; see insight/ingest/gh_reader.py)",
     )
     ingest_parser.add_argument(
+        "--claude-analytics", dest="claude_analytics", action="store_true", default=False,
+        help="EXPERIMENTAL, opt-in, off by default: also query the Claude Code Analytics API "
+             "for org-level usage. Requires an Admin API key in the ANTHROPIC_ADMIN_API_KEY "
+             "env var (never a CLI flag -- a secret typed as a flag leaks into shell history "
+             "and `ps`); unavailable on Bedrock/Foundry/Vertex/Claude Platform on AWS, so it "
+             "degrades silently rather than failing ingest. NOT VERIFIED end-to-end against the "
+             "real API in this repo -- see insight/ingest/analytics_reader.py's own module "
+             "docstring for exactly what is and is not confirmed. When this flag is omitted, no "
+             "claude-analytics/v1 row is written at all -- a collector that was never asked to "
+             "run has no coverage story to tell.",
+    )
+    ingest_parser.add_argument(
+        "--claude-analytics-window-days", dest="claude_analytics_window_days", type=int,
+        default=14,
+        help="trailing window (days) for --claude-analytics (default: 14, matching "
+             "--gh-window-days's own default); ignored unless --claude-analytics is passed",
+    )
+    ingest_parser.add_argument(
         "--repos", dest="repos", default=None,
         help="a glob of repo directories to ingest into the SAME store, resolved against CWD "
              "(QUOTE IT, e.g. --repos '../*/' -- otherwise your shell expands it before this "
@@ -140,7 +158,16 @@ def _ingest_one_repo(conn, project_root, args, label=None):
     #106's per-repo loop can call it once per adopted repo, all sharing the ONE open
     connection/store opened before the loop. `label`, when given, prefixes every summary line
     with the repo's own path so multi-repo output stays attributable; the DEFAULT (no --repos)
-    mode passes label=None and prints EXACTLY what it printed before this story."""
+    mode passes label=None and prints EXACTLY what it printed before this story.
+
+    `ingest_analytics_reader` is called ONLY when `args.claude_analytics` is set (FIXED post-#146:
+    an earlier revision called it unconditionally, which made it write an `analytics_disabled`-
+    degraded claude-analytics/v1 row on EVERY run, permanently dragging every non-adopter's
+    `insight gaps` verdict from PASS to WARN via insight/gaps/coverage_degraded_collector.sql --
+    a deliberately all-schema rule with no exclusion for this collector. A collector that was
+    never asked to run has no coverage story to tell, so a non-adopter's run now writes no
+    claude-analytics/v1 row at all, and the summary print below stays silent about it too --
+    no noise for the common case of never having opted in)."""
     from insight.ingest.packs import ingest_collectors
     from insight.ingest.artifact_reader import ingest_artifacts
     from insight.ingest.git_reader import ingest_git_facts, ingest_merge_lead_time
@@ -154,6 +181,13 @@ def _ingest_one_repo(conn, project_root, args, label=None):
     git_pack = ingest_git_facts(conn, project_root, days=args.git_window_days)
     lead_time = ingest_merge_lead_time(conn, project_root, days=args.git_window_days)
     gh_pack = ingest_gh_reader(conn, project_root, days=args.gh_window_days)
+    if args.claude_analytics:
+        from insight.ingest.analytics_reader import ingest_analytics_reader
+        analytics_pack = ingest_analytics_reader(
+            conn, project_root, days=args.claude_analytics_window_days,
+        )
+    else:
+        analytics_pack = None
     ledger_result = ingest_ledger(conn, project_root)
     # issue #217: must run AFTER ingest_ledger -- it derives fact_goal's lifecycle columns by
     # replaying the fact_event rows ingest_ledger just wrote; order matters.
@@ -173,6 +207,10 @@ def _ingest_one_repo(conn, project_root, args, label=None):
     print("insight ingest: %s%s%s" % (prefix, gh_pack["schema"], gh_suffix))
     print("insight ingest: %s%d PR review event(s), %d PR check row(s)"
           % (prefix, gh_pack["review_events"], gh_pack["check_rows"]))
+    if analytics_pack is not None:
+        analytics_suffix = (" (degraded: %s)" % ", ".join(analytics_pack["degraded"])
+                             if analytics_pack["degraded"] else "")
+        print("insight ingest: %s%s%s" % (prefix, analytics_pack["schema"], analytics_suffix))
     print("insight ingest: %s%d ledger event(s), %d hand-off(s) (%d skipped)"
           % (prefix, ledger_result["events"], ledger_result["handoffs"], ledger_result["skipped"]))
     print("insight ingest: %s%d goal(s) derived from event replay (%d stale row(s) purged)"

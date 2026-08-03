@@ -453,6 +453,11 @@ def test_fact_pr_check_pk_upserts_not_duplicates(tmp_path):
 #: and _PACK_EXTRA_COLUMNS (#103/#104). See .sdlc/plans/106.md Design decision D.
 _DIM_PROJECT_EXTRA_COLUMNS = ["adopted", "skip_reason"]
 
+#: fact_event.model (issue #146) is NOT part of spec §B.3's 17-column fact_event -- a
+#: #146-owned EXTENSION, same pattern as _GOAL_EXTRA_COLUMNS (#102) / _DIM_PROJECT_EXTRA_
+#: COLUMNS (#106). See .sdlc/plans/146.md Design decision 4.
+_EVENT_EXTRA_COLUMNS = ["model"]
+
 
 def test_dim_project_adopted_and_skip_reason_columns_are_issue_106_additions(tmp_path):
     conn = duckdb.connect(str(tmp_path / "s.duckdb"))
@@ -483,16 +488,55 @@ def test_ensure_schema_upgrades_a_pre_106_dim_project_table_in_place(tmp_path):
     conn.close()
 
 
+def test_fact_event_model_column_is_the_issue_146_addition(tmp_path):
+    """Metric 17 ("cost per landed goal, by lane and model") needs a model column that
+    spec §B.3's own 17-column fact_event never mandated -- see .sdlc/plans/146.md Design
+    decision 4. Same pattern as the fact_goal/dim_project extra-column tests above: a fresh
+    ensure_schema call adds it, in order, as a suffix on the mandated columns."""
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    assert _columns(conn, "fact_event") == _SPEC_COLUMNS["fact_event"] + _EVENT_EXTRA_COLUMNS
+    conn.close()
+
+
+def test_ensure_schema_upgrades_a_pre_146_fact_event_table_in_place(tmp_path):
+    """Mirrors #102/#103/#104/#106's identical regression tests: CREATE TABLE IF NOT EXISTS is
+    a no-op against a file that already has a pre-#146, 17-column fact_event -- only the new
+    ALTER statement adds the missing model column, without touching existing data, and a
+    second ensure_schema call on the same connection does not raise or duplicate it."""
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    conn.execute("""
+        CREATE TABLE fact_event (
+            project_id VARCHAR, goal_id VARCHAR, ts TIMESTAMP, actor_id VARCHAR, kind VARCHAR,
+            phase VARCHAR, gate VARCHAR, verdict VARCHAR, cycle INTEGER, ms BIGINT,
+            tokens_in BIGINT, tokens_out BIGINT, cost_cents BIGINT, reason_class VARCHAR,
+            ok BOOLEAN, exit_code INTEGER, reliability_class TINYINT
+        )
+    """)
+    conn.execute(
+        "insert into fact_event (project_id, kind, reliability_class) values ('p', 'spend', 2)"
+    )
+    ensure_schema(conn)  # must ADD model, not error, not touch existing data
+    ensure_schema(conn)  # idempotent: a second call must not raise or duplicate the column
+    assert _columns(conn, "fact_event") == _SPEC_COLUMNS["fact_event"] + _EVENT_EXTRA_COLUMNS
+    row = conn.execute(
+        "select project_id, kind, reliability_class, model from fact_event"
+    ).fetchone()
+    assert row == ("p", "spend", 2, None)
+    conn.close()
+
+
 def test_mandated_columns_match_spec_exactly(tmp_path):
     conn = duckdb.connect(str(tmp_path / "s.duckdb"))
     ensure_schema(conn)
     for table, expected in _SPEC_COLUMNS.items():
         real = _columns(conn, table)
-        if table in ("fact_goal", "dim_project"):
+        if table in ("fact_goal", "dim_project", "fact_event"):
             # fact_goal: #102 appended status/verify_command. dim_project: #106 appended
-            # adopted/skip_reason. Neither is part of spec §B.3's mandate -- see
-            # _GOAL_EXTRA_COLUMNS / _DIM_PROJECT_EXTRA_COLUMNS above. Both must still appear,
-            # in order, as a PREFIX; every other table in this loop keeps exact-equality.
+            # adopted/skip_reason. fact_event: #146 appended model. None of these are part of
+            # spec §B.3's mandate -- see _GOAL_EXTRA_COLUMNS / _DIM_PROJECT_EXTRA_COLUMNS /
+            # _EVENT_EXTRA_COLUMNS above. All three must still appear, in order, as a PREFIX;
+            # every other table in this loop keeps exact-equality.
             assert real[: len(expected)] == expected, table
         else:
             assert real == expected, table

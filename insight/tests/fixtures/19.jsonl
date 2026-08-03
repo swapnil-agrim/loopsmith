@@ -1,0 +1,7 @@
+{"_table": "dim_project", "project_id": "p1", "config_json": "{\"budget\": {\"max_iterations\": 20}}"}
+{"_table": "fact_event", "project_id": "p1", "goal_id": null, "ts": "2026-01-01T00:00:10", "kind": "run_stop", "reason_class": "budget", "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": null, "ts": "2026-01-01T00:00:20", "kind": "run_stop", "reason_class": "budget", "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": null, "ts": "2026-01-01T00:00:30", "kind": "run_stop", "reason_class": "backlog-empty", "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p2", "goal_id": null, "ts": "2026-01-01T00:00:10", "kind": "run_stop", "reason_class": "budget", "reliability_class": 2}
+{"_table": "dim_project", "project_id": "p3", "config_json": "not json"}
+{"_table": "fact_event", "project_id": "p3", "goal_id": null, "ts": "2026-01-01T00:00:10", "kind": "run_stop", "reason_class": "budget", "reliability_class": 2}

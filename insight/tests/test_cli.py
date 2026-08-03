@@ -190,6 +190,7 @@ def test_main_module_does_not_import_duckdb_at_top_level():
     banned = {"duckdb", "insight.ingest.store", "insight.ingest.collectors",
               "insight.ingest.packs", "insight.ingest.artifact_reader",
               "insight.ingest.git_reader", "insight.ingest.gh_reader",
+              "insight.ingest.analytics_reader",
               "insight.ingest.repo_scan", "insight.ingest.ledger_writer",
               "insight.gaps.report", "insight.gaps.compare",
               "insight.dash.render", "insight.dash.serve", "insight"}
@@ -233,12 +234,16 @@ def test_ingest_collectors_root_flag_runs_fake_collectors_end_to_end(
     # Scoped to the 3 collectors.py sources: `main()` now ALSO writes two more, separate
     # fact_collector_pack rows every run -- schema="git-facts/v1" (#103) and schema="gh-facts/v1"
     # (#104), both unconditionally wired -- a deliberate, unrelated addition, not a regression in
-    # collectors.py's own count. isolate_path_no_gh guarantees gh-facts/v1 is always degraded here
-    # (adapter_spawn_failed), never a real network call, while bash still resolves for the real
-    # fake-collector script above.
+    # collectors.py's own count. schema="claude-analytics/v1" (#146) is EXCLUDED from that count
+    # deliberately but writes NO row at all here: --claude-analytics is absent from this call, and
+    # post-#146 that means insight.__main__._ingest_one_repo never calls ingest_analytics_reader
+    # in the first place (a not-enabled collector has no coverage story to tell -- see that
+    # module's own docstring for the incident this fixed). isolate_path_no_gh guarantees
+    # gh-facts/v1 is always degraded here (adapter_spawn_failed), never a real network call,
+    # while bash still resolves for the real fake-collector script above.
     count = conn.execute(
         "select count(*) from fact_collector_pack "
-        "where schema not in ('git-facts/v1', 'gh-facts/v1')"
+        "where schema not in ('git-facts/v1', 'gh-facts/v1', 'claude-analytics/v1')"
     ).fetchone()[0]
     assert count == 3
     conn.close()
@@ -402,6 +407,188 @@ def test_help_lists_the_new_gh_window_days_flag(capsys):
         parser.parse_args(["ingest", "--help"])
     out = capsys.readouterr().out
     assert "--gh-window-days" in out
+
+
+# --------------------------------------------------------------------------- analytics reader (issue #146)
+
+
+def test_help_lists_the_new_claude_analytics_flags(capsys):
+    """Mirrors test_help_lists_the_new_gh_window_days_flag -- pins BOTH new flags
+    (.sdlc/plans/146.md Design decision 8)."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["ingest", "--help"])
+    out = capsys.readouterr().out
+    assert "--claude-analytics" in out
+    assert "--claude-analytics-window-days" in out
+
+
+def test_ingest_claude_analytics_flags_are_accepted(tmp_path, monkeypatch, isolate_path_empty):
+    """Not a behavioural assertion about the Analytics API itself (that's analytics_reader.py's
+    own test suite) -- this pins that both flags exist, parse, and reach ingest_analytics_reader
+    without raising, mirroring test_ingest_gh_window_days_flag_is_accepted exactly. Explicitly
+    clears the env var (.sdlc/plans/146.md Design decision 12) so this test's own "no key"
+    premise holds regardless of the developer machine's ambient environment."""
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_ADMIN_API_KEY", raising=False)
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here"),
+                 "--claude-analytics", "--claude-analytics-window-days", "30"])
+    assert code == 0
+
+
+def test_ingest_without_claude_analytics_flag_writes_no_pack_row(
+    tmp_path, monkeypatch, capsys, isolate_path_empty
+):
+    """BLOCKING finding, reviewer-reproduced and fixed (.sdlc/plans/146.md follow-up to Design
+    decision 8): --claude-analytics defaults OFF, and a plain `insight ingest` with no flag at
+    all must write NO claude-analytics/v1 row whatsoever -- never touching the env var, the
+    network, OR the store's fact_collector_pack table for this schema. An earlier revision wrote
+    a row degraded with "analytics_disabled" on every such run instead, which permanently dragged
+    every non-adopter's `insight gaps` verdict from PASS to WARN via
+    insight/gaps/coverage_degraded_collector.sql (deliberately all-schema, no exclusion) with an
+    action that had nothing to fix -- directly contradicting the issue's own acceptance line
+    ("Claude Code Analytics ingest is optional and degrades silently"). A collector that was
+    never asked to run has no coverage story to tell. See
+    insight/tests/test_gap_rule_coverage_degraded_collector.py's
+    test_a_non_adopters_ingest_leaves_the_verdict_unaffected for the gap-rule-level proof this
+    directly motivates."""
+    duckdb = pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc").mkdir()
+    monkeypatch.delenv("ANTHROPIC_ADMIN_API_KEY", raising=False)
+
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "claude-analytics/v1" not in out
+
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    count = conn.execute(
+        "select count(*) from fact_collector_pack where schema = 'claude-analytics/v1'"
+    ).fetchone()[0]
+    assert count == 0
+    conn.close()
+
+
+def test_ingest_without_claude_analytics_flag_never_calls_the_reader(
+    tmp_path, monkeypatch, isolate_path_empty
+):
+    """Stronger than the pack-row assertion above: proves insight.ingest.analytics_reader.
+    ingest_analytics_reader is never even CALLED when --claude-analytics is absent, by patching
+    it to explode if invoked -- rather than merely inferring non-invocation from the absence of
+    a row it could, in principle, have chosen not to write."""
+    pytest.importorskip("duckdb")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc").mkdir()
+    monkeypatch.delenv("ANTHROPIC_ADMIN_API_KEY", raising=False)
+
+    import insight.ingest.analytics_reader as analytics_reader_module
+
+    def _explode_if_called(*args, **kwargs):
+        raise AssertionError("ingest_analytics_reader must never be called without --claude-analytics")
+
+    monkeypatch.setattr(
+        analytics_reader_module, "ingest_analytics_reader", _explode_if_called,
+    )
+    code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here")])
+    assert code == 0
+
+
+def test_ingest_claude_analytics_no_key_present_never_touches_the_network(tmp_path, monkeypatch):
+    """The issue's own required no_network()-wrapped proof (.sdlc/plans/146.md Design decision
+    12/Step 11): a full main(["ingest", ...]) call with --claude-analytics passed but NO key set
+    and NO transport= override (there is no way to inject one through the CLI -- this is the real
+    production code path), wrapped in test_dash_no_network.py's own no_network() context manager,
+    must exit 0 and write exactly one claude-analytics/v1 pack row with degraded=
+    ["analytics_no_key"] -- proving the analytics_no_key short-circuit fires BEFORE any socket
+    touches the network, not merely that a fake transport was never called (there is no fake
+    transport in this test at all).
+
+    EXPLICITLY clears ANTHROPIC_ADMIN_API_KEY -- never relies on the ambient test environment
+    happening not to export it. A developer machine that genuinely exports a real Admin API key
+    would otherwise take the real-transport path here and fail with NetworkBlockedError instead
+    of exercising the intended degrade, per .sdlc/plans/146.md Design decision 12's own warning.
+
+    DEVIATION FROM THE PLAN'S LITERAL WORDING, FOUND LIVE, DOCUMENTED HERE RATHER THAN SILENTLY
+    WORKED AROUND: a plain, unguarded `main(["ingest", "--claude-analytics"])` under
+    `no_network()` does NOT reach the analytics reader at all -- it raises
+    `NetworkBlockedError` first, from a completely unrelated, pre-existing spot.
+    `insight.ingest.packs._git_remote_url` (called by `remote_identity_for`/`project_id_for`,
+    which EVERY reader in this ingest pipeline calls, including `ingest_collectors` itself, the
+    very first thing `_ingest_one_repo` does) issues a real `subprocess.run(["git", ..., "remote",
+    "get-url", "origin"])` call, guarded only by `except (OSError, subprocess.TimeoutExpired)` --
+    not a bare `except Exception`. `no_network()`'s guard replaces `subprocess.Popen.__init__`
+    itself with a function that unconditionally raises `NetworkBlockedError` (a plain Exception,
+    not an OSError) for EVERY subprocess spawn attempt, regardless of PATH contents or which
+    binary is being spawned -- so this fires before `project_id_for` can even return, i.e.
+    before `_ingest_one_repo` gets past its very first line. git_reader.py's `_run_git` and
+    gh_reader.py's `_run_gh` have the identical narrow-except shape and would raise the same way
+    for their own subprocess calls slightly later in the same run. All three are real,
+    pre-existing gaps in this codebase's "never raises" contracts (never previously exercised:
+    no existing test wraps a full `insight ingest` in `no_network()`), and all three are
+    genuinely out of THIS issue's scope (E7.S3 is the Analytics reader; hardening
+    packs.py/git_reader.py/gh_reader.py's own subprocess exception handling against a
+    monkeypatched Popen is a separate, unrelated story). Worked around here, not in production
+    code: the THREE functions that issue real subprocess calls anywhere in this pipeline are
+    stubbed out with benign fakes for THIS test only, so the real, unmodified
+    `main()`/`_ingest_one_repo`/`ingest_analytics_reader` code path is still exercised end to
+    end for the one thing this test means to prove -- the Analytics reader's own no-key
+    short-circuit never touching the network -- without also asserting on three unrelated,
+    unfixed gaps in different readers.
+
+    WHAT THIS TEST DOES AND DOES NOT PROVE, STATED PLAINLY: it proves that
+    `ingest_analytics_reader`'s own no-key short-circuit (the ONE function this issue owns) runs
+    to completion and writes its row before any real subprocess or socket call could occur, via
+    the real, unmodified `main()` entry point. It does NOT prove `packs._git_remote_url`,
+    `git_reader.ingest_git_facts`/`ingest_merge_lead_time`, or `gh_reader.ingest_gh_reader` are
+    themselves safe, hardened, or even reachable under `no_network()` -- those three are stubbed
+    out specifically so their real subprocess-spawning bodies never execute in this test, not
+    because they were verified against it. Reducing the stub surface further is not possible
+    without either (a) leaving one of those three reachable, which would fail this test on the
+    unrelated, already-named narrow-except gap rather than on anything E7.S3 owns, or (b) no
+    longer exercising the real `main()` path at all -- both worse than the residual risk named
+    here. A future story hardening those three readers' own subprocess exception handling should
+    delete this stubbing then, not before."""
+    duckdb = pytest.importorskip("duckdb")
+    from insight.tests.test_dash_no_network import no_network
+    import insight.ingest.packs as packs_module
+    import insight.ingest.git_reader as git_reader_module
+    import insight.ingest.gh_reader as gh_reader_module
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".sdlc").mkdir()
+    monkeypatch.delenv("ANTHROPIC_ADMIN_API_KEY", raising=False)
+    monkeypatch.setattr(
+        packs_module, "_git_remote_url", lambda project_root, timeout=300: None,
+    )
+    monkeypatch.setattr(
+        git_reader_module, "ingest_git_facts",
+        lambda conn, project_root, days=14, ref=None: {"schema": "git-facts/v1", "degraded": []},
+    )
+    monkeypatch.setattr(
+        git_reader_module, "ingest_merge_lead_time",
+        lambda conn, project_root, days=14, ref=None: {"events": 0, "skipped": 0},
+    )
+    monkeypatch.setattr(
+        gh_reader_module, "ingest_gh_reader",
+        lambda conn, project_root, days=14, repo=None, binary="gh": {
+            "schema": "gh-facts/v1", "degraded": [], "pr_count": None,
+            "review_events": 0, "check_rows": 0,
+        },
+    )
+
+    with no_network():
+        code = main(["ingest", "--collectors-root", str(tmp_path / "no-collectors-here"),
+                     "--claude-analytics"])
+    assert code == 0
+
+    conn = duckdb.connect(str(tmp_path / ".sdlc" / "insight.duckdb"))
+    row = conn.execute(
+        "select degraded_collector from fact_collector_pack where schema = 'claude-analytics/v1'"
+    ).fetchone()
+    assert row == (["analytics_no_key"],)
+    conn.close()
 
 
 # --------------------------------------------------------------------------- ledger writer (issue #105)
