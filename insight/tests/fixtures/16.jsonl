@@ -1,0 +1,14 @@
+{"_table": "dim_project", "project_id": "p1", "config_json": {"work": {"max_review_cycles": 3}}}
+{"_table": "dim_project", "project_id": "p2", "config_json": {"work": {}}}
+{"_table": "dim_project", "project_id": "p3", "config_json": {"work": {"max_review_cycles": 5}}}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g_below", "ts": "2026-01-01T00:00:01", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 1, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g_below", "ts": "2026-01-01T00:00:02", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 2, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g_at", "ts": "2026-01-01T00:00:01", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 1, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g_at", "ts": "2026-01-01T00:00:02", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 2, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g_at", "ts": "2026-01-01T00:00:03", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 3, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g_above", "ts": "2026-01-01T00:00:01", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 1, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g_above", "ts": "2026-01-01T00:00:02", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 2, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g_above", "ts": "2026-01-01T00:00:03", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 3, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p1", "goal_id": "g_above", "ts": "2026-01-01T00:00:04", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 4, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p2", "goal_id": "g_p2", "ts": "2026-01-01T00:00:01", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 1, "reliability_class": 2}
+{"_table": "fact_event", "project_id": "p3", "goal_id": "g_p3", "ts": "2026-01-01T00:00:01", "kind": "gate", "gate": "post_review", "verdict": "block", "cycle": 1, "reliability_class": 2}
