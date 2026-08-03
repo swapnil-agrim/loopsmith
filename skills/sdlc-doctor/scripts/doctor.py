@@ -160,6 +160,15 @@ def check(sdlc_dir=".sdlc", run=None):
                         sane,
                         "backlog_check.park_threshold (%r) < dup_threshold (%r): every candidate becomes "
                         "a confident PARK. Set park_threshold >= dup_threshold." % (park, dup)))
+        # The dense/embedding layer switched on but with no embedder command silently runs lexical-only.
+        embed = bchk.get("embed")
+        embed = embed if isinstance(embed, dict) else {}
+        if embed.get("enabled") is True:
+            out.append(_chk("backlog cross-check embedder configured",
+                            bool((embed.get("command") or "").strip()),
+                            "backlog_check.embed is on but embed.command is empty — the dense layer "
+                            "silently falls back to lexical-only. Set embed.command (an embedder that "
+                            "reads text on stdin and prints a JSON vector), or turn embed.enabled off."))
 
     # With work.enabled, verify runs in a FRESH worktree that has none of your installed deps — a
     # relative interpreter path (.venv/bin/python3, node_modules/.bin) fails exit=127 on the first

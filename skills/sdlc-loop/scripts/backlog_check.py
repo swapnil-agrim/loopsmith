@@ -19,7 +19,7 @@ never a raise (a later slice calls this on the pick hot-path).
 
     python3 pipeline.py crosscheck <sdlc_dir> <goal>      # prints a backlog-check/v1 JSON pack
 """
-import importlib.util, json, math, pathlib, re
+import hashlib, importlib.util, json, math, pathlib, re, subprocess
 from collections import Counter
 
 _HERE = pathlib.Path(__file__).resolve().parent
@@ -79,6 +79,28 @@ def _idf(docs):
 
 def _vector(tokens, idf):
     return {t: c * idf.get(t, 0.0) for t, c in tokens.items()}
+
+
+def _lex_weight(tokens, idf, mode="tfidf", avgdl=0.0, k1=1.2, b=0.75):
+    """The lexical term-weight vector. `tfidf` (default) is IDENTICAL to _vector — so the default path
+    is byte-identical to pre-0.9.23. `bm25` uses BM25 saturation + length normalization (the stronger
+    bug-dedup baseline, Q1's opt-in), as symmetric BM25-weighted cosine."""
+    if mode != "bm25":
+        return {t: c * idf.get(t, 0.0) for t, c in tokens.items()}
+    dl = sum(tokens.values()) or 1
+    norm = (1 - b + b * dl / avgdl) if avgdl else 1.0
+    return {t: idf.get(t, 0.0) * (c * (k1 + 1)) / (c + k1 * norm) for t, c in tokens.items()}
+
+
+def _list_cosine(a, b):
+    """Cosine over two dense (embedding) vectors — plain lists of equal length."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    if dot <= 0:
+        return 0.0
+    na, nb = math.sqrt(sum(x * x for x in a)), math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
 
 
 def _cosine(v1, v2):
@@ -253,7 +275,76 @@ def _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now):
     return out
 
 
-def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measure=None):
+_EMBED_CACHE_REL = "state/embeddings.json"      # gitignored (.sdlc/state/), content-hash keyed
+
+
+def _embed_enabled(config):
+    # `embed.enabled` is the SOLE switch for the dense channel — `similarity` only picks the lexical
+    # scorer (tfidf | bm25). One switch, one meaning; no second, undocumented path.
+    return ((config.get("backlog_check") or {}).get("embed") or {}).get("enabled") is True
+
+
+def _run_embedder(text, command):
+    """Run the provider-agnostic embedder: `command` reads the text on stdin and prints a JSON array
+    (the vector). Returns a list[float], or None on any failure (missing tool, bad JSON, non-zero exit,
+    timeout) so the dense channel fails open to lexical-only."""
+    try:
+        proc = subprocess.run(command, shell=True, input=text or "", capture_output=True,
+                              text=True, timeout=30)
+        if proc.returncode != 0:
+            return None
+        v = json.loads(proc.stdout)
+        return [float(x) for x in v] if isinstance(v, list) and v else None
+    except Exception:
+        return None
+
+
+def _embedder_from_config(config):
+    command = ((config.get("backlog_check") or {}).get("embed") or {}).get("command") or ""
+    command = command.strip()
+    return (lambda text: _run_embedder(text, command)) if command else None
+
+
+def _dense_channel(sdlc_dir, config, docs, goal_ref, embed_fn):
+    """Build {ref: embedding} for the corpus, cached by content-hash in gitignored .sdlc/state/ and
+    computed INCREMENTALLY (only new/changed texts are embedded). Returns (vectors, weight) when the
+    dense channel is usable, else (None, 0.0) — not enabled, no embedder configured, or the goal's own
+    text couldn't be embedded (can't fuse without it). Fully fail-open; never raises."""
+    if not _embed_enabled(config):
+        return None, 0.0
+    fn = embed_fn or _embedder_from_config(config)
+    if fn is None:
+        return None, 0.0                                     # enabled but no command -> lexical-only
+    weight = _num((config.get("backlog_check") or {}).get("embed") or {}, "weight", 0.5)
+    try:
+        cache_path = pathlib.Path(sdlc_dir) / _EMBED_CACHE_REL
+        try:
+            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            cache = cache if isinstance(cache, dict) else {}
+        except Exception:
+            cache = {}
+        vecs, dirty = {}, False
+        for d in docs:
+            key = hashlib.sha256((d.get("raw") or "").encode("utf-8")).hexdigest()[:16]
+            v = cache.get(key)
+            if v is None:
+                v = fn(d.get("raw") or "")
+                if v is None:
+                    continue                                 # skip a doc that won't embed; keep the rest
+                cache[key], dirty = v, True
+            vecs[d["ref"]] = v
+        if dirty:
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(json.dumps(cache, sort_keys=True), encoding="utf-8")
+            except Exception:
+                pass                                         # a read-only .sdlc must not break the check
+        return (vecs, weight) if goal_ref in vecs else (None, 0.0)
+    except Exception:
+        return None, 0.0
+
+
+def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measure=None, embed_fn=None):
     """The whole stage-1 pass. FAIL-OPEN: any error → an empty pack + degraded['error']."""
     goal_ref = str(goal)
     try:
@@ -270,15 +361,30 @@ def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measur
             return _pack(goal_ref, [], degraded + ["goal_not_in_corpus"])
 
         idf = _idf(docs)
-        gvec = _vector(goal_doc["tokens"], idf)
+        sim_mode = (config.get("backlog_check") or {}).get("similarity", "tfidf")
+        avgdl = (sum(sum(d["tokens"].values()) for d in docs) / len(docs)) if docs else 0.0
+        gvec = _lex_weight(goal_doc["tokens"], idf, sim_mode, avgdl)
         gterms = set(goal_doc["tokens"])
         window = _closed_window_days(config, run=run, velocity_measure=velocity_measure)
 
+        # Opt-in dense/embedding channel (Q5): catches paraphrases that share NO lexical term. Fail-open
+        # to lexical-only. When it's off (the default), `dense` is None and every line below reduces to
+        # the exact pre-0.9.23 lexical path — byte-identical.
+        dense, dweight = _dense_channel(sdlc_dir, config, docs, goal_ref, embed_fn)
+        if dense is None and _embed_enabled(config):
+            degraded.append("no_embedder")
+        gden = dense.get(goal_ref) if dense else None
+
         scored = []
         for d in docs:
-            if d["ref"] == goal_ref or not (gterms & set(d["tokens"])):
-                continue                                # candidate-gen: only docs sharing ≥1 term
-            s = _cosine(gvec, _vector(d["tokens"], idf))
+            if d["ref"] == goal_ref:
+                continue
+            shares = bool(gterms & set(d["tokens"]))
+            if not shares and dense is None:
+                continue                                # lexical-only: candidate-gen = docs sharing ≥1 term
+            lex = _cosine(gvec, _lex_weight(d["tokens"], idf, sim_mode, avgdl)) if shares else 0.0
+            den = dweight * _list_cosine(gden, dense.get(d["ref"])) if dense else 0.0
+            s = max(lex, den)                           # fuse: the stronger of the two channels
             if s > 0:
                 scored.append((s, d))
         scored.sort(key=lambda x: (-x[0], _ref_key(x[1]["ref"])))   # earliest-ref tiebreak, not lexical
