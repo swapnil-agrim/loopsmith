@@ -37,8 +37,8 @@ _LOOSE = {"dup_threshold": 0.4, "obsolete_threshold": 0.4, "closed_window_days":
 
 def test_tokens_lowercase_drop_stopwords_and_short():
     bc = _mod("backlog_check")
-    toks = bc._tokens("The Postgres Checkpointer is a BIG win, ok")
-    assert "postgres" in toks and "checkpointer" in toks and "big" in toks
+    toks = bc._tokens("The Widget Cache is a BIG win, ok")
+    assert "widget" in toks and "cache" in toks and "big" in toks
     assert "the" not in toks and "is" not in toks and "a" not in toks   # stopwords gone
 
 
