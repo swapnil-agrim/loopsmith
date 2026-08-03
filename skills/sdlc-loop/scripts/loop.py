@@ -337,7 +337,27 @@ def _validate_event(kind, flags, kind_allowlist=None):
     Checks, in order:
       1. kind allowlist (only when `kind_allowlist` is given)
       2. unknown flag NAMES against `ledger.EVENT_FIELDS[kind]`
-      3. out-of-vocabulary VALUES, checked by FIELD name (not by `kind`) for every
+      3. #141: a raw newline in ANY flag value — not only the declared prose fields (`why`/
+         `model`). Scoping to "any flag" needs no second declared list here, is a strict superset
+         of "reject newlines in why/model", and changes nothing for a field that would already
+         fail the vocabulary checks below on a `\n`-corrupted value. This is deliberately a HARD
+         REJECT (exit 2, nothing written) — unlike `append()`'s own flatten-only treatment, which
+         must never reject because it also sits behind the three deterministic, fail-open call
+         sites (a hook's `deny`, an autonomous park). `emit`/`spend` are synchronous, explicitly-
+         typed CLI verbs that already return an exit code for bad input, so a hard rule is safe
+         here specifically. Uses `ledger.reject_newline` — the shared helper `work.py`'s
+         post-review branch also calls, so the two never drift into near-identical hand-written
+         copies of the same rule again.
+      4. POST-REVIEW FIX (THE LEAK): a declared-NUMERIC field whose value does not parse as an
+         int, or a declared-BOOL field whose value isn't a recognised spelling — checked by FIELD
+         name against `ledger.EVENT_NUMERIC_FIELDS[kind]` / `ledger.EVENT_BOOL_FIELDS[kind]`. An
+         independent review proved by execution that `tokens_in`/`cycle`/`debt_count` (declared
+         "safe" only because they weren't prose) were plain CLI strings with ZERO shape
+         enforcement — a payload with no literal newline sailed through with a full secret inside.
+         This is the CLI's clear, actionable half of the fix (exit 2, a usable message); the
+         `append()` chokepoint enforces the same rule again as the fail-open backstop for the call
+         sites that never reach a CLI at all.
+      5. out-of-vocabulary VALUES, checked by FIELD name (not by `kind`) for every
          vocabulary-bearing field present in `flags` — `phase`/`gate`/`verdict`/`grade`/`state`.
          By-field (not by-kind) is what closes finding 1: `EVENT_FIELDS["spend"]` carries a
          `phase` field with the identical `PHASE_KINDS` vocabulary as `phase`-kind events, so a
@@ -352,6 +372,18 @@ def _validate_event(kind, flags, kind_allowlist=None):
     if bad:
         return (f"unknown flag(s) {', '.join(bad)} for kind {kind!r} "
                 f"(expected one of {', '.join(allowed)})")
+    bad_nl = [msg for msg in (ledger.reject_newline(v, f"--{n}") for n, v in flags.items()) if msg]
+    if bad_nl:
+        return "; ".join(bad_nl)
+    bad_numeric = sorted(n for n in flags if n in ledger.EVENT_NUMERIC_FIELDS.get(kind, ())
+                          and not ledger._looks_numeric(flags[n]))
+    if bad_numeric:
+        return (f"{', '.join('--' + n for n in bad_numeric)} must be a whole number for kind "
+                f"{kind!r} (the events stream stores counts/durations, not free text)")
+    bad_bool = sorted(n for n in flags if n in ledger.EVENT_BOOL_FIELDS.get(kind, ())
+                       and not ledger._looks_bool(flags[n]))
+    if bad_bool:
+        return (f"{', '.join('--' + n for n in bad_bool)} must be true/false for kind {kind!r}")
     if "phase" in flags and flags["phase"] not in ledger.PHASE_KINDS:
         return (f"unknown phase {flags['phase']!r} "
                 f"(expected one of {', '.join(ledger.PHASE_KINDS)})")
@@ -442,15 +474,9 @@ def main(argv):
         if err:
             print(f"loop.py emit: {err}", file=sys.stderr)
             return 2
-        if flags.get("why"):
-            # Privacy stopgap only (spec §A.4) — 200 chars, newlines flattened. Does NOT scrub
-            # secret-shaped substrings (that's #141's job); it just shrinks the exposure of the
-            # first agent-controlled free-text path into the events stream. Three OTHER
-            # pre-existing paths already write `why` uncapped and are untouched by this story:
-            # hooks/decision_gate.py:330, loop.py's own `record parked "<text>"` path (line
-            # ~203 above), and work.py:562's post_review — see .sdlc/plans/140.md's
-            # Out-of-scope section (amendment D).
-            flags["why"] = flags["why"].replace("\n", " ")[:200]
+        # #141: `_validate_event` above already rejected a raw newline in any flag (exit 2,
+        # nothing written); `ledger.append()` now flatten+scrub+caps every declared prose field
+        # (`why` here) uniformly, for every caller — no per-call-site cap/flatten stopgap needed.
         config = state.load_config(sdlc_dir)
         try:
             entry = ledger.append(sdlc_dir, config, kind, goal, stream=ledger.EVENTS, **flags)

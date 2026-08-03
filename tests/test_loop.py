@@ -455,6 +455,41 @@ def test_verify_goal_survives_a_raising_command_hash(monkeypatch):
         assert lp.verify_goal(base, goal) == 0     # the real verify outcome, unaffected by the crash
 
 
+def test_verify_event_never_contains_the_raw_command():
+    """#141 regression pin: the raw verify command string must never appear anywhere in the
+    written event — only its sha256. Uses a DISTINCTIVE command (not `"true"`) so the substring
+    check is meaningful."""
+    with tempfile.TemporaryDirectory() as d:
+        marker_cmd = "echo super-secret-marker-xyz123"
+        base, goal = _telemetry_backlog(d, verify_command=marker_cmd)
+        lp = _loop()
+        assert lp.verify_goal(base, goal) == 0
+        events = [e for e in lp.ledger.read_all(base, stream=lp.ledger.EVENTS) if e["kind"] == "verify"]
+        assert len(events) == 1
+        e = events[0]
+        assert json.dumps(e).find("super-secret-marker-xyz123") == -1
+        assert e["command_sha256"] == hashlib.sha256(marker_cmd.encode("utf-8")).hexdigest()
+
+
+def test_record_park_why_is_capped_and_scrubbed():
+    """#141: `_record`'s park path is one of the three deterministic sites — it must NEVER reject
+    (an in-flight autonomous loop cannot 'refuse' the explanation for a goal it already parked),
+    only sanitize. A >200-char detail with an embedded newline and a planted AWS-key shape must
+    still land, flattened, capped, and scrubbed."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        detail = f"blocked on a decision\nsee key {secret}\n" + ("x" * 300)
+        lp._record(base, _Sink(), "g.md", "parked", detail)
+        events = [e for e in lp.ledger.read_all(base, stream=lp.ledger.EVENTS) if e["kind"] == "park"]
+        assert len(events) == 1
+        why = events[0]["why"]
+        assert "\n" not in why
+        assert len(why) <= 200
+        assert secret not in why
+
+
 def test_record_emits_a_park_event_with_reason_class():
     with tempfile.TemporaryDirectory() as d:
         base = _telemetry_base(d)
@@ -665,18 +700,86 @@ def test_emit_rejects_out_of_vocabulary_retro_grade():
         assert _events(base) == []
 
 
-def test_emit_caps_and_flattens_why():
+# #141: `test_emit_caps_and_flattens_why` (a `why` with an embedded newline succeeds, flattened)
+# is DELIBERATELY RETIRED and split into two tests below, each pinning one half of the now-
+# decoupled contract: a newline is a hard REJECT (not a flatten) at this agent-facing CLI verb,
+# while length alone (no newline) still succeeds, capped. This is an intentional behavior change
+# the issue's own done-when requires ("a payload containing a newline is rejected") — the old test
+# pinned the OPPOSITE contract (succeeds, flattened) and would now fail by design.
+
+
+def test_emit_rejects_why_with_newline(capsys):
     with tempfile.TemporaryDirectory() as d:
         base = _telemetry_base(d)
         lp = _loop()
-        why = ("line one\nline two " + "x" * 300)
+        why = "line one\nline two"
+        rc = lp.main(["loop.py", "emit", base, "g.md", "gate", "--gate", "plan_review",
+                      "--verdict", "warn", "--why", why])
+        assert rc == 2
+        assert "newline" in capsys.readouterr().err
+        assert _events(base) == []
+
+
+def test_emit_caps_why_at_200_chars_without_newline():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        why = "x" * 300      # long, but no newline
         rc = lp.main(["loop.py", "emit", base, "g.md", "gate", "--gate", "plan_review",
                       "--verdict", "warn", "--why", why])
         assert rc == 0
         evs = _events(base, "gate")
         assert len(evs) == 1
         assert len(evs[0]["why"]) <= 200
-        assert "\n" not in evs[0]["why"]
+
+
+def test_emit_scrubs_a_planted_secret_in_why():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        SECRET = "AKIAIOSFODNN7EXAMPLE"
+        rc = lp.main(["loop.py", "emit", base, "g.md", "gate", "--gate", "plan_review",
+                      "--verdict", "warn", "--why", f"key: {SECRET}"])
+        assert rc == 0
+        evs = _events(base, "gate")
+        assert len(evs) == 1
+        assert SECRET not in evs[0]["why"] and "[REDACTED" in evs[0]["why"]
+
+
+def test_spend_rejects_model_with_newline():
+    """`--model` with a `\\n` refuses the whole call (exit 2, nothing written) — but tokens are
+    still counted, since `state.add_tokens` runs FIRST and unconditionally (existing amendment
+    behavior, regression-pinned here for the newline check too)."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "spend", base, "10", "g.md", "--model", "a\nb"])
+        assert rc == 2
+        assert lp.state.load_cursor(base)["run_tokens"] == 10
+        assert _events(base) == []
+
+
+def test_spend_scrubs_a_planted_secret_in_model():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        SECRET = "AKIAIOSFODNN7EXAMPLE"
+        rc = lp.main(["loop.py", "spend", base, "10", "g.md", "--model", f"sonnet-{SECRET}"])
+        assert rc == 0
+        evs = _events(base, "spend")
+        assert len(evs) == 1
+        assert SECRET not in evs[0]["model"] and "[REDACTED" in evs[0]["model"]
+
+
+def test_spend_caps_model_at_200_chars():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "spend", base, "10", "g.md", "--model", "x" * 300])
+        assert rc == 0
+        evs = _events(base, "spend")
+        assert len(evs) == 1
+        assert len(evs[0]["model"]) <= 200
 
 
 def test_emit_is_off_when_telemetry_disabled(capsys):
@@ -864,3 +967,107 @@ def test_emit_and_spend_share_one_validator():
         # Same unknown-flag message shape (kind name + flag name + "expected one of") from both.
         assert "bogus_flag_name" in proc_emit.stderr and "bogus_flag_name" in proc_spend.stderr
         assert "unknown flag" in proc_emit.stderr and "unknown flag" in proc_spend.stderr
+
+
+# ------------------------------------------------------------- post-review fix: THE LEAK, closed
+# An independent PR review BLOCKED #249 by demonstrating, by execution, that a numeric-looking
+# field (`tokens_in`, `cycle`, `debt_count`) accepted ANY string with no literal newline — including
+# one carrying a full secret shape — because nothing on the write path ever checked the VALUE, only
+# whether the field's NAME was on a "safe" list. These four tests are the reviewer's own repro,
+# verbatim in shape, now asserting the opposite outcome: refused, not written.
+
+_LEAK_SECRET_1 = "AKIAIOSFODNN7EXAMPLE"
+_LEAK_SECRET_2 = "ghp_ABCDEFGHIJ1234567890ABCD"
+_LEAK_PAYLOAD = f"prose padding {_LEAK_SECRET_1} more padding {_LEAK_SECRET_2} trailing text"
+assert "\n" not in _LEAK_PAYLOAD          # the whole point: no newline, so the old guard missed it
+
+
+def test_emit_phase_refuses_the_reviewers_leaked_tokens_in_payload(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "phase", "--phase", "plan",
+                      "--state", "start", "--tokens_in", _LEAK_PAYLOAD])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert _LEAK_SECRET_1 not in err and _LEAK_SECRET_2 not in err
+        assert _events(base) == []
+
+
+def test_emit_gate_refuses_the_reviewers_leaked_cycle_payload(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "gate", "--gate", "plan_review",
+                      "--verdict", "warn", "--cycle", _LEAK_PAYLOAD])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert _LEAK_SECRET_1 not in err and _LEAK_SECRET_2 not in err
+        assert _events(base) == []
+
+
+def test_spend_refuses_the_reviewers_leaked_tokens_in_payload(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "spend", base, "10", "g.md", "--tokens_in", _LEAK_PAYLOAD])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert _LEAK_SECRET_1 not in err and _LEAK_SECRET_2 not in err
+        assert _events(base) == []
+        # budget accounting is unconditional and first — same contract as every other spend refusal
+        assert lp.state.load_cursor(base)["run_tokens"] == 10
+
+
+def test_emit_retro_refuses_the_reviewers_leaked_debt_count_payload(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "retro", "--grade", "achieved",
+                      "--debt_count", _LEAK_PAYLOAD])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert _LEAK_SECRET_1 not in err and _LEAK_SECRET_2 not in err
+        assert _events(base) == []
+
+
+def test_emit_still_accepts_a_genuinely_numeric_tokens_in():
+    """The refusal is scoped to non-numeric values only — a legitimate numeric flag must keep
+    working exactly as before this fix."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "phase", "--phase", "plan",
+                      "--state", "start", "--tokens_in", "123"])
+        assert rc == 0
+        evs = _events(base, "phase")
+        assert len(evs) == 1 and evs[0]["tokens_in"] == "123"
+
+
+def test_emit_refuses_a_non_numeric_cycle_with_a_usable_message(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "gate", "--gate", "plan_review",
+                      "--verdict", "warn", "--cycle", "not-a-number"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "cycle" in err and "whole number" in err
+
+
+# ------------------------------------------------------------- post-review fix: shared newline helper
+# Item E from the retrospective: the newline-reject rule was hand-written twice — this file's own
+# `_validate_event` and `work.py`'s post-review branch in `main()` — with near-identical but
+# unshared wording. `ledger.reject_newline` is now the one shared helper both call; the
+# cross-module "same message shape from both" proof lives in test_work.py (it already has the
+# harness — `_sdlc`/`_started` — to drive `work.py post-review` for real), right next to the
+# existing `test_cli_post_review_rejects_a_newline_in_reason`.
+
+
+def test_validate_event_uses_the_shared_reject_newline_helper():
+    """`_validate_event`'s own newline message is exactly `ledger.reject_newline`'s output, per
+    flag — not a separately hand-written string that happens to also say "newline"."""
+    lp = _loop()
+    err = lp._validate_event("gate", {"gate": "plan_review", "verdict": "warn", "why": "a\nb"},
+                             kind_allowlist=lp._EMIT_KINDS)
+    assert err == lp.ledger.reject_newline("a\nb", "--why")

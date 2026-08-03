@@ -701,6 +701,52 @@ def test_post_review_default_cap_is_three(tmp_path):
     assert work.post_review(d, ON, goal, run=run, verdict="block", reason="3rd").startswith("PARK:")
 
 
+# --------------------------------------------------------------------------- #141 amendment A
+# `post-review` is a synchronous, agent-typed CLI verb — the same shape as `loop.py emit`/`spend`
+# — so a newline in `--reason` is a HARD REJECT at the CLI (main()), before `post_review()` is
+# ever dispatched. This is deliberately checked in `main()`, NOT inside `post_review()` itself:
+# a direct `work.post_review(..., reason="a\nb")` call (as every test above does) must still only
+# flatten (via ledger.append()'s automatic treatment), never reject — see test_ledger.py's
+# `test_append_flattens_a_raw_newline_in_park_why`-style guarantee for why that matters.
+
+
+def test_cli_post_review_rejects_a_newline_in_reason(tmp_path, capsys):
+    d = _sdlc(tmp_path); goal = _started(d)
+    rc = work.main(["work.py", "post-review", d, goal, "--verdict", "block",
+                     "--reason", "line one\nline two"])
+    assert rc == 2
+    assert "newline" in capsys.readouterr().err
+    assert work._record(d, goal).get("review_cycles", 0) == 0   # post_review never dispatched
+
+
+def test_cli_post_review_accepts_a_single_line_reason(tmp_path, capsys, monkeypatch):
+    """The reject is scoped to newlines only — a normal single-line --reason must still dispatch
+    to post_review() and post the comment, exactly as before this story."""
+    d = _sdlc(tmp_path); goal = _started(d)
+    monkeypatch.setattr(work, "_run", lambda cwd, argv: "")
+    rc = work.main(["work.py", "post-review", d, goal, "--verdict", "block",
+                     "--reason", "a single line reason"])
+    assert rc == 0
+    assert "posted loopsmith:block" in capsys.readouterr().out
+
+
+def test_cli_post_review_newline_message_matches_loop_pys_shared_helper(tmp_path, capsys):
+    """POST-REVIEW FIX (retrospective item E): the newline-reject rule used to be hand-written
+    TWICE — here in `work.py`'s `main()`, and again in `loop.py`'s `_validate_event` — with near-
+    identical but unshared wording. Both now call the ONE shared `ledger.reject_newline(value,
+    label)` helper in `ledger.py`. This proves `work.py`'s real CLI output for a newline in
+    `--reason` is exactly what that shared helper produces — not a second hand-written string that
+    merely happens to also contain the word "newline" — closing the drift a fourth CLI verb could
+    otherwise reintroduce."""
+    d = _sdlc(tmp_path); goal = _started(d)
+    rc = work.main(["work.py", "post-review", d, goal, "--verdict", "block",
+                     "--reason", "line one\nline two"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    expected = work.ledger.reject_newline("line one\nline two", "--reason")
+    assert err == f"work: {expected}\n"
+
+
 # --------------------------------------------------------------------------- #139 Slice 2: events
 # Site c (post_review -> gate{post_review}), site d (gate/merge -> gate{merge}), site e
 # (review_gate -> gate{code_review}). All need ledger.enabled AND telemetry.enabled — the Slice 0

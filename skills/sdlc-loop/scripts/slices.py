@@ -115,6 +115,14 @@ def _normalise(item, index, path):
     if not isinstance(item, dict):
         raise ValueError(f"{path}: slice #{index} is a {type(item).__name__}, expected an object")
     return {
+        # #141: `id` lands in the `slice` telemetry event (ledger.py `EVENT_BOUNDED_ID_FIELDS
+        # ["slice"]`) verbatim HERE — but not any more once it reaches `ledger.append()`. A PR
+        # review BLOCKED #249 by proving "declared safe by convention" (this comment's own former
+        # wording) was never actually enforced: an agent-authored plan `id` could carry anything,
+        # including a secret shape, with nothing here or in ledger.py checking its length or
+        # shape. `append()` now scrub+caps every bounded-identifier field (SHORT: BOUNDED_ID_CAP,
+        # not the prose cap) at the one chokepoint every write path already funnels through — this
+        # module still does no enforcement of its own, on purpose; that's ledger.py's job.
         "id": str(item.get("id") or "").strip(),
         "title": str(item.get("title") or "").strip(),
         "needs": _as_list(item.get("needs")),

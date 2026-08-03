@@ -73,6 +73,209 @@ EVENT_FIELDS = {
 #: entry raises immediately at import time instead of silently dropping every field it writes.
 assert set(EVENT_KINDS) == set(EVENT_FIELDS), "EVENT_KINDS and EVENT_FIELDS have drifted apart"
 
+#: #141: the closed set of EVENTS-stream fields that carry agent-/hook-authored free prose —
+#: append() flatten+scrub+caps exactly these, for every kind, at the one chokepoint every write
+#: path already funnels through. Nothing else in EVENT_FIELDS is prose: everything else is an
+#: enum, a count, a duration, a bool, or (`verify.command_sha256`) a hash.
+EVENT_FREE_TEXT_FIELDS = {
+    "gate": ("why",),
+    "park": ("why",),
+    "spend": ("model",),
+}
+
+#: #141 amendment B: the completeness half of the guard below. A field NOT listed in
+#: EVENT_FREE_TEXT_FIELDS is not automatically "safe" — the two look identical in Python (both are
+#: plain `str`), so a type check alone can never catch a forgotten prose field. Every field of
+#: every kind must be named HERE or above, on purpose, or the assertion below fails at import time
+#: instead of a future story shipping an uncapped/unscrubbed/newline-tolerant field for years with
+#: green tests.
+#:
+#: POST-REVIEW FIX: this used to be where the story stopped — a field named here was "safe", full
+#: stop, no further check. An independent PR review BLOCKED #249 by proving that was never enough:
+#: it proved every field LABELLED prose-or-not, but never that a "non-prose" label was actually
+#: TRUE. `ms`/`tokens_in`/`tokens_out`/`cost_cents`/`cycle`/`debt_count`/`lessons_count` were plain
+#: CLI strings with zero numeric validation anywhere on the write path, and `scan.file`/
+#: `slice.slice` were "safe" purely BY CONVENTION (a filesystem path and a plan-authored id,
+#: "neither expected to carry ... a secret shape" — an expectation, not a check). A payload with no
+#: literal newline sailed through every one of those untouched. Every field named here now ALSO
+#: carries a declared VALUE TYPE below (EVENT_NUMERIC_FIELDS / EVENT_BOOL_FIELDS /
+#: EVENT_ENUM_FIELDS / EVENT_BOUNDED_ID_FIELDS), and `_assert_non_prose_fields_are_typed` (run at
+#: import time, same as the guard below) fails closed if one is missing. `append()` enforces
+#: numeric/bool at its chokepoint; `loop.py`'s `_validate_event` enforces the same thing again,
+#: earlier, at the CLI, with a usable refusal instead of a silent sanitize.
+EVENT_NON_PROSE_FIELDS = {
+    "phase": ("phase", "state", "ms", "tokens_in", "tokens_out"),
+    "gate": ("gate", "verdict", "cycle"),
+    "verify": ("ok", "exit", "ms", "command_sha256", "absent"),
+    "slice": ("slice", "wave", "mode", "files_declared", "ms"),
+    "spend": ("phase", "tokens_in", "tokens_out", "cost_cents"),
+    "retro": ("grade", "debt_count", "lessons_count"),
+    "park": ("reason_class",),
+    "scan": ("category", "file", "count"),
+}
+
+def _assert_event_fields_classified(event_kinds, event_fields, free_text_fields, non_prose_fields):
+    """The completeness check itself, as a function rather than inlined at import time — so a test
+    can call it directly against a deliberately-INCOMPLETE copy of the field maps (simulating a
+    future story that adds a free-text field and forgets to classify it) and prove the guard
+    actually fires, without needing to add a second real member to module-level EVENT_KINDS just
+    to exercise the failure path. Called once below, at import time, against the real constants."""
+    assert set(free_text_fields) <= set(event_kinds), \
+        "EVENT_FREE_TEXT_FIELDS names a kind that isn't in EVENT_KINDS"
+    assert set(non_prose_fields) <= set(event_kinds), \
+        "EVENT_NON_PROSE_FIELDS names a kind that isn't in EVENT_KINDS"
+    for kind in event_kinds:
+        prose = set(free_text_fields.get(kind, ()))
+        safe = set(non_prose_fields.get(kind, ()))
+        assert not (prose & safe), \
+            f"{kind!r}: a field cannot be both prose and declared-safe: {prose & safe}"
+        real = set(event_fields[kind])
+        assert prose <= real, f"EVENT_FREE_TEXT_FIELDS[{kind!r}] names a field not in EVENT_FIELDS"
+        assert safe <= real, f"EVENT_NON_PROSE_FIELDS[{kind!r}] names a field not in EVENT_FIELDS"
+        unclassified = real - (prose | safe)
+        assert not unclassified, (
+            f"EVENT_FIELDS[{kind!r}] has unclassified field(s) {unclassified} — declare each one in "
+            "EVENT_FREE_TEXT_FIELDS (prose: flatten+scrub+cap) or EVENT_NON_PROSE_FIELDS (safe as-is); "
+            "an unclassified field is a classification bug, not a safe default")
+
+
+_assert_event_fields_classified(EVENT_KINDS, EVENT_FIELDS, EVENT_FREE_TEXT_FIELDS, EVENT_NON_PROSE_FIELDS)
+
+#: POST-REVIEW FIX (the four buckets EVENT_NON_PROSE_FIELDS now has to account for). Every field
+#: named in EVENT_NON_PROSE_FIELDS above must land in EXACTLY ONE of these — the completeness half
+#: of `_assert_non_prose_fields_are_typed` below fails at import time if a field is in neither, and
+#: the mutual-exclusion half fails if a field is claimed by two.
+#:
+#:   - numeric: must parse as a whole number (`_looks_numeric`). Enforced twice: `loop.py`'s
+#:     `_validate_event` refuses a bad value at the CLI (exit 2, nothing written); `append()`
+#:     sanitizes (never raises) for every other call site.
+#:   - bool: must be an actual bool or a recognised spelling (`_looks_bool`). Same two enforcement
+#:     points as numeric.
+#:   - enum: already vocabulary-checked elsewhere — PHASE_KINDS/GATE_KINDS/VERDICTS/RETRO_GRADES in
+#:     `loop.py`'s `_validate_event` for the fields an agent can type; `category`/`mode` are
+#:     produced only by deterministic code (discovery-scan's fixed categories, `slices.dispatch`'s
+#:     two dispatch modes), never agent-typed, so there is nothing to enforce at a CLI they never
+#:     reach. Written as-is, same as before this story.
+#:   - bounded_id: `slice`/`file`/`command_sha256` — ids and short paths, not prose, but no longer
+#:     "safe by convention" either. Capped SHORT (BOUNDED_ID_CAP, not FREE_TEXT_CAP) and scrubbed,
+#:     the same treatment as prose, closing the `slice.slice` gap the review flagged (an agent-
+#:     authored plan `id` landing verbatim with no length/shape check at all).
+EVENT_NUMERIC_FIELDS = {
+    "phase": ("ms", "tokens_in", "tokens_out"),
+    "gate": ("cycle",),
+    "verify": ("exit", "ms"),
+    "slice": ("wave", "files_declared", "ms"),
+    "spend": ("tokens_in", "tokens_out", "cost_cents"),
+    "retro": ("debt_count", "lessons_count"),
+    "scan": ("count",),
+}
+
+EVENT_BOOL_FIELDS = {
+    "verify": ("ok", "absent"),
+}
+
+EVENT_ENUM_FIELDS = {
+    "phase": ("phase", "state"),
+    "gate": ("gate", "verdict"),
+    "slice": ("mode",),
+    "spend": ("phase",),
+    "retro": ("grade",),
+    "park": ("reason_class",),
+    "scan": ("category",),
+}
+
+EVENT_BOUNDED_ID_FIELDS = {
+    "verify": ("command_sha256",),
+    "slice": ("slice",),
+    "scan": ("file",),
+}
+
+
+def _assert_non_prose_fields_are_typed(event_kinds, non_prose_fields, type_maps):
+    """The TYPE half of the guard, layered on top of `_assert_event_fields_classified` above. That
+    guard already proves every field is LABELLED prose-or-not; it never proves a "non-prose" label
+    is TRUE — a reviewer demonstrated by execution that `tokens_in`/`cycle`/`debt_count` (all
+    "safe" by that label) were plain CLI strings with zero shape enforcement. This confirms every
+    field named in `non_prose_fields` also has exactly one declared VALUE TYPE, and fails at IMPORT
+    TIME — not years later in production — the moment a new field ships with a label but no type.
+
+    `type_maps` is `{type_name: {kind: (field, ...)}}`; called once below, at import time, against
+    the real constants, and directly by tests against a deliberately-broken copy to prove the
+    failure path fires (mirroring `_assert_event_fields_classified`'s own test-injection shape)."""
+    for type_name, type_map in type_maps.items():
+        assert set(type_map) <= set(event_kinds), \
+            f"{type_name!r} type map names a kind that isn't in EVENT_KINDS"
+    for kind in event_kinds:
+        safe = set(non_prose_fields.get(kind, ()))
+        owner = {}
+        for type_name, type_map in type_maps.items():
+            fields = set(type_map.get(kind, ()))
+            assert fields <= safe, (
+                f"{type_name!r}[{kind!r}] names field(s) {fields - safe} not declared non-prose "
+                f"for {kind!r} in EVENT_NON_PROSE_FIELDS")
+            for field in fields:
+                assert field not in owner, (
+                    f"{kind!r}.{field!r} is classified as both {owner[field]!r} and {type_name!r} "
+                    "— a field must have exactly one VALUE TYPE")
+                owner[field] = type_name
+        untyped = safe - set(owner)
+        assert not untyped, (
+            f"EVENT_NON_PROSE_FIELDS[{kind!r}] has field(s) {untyped} with no declared VALUE TYPE — "
+            "add each to EVENT_NUMERIC_FIELDS, EVENT_BOOL_FIELDS, EVENT_ENUM_FIELDS, or "
+            "EVENT_BOUNDED_ID_FIELDS; an untyped field is a classification bug, not a safe default")
+
+
+_assert_non_prose_fields_are_typed(EVENT_KINDS, EVENT_NON_PROSE_FIELDS, {
+    "numeric": EVENT_NUMERIC_FIELDS, "bool": EVENT_BOOL_FIELDS,
+    "enum": EVENT_ENUM_FIELDS, "bounded_id": EVENT_BOUNDED_ID_FIELDS,
+})
+
+#: #141: the length every declared prose field is capped to, after flatten+scrub.
+FREE_TEXT_CAP = 200
+
+#: POST-REVIEW FIX: the length a declared bounded-identifier field (slice/file/command_sha256) is
+#: capped to, after flatten+scrub — deliberately shorter than FREE_TEXT_CAP. These are ids and
+#: short paths, not prose: a legitimate `slice` id, a repo-relative file path, or a sha256 hex
+#: digest (64 chars) is always well under 120; anything longer is already suspicious.
+BOUNDED_ID_CAP = 120
+
+#: Digits a numeric field may carry. A syntactic "parses as an int" check is NOT a safety check:
+#: an arbitrary secret base-10-encoded as one integer parses cleanly, so without a bound it would
+#: skip the scrubber and both caps and land raw, recoverable byte-for-byte with int(v).to_bytes().
+#: 20 digits clears a signed 64-bit int, so every real duration, token count, cost and cycle fits
+#: with room to spare.
+#:
+#: WHAT THIS DOES NOT CLOSE, stated plainly because an earlier version of this comment claimed it
+#: did and that was false. A per-field bound does nothing against a payload SPLIT ACROSS fields: a
+#: `phase` event carries three numeric fields, so ~24 bytes — enough for a whole AWS key — round-
+#: trips in one legitimate `emit` call, and successive events cost nothing. That channel is
+#: inherent to "a bounded numeric field trusts its own digits" and no cap can remove it.
+#:
+#: The accepted risk, stated at its real size. A first version of this note argued the gap was
+#: cheap to accept because an agent that wants to exfiltrate can write
+#: `.sdlc/ledger/events/<actor>.jsonl` directly with a shell redirect anyway, so closing the CLI
+#: channel buys nothing. Review showed that reasoning is wrong, and the correction matters more
+#: than the mechanics: it assumes the blast radius is the writer's own machine. It is not. The
+#: events stream is PUSHED to the shared `sdlc-ledger` ops branch by the documented default path
+#: (`sync.py bootstrap` — "pushes it so the team can see it"), and `insight`'s manager dashboard
+#: reads it team-wide. There is currently no config that keeps it local: doctor reports that even
+#: `share: false` "still publishes with the ledger, same as share: true", because the write side of
+#: that flag is unimplemented (#244).
+#:
+#: So the honest statement is: a chunked secret entered through the SANCTIONED `loop.py emit` CLI
+#: — the exact command an agent is told to run — reaches a shared team branch and a manager
+#: dashboard whose readers trust it as sanitised. That is a different threat class from #140's
+#: allowlist precedent, which is about an agent lying to ITSELF on one machine. A raw shell
+#: redirect is unstoppable from in-process and genuinely out of scope; this is not that.
+#:
+#: It is still not fixed HERE, because no per-field bound can fix it — a `phase` event has three
+#: numeric fields and successive events are free — and tightening the cap to a few digits would
+#: break real values (a 27-hour `ms`, a seven-figure token count) while leaving the channel open.
+#: The real mitigations are elsewhere and owned: #244 makes `share: false` actually keep events
+#: local, and #248 covers whether ingested data can be trusted at all. Recorded on #141 so it is a
+#: known accepted risk with the right size attached, not an inherited "local, so low-stakes".
+NUMERIC_DIGIT_CAP = 20
+
 #: Controlled vocabularies from spec §A.3. PHASE_KINDS/GATE_KINDS/REASON_CLASSES exist for
 #: downstream consumers (ingest, docs, future validation) but are NOT enforced by append() in
 #: #136 — see the "unknown phase/gate/reason_class" decision in the append() docstring.
@@ -180,6 +383,138 @@ def reset_actor_cache():
     _ACTOR_CACHE.clear()
 
 
+# --------------------------------------------------------------------------- free-text sanitizing (#141)
+
+_SCRUB_MODULE = None
+_SCRUB_LOAD_ATTEMPTED = False
+
+
+def _scrub_module():
+    """Lazily importlib-load `hooks/research_capture.py` so `ledger.py` reuses its `_scrub`/
+    `_SECRET_PATTERNS` — the one scrubber in the repo — instead of duplicating the pattern table
+    (two tables is exactly the drift this repo has already been bitten by). This is the REVERSE
+    direction of `hooks/decision_gate.py`'s own cross-load (that file loads THIS module the other
+    way, at its `_emit_decision_event`): both are the same `importlib.util.spec_from_file_location`
+    sibling-load idiom, and both are invisible to `tests/test_import_boundary.py`'s ast-based guard
+    (that checker only parses real `ast.Import`/`ast.ImportFrom` nodes; `spec_from_file_location`
+    produces neither — confirmed against the guard's own module docstring).
+
+    Cached after the FIRST attempt, success or failure — one load per process, not one per call.
+    Fails open to `None` (never raises) if `hooks/research_capture.py` is missing or broken in some
+    checkout; the caller then treats scrub as a no-op and degrades to flatten+cap only. That
+    degrade is a real privacy reduction on its own (flatten/cap are plain string ops right here in
+    `ledger.py` and never touch this loader, so the worst case becomes "<=200 chars, single line,
+    unredacted" instead of unbounded raw text) — but it must never be SILENT: one line to stderr,
+    the same idiom `safe_append` already uses for its own non-fatal failures (see that function's
+    "ledger: entry skipped (non-fatal): ..." message), so a broken install is visible in the log
+    even though no run ever breaks because of it."""
+    global _SCRUB_MODULE, _SCRUB_LOAD_ATTEMPTED
+    if _SCRUB_LOAD_ATTEMPTED:
+        return _SCRUB_MODULE
+    _SCRUB_LOAD_ATTEMPTED = True
+    try:
+        import importlib.util
+        # ledger.py lives at skills/sdlc-loop/scripts/ledger.py; hooks/ is a sibling of skills/ at
+        # the repo root — four `.parent`s up from this file, matching decision_gate.py's own
+        # two-`.parent`s-up-then-down-into-skills/sdlc-loop/scripts symmetry in the other direction.
+        repo_root = pathlib.Path(__file__).resolve().parent.parent.parent.parent
+        path = repo_root / "hooks" / "research_capture.py"
+        spec = importlib.util.spec_from_file_location("research_capture", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _SCRUB_MODULE = mod
+    except Exception as exc:                                    # noqa: BLE001 - fail-open by design
+        print(f"ledger: scrub unavailable, degrading to flatten+cap only (non-fatal): {exc}",
+              file=sys.stderr)
+        _SCRUB_MODULE = None
+    return _SCRUB_MODULE
+
+
+def _sanitize_free_text(value, cap=FREE_TEXT_CAP):
+    """flatten -> scrub -> cap, IN THAT EXACT ORDER — never reorder this. An independent review
+    proved by execution that a secret whose match starts near char 195 of a 215-char string is
+    fully redacted when scrub runs BEFORE the 200-char cap, but capping first truncates the match
+    mid-pattern and leaves an unredacted FRAGMENT (e.g. the literal `AKIAI...`) inside the capped
+    text, because the scrubber never gets to see the whole shape once it's been cut off. Flattening
+    first (not last) matters too: it turns a raw multi-line block into one line before either the
+    scrubber or the cap sees it, so a cap can never land mid-multi-line-secret in a way flatten
+    would otherwise have prevented.
+
+    `cap` defaults to FREE_TEXT_CAP (declared prose). POST-REVIEW FIX: the bounded-identifier and
+    the numeric/bool-fallback call sites in `append()` below pass `cap=BOUNDED_ID_CAP` — same
+    function, same order, just a shorter ceiling for a value that's an id/path/miscoerced-field
+    rather than prose.
+
+    Never raises on its own: a missing/broken scrub module (see `_scrub_module`) degrades to
+    flatten+cap only, and a scrub call that itself raises is caught here too — this function is
+    called from inside `append()`'s field-writing loop, which must stay exception-safe for the
+    fail-open call sites (a hook's `deny`, an autonomous park) that route through it. `str(value)`
+    never raises regardless of what lands here — a dict, an int, bytes, `None` all stringify
+    cleanly, which is exactly why sanitizing (rather than coercing) is the safe fallback for a
+    declared-numeric/bool field that turns out not to hold one."""
+    text = str(value).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    mod = _scrub_module()
+    if mod is not None:
+        try:
+            text = mod._scrub(text)
+        except Exception as exc:                                # noqa: BLE001 - fail-open by design
+            print(f"ledger: scrub failed, degrading to flatten+cap only (non-fatal): {exc}",
+                  file=sys.stderr)
+    return text[:cap]
+
+
+_BOOL_SPELLINGS = {"true", "false", "1", "0", "yes", "no"}
+
+
+def _looks_numeric(value):
+    """True when `value` parses cleanly as a whole number — an int (or bool, its subclass) as-is,
+    or a string shaped like one. Shared by `append()`'s chokepoint sanitizer below AND `loop.py`'s
+    `_validate_event` CLI refusal (which reaches in directly — the same cross-module idiom
+    `_scrub_module` above already uses in the other direction, importing `hooks/research_capture`'s
+    `_scrub`) so a numeric field's definition of "valid" can never drift between the two
+    enforcement points. Never raises.
+
+    NUMERIC_DIGIT_CAP is the whole point of the second condition, not belt-and-braces. Parsing as
+    an int says nothing about what the digits ENCODE: base-10-encoding a secret as one giant
+    integer — `str(int.from_bytes(b"AKIA...|ghp_...", "big"))`, 118 digits — passes a purely
+    syntactic check, so it skips the scrubber and the cap and lands raw, and `int(v).to_bytes()`
+    reads it straight back off disk. A digit cap closes that channel's bandwidth below anything
+    useful, and closes the plain unbounded-length hole (50k digits written verbatim) in the same
+    stroke. 20 digits clears a signed 64-bit int, so no real ms / tokens / cost / count / cycle
+    value is anywhere near it."""
+    try:
+        int(value)
+    except (TypeError, ValueError):
+        return False
+    return len(str(value).strip().lstrip("+-").replace("_", "")) <= NUMERIC_DIGIT_CAP
+
+
+def _looks_bool(value):
+    """True for an actual bool, or a string spelled like one (`_BOOL_SPELLINGS`, case-insensitive).
+    Same sharing rationale as `_looks_numeric`. Never raises."""
+    if isinstance(value, bool):
+        return True
+    return isinstance(value, str) and value.strip().lower() in _BOOL_SPELLINGS
+
+
+def reject_newline(value, label):
+    """The hard-reject-a-raw-newline rule shared by every synchronous, agent-typed CLI verb that
+    must REFUSE (not merely flatten) a multi-line value: `loop.py`'s `_validate_event` and
+    `work.py`'s `main()` post-review branch hand-wrote this identically twice before this — the
+    same "guard duplicated at call sites instead of chokepointed" shape #141's whole story is
+    about. A third CLI verb now has one shared place to call instead of a third drifting copy.
+
+    `append()` itself must NEVER call this: it flattens instead of rejecting (see
+    `_sanitize_free_text`), because it also sits behind the three deterministic, fail-open call
+    sites (a hook's `deny`, an autonomous park) that must never raise on bad input.
+
+    Returns the refusal message (already naming `label`), or `None` when `value` has no raw
+    newline. Never raises — `str(value)` handles anything."""
+    if "\n" in str(value):
+        return f"newline not allowed in {label} (the events stream is single-line only)"
+    return None
+
+
 # --------------------------------------------------------------------------- write
 
 
@@ -258,6 +593,65 @@ def append(sdlc_dir, config, kind, goal, run=None, now=None, stream=ENTRIES, **f
     for name in field_whitelist:
         value = fields.get(name)
         if value not in (None, ""):
+            # #141: cap+scrub lives HERE, once, for every caller — never at a call site. Scoped to
+            # stream == EVENTS only (the ENTRIES stream's own `why` — hand-offs/notes a lead reads
+            # in TEAM.md — is unaffected, out of this story's scope).
+            if stream == EVENTS:
+                if name in EVENT_FREE_TEXT_FIELDS.get(kind, ()):
+                    value = _sanitize_free_text(value)
+                elif name in EVENT_BOUNDED_ID_FIELDS.get(kind, ()):
+                    # POST-REVIEW FIX: `slice`/`file`/`command_sha256` were "safe by convention"
+                    # only — an agent-authored plan `id` (`slice.slice`) landed verbatim with no
+                    # length/shape check at all. Same treatment as prose, just a SHORTER cap
+                    # (BOUNDED_ID_CAP, not FREE_TEXT_CAP): these are ids/paths, not prose, and a
+                    # legitimate one is always short — closes the gap with enforcement, not habit.
+                    value = _sanitize_free_text(value, cap=BOUNDED_ID_CAP)
+                elif name in EVENT_ENUM_FIELDS.get(kind, ()):
+                    # POST-REVIEW FIX (round 3): the enum bucket had NO enforcement here at all.
+                    # `gate.verdict` and `phase.state` raise below, and `loop.py`'s `_validate_event`
+                    # vocabulary-checks the agent-typed ones — but that is a CLI-only helper, so a
+                    # direct `append()` call could put 175 chars of secret-laden prose into
+                    # `scan.category` / `slice.mode` / `retro.grade` / `park.reason_class` /
+                    # `phase.phase` and have it written raw. No shipped caller does (they all pass
+                    # hard-coded constants), which is exactly the "safe by convention, one level
+                    # further out" pattern that caused the two earlier blocks. A vocabulary check
+                    # here would reverse #136's deliberate decision to leave phase/gate/reason_class
+                    # unvalidated, so this is the floor instead: an enum can never carry prose,
+                    # whatever a future caller passes.
+                    value = _sanitize_free_text(value, cap=BOUNDED_ID_CAP)
+                elif name in EVENT_NUMERIC_FIELDS.get(kind, ()) and _looks_numeric(value):
+                    # POST-REVIEW FIX (round 3): the predicate normalised the string
+                    # (`.replace("_", "")`) but the RAW value was written, so
+                    # "1_2_3_4_5_6_7_8_9_0_1_2_3_4_5_6_7_8_9_0" passed a 20-digit check and landed
+                    # at 39 characters. Re-stringify through int() so what is stored is what was
+                    # checked — which also normalises leading zeros, padding and sign whitespace.
+                    # Same shape of bug as the two before it: a predicate applied to one
+                    # representation, enforcement applied to another.
+                    if not isinstance(value, bool):
+                        value = type(value)(int(value)) if isinstance(value, int) else str(int(value))
+                elif name in EVENT_NUMERIC_FIELDS.get(kind, ()):
+                    # POST-REVIEW FIX (THE LEAK): a declared-numeric field that does not actually
+                    # hold a number must never be written raw — this is the reviewer's exact repro
+                    # (`tokens_in`/`cycle`/`debt_count` as a secret-bearing string with no literal
+                    # newline, sailing through untouched because nothing validated the VALUE, only
+                    # the field's presence in a "safe" list). `append()` must NEVER raise for this
+                    # — the three deterministic fail-open call sites (a hook's `deny`, an
+                    # autonomous park) depend on it — so sanitize (scrub+cap) rather than reject:
+                    # it can neither leak the value nor lose the event. `loop.py`'s
+                    # `_validate_event` enforces the same rule again, earlier, at the CLI, where a
+                    # loud refusal is possible and safe.
+                    #
+                    # The cap here is NUMERIC_DIGIT_CAP, not FREE_TEXT_CAP, and that is the second
+                    # half of the fix. Scrubbing does not touch a digit string, so a base-10-encoded
+                    # secret sanitized at the 200-char prose cap still survived — 118 digits is ~49
+                    # recoverable bytes. A field declared numeric can never legitimately need more
+                    # room than a number, so it does not get prose's allowance.
+                    value = _sanitize_free_text(value, cap=NUMERIC_DIGIT_CAP)
+                elif name in EVENT_BOOL_FIELDS.get(kind, ()) and not _looks_bool(value):
+                    # Same rationale as the numeric branch, for the (currently CLI-unreachable,
+                    # but append()-reachable) bool fields `verify.ok` / `verify.absent`. A bool
+                    # needs even less room than a number, so it borrows the same tight cap.
+                    value = _sanitize_free_text(value, cap=NUMERIC_DIGIT_CAP)
             entry[name] = value
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
