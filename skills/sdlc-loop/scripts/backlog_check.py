@@ -314,6 +314,39 @@ def _pack(goal_ref, findings, degraded):
             "degraded": sorted(set(degraded))}
 
 
+_KIND_PHRASE = {"duplicate": "duplicate of #{ref}", "obsoleted-by": "obsoleted by #{ref}",
+                "blocked-by": "blocked by #{ref}", "in-flight-elsewhere": "in flight elsewhere: #{ref}"}
+
+
+def _phrase(f):
+    ref = f["ref"]
+    ref = pathlib.Path(ref).name if "/" in ref else ref     # local goals are paths; show the stem
+    base = _KIND_PHRASE.get(f["kind"], f["kind"] + " #{ref}").format(ref=ref)
+    ev = ", ".join(f.get("evidence") or [])
+    return f"{base} ({f['score']}" + (f"; shared: {ev}" if ev else "") + ")"
+
+
+def summary(findings, limit=3):
+    """A compact, secret-safe one-liner over the top findings (refs + scores + already-scrubbed shared
+    terms — never a title/body). Used verbatim in the park comment / advisory note."""
+    return "; ".join(_phrase(f) for f in findings[:limit])
+
+
+def decide(pack, config):
+    """Pure: turn a pack into the loop hook's action. `backlog_check.action` (default 'park'): a
+    CONFIDENT finding parks-with-proof; 'flag' (or only weak findings) annotates and proceeds. Returns
+    {action: 'park'|'proceed', reason: <park-comment text>, note: <advisory text>}. Deterministic —
+    findings are already sorted confident-first, score desc."""
+    findings = (pack or {}).get("findings") or []
+    if not findings:
+        return {"action": "proceed", "reason": "", "note": ""}
+    action = (config.get("backlog_check") or {}).get("action", "park")
+    line = "backlog cross-check: " + summary(findings)
+    if action == "park" and any(f.get("confident") for f in findings):
+        return {"action": "park", "reason": line, "note": ""}
+    return {"action": "proceed", "reason": "", "note": line + " (advisory)"}
+
+
 def main(argv):
     if len(argv) < 3:
         print("usage: backlog_check.py <sdlc_dir> <goal>", file=__import__("sys").stderr)

@@ -269,6 +269,50 @@ def test_closed_window_days_loads_the_real_velocity_module():
 
 # --- CLI verb ---
 
+# --- decide(): pure pack -> loop-hook action ---
+
+def _mkpack(findings):
+    return {"schema": "backlog-check/v1", "goal": "1", "findings": findings, "degraded": []}
+
+
+def _f(kind, ref, score, confident, ev=("widget", "cache")):
+    return {"kind": kind, "ref": ref, "score": score, "source": "mirror",
+            "evidence": list(ev), "confident": confident}
+
+
+def test_decide_parks_a_confident_finding_by_default():
+    bc = _mod("backlog_check")
+    d = bc.decide(_mkpack([_f("duplicate", "42", 0.85, True)]), {})
+    assert d["action"] == "park" and "duplicate of #42" in d["reason"] and "widget" in d["reason"]
+    assert d["note"] == ""
+
+
+def test_decide_annotates_a_weak_finding():
+    bc = _mod("backlog_check")
+    d = bc.decide(_mkpack([_f("duplicate", "42", 0.6, False)]), {})
+    assert d["action"] == "proceed" and "advisory" in d["note"] and "duplicate of #42" in d["note"]
+
+
+def test_decide_proceeds_on_no_findings():
+    bc = _mod("backlog_check")
+    assert bc.decide(_mkpack([]), {}) == {"action": "proceed", "reason": "", "note": ""}
+
+
+def test_decide_flag_mode_never_parks_even_a_confident_hit():
+    bc = _mod("backlog_check")
+    d = bc.decide(_mkpack([_f("duplicate", "42", 0.95, True)]), {"backlog_check": {"action": "flag"}})
+    assert d["action"] == "proceed" and "advisory" in d["note"]
+
+
+def test_decide_summary_covers_multiple_kinds_secret_safe():
+    bc = _mod("backlog_check")
+    d = bc.decide(_mkpack([_f("obsoleted-by", "5", 0.8, True), _f("blocked-by", "7", 1.0, True, ev=[])]), {})
+    assert "obsoleted by #5" in d["reason"] and "blocked by #7" in d["reason"]
+    # a local-mode ref is a path; summary shows the stem, not the whole path
+    d2 = bc.decide(_mkpack([_f("duplicate", "/tmp/x/.sdlc/goals/0002.md", 0.9, True)]), {})
+    assert "duplicate of #0002.md" in d2["reason"] and "/tmp/x" not in d2["reason"]
+
+
 def test_crosscheck_cli_in_process(capsys):
     bc, pl = _mod("backlog_check"), _mod("pipeline")
     with tempfile.TemporaryDirectory() as d:

@@ -204,6 +204,37 @@ def _record(sdlc_dir, source, goal, result, detail=""):
                            reason_class=_reason_class(detail), why=detail or None)
 
 
+def precheck(sdlc_dir, goal, config, source, run=None, now=None):
+    """Pre-work backlog cross-check hook (OPT-IN via `backlog_check.enabled is True`). Before a picked
+    goal spends a token: refresh the board mirror (TTL-guarded; a no-op in local / non-github mode),
+    cross-check the pick, and per `backlog_check.action` (default 'park') either PARK-with-proof a
+    confident duplicate/obsolete/blocked goal — a comment carrying the evidence, then the loop advances
+    to the next goal — or annotate a weak match and proceed. The engine spends ZERO LLM tokens.
+
+    Returns a one-line result the SKILL reads by its first word: 'OFF' (disabled) | 'PARKED <reason>'
+    (do not research it; take the next goal) | 'PROCEED[ (advisory)]' (carry on). FAIL-OPEN: any error
+    returns 'PROCEED' — the cross-check must never block or crash the loop. Note: a PARKED goal goes
+    through _record, so it advances the per-run iteration cursor like any other outcome."""
+    if (config.get("backlog_check") or {}).get("enabled") is not True:
+        return "OFF"
+    try:
+        bc = _load("backlog_check")
+        _load("mirror").fetch_and_write(sdlc_dir, config=config, run=run, now=now)
+        decision = bc.decide(bc.cross_check(sdlc_dir, goal, config=config, run=run, now=now), config)
+        if decision["action"] == "park":
+            _record(sdlc_dir, source, goal, "parked", decision["reason"])   # park comment carries proof
+            return "PARKED " + decision["reason"]
+        if decision["note"]:
+            try:
+                source.note(goal, decision["note"])
+            except Exception:
+                pass
+        return "PROCEED" + (" (advisory)" if decision["note"] else "")
+    except Exception as e:
+        print(f"loop.py precheck: non-fatal ({e}) — proceeding", file=sys.stderr)
+        return "PROCEED"
+
+
 _evidence_path = state.evidence_path       # both live in state.py so work.py can require the same
 _done_refusal = state.done_refusal         # evidence without loop.py and work.py importing each other
 
@@ -416,6 +447,10 @@ def main(argv):
     if len(argv) >= 4 and argv[1] == "qc":          # board-only: move a goal to QC at the Review phase
         config = state.load_config(argv[2])
         sources.get_source(argv[2], config).mark_qc(argv[3]); return 0
+    if len(argv) >= 4 and argv[1] == "precheck":    # opt-in pre-work backlog cross-check (fail-open)
+        config = state.load_config(argv[2])
+        print(precheck(argv[2], argv[3], config, sources.get_source(argv[2], config)))
+        return 0
     if len(argv) >= 5 and argv[1] == "note":        # record a journey-log / critical-insight note (fail-open)
         config = state.load_config(argv[2])
         try:

@@ -147,13 +147,15 @@ def test_fetch_fail_open_on_unreadable_config():
         assert m.fetch_and_write(str(base), now=1.0) is None
 
 
-def test_mirror_not_wired_into_the_pick_path():
-    """Additive guarantee: the loop's goal-pick path never runs the mirror — only the explicit
-    `pipeline.py mirror` verb / module __main__ do. Locks the no-regression claim cheaply."""
-    for name in ("loop.py", "sources.py"):
-        text = (S / name).read_text()
-        assert "fetch_and_write" not in text
-        assert '"mirror"' not in text and "'mirror'" not in text   # not loaded/dispatched there
+def test_mirror_reached_only_through_the_opt_in_precheck_hook():
+    """Additive guarantee: the PICK itself (sources.next_pending) never runs the mirror. As of 0.9.22
+    the loop reaches it in exactly one place — loop.py's `precheck` hook — and only AFTER the
+    off-by-default `backlog_check.enabled is True` gate, so a default config never mirrors."""
+    assert "fetch_and_write" not in (S / "sources.py").read_text()      # the pick path is untouched
+    loop_txt = (S / "loop.py").read_text()
+    assert "fetch_and_write" in loop_txt                                # the hook wires it now...
+    gate, call = loop_txt.index('backlog_check") or {}).get("enabled") is not True'), loop_txt.index("fetch_and_write")
+    assert gate < call                                                  # ...behind the enable gate (returns OFF first)
 
 
 def test_ttl_skips_refetch_until_forced():
