@@ -146,6 +146,21 @@ def check(sdlc_dir=".sdlc", run=None):
                         "verify.enforce is on but no verify.command (and no goal sets verify_command) — "
                         "every `done` is refused. Set verify.command, or turn enforce off."))
 
+    # A backlog cross-check whose park_threshold sits BELOW its candidate threshold parks EVERYTHING it
+    # finds — the opposite of "confident hits only". Flag it (only when the feature is actually on).
+    bchk = cfg.get("backlog_check")
+    bchk = bchk if isinstance(bchk, dict) else {}       # a non-dict block reads as off, never crashes
+    if bchk.get("enabled") is True:
+        dup, park = bchk.get("dup_threshold", 0.72), bchk.get("park_threshold", 0.80)
+        try:
+            sane = float(park) >= float(dup)
+        except (TypeError, ValueError):
+            sane = True                 # a non-numeric threshold falls back to the default at runtime
+        out.append(_chk("backlog cross-check thresholds sane",
+                        sane,
+                        "backlog_check.park_threshold (%r) < dup_threshold (%r): every candidate becomes "
+                        "a confident PARK. Set park_threshold >= dup_threshold." % (park, dup)))
+
     # With work.enabled, verify runs in a FRESH worktree that has none of your installed deps — a
     # relative interpreter path (.venv/bin/python3, node_modules/.bin) fails exit=127 on the first
     # real per-goal run. Flag it before it bites.
@@ -340,6 +355,18 @@ def _telemetry_feature_state(base, cfg):
     return f"ON, share:true — {where}, publishes to the ops branch alongside ledger entries"
 
 
+def _backlog_check_state(cfg):
+    """OFF unless backlog_check.enabled is strictly True (a truthy string must not switch a pick-path
+    behavior on). A non-dict block degrades to off — same convention as every other reader here."""
+    b = cfg.get("backlog_check")
+    b = b if isinstance(b, dict) else {}
+    if b.get("enabled") is not True:
+        return "off (a picked goal is worked without a backlog cross-check)"
+    how = ("parks a confident duplicate/obsolete/blocked goal (with proof), else annotates"
+           if b.get("action", "park") == "park" else "only annotates (flag mode — never parks)")
+    return "ON — pre-work cross-check " + how
+
+
 def _decision_gate_state(base, cfg):
     """Count the ACTIVE decisions, not the entries. A registry whose decisions are all superseded
     enforces nothing, and reporting it as ON would be exactly the false assurance this gate exists
@@ -454,6 +481,9 @@ def features(sdlc_dir=".sdlc"):
         ("telemetry (agent-emitted events)",
          _telemetry_feature_state(base, cfg),
          'config: "telemetry": {"enabled": true, "share": true|false}'),
+        ("pre-work backlog cross-check",
+         _backlog_check_state(cfg),
+         'config: "backlog_check": {"enabled": true}'),
         ("slice parallelism",
          ("ON — up to %s concurrent slices per wave" % par.get("max_concurrent", 3))
          if par.get("enabled") is True else "off (a goal's slices run one after another)",

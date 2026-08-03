@@ -23,7 +23,16 @@ Then repeat until the helper says stop:
    the host breaks that usage down per phase (rare), attribute it instead of the plain form:
    `loop.py spend .sdlc <tokens> "$goal" --phase <phase> --tokens_in N --tokens_out N` —
    otherwise keep the two-argument form; never fabricate a per-phase number you don't have.
-3. Otherwise: first **recall prior art** — if the knowledge graph is enabled, run the `sdlc-context`
+3. Otherwise: first **cross-check the pick** (opt-in, `backlog_check.enabled`) — before spending a
+   token, run `result=$(python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" precheck .sdlc "$goal")`. It
+   prints `OFF` (a no-op — feature disabled) or, when on, refreshes the board mirror and cross-checks the
+   goal against the rest of the backlog + the team ledger at **zero LLM cost**, then either:
+   - prints **`PARKED <reason>`** — the goal was a confident DUPLICATE / OBSOLETED-BY-completed-work /
+     BLOCKED-BY item and has already been parked-with-proof (the evidence is on the issue). **Do not
+     research it: loop back to step 1** and take the next goal. (The park counts as one iteration.)
+   - prints **`PROCEED`** (optionally `(advisory)`, having annotated a weak match) → carry on below.
+
+   Then **recall prior art** — if the knowledge graph is enabled, run the `sdlc-context`
    pre-flight to pull a cited brief from the graph + past issues + conventions, so the goal starts
    informed by history instead of a flushed window (no-op when the KG is off).
    **Match the model to the goal** — run `python3 "${CLAUDE_SKILL_DIR}/../sdlc-model/scripts/predict.py"

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### backlog cross-check: wire it into the loop, off by default (0.9.22)
+Third slice — the pre-work cross-check (0.9.20 mirror + 0.9.21 engine) now actually runs in `/sdlc-loop`,
+**opt-in and off by default**. New `loop.py precheck <sdlc_dir> <goal>` verb + a step at the very top of
+the loop body (before any token spend): when `backlog_check.enabled` is true it refreshes the board
+mirror and cross-checks the just-picked goal, then per `backlog_check.action`:
+- **`park` (default):** a CONFIDENT duplicate / obsoleted-by / blocked-by finding is **parked-with-proof**
+  — a comment carrying the evidence (refs + scores + scrubbed shared terms), then the loop advances to the
+  next goal. It **never stalls** on a broken goal and **never closes** an issue (a human does that).
+- **weak finding:** annotate-and-proceed (a `flag`-mode config forces this for every finding).
+- Prints `OFF` / `PARKED <reason>` / `PROCEED[ (advisory)]` — the SKILL reads the first word. **Fail-open:**
+  any error → `PROCEED` (the cross-check can never block or crash the loop). A parked goal advances the
+  per-run iteration cursor like any other outcome.
+- `backlog_check` block added to the scaffolded config (default `enabled:false`, documenting every knob);
+  `/sdlc-doctor` reports the feature state and flags `park_threshold < dup_threshold` (which would park
+  every candidate). README "What you get" + "Feature flags" rows. Installing changes nothing until opted in.
+- The decision is a pure, tested `backlog_check.decide(pack, config)`; the loop hook only executes it.
+
 ### backlog cross-check engine: catch a redundant goal before the loop works it (0.9.21)
 Second slice of the pre-work backlog cross-check (the mirror was 0.9.20). `backlog_check.py` (+
 `pipeline.py crosscheck <sdlc_dir> <goal>`) takes a just-picked goal and surfaces likely

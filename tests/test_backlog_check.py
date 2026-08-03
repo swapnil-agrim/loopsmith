@@ -66,18 +66,51 @@ def test_duplicate_open_issue_flagged_distinct_not():
         assert pack["schema"] == "backlog-check/v1" and pack["goal"] == "1"
 
 
+def test_duplicate_pair_only_the_later_goal_is_park_confident():
+    # both #1 and #2 are open duplicates: the EARLIER (#1) survives + is worked; only the LATER (#2)
+    # parks. Without this, #1 parks as dup-of-#2 AND #2 parks as dup-of-#1 -> neither ever gets worked.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _GOAL)],
+                        dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
+        f1 = next(f for f in bc.cross_check(base, "1")["findings"] if f["ref"] == "2")
+        assert f1["kind"] == "duplicate" and f1["confident"] is False   # #1 is earliest -> survives
+        f2 = next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")
+        assert f2["confident"] is True                                  # #2 is later -> parks against #1
+
+
+def test_earlier_orders_github_numbers_and_local_paths():
+    bc = _mod("backlog_check")
+    assert bc._earlier("2", "10") is True and bc._earlier("10", "2") is False   # numeric, not lexical
+    assert bc._earlier("/a/goals/0001.md", "/b/goals/0002.md") is True          # local: by filename
+
+
+def test_larger_duplicate_cluster_keeps_earliest_in_top_k_window():
+    # a cluster BIGGER than top_k (8) with mixed 1-/2-digit numbers: a lexical candidate tiebreak would
+    # sort 10..17 before 2 and crowd #2 out of #3's window, leaving #3 a wrong SECOND survivor. The
+    # numeric-aware _ref_key keeps #2 in-window, so #3 parks against the true earliest.
+    bc = _mod("backlog_check")
+    nums = [2, 3, 10, 11, 12, 13, 14, 15, 16, 17]
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(n, _GOAL) for n in nums],
+                        dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
+        f = [x for x in bc.cross_check(base, "3")["findings"] if x["ref"] == "2"]
+        assert f and f[0]["confident"] is True          # #3 parks against the earlier #2, not survives
+
+
 def test_confidence_gate_park_vs_annotate():
     bc = _mod("backlog_check")
+    # cross-check from the LATER goal (#2) so the earlier dup (#1) is the park-confident match
     with tempfile.TemporaryDirectory() as d1:
         # identical -> score ~1.0 >= park_threshold 0.9 -> confident (the loop would park)
         base = _gh_base(d1, [_rec(1, _GOAL), _rec(2, _GOAL)],
                         dup_threshold=0.4, park_threshold=0.9, closed_window_days=3650)
-        assert next(f for f in bc.cross_check(base, "1")["findings"] if f["ref"] == "2")["confident"] is True
+        assert next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")["confident"] is True
     with tempfile.TemporaryDirectory() as d2:
         # same score, but an unreachable park_threshold -> a finding, NOT confident (annotate + proceed)
         base = _gh_base(d2, [_rec(1, _GOAL), _rec(2, _GOAL)],
                         dup_threshold=0.4, park_threshold=1.01, closed_window_days=3650)
-        assert next(f for f in bc.cross_check(base, "1")["findings"] if f["ref"] == "2")["confident"] is False
+        assert next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")["confident"] is False
 
 
 # --- obsolescence (closed within the window) ---
@@ -268,6 +301,50 @@ def test_closed_window_days_loads_the_real_velocity_module():
 
 
 # --- CLI verb ---
+
+# --- decide(): pure pack -> loop-hook action ---
+
+def _mkpack(findings):
+    return {"schema": "backlog-check/v1", "goal": "1", "findings": findings, "degraded": []}
+
+
+def _f(kind, ref, score, confident, ev=("widget", "cache")):
+    return {"kind": kind, "ref": ref, "score": score, "source": "mirror",
+            "evidence": list(ev), "confident": confident}
+
+
+def test_decide_parks_a_confident_finding_by_default():
+    bc = _mod("backlog_check")
+    d = bc.decide(_mkpack([_f("duplicate", "42", 0.85, True)]), {})
+    assert d["action"] == "park" and "duplicate of #42" in d["reason"] and "widget" in d["reason"]
+    assert d["note"] == ""
+
+
+def test_decide_annotates_a_weak_finding():
+    bc = _mod("backlog_check")
+    d = bc.decide(_mkpack([_f("duplicate", "42", 0.6, False)]), {})
+    assert d["action"] == "proceed" and "advisory" in d["note"] and "duplicate of #42" in d["note"]
+
+
+def test_decide_proceeds_on_no_findings():
+    bc = _mod("backlog_check")
+    assert bc.decide(_mkpack([]), {}) == {"action": "proceed", "reason": "", "note": ""}
+
+
+def test_decide_flag_mode_never_parks_even_a_confident_hit():
+    bc = _mod("backlog_check")
+    d = bc.decide(_mkpack([_f("duplicate", "42", 0.95, True)]), {"backlog_check": {"action": "flag"}})
+    assert d["action"] == "proceed" and "advisory" in d["note"]
+
+
+def test_decide_summary_covers_multiple_kinds_secret_safe():
+    bc = _mod("backlog_check")
+    d = bc.decide(_mkpack([_f("obsoleted-by", "5", 0.8, True), _f("blocked-by", "7", 1.0, True, ev=[])]), {})
+    assert "obsoleted by #5" in d["reason"] and "blocked by #7" in d["reason"]
+    # a local-mode ref is a path; summary shows the stem, not the whole path
+    d2 = bc.decide(_mkpack([_f("duplicate", "/tmp/x/.sdlc/goals/0002.md", 0.9, True)]), {})
+    assert "duplicate of #0002.md" in d2["reason"] and "/tmp/x" not in d2["reason"]
+
 
 def test_crosscheck_cli_in_process(capsys):
     bc, pl = _mod("backlog_check"), _mod("pipeline")

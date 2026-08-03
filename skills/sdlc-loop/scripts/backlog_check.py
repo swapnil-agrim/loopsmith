@@ -281,7 +281,7 @@ def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measur
             s = _cosine(gvec, _vector(d["tokens"], idf))
             if s > 0:
                 scored.append((s, d))
-        scored.sort(key=lambda x: (-x[0], x[1]["ref"]))
+        scored.sort(key=lambda x: (-x[0], _ref_key(x[1]["ref"])))   # earliest-ref tiebreak, not lexical
 
         findings = []
         for s, d in scored[:top_k]:
@@ -289,7 +289,12 @@ def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measur
             if d["completed"] and s >= obs_th and _within_window(d, window, now):
                 findings.append(_finding("obsoleted-by", d["ref"], s, d["source"], ev, s >= park_th))
             elif d["open"] and s >= dup_th:
-                findings.append(_finding("duplicate", d["ref"], s, d["source"], ev, s >= park_th))
+                # Of a duplicate PAIR, park only the LATER goal: a `duplicate` is park-confident only when
+                # the matched open issue is EARLIER in pick order (lower number / earlier filename). Else
+                # both #1↔#2 would park each other and neither would ever be worked — the first-filed
+                # survives and is worked; later duplicates park against it. (Reported either way.)
+                confident = s >= park_th and _earlier(d["ref"], goal_ref)
+                findings.append(_finding("duplicate", d["ref"], s, d["source"], ev, confident))
 
         findings += _explicit_blockers(goal_doc, docs)
         doc_by_ref = {d["ref"]: d for d in docs}
@@ -312,6 +317,58 @@ def _dedup_sort(findings):
 def _pack(goal_ref, findings, degraded):
     return {"schema": SCHEMA, "goal": str(goal_ref), "findings": findings,
             "degraded": sorted(set(degraded))}
+
+
+_KIND_PHRASE = {"duplicate": "duplicate of #{ref}", "obsoleted-by": "obsoleted by #{ref}",
+                "blocked-by": "blocked by #{ref}", "in-flight-elsewhere": "in flight elsewhere: #{ref}"}
+
+
+def _stem(ref):
+    return pathlib.Path(str(ref)).name          # github ref '42' -> '42'; local path -> filename (win-safe)
+
+
+def _ref_key(ref):
+    """Deterministic ref ordering matching next_pending (numeric issue numbers, THEN filename). Used as
+    the candidate-truncation tiebreak so the top_k window keeps the EARLIEST issues, not the lexically
+    smallest — else in a duplicate cluster larger than top_k, #10..#17 could crowd #2 out of #3's window
+    and #3 would find no earlier match and wrongly survive (a second survivor)."""
+    try:
+        return (0, int(ref), "")
+    except (TypeError, ValueError):
+        return (1, 0, _stem(ref))
+
+
+def _earlier(a, b):
+    """Pick order (mirrors next_pending's oldest-first): lower issue number, else earlier filename. Used
+    so only the LATER goal of a duplicate pair parks — the first-filed survives and gets worked."""
+    return _ref_key(a) < _ref_key(b)
+
+
+def _phrase(f):
+    base = _KIND_PHRASE.get(f["kind"], f["kind"] + " #{ref}").format(ref=_stem(f["ref"]))
+    ev = ", ".join(f.get("evidence") or [])
+    return f"{base} ({f['score']}" + (f"; shared: {ev}" if ev else "") + ")"
+
+
+def summary(findings, limit=3):
+    """A compact, secret-safe one-liner over the top findings (refs + scores + already-scrubbed shared
+    terms — never a title/body). Used verbatim in the park comment / advisory note."""
+    return "; ".join(_phrase(f) for f in findings[:limit])
+
+
+def decide(pack, config):
+    """Pure: turn a pack into the loop hook's action. `backlog_check.action` (default 'park'): a
+    CONFIDENT finding parks-with-proof; 'flag' (or only weak findings) annotates and proceeds. Returns
+    {action: 'park'|'proceed', reason: <park-comment text>, note: <advisory text>}. Deterministic —
+    findings are already sorted confident-first, score desc."""
+    findings = (pack or {}).get("findings") or []
+    if not findings:
+        return {"action": "proceed", "reason": "", "note": ""}
+    action = (config.get("backlog_check") or {}).get("action", "park")
+    line = "backlog cross-check: " + summary(findings)
+    if action == "park" and any(f.get("confident") for f in findings):
+        return {"action": "park", "reason": line, "note": ""}
+    return {"action": "proceed", "reason": "", "note": line + " (advisory)"}
 
 
 def main(argv):

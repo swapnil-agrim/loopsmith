@@ -396,6 +396,57 @@ def test_features_surfaces_skill_selection_advisory(tmp_path):
     assert "skillOverrides" in enable and "/plugin disable" in enable
 
 
+# --- pre-work backlog cross-check (0.9.22) ---------------------------------------------------
+
+def _bc_rows(d, tmp_path, cfg):
+    return {n: s for n, s, _ in d.features(_sdlc(tmp_path, cfg))}
+
+
+def test_features_backlog_check_off_by_default_and_on_when_enabled(tmp_path):
+    d = _doc()
+    assert _bc_rows(d, tmp_path, {})["pre-work backlog cross-check"].startswith("off")   # absent -> off
+    on = _bc_rows(d, tmp_path / "on", {"backlog_check": {"enabled": True}})["pre-work backlog cross-check"]
+    assert on.startswith("ON") and "parks a confident" in on
+    flag = _bc_rows(d, tmp_path / "flag",
+                    {"backlog_check": {"enabled": True, "action": "flag"}})["pre-work backlog cross-check"]
+    assert "flag mode" in flag and "never parks" in flag
+
+
+def test_features_backlog_check_enabled_is_strict_true_not_truthy(tmp_path):
+    d = _doc()
+    # a stringy "true" / 1 must NOT switch a pick-path behavior on
+    assert _bc_rows(d, tmp_path, {"backlog_check": {"enabled": "true"}})["pre-work backlog cross-check"].startswith("off")
+    assert _bc_rows(d, tmp_path / "one", {"backlog_check": {"enabled": 1}})["pre-work backlog cross-check"].startswith("off")
+
+
+def test_features_backlog_check_malformed_block_does_not_crash(tmp_path):
+    d = _doc()
+    assert _bc_rows(d, tmp_path, {"backlog_check": "yes please"})["pre-work backlog cross-check"].startswith("off")
+
+
+def test_check_flags_park_threshold_below_dup_threshold(tmp_path):
+    d = _doc()
+    base = _sdlc(tmp_path, {"backlog_check": {"enabled": True, "dup_threshold": 0.72, "park_threshold": 0.5}})
+    checks = {c["name"]: c for c in d.check(base, run=_runner())}
+    assert checks["backlog cross-check thresholds sane"]["ok"] is False
+    assert "park_threshold" in checks["backlog cross-check thresholds sane"]["fix"]
+
+
+def test_check_does_not_crash_on_a_non_dict_backlog_check_block(tmp_path):
+    d = _doc()
+    base = _sdlc(tmp_path, {"backlog_check": "yes please"})     # malformed -> reads as off, no crash
+    names = {c["name"] for c in d.check(base, run=_runner())}
+    assert "backlog cross-check thresholds sane" not in names
+
+
+def test_check_backlog_thresholds_ok_when_sane_and_absent_when_disabled(tmp_path):
+    d = _doc()
+    sane = _sdlc(tmp_path, {"backlog_check": {"enabled": True, "dup_threshold": 0.72, "park_threshold": 0.8}})
+    assert {c["name"]: c for c in d.check(sane, run=_runner())}["backlog cross-check thresholds sane"]["ok"] is True
+    off = _sdlc(tmp_path / "off", {"backlog_check": {"enabled": False, "park_threshold": 0.1}})
+    assert "backlog cross-check thresholds sane" not in {c["name"] for c in d.check(off, run=_runner())}
+
+
 # --- standing-doc hygiene: the mechanical half of context maintenance -------------------------
 # Rot that a script can settle (a reference that no longer resolves), NOT the judgment half
 # (demoting a rule CI now enforces) — that's sdlc-retro's, because it changes files.
