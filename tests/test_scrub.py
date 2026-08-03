@@ -49,6 +49,6 @@ def test_secret_patterns_stay_in_sync_with_the_research_capture_hook():
     rc_path = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "research_capture.py"
     spec = importlib.util.spec_from_file_location("research_capture", rc_path)
     rc = importlib.util.module_from_spec(spec); spec.loader.exec_module(rc)
-    mine = [(p.pattern, repl) for p, repl in scrub._SECRET_PATTERNS]
-    theirs = [(p.pattern, repl) for p, repl in rc._SECRET_PATTERNS]
+    mine = [(p.pattern, p.flags, repl) for p, repl in scrub._SECRET_PATTERNS]     # flags too: a
+    theirs = [(p.pattern, p.flags, repl) for p, repl in rc._SECRET_PATTERNS]      # DOTALL-only drift counts
     assert mine == theirs, "scrub.py and research_capture.py secret patterns drifted — re-sync them"

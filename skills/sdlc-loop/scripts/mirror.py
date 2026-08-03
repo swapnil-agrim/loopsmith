@@ -147,8 +147,9 @@ def fetch_and_write(sdlc_dir, config=None, run=None, now=None, force=False):
         assignee = gh.get("assignee") or None
         closed_limit = int(mirror_cfg.get("closed_limit", _DEFAULT_CLOSED_LIMIT))   # bad value -> caught below
         repo_args = ["--repo", repo] if repo else []
-        # The open query does NOT drop parked issues (unlike next_pending): a parked goal is still a valid
-        # dedup candidate, so the corpus is a deliberate superset of the loop's actual pick queue.
+        # The open query does NOT apply next_pending's extra parked-label exclusion. In practice `park`
+        # also strips the goal label, so most parked issues fall out of this --label query anyway; one
+        # that is parked-but-still-goal-labelled stays in the corpus as a valid dedup candidate.
         open_args = ["issue", "list", *repo_args, "--label", goal_label, "--state", "open",
                      "--json", _FIELDS, "--limit", str(_OPEN_LIMIT)]
         if assignee:
