@@ -276,3 +276,23 @@ def test_metric_16_a_zero_cap_reads_absent_because_zero_disables_the_cap(conn):
     assert row["status"] == "ABSENT"
     assert row["goals_at_cap_count"] is None
     assert row["mass_at_cap_share"] is None
+
+
+def test_metric_16_a_fractional_cap_truncates_the_way_work_py_does(conn):
+    """DuckDB casts 3.5 to 4 (round-half-to-even); work.py's `int(...)` truncates to 3. Without
+    TRUNC the metric would report a cap one HIGHER than the loop actually enforces -- a silent
+    off-by-one in the exact number this view exists to measure against, which is worse than a
+    crash because it still looks like an answer."""
+    load_metrics(conn)
+    conn.execute(
+        "INSERT INTO dim_project (project_id, config_json) VALUES "
+        "('p_frac', '{\"work\": {\"max_review_cycles\": 3.5}}')"
+    )
+    conn.execute(
+        "INSERT INTO fact_event "
+        "(project_id, goal_id, ts, kind, gate, verdict, cycle, reliability_class) VALUES "
+        "('p_frac', 'g1', '2026-01-01T00:00:01', 'gate', 'post_review', 'block', 3, 2)"
+    )
+    row = rows_as_dicts(conn.execute("SELECT * FROM metric_16"))[0]
+    assert row["cap"] == 3                      # work.py enforces 3, not 4
+    assert row["goals_at_cap_count"] == 1       # so g1 at cycle 3 IS at the cap

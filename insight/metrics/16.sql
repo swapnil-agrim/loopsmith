@@ -43,7 +43,11 @@ project_cap AS (
                 -- this, a project that switched the cap off rendered mass=1.0, status=FAIL -- a
                 -- confident alarm about a mechanism that is not running. Mirrors work.py's own
                 -- falsy-zero semantics rather than inventing a second reading of the same value.
-                THEN NULLIF(TRY_CAST(json_extract(config_json, '$.work.max_review_cycles') AS INTEGER), 0)
+                -- TRUNC via DOUBLE, not a bare cast: DuckDB rounds half-to-even (3.5 -> 4) while
+                -- work.py's `int(...)` truncates toward zero (3.5 -> 3), so a fractional cap
+                -- would render a cap one higher than the one actually enforced -- a silent
+                -- off-by-one in the very number this metric exists to compare against.
+                THEN NULLIF(TRY_CAST(TRUNC(TRY_CAST(json_extract(config_json, '$.work.max_review_cycles') AS DOUBLE)) AS INTEGER), 0)
             ELSE NULL
         END AS cap
     FROM dim_project
