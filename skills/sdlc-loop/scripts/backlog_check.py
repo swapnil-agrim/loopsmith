@@ -2,8 +2,9 @@
 goal, surfaces likely DUPLICATES / BLOCKERS / OBSOLETE-BY-completed-work against the rest of the
 backlog + in-flight team work, so the loop doesn't spend a full Research/Plan cycle on redundant work.
 
-Zero LLM tokens: a stdlib TF-IDF cosine over a candidate set generated from shared rare terms (exact at
-a few-hundred-issue scale — no MinHash/LSH needed), plus an explicit `#N`-reference graph and the team
+Zero LLM tokens: a stdlib TF-IDF cosine over a candidate set of issues that share ≥1 term with the goal
+(rarity then drives the SCORE via idf, not membership) — exact at a few-hundred-issue scale, no
+MinHash/LSH needed — plus an explicit `#N`-reference graph and the team
 ledger. It EMITS EVIDENCE, renders no verdict and takes no action — a later slice's loop hook decides
 whether to park-with-proof or annotate, and only THAT stage may (optionally) hand the top-K flagged
 pairs to an LLM. The lexical index is cheap enough to rebuild each run, so nothing is persisted here;
@@ -109,6 +110,19 @@ def _load_config(sdlc_dir):
         return {}
 
 
+def _num(cfg, key, default):
+    """Coerce a config value to the default's numeric type, falling back to the default on anything
+    bad (a hand-edited `top_k: "all"` or `dup_threshold: "high"` must degrade to the default — not
+    zero out the whole check via the outer catch). `bool` (an int subclass) is treated as unset."""
+    v = cfg.get(key, default)
+    if isinstance(v, bool):
+        return default
+    try:
+        return type(default)(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def _build_corpus(sdlc_dir, config):
     """Returns (docs, degraded). doc = {ref,title,raw,tokens,open,completed,closed_at,source}.
     `open` = a live dedup candidate; `completed` = finished work that can obsolete the goal."""
@@ -119,6 +133,8 @@ def _build_corpus(sdlc_dir, config):
             degraded.append("no_mirror")
         docs = []
         for r in recs:
+            if not isinstance(r, dict):
+                continue                                # a garbage mirror line degrades ONE record, not all
             # the mirror already scrubs, but re-scrub the RAW (case-preserving) text here BEFORE
             # tokenizing: tokens are lowercased, and scrub's shape patterns are case-sensitive, so a
             # secret must be redacted while its case survives — else a lowercased secret token could
@@ -243,10 +259,10 @@ def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measur
     try:
         config = config if config is not None else _load_config(sdlc_dir)
         cfg = config.get("backlog_check") or {}
-        dup_th = cfg.get("dup_threshold", _DEFAULTS["dup_threshold"])
-        obs_th = cfg.get("obsolete_threshold", _DEFAULTS["obsolete_threshold"])
-        park_th = cfg.get("park_threshold", _DEFAULTS["park_threshold"])
-        top_k = int(cfg.get("top_k", _DEFAULTS["top_k"]))
+        dup_th = _num(cfg, "dup_threshold", _DEFAULTS["dup_threshold"])
+        obs_th = _num(cfg, "obsolete_threshold", _DEFAULTS["obsolete_threshold"])
+        park_th = _num(cfg, "park_threshold", _DEFAULTS["park_threshold"])
+        top_k = _num(cfg, "top_k", _DEFAULTS["top_k"])
 
         docs, degraded = _build_corpus(sdlc_dir, config)
         goal_doc = next((d for d in docs if d["ref"] == goal_ref), None)

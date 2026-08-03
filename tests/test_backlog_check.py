@@ -26,9 +26,9 @@ def _gh_base(d, records, **bc):
     return str(base)
 
 
-# clearly-similar pair (shared rare terms) vs a disjoint issue
-_GOAL = "migrate postgres checkpointer onto the aegra store"
-_DUP = "move postgres checkpointer to aegra store backend"
+# clearly-similar pair (shared rare terms) vs a disjoint issue — neutral fixture, no real stack names
+_GOAL = "migrate the widget cache onto the acme storage backend"
+_DUP = "move the widget cache to acme storage"
 _DISTINCT = "restyle the frontend dashboard button colours"
 _LOOSE = {"dup_threshold": 0.4, "obsolete_threshold": 0.4, "closed_window_days": 3650}
 
@@ -155,8 +155,12 @@ def test_secret_shaped_token_never_reaches_the_pack():
     with tempfile.TemporaryDirectory() as d:
         base = _gh_base(d, [_rec(1, _GOAL, body="rotate " + secret),
                             _rec(2, _DUP, body="rotate " + secret)], **_LOOSE)
-        blob = json.dumps(bc.cross_check(base, "1"))
-        assert secret not in blob                        # a shared secret-shaped token is scrubbed from evidence
+        pack = bc.cross_check(base, "1")
+        blob = json.dumps(pack)
+        # CASE-INSENSITIVE: the tokenizer lowercases, so a case-sensitive check would pass even on
+        # reverted (leaky) code where the secret reaches evidence as `akiaabcdefghijklmnop`.
+        assert secret.lower() not in blob.lower()
+        assert any(f["ref"] == "2" for f in pack["findings"])   # the dup WAS found — the evidence path ran
 
 
 def test_fail_open_empty_corpus_and_missing_goal():
@@ -172,6 +176,32 @@ def test_fail_open_never_raises_on_garbage():
     bc = _mod("backlog_check")
     pack = bc.cross_check("/nonexistent/nope", "1")
     assert pack["schema"] == "backlog-check/v1" and pack["findings"] == []
+
+
+def test_github_corpus_skips_a_non_dict_record_not_the_whole_check():
+    # a garbage mirror line (valid JSON, not an object) must degrade ONE record, not zero the check
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "state").mkdir(parents=True)
+        (base / "config.json").write_text(json.dumps({"discovery": {"source": "github"},
+                                                       "backlog_check": _LOOSE}))
+        (base / "state" / "board-mirror.ndjson").write_text(
+            "\n".join([json.dumps(_rec(1, _GOAL)), "null", "42", json.dumps(_rec(2, _DUP))]) + "\n")
+        pack = bc.cross_check(str(base), "1")
+        assert "error" not in pack["degraded"]                       # one bad line didn't zero it
+        assert ("duplicate", "2") in {(f["kind"], f["ref"]) for f in pack["findings"]}
+
+
+def test_bad_config_numeric_falls_back_to_default_not_disabled():
+    # a hand-edited config typo (top_k: "all", dup_threshold: "high") degrades to the DEFAULTS, not an
+    # error. Identical titles (cosine ~1.0) clear the default 0.72 dup_threshold, proving it was applied.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _GOAL)],
+                        dup_threshold="high", top_k="all", closed_window_days=3650)
+        pack = bc.cross_check(base, "1")
+        assert "error" not in pack["degraded"]
+        assert ("duplicate", "2") in {(f["kind"], f["ref"]) for f in pack["findings"]}   # default 0.72 applied
 
 
 def test_candidate_gen_skips_zero_overlap_goal():
@@ -225,6 +255,8 @@ def test_closed_window_days_pinned_and_auto_and_fallback():
     # rate 0 (fresh/non-git) -> fallback 90
     dead = lambda days=30, run=None: {"prs_per_day": 0, "commits_per_day": 0}
     assert bc._closed_window_days({"backlog_check": {"closed_window_days": "auto"}}, velocity_measure=dead) == 90
+    # bool is an int subclass: True must be treated as unset ("auto"), NOT a 1-day window
+    assert bc._closed_window_days({"backlog_check": {"closed_window_days": True}}, velocity_measure=dead) == 90
 
 
 def test_closed_window_days_loads_the_real_velocity_module():

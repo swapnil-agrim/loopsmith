@@ -8,8 +8,9 @@ Second slice of the pre-work backlog cross-check (the mirror was 0.9.20). `backl
 **duplicates / blockers / obsolete-by-completed-work** against the rest of the backlog + in-flight team
 work — so the loop doesn't spend a full Research/Plan cycle on work that's redundant, blocked, or already
 done. It EMITS EVIDENCE and renders no verdict; a later slice's hook decides what to do with it.
-- **Zero LLM tokens.** A stdlib TF-IDF cosine (title weighted 3×) over a candidate set generated from
-  shared rare terms — exact at a few-hundred-issue scale, so no MinHash/LSH and no numpy. Plus an
+- **Zero LLM tokens.** A stdlib TF-IDF cosine (title weighted 3×) over a candidate set of issues that
+  share ≥1 term with the goal (rarity then drives the score via idf) — exact at a few-hundred-issue
+  scale, so no MinHash/LSH and no numpy. Plus an
   explicit `blocked by … #N` graph (high precision: only when N is a real OPEN issue) and the team
   ledger (`open_claims` → a paraphrase a teammate is already working; an outstanding hand-off → a
   recorded blocker). The lexical index is cheap to rebuild each run, so nothing is persisted; the vector
