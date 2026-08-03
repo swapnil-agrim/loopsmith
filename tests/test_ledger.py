@@ -825,6 +825,33 @@ def test_looks_numeric_accepts_ints_and_numeral_strings_rejects_everything_else(
     assert ledger._looks_numeric(None) is False
 
 
+def test_a_numeric_field_stores_what_was_checked_not_what_was_typed(tmp_path):
+    """The predicate normalised the string (`.replace("_", "")`) but the RAW value was written, so
+    20 digits separated by 19 underscores passed a 20-digit check and landed at 39 characters.
+    Third instance of one bug shape: a predicate applied to one representation, enforcement applied
+    to another."""
+    d = _sdlc(tmp_path, ON)
+    ledger.append(d, ON, "phase", "g.md", stream=ledger.EVENTS,
+                  phase="plan", state="start", tokens_in="1_2_3_4_5_6_7_8_9_0_1_2_3_4_5_6_7_8_9_0")
+    written = ledger.read_all(d, stream=ledger.EVENTS)[0]["tokens_in"]
+    assert written == "12345678901234567890"
+    assert len(written) <= ledger.NUMERIC_DIGIT_CAP
+    assert "_" not in written
+
+
+def test_an_enum_field_cannot_carry_prose_even_from_a_direct_append(tmp_path):
+    """append() is the chokepoint, but the enum bucket had NO enforcement here — vocabulary checks
+    live in loop.py's CLI-only _validate_event. No shipped caller passes anything but a constant,
+    which is the same 'safe by convention' pattern that caused two earlier blocks, one level out."""
+    d = _sdlc(tmp_path, ON)
+    payload = "AKIAIOSFODNN7EXAMPLE and a whole paragraph of prose " + "x" * 200
+    ledger.append(d, ON, "scan", "g.md", stream=ledger.EVENTS,
+                  category=payload, file="a.py", count=1)
+    written = ledger.read_all(d, stream=ledger.EVENTS)[0]["category"]
+    assert "AKIAIOSFODNN7EXAMPLE" not in written        # scrubbed
+    assert len(written) <= ledger.BOUNDED_ID_CAP        # and capped: an enum is never prose
+
+
 def test_a_secret_base10_encoded_into_a_numeric_field_does_not_survive(tmp_path):
     """Parsing as an int is NOT a safety check. A secret encoded as one giant integer passes a
     purely syntactic _looks_numeric, so before NUMERIC_DIGIT_CAP it skipped the scrubber and both

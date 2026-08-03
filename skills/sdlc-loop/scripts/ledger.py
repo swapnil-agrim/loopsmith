@@ -240,10 +240,25 @@ FREE_TEXT_CAP = 200
 BOUNDED_ID_CAP = 120
 
 #: Digits a numeric field may carry. A syntactic "parses as an int" check is NOT a safety check:
-#: an arbitrary secret base-10-encoded as one integer parses cleanly, so it would skip the
-#: scrubber and both caps and land raw, recoverable byte-for-byte with int(v).to_bytes(). 20
-#: digits clears a signed 64-bit int, so every real duration, token count, cost and cycle fits
-#: with room to spare, while the encoding channel is too narrow to carry anything worth having.
+#: an arbitrary secret base-10-encoded as one integer parses cleanly, so without a bound it would
+#: skip the scrubber and both caps and land raw, recoverable byte-for-byte with int(v).to_bytes().
+#: 20 digits clears a signed 64-bit int, so every real duration, token count, cost and cycle fits
+#: with room to spare.
+#:
+#: WHAT THIS DOES NOT CLOSE, stated plainly because an earlier version of this comment claimed it
+#: did and that was false. A per-field bound does nothing against a payload SPLIT ACROSS fields: a
+#: `phase` event carries three numeric fields, so ~24 bytes — enough for a whole AWS key — round-
+#: trips in one legitimate `emit` call, and successive events cost nothing. That channel is
+#: inherent to "a bounded numeric field trusts its own digits" and no cap can remove it.
+#:
+#: It is out of scope rather than unsolved, and the threat model is the reason: this control exists
+#: to stop ACCIDENTAL leakage — an error string pasted into a park reason that happens to carry a
+#: token. It is not a boundary against an agent that WANTS to exfiltrate, and it cannot be: that
+#: agent can write `.sdlc/ledger/events/<actor>.jsonl` directly with a shell redirect and skip
+#: every check in this file (see #140's retro, which established the same about the emit
+#: allowlist). Encoding a secret into three token counts is strictly harder than that. The bound
+#: still earns its place — it closes the accidental unbounded-length case and forces deliberate
+#: effort — but it is a guardrail, not a boundary. Filed as part of #248's reliability_class work.
 NUMERIC_DIGIT_CAP = 20
 
 #: Controlled vocabularies from spec §A.3. PHASE_KINDS/GATE_KINDS/REASON_CLASSES exist for
@@ -576,7 +591,30 @@ def append(sdlc_dir, config, kind, goal, run=None, now=None, stream=ENTRIES, **f
                     # (BOUNDED_ID_CAP, not FREE_TEXT_CAP): these are ids/paths, not prose, and a
                     # legitimate one is always short — closes the gap with enforcement, not habit.
                     value = _sanitize_free_text(value, cap=BOUNDED_ID_CAP)
-                elif name in EVENT_NUMERIC_FIELDS.get(kind, ()) and not _looks_numeric(value):
+                elif name in EVENT_ENUM_FIELDS.get(kind, ()):
+                    # POST-REVIEW FIX (round 3): the enum bucket had NO enforcement here at all.
+                    # `gate.verdict` and `phase.state` raise below, and `loop.py`'s `_validate_event`
+                    # vocabulary-checks the agent-typed ones — but that is a CLI-only helper, so a
+                    # direct `append()` call could put 175 chars of secret-laden prose into
+                    # `scan.category` / `slice.mode` / `retro.grade` / `park.reason_class` /
+                    # `phase.phase` and have it written raw. No shipped caller does (they all pass
+                    # hard-coded constants), which is exactly the "safe by convention, one level
+                    # further out" pattern that caused the two earlier blocks. A vocabulary check
+                    # here would reverse #136's deliberate decision to leave phase/gate/reason_class
+                    # unvalidated, so this is the floor instead: an enum can never carry prose,
+                    # whatever a future caller passes.
+                    value = _sanitize_free_text(value, cap=BOUNDED_ID_CAP)
+                elif name in EVENT_NUMERIC_FIELDS.get(kind, ()) and _looks_numeric(value):
+                    # POST-REVIEW FIX (round 3): the predicate normalised the string
+                    # (`.replace("_", "")`) but the RAW value was written, so
+                    # "1_2_3_4_5_6_7_8_9_0_1_2_3_4_5_6_7_8_9_0" passed a 20-digit check and landed
+                    # at 39 characters. Re-stringify through int() so what is stored is what was
+                    # checked — which also normalises leading zeros, padding and sign whitespace.
+                    # Same shape of bug as the two before it: a predicate applied to one
+                    # representation, enforcement applied to another.
+                    if not isinstance(value, bool):
+                        value = type(value)(int(value)) if isinstance(value, int) else str(int(value))
+                elif name in EVENT_NUMERIC_FIELDS.get(kind, ()):
                     # POST-REVIEW FIX (THE LEAK): a declared-numeric field that does not actually
                     # hold a number must never be written raw — this is the reviewer's exact repro
                     # (`tokens_in`/`cycle`/`debt_count` as a secret-bearing string with no literal
