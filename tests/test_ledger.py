@@ -823,6 +823,30 @@ def test_looks_numeric_accepts_ints_and_numeral_strings_rejects_everything_else(
     assert ledger._looks_numeric("-3") is True
     assert ledger._looks_numeric("x" * 200 + "AKIAIOSFODNN7EXAMPLE") is False
     assert ledger._looks_numeric(None) is False
+
+
+def test_a_secret_base10_encoded_into_a_numeric_field_does_not_survive(tmp_path):
+    """Parsing as an int is NOT a safety check. A secret encoded as one giant integer passes a
+    purely syntactic _looks_numeric, so before NUMERIC_DIGIT_CAP it skipped the scrubber and both
+    caps and landed raw — int(v).to_bytes() read it straight back off disk. Also pins the plain
+    unbounded-length hole the same gap opened."""
+    secret = b"AKIAIOSFODNN7EXAMPLE|ghp_ABCDEFGHIJ1234567890ABCD"
+    encoded = str(int.from_bytes(secret, "big"))
+    assert len(encoded) > ledger.NUMERIC_DIGIT_CAP           # the payload is only useful when long
+    assert ledger._looks_numeric(encoded) is False           # so it can never take the raw path
+    assert ledger._looks_numeric("7" * 50000) is False       # 50k digits is not a token count
+    assert ledger._looks_numeric("9" * ledger.NUMERIC_DIGIT_CAP) is True     # a real value still is
+    assert ledger._looks_numeric(2**63 - 1) is True                          # 19 digits, fits
+
+    d = _sdlc(tmp_path, ON)
+    ledger.append(d, ON, "phase", "g.md", stream=ledger.EVENTS,
+                  phase="plan", state="start", tokens_in=encoded)
+    written = ledger.read_all(d, stream=ledger.EVENTS)[0]["tokens_in"]
+    assert encoded not in written
+    # NUMERIC_DIGIT_CAP, not FREE_TEXT_CAP: scrubbing does not touch a digit string, so sanitizing
+    # at the 200-char prose cap still left ~49 recoverable bytes of secret.
+    assert len(written) <= ledger.NUMERIC_DIGIT_CAP
+    assert int.from_bytes(secret, "big").to_bytes(len(secret), "big") not in written.encode()
     assert ledger._looks_numeric("3.5") is False
 
 

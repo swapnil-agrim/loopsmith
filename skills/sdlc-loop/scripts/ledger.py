@@ -239,6 +239,13 @@ FREE_TEXT_CAP = 200
 #: digest (64 chars) is always well under 120; anything longer is already suspicious.
 BOUNDED_ID_CAP = 120
 
+#: Digits a numeric field may carry. A syntactic "parses as an int" check is NOT a safety check:
+#: an arbitrary secret base-10-encoded as one integer parses cleanly, so it would skip the
+#: scrubber and both caps and land raw, recoverable byte-for-byte with int(v).to_bytes(). 20
+#: digits clears a signed 64-bit int, so every real duration, token count, cost and cycle fits
+#: with room to spare, while the encoding channel is too narrow to carry anything worth having.
+NUMERIC_DIGIT_CAP = 20
+
 #: Controlled vocabularies from spec §A.3. PHASE_KINDS/GATE_KINDS/REASON_CLASSES exist for
 #: downstream consumers (ingest, docs, future validation) but are NOT enforced by append() in
 #: #136 — see the "unknown phase/gate/reason_class" decision in the append() docstring.
@@ -435,12 +442,21 @@ def _looks_numeric(value):
     `_validate_event` CLI refusal (which reaches in directly — the same cross-module idiom
     `_scrub_module` above already uses in the other direction, importing `hooks/research_capture`'s
     `_scrub`) so a numeric field's definition of "valid" can never drift between the two
-    enforcement points. Never raises."""
+    enforcement points. Never raises.
+
+    NUMERIC_DIGIT_CAP is the whole point of the second condition, not belt-and-braces. Parsing as
+    an int says nothing about what the digits ENCODE: base-10-encoding a secret as one giant
+    integer — `str(int.from_bytes(b"AKIA...|ghp_...", "big"))`, 118 digits — passes a purely
+    syntactic check, so it skips the scrubber and the cap and lands raw, and `int(v).to_bytes()`
+    reads it straight back off disk. A digit cap closes that channel's bandwidth below anything
+    useful, and closes the plain unbounded-length hole (50k digits written verbatim) in the same
+    stroke. 20 digits clears a signed 64-bit int, so no real ms / tokens / cost / count / cycle
+    value is anywhere near it."""
     try:
         int(value)
-        return True
     except (TypeError, ValueError):
         return False
+    return len(str(value).strip().lstrip("+-").replace("_", "")) <= NUMERIC_DIGIT_CAP
 
 
 def _looks_bool(value):
@@ -571,11 +587,18 @@ def append(sdlc_dir, config, kind, goal, run=None, now=None, stream=ENTRIES, **f
                     # it can neither leak the value nor lose the event. `loop.py`'s
                     # `_validate_event` enforces the same rule again, earlier, at the CLI, where a
                     # loud refusal is possible and safe.
-                    value = _sanitize_free_text(value)
+                    #
+                    # The cap here is NUMERIC_DIGIT_CAP, not FREE_TEXT_CAP, and that is the second
+                    # half of the fix. Scrubbing does not touch a digit string, so a base-10-encoded
+                    # secret sanitized at the 200-char prose cap still survived — 118 digits is ~49
+                    # recoverable bytes. A field declared numeric can never legitimately need more
+                    # room than a number, so it does not get prose's allowance.
+                    value = _sanitize_free_text(value, cap=NUMERIC_DIGIT_CAP)
                 elif name in EVENT_BOOL_FIELDS.get(kind, ()) and not _looks_bool(value):
                     # Same rationale as the numeric branch, for the (currently CLI-unreachable,
-                    # but append()-reachable) bool fields `verify.ok` / `verify.absent`.
-                    value = _sanitize_free_text(value)
+                    # but append()-reachable) bool fields `verify.ok` / `verify.absent`. A bool
+                    # needs even less room than a number, so it borrows the same tight cap.
+                    value = _sanitize_free_text(value, cap=NUMERIC_DIGIT_CAP)
             entry[name] = value
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, sort_keys=True) + "\n")
