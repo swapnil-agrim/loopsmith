@@ -85,6 +85,19 @@ def test_earlier_orders_github_numbers_and_local_paths():
     assert bc._earlier("/a/goals/0001.md", "/b/goals/0002.md") is True          # local: by filename
 
 
+def test_larger_duplicate_cluster_keeps_earliest_in_top_k_window():
+    # a cluster BIGGER than top_k (8) with mixed 1-/2-digit numbers: a lexical candidate tiebreak would
+    # sort 10..17 before 2 and crowd #2 out of #3's window, leaving #3 a wrong SECOND survivor. The
+    # numeric-aware _ref_key keeps #2 in-window, so #3 parks against the true earliest.
+    bc = _mod("backlog_check")
+    nums = [2, 3, 10, 11, 12, 13, 14, 15, 16, 17]
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(n, _GOAL) for n in nums],
+                        dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
+        f = [x for x in bc.cross_check(base, "3")["findings"] if x["ref"] == "2"]
+        assert f and f[0]["confident"] is True          # #3 parks against the earlier #2, not survives
+
+
 def test_confidence_gate_park_vs_annotate():
     bc = _mod("backlog_check")
     # cross-check from the LATER goal (#2) so the earlier dup (#1) is the park-confident match

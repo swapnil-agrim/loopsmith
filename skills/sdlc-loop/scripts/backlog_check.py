@@ -281,7 +281,7 @@ def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measur
             s = _cosine(gvec, _vector(d["tokens"], idf))
             if s > 0:
                 scored.append((s, d))
-        scored.sort(key=lambda x: (-x[0], x[1]["ref"]))
+        scored.sort(key=lambda x: (-x[0], _ref_key(x[1]["ref"])))   # earliest-ref tiebreak, not lexical
 
         findings = []
         for s, d in scored[:top_k]:
@@ -327,13 +327,21 @@ def _stem(ref):
     return pathlib.Path(str(ref)).name          # github ref '42' -> '42'; local path -> filename (win-safe)
 
 
+def _ref_key(ref):
+    """Deterministic ref ordering matching next_pending (numeric issue numbers, THEN filename). Used as
+    the candidate-truncation tiebreak so the top_k window keeps the EARLIEST issues, not the lexically
+    smallest — else in a duplicate cluster larger than top_k, #10..#17 could crowd #2 out of #3's window
+    and #3 would find no earlier match and wrongly survive (a second survivor)."""
+    try:
+        return (0, int(ref), "")
+    except (TypeError, ValueError):
+        return (1, 0, _stem(ref))
+
+
 def _earlier(a, b):
     """Pick order (mirrors next_pending's oldest-first): lower issue number, else earlier filename. Used
     so only the LATER goal of a duplicate pair parks — the first-filed survives and gets worked."""
-    try:
-        return int(a) < int(b)                  # github issue numbers compare numerically
-    except (TypeError, ValueError):
-        return _stem(a) < _stem(b)              # local goal paths compare by filename (glob order)
+    return _ref_key(a) < _ref_key(b)
 
 
 def _phrase(f):
