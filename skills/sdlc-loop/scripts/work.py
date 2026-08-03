@@ -616,9 +616,13 @@ def main(argv):
             # HERE, before dispatch, not inside `post_review()` itself: the two genuinely automatic
             # ledger.append() call sites (a hook's `deny`, an autonomous park) must keep the
             # flatten-only, never-reject treatment `append()` gives every prose field uniformly.
-            if "\n" in kwargs["reason"]:
-                print("work: newline not allowed in --reason (the events stream is single-line "
-                      "only)", file=sys.stderr)
+            # POST-REVIEW FIX (retro item E): this used to hand-write the same "newline not
+            # allowed" wording `loop.py`'s `_validate_event` also hand-writes — the exact "guard
+            # duplicated at call sites instead of chokepointed" shape #141 is about. Now one shared
+            # helper (`ledger.reject_newline`), called from both.
+            newline_error = ledger.reject_newline(kwargs["reason"], "--reason")
+            if newline_error:
+                print(f"work: {newline_error}", file=sys.stderr)
                 return 2
         try:
             print(_COMMANDS[argv[1]](sdlc_dir, config, goal, **kwargs))

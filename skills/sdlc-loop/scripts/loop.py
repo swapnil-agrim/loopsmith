@@ -345,8 +345,19 @@ def _validate_event(kind, flags, kind_allowlist=None):
          must never reject because it also sits behind the three deterministic, fail-open call
          sites (a hook's `deny`, an autonomous park). `emit`/`spend` are synchronous, explicitly-
          typed CLI verbs that already return an exit code for bad input, so a hard rule is safe
-         here specifically.
-      4. out-of-vocabulary VALUES, checked by FIELD name (not by `kind`) for every
+         here specifically. Uses `ledger.reject_newline` — the shared helper `work.py`'s
+         post-review branch also calls, so the two never drift into near-identical hand-written
+         copies of the same rule again.
+      4. POST-REVIEW FIX (THE LEAK): a declared-NUMERIC field whose value does not parse as an
+         int, or a declared-BOOL field whose value isn't a recognised spelling — checked by FIELD
+         name against `ledger.EVENT_NUMERIC_FIELDS[kind]` / `ledger.EVENT_BOOL_FIELDS[kind]`. An
+         independent review proved by execution that `tokens_in`/`cycle`/`debt_count` (declared
+         "safe" only because they weren't prose) were plain CLI strings with ZERO shape
+         enforcement — a payload with no literal newline sailed through with a full secret inside.
+         This is the CLI's clear, actionable half of the fix (exit 2, a usable message); the
+         `append()` chokepoint enforces the same rule again as the fail-open backstop for the call
+         sites that never reach a CLI at all.
+      5. out-of-vocabulary VALUES, checked by FIELD name (not by `kind`) for every
          vocabulary-bearing field present in `flags` — `phase`/`gate`/`verdict`/`grade`/`state`.
          By-field (not by-kind) is what closes finding 1: `EVENT_FIELDS["spend"]` carries a
          `phase` field with the identical `PHASE_KINDS` vocabulary as `phase`-kind events, so a
@@ -361,10 +372,18 @@ def _validate_event(kind, flags, kind_allowlist=None):
     if bad:
         return (f"unknown flag(s) {', '.join(bad)} for kind {kind!r} "
                 f"(expected one of {', '.join(allowed)})")
-    bad_nl = sorted(name for name, v in flags.items() if "\n" in v)
+    bad_nl = [msg for msg in (ledger.reject_newline(v, f"--{n}") for n, v in flags.items()) if msg]
     if bad_nl:
-        return (f"newline not allowed in {', '.join('--' + n for n in bad_nl)} "
-                f"(the events stream is single-line only)")
+        return "; ".join(bad_nl)
+    bad_numeric = sorted(n for n in flags if n in ledger.EVENT_NUMERIC_FIELDS.get(kind, ())
+                          and not ledger._looks_numeric(flags[n]))
+    if bad_numeric:
+        return (f"{', '.join('--' + n for n in bad_numeric)} must be a whole number for kind "
+                f"{kind!r} (the events stream stores counts/durations, not free text)")
+    bad_bool = sorted(n for n in flags if n in ledger.EVENT_BOOL_FIELDS.get(kind, ())
+                       and not ledger._looks_bool(flags[n]))
+    if bad_bool:
+        return (f"{', '.join('--' + n for n in bad_bool)} must be true/false for kind {kind!r}")
     if "phase" in flags and flags["phase"] not in ledger.PHASE_KINDS:
         return (f"unknown phase {flags['phase']!r} "
                 f"(expected one of {', '.join(ledger.PHASE_KINDS)})")

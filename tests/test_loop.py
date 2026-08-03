@@ -967,3 +967,107 @@ def test_emit_and_spend_share_one_validator():
         # Same unknown-flag message shape (kind name + flag name + "expected one of") from both.
         assert "bogus_flag_name" in proc_emit.stderr and "bogus_flag_name" in proc_spend.stderr
         assert "unknown flag" in proc_emit.stderr and "unknown flag" in proc_spend.stderr
+
+
+# ------------------------------------------------------------- post-review fix: THE LEAK, closed
+# An independent PR review BLOCKED #249 by demonstrating, by execution, that a numeric-looking
+# field (`tokens_in`, `cycle`, `debt_count`) accepted ANY string with no literal newline — including
+# one carrying a full secret shape — because nothing on the write path ever checked the VALUE, only
+# whether the field's NAME was on a "safe" list. These four tests are the reviewer's own repro,
+# verbatim in shape, now asserting the opposite outcome: refused, not written.
+
+_LEAK_SECRET_1 = "AKIAIOSFODNN7EXAMPLE"
+_LEAK_SECRET_2 = "ghp_ABCDEFGHIJ1234567890ABCD"
+_LEAK_PAYLOAD = f"prose padding {_LEAK_SECRET_1} more padding {_LEAK_SECRET_2} trailing text"
+assert "\n" not in _LEAK_PAYLOAD          # the whole point: no newline, so the old guard missed it
+
+
+def test_emit_phase_refuses_the_reviewers_leaked_tokens_in_payload(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "phase", "--phase", "plan",
+                      "--state", "start", "--tokens_in", _LEAK_PAYLOAD])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert _LEAK_SECRET_1 not in err and _LEAK_SECRET_2 not in err
+        assert _events(base) == []
+
+
+def test_emit_gate_refuses_the_reviewers_leaked_cycle_payload(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "gate", "--gate", "plan_review",
+                      "--verdict", "warn", "--cycle", _LEAK_PAYLOAD])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert _LEAK_SECRET_1 not in err and _LEAK_SECRET_2 not in err
+        assert _events(base) == []
+
+
+def test_spend_refuses_the_reviewers_leaked_tokens_in_payload(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "spend", base, "10", "g.md", "--tokens_in", _LEAK_PAYLOAD])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert _LEAK_SECRET_1 not in err and _LEAK_SECRET_2 not in err
+        assert _events(base) == []
+        # budget accounting is unconditional and first — same contract as every other spend refusal
+        assert lp.state.load_cursor(base)["run_tokens"] == 10
+
+
+def test_emit_retro_refuses_the_reviewers_leaked_debt_count_payload(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "retro", "--grade", "achieved",
+                      "--debt_count", _LEAK_PAYLOAD])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert _LEAK_SECRET_1 not in err and _LEAK_SECRET_2 not in err
+        assert _events(base) == []
+
+
+def test_emit_still_accepts_a_genuinely_numeric_tokens_in():
+    """The refusal is scoped to non-numeric values only — a legitimate numeric flag must keep
+    working exactly as before this fix."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "phase", "--phase", "plan",
+                      "--state", "start", "--tokens_in", "123"])
+        assert rc == 0
+        evs = _events(base, "phase")
+        assert len(evs) == 1 and evs[0]["tokens_in"] == "123"
+
+
+def test_emit_refuses_a_non_numeric_cycle_with_a_usable_message(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        lp = _loop()
+        rc = lp.main(["loop.py", "emit", base, "g.md", "gate", "--gate", "plan_review",
+                      "--verdict", "warn", "--cycle", "not-a-number"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "cycle" in err and "whole number" in err
+
+
+# ------------------------------------------------------------- post-review fix: shared newline helper
+# Item E from the retrospective: the newline-reject rule was hand-written twice — this file's own
+# `_validate_event` and `work.py`'s post-review branch in `main()` — with near-identical but
+# unshared wording. `ledger.reject_newline` is now the one shared helper both call; the
+# cross-module "same message shape from both" proof lives in test_work.py (it already has the
+# harness — `_sdlc`/`_started` — to drive `work.py post-review` for real), right next to the
+# existing `test_cli_post_review_rejects_a_newline_in_reason`.
+
+
+def test_validate_event_uses_the_shared_reject_newline_helper():
+    """`_validate_event`'s own newline message is exactly `ledger.reject_newline`'s output, per
+    flag — not a separately hand-written string that happens to also say "newline"."""
+    lp = _loop()
+    err = lp._validate_event("gate", {"gate": "plan_review", "verdict": "warn", "why": "a\nb"},
+                             kind_allowlist=lp._EMIT_KINDS)
+    assert err == lp.ledger.reject_newline("a\nb", "--why")

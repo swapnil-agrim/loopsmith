@@ -634,10 +634,14 @@ def test_entries_stream_why_is_untouched(tmp_path):
 
 
 def test_scan_file_and_slice_slice_are_not_in_the_declared_set():
-    """Pins Decision 4's 'declared safe' calls (amendment D: by convention, not enforcement) so a
-    later change can't silently start truncating a path or an id."""
+    """`file`/`slice` are ids and short paths, not prose — they must never get the PROSE cap/scrub
+    treatment (FREE_TEXT_CAP=200, the `why`/`model` cap). Post-review fix: they are NOT unbounded
+    either any more — see EVENT_BOUNDED_ID_FIELDS and BOUNDED_ID_CAP for their own, shorter,
+    enforced cap+scrub, distinct from this prose set."""
     assert "file" not in ledger.EVENT_FREE_TEXT_FIELDS.get("scan", ())
     assert "slice" not in ledger.EVENT_FREE_TEXT_FIELDS.get("slice", ())
+    assert "file" in ledger.EVENT_BOUNDED_ID_FIELDS.get("scan", ())
+    assert "slice" in ledger.EVENT_BOUNDED_ID_FIELDS.get("slice", ())
 
 
 def test_event_free_text_fields_is_the_declared_set():
@@ -693,6 +697,21 @@ def test_sanitize_free_text_flattens_scrubs_and_caps_directly():
     assert "AKIAIOSFODNN7EXAMPLE" not in scrubbed and "[REDACTED" in scrubbed
 
 
+def test_sanitize_free_text_never_raises_on_hostile_input_shapes():
+    """Hard constraint: `_sanitize_free_text` must NEVER raise, whatever lands in it — `append()`
+    sits behind the three deterministic, fail-open call sites (a hook's `deny`, an autonomous
+    park) and must stay exception-safe no matter what a future caller hands it."""
+    for value in (None, 42, True, b"\x00\x01raw-bytes", {"a": 1}, [1, 2, 3], "x" * (10 * 1024 * 1024)):
+        result = ledger._sanitize_free_text(value)
+        assert isinstance(result, str)
+        assert len(result) <= ledger.FREE_TEXT_CAP
+    # the shorter bounded-id cap must never raise either, for the same set of hostile shapes
+    for value in (None, 42, b"\x00", {"a": 1}, [1, 2, 3]):
+        result = ledger._sanitize_free_text(value, cap=ledger.BOUNDED_ID_CAP)
+        assert isinstance(result, str)
+        assert len(result) <= ledger.BOUNDED_ID_CAP
+
+
 def test_sanitize_free_text_never_raises_when_the_scrub_module_is_unreachable(monkeypatch):
     """Fail-open even past the scrub load itself: a broken/missing hooks/research_capture.py must
     degrade to flatten+cap only, never raise — this is what keeps append() safe for the three
@@ -739,3 +758,186 @@ def test_files_declared_is_an_int_not_a_list(tmp_path):
     e = ledger.append(d, ON, "slice", "g.md", stream="events", slice="a", wave=1, mode="subagent",
                       files_declared=3)
     assert isinstance(e["files_declared"], int) and e["files_declared"] == 3
+
+
+# ----------------------------------------------------------------- post-review fix: VALUE TYPES
+# An independent PR review BLOCKED #249, proving by execution that the prose/non-prose binary above
+# labels every field safe-or-not but never PROVES a "non-prose" label is true. `tokens_in`, `cycle`,
+# `debt_count` etc. were plain CLI strings with zero shape enforcement anywhere on the write path —
+# a payload with no literal newline sailed through untouched. The fix: every non-prose field now
+# carries a declared VALUE TYPE (numeric/bool/enum/bounded-id), enforced — not just labelled — at
+# the `append()` chokepoint (this section) and, redundantly, at the CLI (`test_loop.py`).
+
+
+def test_event_numeric_fields_matches_the_non_prose_set_minus_bool_enum_and_bounded_id():
+    """The four typed buckets (numeric/bool/enum/bounded_id) must partition EVENT_NON_PROSE_FIELDS
+    exactly — proof the new fine-grained classification didn't silently drop or duplicate a field
+    the coarse guard already confirmed was non-prose."""
+    for kind in ledger.EVENT_KINDS:
+        safe = set(ledger.EVENT_NON_PROSE_FIELDS.get(kind, ()))
+        typed = (set(ledger.EVENT_NUMERIC_FIELDS.get(kind, ())) |
+                 set(ledger.EVENT_BOOL_FIELDS.get(kind, ())) |
+                 set(ledger.EVENT_ENUM_FIELDS.get(kind, ())) |
+                 set(ledger.EVENT_BOUNDED_ID_FIELDS.get(kind, ())))
+        assert typed == safe, f"{kind!r}: typed {typed} != non-prose {safe}"
+
+
+def test_type_completeness_guard_fails_on_a_field_with_no_declared_type():
+    """THE mutation proof. A type check alone can't catch a forgotten field (a forgotten numeric
+    field is still a plain str, same as a properly-declared one) — only an explicit, exhaustive
+    allowlist that fails CLOSED can. Mutate a copy of EVENT_NON_PROSE_FIELDS to add a field none of
+    the four type maps mention, and confirm the guard the module runs at import time rejects it."""
+    broken_non_prose = dict(ledger.EVENT_NON_PROSE_FIELDS)
+    broken_non_prose["retro"] = broken_non_prose["retro"] + ("untyped_field",)
+    with pytest.raises(AssertionError, match="no declared VALUE TYPE"):
+        ledger._assert_non_prose_fields_are_typed(
+            ledger.EVENT_KINDS, broken_non_prose,
+            {"numeric": ledger.EVENT_NUMERIC_FIELDS, "bool": ledger.EVENT_BOOL_FIELDS,
+             "enum": ledger.EVENT_ENUM_FIELDS, "bounded_id": ledger.EVENT_BOUNDED_ID_FIELDS})
+
+
+def test_type_completeness_guard_passes_on_the_real_declared_maps():
+    """The real, shipped maps must NOT trip the guard — proves the mutation test above is
+    exercising a real failure mode, not a check that always fails."""
+    ledger._assert_non_prose_fields_are_typed(
+        ledger.EVENT_KINDS, ledger.EVENT_NON_PROSE_FIELDS,
+        {"numeric": ledger.EVENT_NUMERIC_FIELDS, "bool": ledger.EVENT_BOOL_FIELDS,
+         "enum": ledger.EVENT_ENUM_FIELDS, "bounded_id": ledger.EVENT_BOUNDED_ID_FIELDS})
+
+
+def test_type_completeness_guard_fails_when_a_field_is_claimed_by_two_types():
+    """A field must have EXACTLY one type — declaring it in two buckets is as much a
+    classification bug as declaring it in none, so the guard must reject that too."""
+    broken_numeric = dict(ledger.EVENT_NUMERIC_FIELDS)
+    broken_numeric["retro"] = broken_numeric["retro"] + ("grade",)   # grade is already enum
+    with pytest.raises(AssertionError):
+        ledger._assert_non_prose_fields_are_typed(
+            ledger.EVENT_KINDS, ledger.EVENT_NON_PROSE_FIELDS,
+            {"numeric": broken_numeric, "bool": ledger.EVENT_BOOL_FIELDS,
+             "enum": ledger.EVENT_ENUM_FIELDS, "bounded_id": ledger.EVENT_BOUNDED_ID_FIELDS})
+
+
+def test_looks_numeric_accepts_ints_and_numeral_strings_rejects_everything_else():
+    assert ledger._looks_numeric(10) is True
+    assert ledger._looks_numeric("10") is True
+    assert ledger._looks_numeric("-3") is True
+    assert ledger._looks_numeric("x" * 200 + "AKIAIOSFODNN7EXAMPLE") is False
+    assert ledger._looks_numeric(None) is False
+    assert ledger._looks_numeric("3.5") is False
+
+
+def test_looks_bool_accepts_real_bools_and_recognised_spellings():
+    assert ledger._looks_bool(True) is True
+    assert ledger._looks_bool(False) is True
+    assert ledger._looks_bool("true") is True
+    assert ledger._looks_bool("False") is True
+    assert ledger._looks_bool("maybe") is False
+    assert ledger._looks_bool("x" * 200 + "AKIAIOSFODNN7EXAMPLE") is False
+
+
+def test_append_sanitizes_a_secret_bearing_non_numeric_value_in_a_declared_numeric_field(tmp_path):
+    """THE LEAK, closed at the chokepoint (defense in depth beyond the CLI refusal — `append()` is
+    reached directly by call sites that never go through the CLI: slices.py, pipeline.py,
+    work.py's post_review, verify_goal). A declared-numeric field (`tokens_in`) given a secret-
+    bearing, non-numeric, NEWLINE-FREE string — exactly the reviewer's repro shape — must be
+    sanitised (scrub+cap), never written raw, and append() must never raise: the three
+    deterministic fail-open call sites (a hook's `deny`, an autonomous park) depend on that."""
+    d = _sdlc(tmp_path, ON)
+    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    payload = "leaked key " + SECRET + (" filler" * 40)
+    assert "\n" not in payload
+    e = ledger.append(d, ON, "phase", "g.md", stream="events", phase="plan", state="start",
+                      tokens_in=payload)
+    assert SECRET not in e["tokens_in"]
+    assert "[REDACTED" in e["tokens_in"]
+    assert len(e["tokens_in"]) <= ledger.FREE_TEXT_CAP
+
+
+def test_append_leaves_a_genuinely_numeric_value_untouched(tmp_path):
+    """The other half: a legitimate numeric string must NOT be mangled by the new check — it is
+    written through exactly as before, matching what `_flags` always hands `append()` (a string)."""
+    d = _sdlc(tmp_path, ON)
+    e = ledger.append(d, ON, "phase", "g.md", stream="events", phase="plan", state="start",
+                      tokens_in="42")
+    assert e["tokens_in"] == "42"
+
+
+def test_append_never_raises_on_a_non_numeric_dict_or_bytes_in_a_numeric_field(tmp_path):
+    """append() must never raise, whatever garbage lands in a declared-numeric field — a dict, a
+    list, bytes, all sanitise cleanly instead of blowing up the fail-open call sites."""
+    d = _sdlc(tmp_path, ON)
+    for garbage in ({"a": 1}, [1, 2, 3], b"\x00\x01raw-bytes"):
+        e = ledger.append(d, ON, "phase", "g.md", stream="events", phase="plan", state="start",
+                          tokens_in=garbage)
+        assert isinstance(e["tokens_in"], str)
+
+
+def test_append_sanitizes_a_non_boolean_value_in_a_declared_bool_field(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    e = ledger.append(d, ON, "verify", "g.md", stream="events", ok=f"nope {SECRET}", exit=1)
+    assert SECRET not in e["ok"] and "[REDACTED" in e["ok"]
+
+
+def test_append_leaves_a_real_bool_untouched(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    e = ledger.append(d, ON, "verify", "g.md", stream="events", ok=True, exit=0)
+    assert e["ok"] is True
+
+
+# ----------------------------------------------------------------- post-review fix: bounded ids
+
+
+def test_append_scrubs_and_caps_a_secret_bearing_slice_id(tmp_path):
+    """Secondary finding: `slice.slice` was 'safe by convention' only — `slices.py` copies an
+    agent-authored plan `id` verbatim with no length/shape check, so `slice="id-with-secret-
+    AKIA..."` wrote unredacted at the append() layer. Now enforced like every other bounded
+    identifier: scrub + a short cap (BOUNDED_ID_CAP), closing the gap with code, not convention."""
+    d = _sdlc(tmp_path, ON)
+    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    e = ledger.append(d, ON, "slice", "g.md", stream="events",
+                      slice=f"id-with-secret-{SECRET}", wave=1, mode="subagent", files_declared=1)
+    assert SECRET not in e["slice"]
+    assert "[REDACTED" in e["slice"]
+    assert len(e["slice"]) <= ledger.BOUNDED_ID_CAP
+
+
+def test_append_caps_a_long_scan_file_path_at_the_bounded_id_cap(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    e = ledger.append(d, ON, "scan", "(discovery-scan)", stream="events",
+                      category="tech-debt", file="x" * 300, count=1)
+    assert len(e["file"]) <= ledger.BOUNDED_ID_CAP
+
+
+def test_append_caps_command_sha256_at_the_bounded_id_cap_but_leaves_a_real_hash_untouched(tmp_path):
+    """A real sha256 hex digest (64 chars) is well under BOUNDED_ID_CAP (120) and has no secret
+    shape, so it must survive byte-for-byte — the same regression pin as
+    `test_command_sha256_never_carries_the_raw_command_in_a_verify_event`, now under the new
+    bounded-id enforcement path instead of the old untouched-by-convention one."""
+    import hashlib
+    d = _sdlc(tmp_path, ON)
+    digest = hashlib.sha256(b"echo hello").hexdigest()
+    e = ledger.append(d, ON, "verify", "g.md", stream="events", ok=True, exit=0,
+                      command_sha256=digest)
+    assert e["command_sha256"] == digest
+
+
+def test_bounded_id_cap_is_short_not_the_prose_cap():
+    """Pins the two caps as deliberately different — BOUNDED_ID_CAP exists specifically because an
+    id/path is not prose and should be capped shorter than FREE_TEXT_CAP."""
+    assert ledger.BOUNDED_ID_CAP < ledger.FREE_TEXT_CAP
+
+
+# ----------------------------------------------------------------- post-review fix: shared newline helper
+
+
+def test_reject_newline_returns_none_for_a_clean_value():
+    assert ledger.reject_newline("clean single line", "--reason") is None
+
+
+def test_reject_newline_names_the_field_and_says_why():
+    msg = ledger.reject_newline("a\nb", "--reason")
+    assert msg is not None
+    assert "--reason" in msg
+    assert "newline" in msg
+    assert "single-line" in msg

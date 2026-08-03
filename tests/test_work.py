@@ -730,6 +730,23 @@ def test_cli_post_review_accepts_a_single_line_reason(tmp_path, capsys, monkeypa
     assert "posted loopsmith:block" in capsys.readouterr().out
 
 
+def test_cli_post_review_newline_message_matches_loop_pys_shared_helper(tmp_path, capsys):
+    """POST-REVIEW FIX (retrospective item E): the newline-reject rule used to be hand-written
+    TWICE — here in `work.py`'s `main()`, and again in `loop.py`'s `_validate_event` — with near-
+    identical but unshared wording. Both now call the ONE shared `ledger.reject_newline(value,
+    label)` helper in `ledger.py`. This proves `work.py`'s real CLI output for a newline in
+    `--reason` is exactly what that shared helper produces — not a second hand-written string that
+    merely happens to also contain the word "newline" — closing the drift a fourth CLI verb could
+    otherwise reintroduce."""
+    d = _sdlc(tmp_path); goal = _started(d)
+    rc = work.main(["work.py", "post-review", d, goal, "--verdict", "block",
+                     "--reason", "line one\nline two"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    expected = work.ledger.reject_newline("line one\nline two", "--reason")
+    assert err == f"work: {expected}\n"
+
+
 # --------------------------------------------------------------------------- #139 Slice 2: events
 # Site c (post_review -> gate{post_review}), site d (gate/merge -> gate{merge}), site e
 # (review_gate -> gate{code_review}). All need ledger.enabled AND telemetry.enabled — the Slice 0
