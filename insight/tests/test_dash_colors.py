@@ -5,6 +5,8 @@ CSS engine, so the validated palette and the resolved-hex contrast table are har
 durable proof, not re-derived at test time."""
 import re
 
+import pytest
+
 from insight.dash import render as dash_render
 from insight.dash.colors import (
     ALL_PAIRS_CAP,
@@ -201,6 +203,22 @@ def test_not_measured_texture_is_default_visible_not_gated():
     # not appear inside ANY @media block.
     for block in _top_level_media_blocks(css):
         assert ".data-state-not-measured" not in block
+
+
+@pytest.mark.parametrize("empty_provenance", ["", "   ", "\t\n"])
+def test_not_measured_block_rejects_empty_provenance(empty_provenance):
+    # PR review finding 5 on issue #262/D1: spec Sec.2 requires "a monospace provenance line
+    # naming the missing writer" -- an empty/whitespace-only string satisfies the call signature
+    # while rendering a hollow <code></code> that defeats the requirement. A real exception, not
+    # a bare `assert` (which vanishes under `python -O`).
+    with pytest.raises(ValueError):
+        not_measured_block("explain", empty_provenance)
+
+
+@pytest.mark.parametrize("empty_provenance", ["", "   ", "\t\n"])
+def test_not_measured_svg_rejects_empty_provenance(empty_provenance):
+    with pytest.raises(ValueError):
+        not_measured_svg("explain", empty_provenance)
 
 
 def test_not_measured_svg_and_not_measured_block_pass_assert_self_contained():

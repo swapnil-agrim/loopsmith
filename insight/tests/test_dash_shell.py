@@ -6,6 +6,7 @@ import re
 
 from insight.dash.colors import viz_css_vars
 from insight.dash.shell import base_style
+from insight.tests.test_dash_no_bare_spacing_or_font_size import _assert_no_bare_literal
 
 _HEX_ANYWHERE = re.compile(r'#[0-9a-fA-F]{3,6}\b')
 
@@ -34,25 +35,15 @@ def test_base_style_carries_the_five_common_rule_groups():
 # --------------------------------------------------------------------------- issue #262 (D1),
 # Step 9: a generalization of test_base_style_page_specific_rules_contain_no_literal_hex above --
 # same "subtract viz_css_vars()'s own output" technique, scanning what remains for a bare
-# font-size/spacing literal not already routed through a `var(--dash-...)` token. A small,
-# explicit allowlist documents Design decision 5's named exceptions rather than silently
-# special-casing them.
-
-#: Design decision 5's named exceptions, kept as literals on purpose (not a forced fit):
-#: `10px` (th/td horizontal padding, no scale neighbour within 2px), `10rem` (stat-tile
-#: min-width, a component sizing constraint not a spacing-between-elements value), `100%`
-#: (table width, a layout keyword/percentage, not a spacing-scale value at all).
-_ALLOWLISTED_BARE_LITERALS = ("10px", "10rem", "100%")
-
-_BARE_SIZE_LITERAL = re.compile(r'\b\d+(?:\.\d+)?(?:px|rem|em)\b')
+# font-size/spacing literal not already routed through a `var(--dash-...)` token.
+#
+# The allowlist (Design decision 5's named exceptions: `10px` th/td padding, `10rem` stat-tile
+# min-width, `100%` table width), its literal regex, and the match-then-filter scan logic are
+# defined ONCE in test_dash_no_bare_spacing_or_font_size.py and imported above (PR review finding
+# 3 on issue #262/D1: this file used to independently redefine all three, which that module's own
+# docstring claimed -- incorrectly -- was centralized "in one place").
 
 
 def test_base_style_page_specific_rules_contain_no_bare_font_size_or_spacing_literal():
     page_specific = base_style().replace(viz_css_vars(), "")
-    for allowed in _ALLOWLISTED_BARE_LITERALS:
-        page_specific = page_specific.replace(allowed, "")
-    matches = _BARE_SIZE_LITERAL.findall(page_specific)
-    assert not matches, (
-        f"base_style()'s page-specific rules hardcode a font-size/spacing literal not routed "
-        f"through a var(--dash-...) token: {matches}"
-    )
+    _assert_no_bare_literal(page_specific, "base_style()'s page-specific rules")

@@ -44,6 +44,8 @@ and never re-exported raw -- `fonts.py` holds base64 *data*, every actual design
 font, what size, what CSS variable name) stays here (Decision 2).
 """
 import html
+import re
+import sys
 
 from insight.dash.fonts import FONT_MONO_WOFF2_BASE64, FONT_SANS_WOFF2_BASE64
 from insight.gaps.severity import SEVERITY_ORDER  # never re-derived; KeyError if it drifts
@@ -283,12 +285,30 @@ def texture_defs(id_prefix="dash"):
 # state's primary at-a-glance signal spec Sec.2's judged_when needs actually perceived, so it
 # needs a token that clears 3:1 alone -- ink2 already does (see CONTRAST_PAIRS below).
 
-def not_measured_block(explain_text, provenance, id_prefix="dash"):
+def not_measured_block(explain_text, provenance):
     """The not_measured primitive (issue #262/D1; spec Sec.2's own "Decision"). Hatched fill
     (DEFAULT-VISIBLE -- .data-state-not-measured's background-image, never gated behind
     forced-colors/print the way STATUS['ABSENT']'s .dash-texture-a11y is, per S3) + dashed border
     + the words "not measured" at body weight (class="not-measured-label", NEVER a numeral) + a
-    mandatory monospace provenance line naming the missing writer."""
+    mandatory monospace provenance line naming the missing writer.
+
+    Unlike status_mark()/texture_defs()/not_measured_svg(), this function takes no `id_prefix`:
+    it emits only fixed class names (no `id="..."` attribute, no `var(--{id_prefix}-...)`
+    reference anywhere in its output), so there is nothing here for a prefix to scope -- two
+    `not_measured_block()`s on the same page cannot collide the way two `id`-bearing SVG
+    fragments could. See PR review finding 4 on issue #262/D1: an earlier draft accepted and
+    silently ignored an `id_prefix` parameter, a trap for a caller who could not tell it was a
+    no-op without reading the source.
+
+    Raises ValueError if `provenance` is empty or whitespace-only -- spec Sec.2 requires "a
+    monospace provenance line naming the missing writer"; an empty string renders a hollow
+    `<code></code>` that satisfies the call signature while defeating that requirement. A bare
+    `assert` would vanish under `python -O`, so this is a real exception."""
+    if not provenance or not provenance.strip():
+        raise ValueError(
+            "not_measured_block() requires a non-empty provenance naming the missing writer "
+            "(spec Sec.2) -- got an empty/whitespace-only string"
+        )
     return (
         f'<div class="data-state-not-measured">'
         f'<p class="not-measured-label">not measured</p>'
@@ -302,7 +322,15 @@ def not_measured_svg(explain_text, provenance, id_prefix="dash", w=480, h=100):
     """SVG-context sibling of not_measured_block(), for chart-shaped call sites (mirrors
     _absent_svg's own split in insight.dash.charts). Same hatch pattern id family as
     texture_defs(), but a SEPARATE pattern id (f"{id_prefix}-not-measured-hatch") and rendered
-    always-on -- never gated behind .dash-texture-a11y."""
+    always-on -- never gated behind .dash-texture-a11y.
+
+    Raises ValueError if `provenance` is empty or whitespace-only -- see not_measured_block()'s
+    docstring for why; the same requirement applies here (spec Sec.2)."""
+    if not provenance or not provenance.strip():
+        raise ValueError(
+            "not_measured_svg() requires a non-empty provenance naming the missing writer "
+            "(spec Sec.2) -- got an empty/whitespace-only string"
+        )
     pid = f"{id_prefix}-not-measured-hatch"
     return (
         f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" role="img" '
@@ -432,13 +460,59 @@ CONTRAST_PAIRS = [
 ]
 
 
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{3,8}$")
+
+
+def _is_hex(value):
+    return isinstance(value, str) and bool(_HEX_RE.match(value))
+
+
+def _is_light_dark_leaf(value):
+    """True for a dict shaped like {"light": "#...", "dark": "#...", ...} -- the shape STATUS's
+    and CHROME's per-key dicts, and CATEGORICAL's per-entry dicts, all share (extra keys like
+    "icon"/"label"/"name" are ignored). This is the actual structural signature of "a colour
+    token", not a naming convention."""
+    return isinstance(value, dict) and _is_hex(value.get("light")) and _is_hex(value.get("dark"))
+
+
 def _all_exported_color_tokens():
+    """Derived generically from this module's own top-level constants -- NOT a hand-enumerated
+    list of the four containers that happened to exist when this was first written (PR review
+    finding 1 on issue #262/D1: a hand-enumerated list is defeated by any NEW colour-bearing
+    container, since it is simply never mentioned here). Two structural shapes are recognized,
+    matching every colour container this module actually defines:
+
+    1. A dict (STATUS, CHROME, or any future sibling) or a list (CATEGORICAL, or any future
+       sibling) whose entries are `_is_light_dark_leaf()` dicts -> one token per entry, named
+       "NAME.key" (dict) or "NAME[index]" (list).
+    2. A `*_LIGHT`/`*_DARK` pair of same-length lists of bare hex strings (SEQUENTIAL_BLUE_LIGHT/
+       _DARK, or any future sequential-ramp sibling) -- a genuinely different shape (no "light"/
+       "dark" *keys* to sniff, since the two modes are two whole lists), so paired by name
+       instead -> one token per index, named "BASE[index]".
+
+    Adding a brand-new top-level dict/list that matches either shape is picked up automatically,
+    with no edit needed here -- that is what makes the registry mechanical rather than a
+    hardcoded list that rots (see test_every_exported_color_token_has_a_registered_contrast_
+    pairing, which fails loudly for any token this misses)."""
+    mod = vars(sys.modules[__name__])
     names = set()
-    names |= {f"STATUS.{k}" for k in STATUS}
-    names |= {f"CATEGORICAL[{i}]" for i in range(len(CATEGORICAL))}
-    names |= {f"SEQUENTIAL_BLUE[{i}]" for i in range(_SEQ_STEPS)}
-    names |= {f"CHROME.{k}" for k in CHROME}
-    names |= {"CHROME.on-status"}  # synthesized in viz_css_vars(), not a CHROME dict key
+    for attr_name, value in mod.items():
+        if attr_name.startswith("_") or not attr_name.isupper():
+            continue
+        if isinstance(value, dict):
+            names |= {f"{attr_name}.{k}" for k, v in value.items() if _is_light_dark_leaf(v)}
+        elif isinstance(value, list) and value and all(_is_light_dark_leaf(v) for v in value):
+            names |= {f"{attr_name}[{i}]" for i in range(len(value))}
+    for attr_name, value in mod.items():
+        if not (attr_name.endswith("_LIGHT") and isinstance(value, list)):
+            continue
+        if not (value and all(_is_hex(v) for v in value)):
+            continue
+        base = attr_name[: -len("_LIGHT")]
+        dark_value = mod.get(f"{base}_DARK")
+        if isinstance(dark_value, list) and len(dark_value) == len(value):
+            names |= {f"{base}[{i}]" for i in range(len(value))}
+    names.add("CHROME.on-status")  # synthesized in viz_css_vars(), not a CHROME dict key
     return names
 
 
