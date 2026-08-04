@@ -48,3 +48,30 @@ jobs:
         run: python -m pip install -e insight/
       - name: pytest + coverage, scoped to insight/ only
         run: python -m pytest insight/tests/ -q --cov=insight --cov-report=term-missing --cov-fail-under=85
+
+  # Required alongside test (3.10)/(3.12) and insight (3.10)/(3.12) once branch protection is updated
+  # out-of-band (issue #295's PR records the exact `gh api` PUT for a human to run — this session's
+  # `gh api`/`gh pr view` are denied, the same shape as the `insight` job's not-yet-required footnote
+  # above for #167). Runs scripts/verify_web.py, the SAME script `.sdlc/config.json`'s verify.command
+  # calls (that file is gitignored — see the PR body for the out-of-band edit it also needs) — CI and
+  # the local gate read one definition of "the web checks", so they cannot drift from each other.
+  # Pre-E17.S1 there is no insight/web/package.json yet: verify_web.py SKIPs loudly and exits 0 rather
+  # than silently passing something it never ran.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup-node (cached — once insight/web/package-lock.json exists)
+        if: hashFiles('insight/web/package-lock.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: insight/web/package-lock.json
+      - name: setup-node (no cache yet — insight/web/ not landed, E17.S1)
+        if: hashFiles('insight/web/package-lock.json') == ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: web checks (type-check, lint, unit tests, build) via scripts/verify_web.py
+        run: python3 scripts/verify_web.py
