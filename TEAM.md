@@ -11,6 +11,8 @@ _Nothing is blocked on another person._
 
 | when | who | did | goal | detail |
 |---|---|---|---|---|
+| 2026-08-04T12:34:34Z | swapnil-agrim | claimed | 297 |  |
+| 2026-08-04T12:34:04Z | swapnil-agrim | done | 296 |  |
 | 2026-08-04T12:33:20Z | swapnil-agrim | merged | 296 | auto-merge (squash) armed on PR #322 |
 | 2026-08-04T10:55:19Z | swapnil-agrim | claimed | 296 |  |
 | 2026-08-04T10:54:57Z | swapnil-agrim | parked | 295 | PR #321 merged (77b39c1) — the machinery landed and the LOCAL gate was watched failing on all four checks. Two of the four Done-when clauses need a human with repo-admin gh access, which this session does not have (gh api and gh pr view are denied by the host permission layer): (1) 'web' is NOT yet a REQUIRED check on main — read protection first, then add the context, the repo's own records disagree on whether 2 or 4 are required today (.sdlc/config.json:73 vs OVERNIGHT.md:116); (2) GitHub's own web job has never been observed going red. The exact read-then-write gh commands are in PR #321's evidence comment. Until that runs, the job is advisory: this goal added the job, not the requirement. |
@@ -34,5 +36,3 @@ _Nothing is blocked on another person._
 | 2026-08-04T00:53:34Z | swapnil-agrim | claimed | 263 |  |
 | 2026-08-04T00:53:14Z | swapnil-agrim | done | 262 |  |
 | 2026-08-04T00:44:41Z | swapnil-agrim | merged | 262 | auto-merge (squash) armed on PR #273 |
-| 2026-08-03T23:08:28Z | swapnil-agrim | claimed | 262 |  |
-| 2026-08-03T23:08:09Z | swapnil-agrim | done | 147 |  |
