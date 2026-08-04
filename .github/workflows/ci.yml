@@ -24,11 +24,15 @@ jobs:
       - name: quality gate (Tier-1 behavioral drift vs baseline)
         run: python3 evals/run.py
 
-  # NOT a required status check yet — branch protection lists only test (3.10)/(3.12), so this job
-  # is advisory and `work.auto_merge: protected` would merge a PR whose insight tests failed.
-  # Tracked as issue #167, which cannot land inside this change: protection is out-of-band repo
-  # config that cannot be committed atomically with a diff, and requiring a check before the job
-  # exists on main would strand main if this PR were ever closed unmerged.
+  # Required alongside test (3.10)/(3.12): branch protection requires FIVE contexts — test
+  # (3.10), test (3.12), insight (3.10), insight (3.12), web — all with strict: true, verified
+  # live against the repo's branch-protection API on 2026-08-04 (issue #297 comment 2). The
+  # previous footnote here claimed this job was advisory pending issue #167; #167 is closed,
+  # protection was corrected without a tracking issue, and the stale claim survived long enough
+  # to become actively wrong. Nothing currently re-verifies this fact if it drifts again — that
+  # residual risk is accepted, not solved, by this correction. (The `web` job below made the same
+  # stale claim in its own header comment; both are fixed together here, stated once, so the two
+  # cannot drift apart into two different paraphrases again.)
   insight:
     # Separate job, separate coverage gate (spec §1.1 rule 2 / issue #96, E0.S3): insight/ has its
     # own deps (duckdb) that the plugin job above must never need, and an insight/ test failure
@@ -49,14 +53,14 @@ jobs:
       - name: pytest + coverage, scoped to insight/ only
         run: python -m pytest insight/tests/ -q --cov=insight --cov-report=term-missing --cov-fail-under=85
 
-  # Required alongside test (3.10)/(3.12) and insight (3.10)/(3.12) once branch protection is updated
-  # out-of-band (issue #295's PR records the exact `gh api` PUT for a human to run — this session's
-  # `gh api`/`gh pr view` are denied, the same shape as the `insight` job's not-yet-required footnote
-  # above for #167). Runs scripts/verify_web.py, the SAME script `.sdlc/config.json`'s verify.command
-  # calls (that file is gitignored — see the PR body for the out-of-band edit it also needs) — CI and
-  # the local gate read one definition of "the web checks", so they cannot drift from each other.
-  # Pre-E17.S1 there is no insight/web/package.json yet: verify_web.py SKIPs loudly and exits 0 rather
-  # than silently passing something it never ran.
+  # Required alongside test (3.10)/(3.12) and insight (3.10)/(3.12) — see the `insight` job's
+  # comment above for the corrected, five-context fact (this job is one of the five); it is stated
+  # there once, in full, rather than repeated here as a second paraphrase that could drift from it.
+  # Runs insight/verify_web.py, the SAME script `.sdlc/config.json`'s verify.command calls (that
+  # file is gitignored — see the PR body for the out-of-band edit it also needs) — CI and the local
+  # gate read one definition of "the web checks", so they cannot drift from each other. Pre-E17.S1
+  # there is no insight/web/package.json yet: verify_web.py SKIPs loudly and exits 0 rather than
+  # silently passing something it never ran.
   web:
     runs-on: ubuntu-latest
     steps:
@@ -73,5 +77,5 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: web checks (type-check, lint, unit tests, build) via scripts/verify_web.py
-        run: python3 scripts/verify_web.py
+      - name: web checks (type-check, lint, unit tests, build) via insight/verify_web.py
+        run: python3 insight/verify_web.py

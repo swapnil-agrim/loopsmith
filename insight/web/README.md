@@ -1,7 +1,7 @@
 # insight/web/
 
 Next.js (App Router) + TypeScript application — the dashboard UI (design spec §4). Nothing lives
-here yet; **E17.S1** authors the app and wires `scripts/verify_web.py`'s four checks
+here yet; **E17.S1** authors the app and wires `insight/verify_web.py`'s four checks
 (typecheck/lint/test/build).
 
 ## The BUSL marker for `.ts`/`.tsx`
@@ -25,14 +25,14 @@ this ordering right; there is no fixup once real `"use client"` files exist.
 
 ## `package.json` must NOT appear before E17.S1
 
-Its mere existence arms `scripts/verify_web.py`: it starts running `npm ci` (which hard-fails with
+Its mere existence arms `insight/verify_web.py`: it starts running `npm ci` (which hard-fails with
 `EUSAGE` without a committed `package-lock.json`) and then requires all four of
 `typecheck`/`lint`/`test`/`build` to exist as npm scripts and pass, inside every future goal's
 verify gate, in a fresh worktree. Landing `package.json` here without a committed lockfile and all
 four scripts would park every subsequent goal on an unrelated failure. E17.S1 lands both together.
 
-This is not just prose: `tests/test_verify_web.py` carries a machine-checked invariant — IF
+This is not just prose: `insight/tests/test_verify_web.py` carries a machine-checked invariant — IF
 `insight/web/package.json` exists THEN it must have a sibling `package-lock.json` and its `scripts`
-must declare every name `scripts/verify_web.py`'s `CHECKS` requires (read from that module, never
+must declare every name `insight/verify_web.py`'s `CHECKS` requires (read from that module, never
 retyped). Today the invariant is vacuously true (the file does not exist); the day E17.S1 commits
 it, the guard starts enforcing for real and nothing here has to change or be deleted.

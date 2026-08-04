@@ -9,6 +9,8 @@ THIS test loudly instead of leaving compare.py silently stale."""
 import pathlib
 import re
 
+import pytest
+
 PIPELINE_PATH = (
     pathlib.Path(__file__).resolve().parents[2] / "skills" / "sdlc-loop" / "scripts" / "pipeline.py"
 )
@@ -21,6 +23,7 @@ def _normalize(text):
     return _WHITESPACE.sub("", text)
 
 
+@pytest.mark.skipif(not PIPELINE_PATH.is_file(), reason="skills/ not present in this checkout")
 def test_pipeline_compare_cards_still_checks_still_failing_before_ordering():
     text = PIPELINE_PATH.read_text(encoding="utf-8")
     normalized = _normalize(text)

@@ -67,6 +67,7 @@ def _gate_kinds_off_disk():
     )
 
 
+@pytest.mark.skipif(not LEDGER_PATH.is_file(), reason="skills/ not present in this checkout")
 def test_gate_kinds_parsed_off_disk_matches_the_known_vocabulary():
     """Sanity-checks the parser itself against the exact values read directly from ledger.py --
     if this fails, the parser above is broken, not 23.sql."""
@@ -77,6 +78,7 @@ def test_gate_kinds_parsed_off_disk_matches_the_known_vocabulary():
     )
 
 
+@pytest.mark.skipif(not LEDGER_PATH.is_file(), reason="skills/ not present in this checkout")
 def test_metric_23_case_enumerates_every_ledger_gate_kind():
     """Independent plan-review nit, closed mechanically: nothing pins the 12-way CASE in
     23.sql against ledger.GATE_KINDS itself beyond manual inspection -- a hypothetical future
