@@ -103,3 +103,5 @@
 {"actor": "swapnil-agrim", "gate": "code_review", "goal": "296", "id": "swapnil-agrim:103", "kind": "gate", "ts": "2026-08-04T12:33:15Z", "verdict": "pass"}
 {"actor": "swapnil-agrim", "goal": "296", "id": "swapnil-agrim:104", "kind": "phase", "phase": "retro", "state": "end", "ts": "2026-08-04T12:33:50Z"}
 {"actor": "swapnil-agrim", "goal": "297", "id": "swapnil-agrim:105", "kind": "phase", "phase": "research", "state": "start", "ts": "2026-08-04T12:34:45Z"}
+{"actor": "swapnil-agrim", "goal": "297", "id": "swapnil-agrim:106", "kind": "phase", "phase": "research", "state": "end", "ts": "2026-08-04T12:52:38Z"}
+{"actor": "swapnil-agrim", "goal": "297", "id": "swapnil-agrim:107", "kind": "phase", "phase": "plan", "state": "start", "ts": "2026-08-04T12:52:38Z"}
