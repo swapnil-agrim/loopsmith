@@ -250,7 +250,7 @@ def _bars(daily, w=620, h=150):
         out.append(f'<line x1="{pad_l}" y1="{y:.1f}" x2="{w}" y2="{y:.1f}" '
                    f'stroke="var(--panel-grid)" stroke-width="1"/>')
         out.append(f'<text x="0" y="{y - 3:.1f}" fill="var(--panel-faint)" font-size="9" '
-                   f'font-family="PlexMono,monospace">{v:.0f}</text>')
+                   f'font-family="var(--panel-font-mono)">{v:.0f}</text>')
     for i, (d, n) in enumerate(daily):
         bh = (h - pad_b) * (n / peak)
         x = pad_l + i * bw + bw * .18
@@ -259,9 +259,9 @@ def _bars(daily, w=620, h=150):
         out.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bwid:.1f}" height="{bh:.1f}" '
                    f'fill="url(#bg)" rx="1"/>')
         out.append(f'<text x="{x + bwid / 2:.1f}" y="{y - 5:.1f}" fill="var(--panel-bone)" font-size="10.5" '
-                   f'text-anchor="middle" font-family="PlexMono,monospace">{n}</text>')
+                   f'text-anchor="middle" font-family="var(--panel-font-mono)">{n}</text>')
         out.append(f'<text x="{x + bwid / 2:.1f}" y="{h - 8}" fill="var(--panel-faint)" font-size="9" '
-                   f'text-anchor="middle" font-family="PlexMono,monospace">'
+                   f'text-anchor="middle" font-family="var(--panel-font-mono)">'
                    f'{_e(str(d)[5:])}</text>')
     out.append('<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">'
                '<stop offset="0" stop-color="var(--panel-amber)"/><stop offset="1" stop-color="var(--panel-amber-deep)"/>'
@@ -304,7 +304,7 @@ def _strip(spread, p50, p85, w=620, h=132):
         out.append(f'<line x1="{tx:.1f}" y1="34" x2="{tx:.1f}" y2="{base + 8}" '
                    f'stroke="rgba(233,227,214,.08)"/>')
         out.append(f'<text x="{tx:.1f}" y="{h - 16}" fill="var(--panel-faint)" font-size="9" '
-                   f'text-anchor="middle" font-family="PlexMono,monospace">{_e(_dur(tick))}</text>')
+                   f'text-anchor="middle" font-family="var(--panel-font-mono)">{_e(_dur(tick))}</text>')
     out.append(f'<line x1="{pad_l}" y1="{base}" x2="{w - pad_l}" y2="{base}" '
                f'stroke="rgba(233,227,214,.14)"/>')
     for v in vals:
@@ -324,12 +324,12 @@ def _strip(spread, p50, p85, w=620, h=132):
         out.append(f'<line x1="{x(v):.1f}" y1="26" x2="{x(v):.1f}" y2="{base + 8}" stroke="{col}" '
                    f'stroke-width="1.5"/>')
         out.append(f'<text x="{x(v) + dx:.1f}" y="20" fill="{col}" font-size="10" '
-                   f'text-anchor="{anchor}" font-family="PlexMono,monospace">'
+                   f'text-anchor="{anchor}" font-family="var(--panel-font-mono)">'
                    f'{lab} {_e(_dur(v))}</text>')
     out.append(f'<text x="{pad_l}" y="{h - 3}" fill="var(--panel-faint)" font-size="9" '
-               f'font-family="PlexMono,monospace">fastest {_e(_dur(lo))}</text>')
+               f'font-family="var(--panel-font-mono)">fastest {_e(_dur(lo))}</text>')
     out.append(f'<text x="{w - pad_l}" y="{h - 3}" fill="var(--panel-faint)" font-size="9" text-anchor="end" '
-               f'font-family="PlexMono,monospace">log scale &middot; slowest {_e(_dur(hi))}</text>')
+               f'font-family="var(--panel-font-mono)">log scale &middot; slowest {_e(_dur(hi))}</text>')
     out.append('</svg>')
     return "".join(out)
 

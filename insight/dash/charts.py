@@ -24,8 +24,11 @@ import math
 from insight.dash.colors import (
     ALL_PAIRS_CAP,
     CATEGORICAL,
+    PANEL_MIX,
     SEQUENTIAL_BLUE_DARK,
     SEQUENTIAL_BLUE_LIGHT,
+    not_measured_block,
+    not_measured_svg,
     status_mark,
     texture_defs,
 )
@@ -42,14 +45,25 @@ _ABSENT_CY = 40
 _ABSENT_EXPLAIN_X = 70
 
 
-def _absent_svg(aria_label, explain_text, id_prefix="dash"):
+def _absent_svg(aria_label, explain_text, id_prefix="dash", provenance=None):
     """Shared ABSENT-state renderer for any primitive with zero measured rows -- built from
     `status_mark()` (Decision 2's shared helper, actually exercised by every primitive below, not
     left defined-but-unused) plus a second, chart-specific explanatory sentence in SECONDARY ink
     (`--dash-ink2`), never muted -- muted clears only 3.50:1 on the light surface, below the
     4.5:1 AA text floor for a full sentence (muted is reserved for the short '.'/icon glyph and
     axis ticks beside it, per .sdlc/plans/125.md's own contrast spot-check). `texture_defs()` is
-    emitted once here so the ABSENT dot's opt-in hatch overlay has a `<pattern>` to reference."""
+    emitted once here so the ABSENT dot's opt-in hatch overlay has a `<pattern>` to reference.
+
+    issue #265 (D4) Design 3: when `id_prefix="panel"`, delegates wholesale to the product's own
+    committed absence primitive (`colors.not_measured_svg`) instead of this STATUS["ABSENT"] shell
+    -- its own fixed aria-label ("not measured: {explain_text}") replaces the caller-supplied
+    `aria_label` on this branch; `explain_text` already carries the chart-specific framing, so
+    nothing is lost. Raises ValueError via `not_measured_svg`'s own contract if `provenance` is
+    empty/missing -- no new validation code needed here. The default `id_prefix="dash"` body below
+    this branch is BYTE-IDENTICAL to before this change -- that is what keeps every existing
+    caller (and the six pinned ABSENT-shape tests) green without being rewritten."""
+    if id_prefix == "panel":
+        return not_measured_svg(explain_text, provenance, id_prefix=id_prefix, w=_ABSENT_W, h=_ABSENT_H)
     return (
         f'<svg width="{_ABSENT_W}" height="{_ABSENT_H}" viewBox="0 0 {_ABSENT_W} {_ABSENT_H}" '
         f'role="img" aria-label="{html.escape(aria_label)}">'
@@ -61,7 +75,7 @@ def _absent_svg(aria_label, explain_text, id_prefix="dash"):
     )
 
 
-def _absent_line(explain_text, id_prefix="dash", emit_defs=True):
+def _absent_line(explain_text, id_prefix="dash", emit_defs=True, provenance=None):
     """A one-line ABSENT marker for prose panels (not a chart) -- the same `status_mark()` +
     `texture_defs()` primitives every other ABSENT state in this codebase uses, just inlined as a
     `<p>` rather than inside an `<svg>`. Moved here from insight.dash.manager (.sdlc/plans/131.md
@@ -76,7 +90,14 @@ def _absent_line(explain_text, id_prefix="dash", emit_defs=True):
     ABSENT element is to define the pattern once. `url(#...)` resolves document-wide, so a single
     page-level `<defs>` serves every mark. Default stays True so existing callers are unchanged;
     insight.dash.manager and insight.dash.leadership still ship duplicate ids and are tracked
-    separately -- this parameter is what lets a page opt into being valid."""
+    separately -- this parameter is what lets a page opt into being valid.
+
+    issue #265 (D4) Design 3: when `id_prefix="panel"`, delegates wholesale to
+    `colors.not_measured_block` (a `<div>`, dropped straight into flow) instead of the
+    `status_mark()`+`texture_defs()` shell -- same provenance-required contract as `_absent_svg`
+    above. Default `id_prefix="dash"` body is byte-identical to before."""
+    if id_prefix == "panel":
+        return not_measured_block(explain_text, provenance)
     defs = texture_defs(id_prefix) if emit_defs else ""
     return (
         '<p><svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="ABSENT">'
@@ -224,7 +245,7 @@ def _aging_items(rows, now):
     return items
 
 
-def render_aging_wip(rows, now=None, id_prefix="dash"):
+def render_aging_wip(rows, now=None, id_prefix="dash", provenance=None):
     """Bar, magnitude low->high: age (a magnitude) keyed to the ONE-hue sequential ramp
     (SEQUENTIAL_BLUE_LIGHT/_DARK, mode-aware), never a status hue -- age is not a verdict
     (Decision 5). Every bar direct-labels its actor and exact age in days beside it (Task 4:
@@ -234,6 +255,7 @@ def render_aging_wip(rows, now=None, id_prefix="dash"):
     if not rows:
         return _absent_svg(
             "Aging WIP: no open claims", "no open claims measured", id_prefix=id_prefix,
+            provenance=provenance,
         )
     items = _aging_items(rows, now)
     max_age = items[0]["age_days"]
@@ -323,7 +345,7 @@ def _percentile_value(sorted_vals, p):
     return sorted_vals[idx]
 
 
-def render_percentile_scatter(rows, percentiles=(50, 90), id_prefix="dash"):
+def render_percentile_scatter(rows, percentiles=(50, 90), id_prefix="dash", provenance=None):
     """Scatter (per-item distribution) + reference hairlines for each of `percentiles`.
     `rows`: [{ts, seconds, kind}]. Dots are positioned by `ts` on x (time) and `seconds` on y
     (magnitude, higher = higher up); coloured by `kind`, categorical, capped at
@@ -335,6 +357,7 @@ def render_percentile_scatter(rows, percentiles=(50, 90), id_prefix="dash"):
     if not rows:
         return _absent_svg(
             "Percentile scatter: no data", "no merge lead times measured", id_prefix=id_prefix,
+            provenance=provenance,
         )
     n = len(rows)
     seconds_sorted = sorted(r["seconds"] for r in rows)
@@ -458,7 +481,7 @@ _LANE_ORDER = ("WIP", "Done", "Blocked")
 _LANE_SLOT = {"WIP": 0, "Done": 2, "Blocked": 1}
 
 
-def render_flow_lanes(weekly_rows, id_prefix="dash"):
+def render_flow_lanes(weekly_rows, id_prefix="dash", provenance=None):
     """Stacked area (part-to-whole over time), the CFD slot -- named "Flow lanes over time," NOT
     "CFD" (Decision 3): fact_event only supports point-in-time last-event-wins reconstruction, so
     a lane's count CAN decrease (e.g. a reopen), which a textbook CFD's cumulative-arrivals Done
@@ -469,7 +492,7 @@ def render_flow_lanes(weekly_rows, id_prefix="dash"):
         return _absent_svg(
             "Flow lanes over time: no data",
             "no claimed/done/parked/failed events measured",
-            id_prefix=id_prefix,
+            id_prefix=id_prefix, provenance=provenance,
         )
     weeks = list(weekly_rows)
     totals = [w["wip"] + w["done"] + w["blocked"] for w in weeks]
@@ -555,13 +578,41 @@ GROUP BY w.week_start ORDER BY w.week_start
 """
 
 
+def _forecast_hatch_defs(id_prefix, slot):
+    """A 45-deg hatch `<pattern>`, chart-local (burndown-only, one call site -- not promoted to
+    colors.py, matching the "colors.py holds cross-module primitives, chart-specific geometry
+    stays in charts.py" split aging-WIP's own bucket math and scatter's percentile math already
+    follow). Stroke colour is the SAME var as the burndown line -- reused, not duplicated -- so
+    the band still visually reads as "this series, inferred" rather than a second identity.
+
+    issue #265 (D4) Design 4: the forecast band's hatch is a PRIMITIVE-level fix that applies
+    regardless of `id_prefix` -- "a soft fill reads as data, hatching reads as inference" is a
+    statement about what a Monte-Carlo band means, not about which ground it is drawn on.
+
+    Drawn as a direct corner-to-corner diagonal (0,4)->(4,0) within the tile -- NOT the
+    vertical-line + `patternTransform="rotate(45)"` shape `colors.texture_defs()`/
+    `not_measured_svg()` use for their own hatches. Same 45-degree result, but that shape's inner
+    `<line x1="0" ... x2="0" ...>` has x1==x2, which on THIS primitive's populated (non-ABSENT)
+    render path collides with `test_burndown_never_emits_a_second_y_axis_element`'s own
+    string-level scan for a second vertical axis line (a real, disclosed conflict this
+    implementation avoids by construction rather than by weakening that test)."""
+    pid = f"{id_prefix}-forecast-hatch-{slot}"
+    return pid, (
+        f'<pattern id="{pid}" width="4" height="4" patternUnits="userSpaceOnUse">'
+        f'<line x1="0" y1="4" x2="4" y2="0" stroke="var(--{id_prefix}-cat-{slot})" '
+        f'stroke-width="1.5"/></pattern>'
+    )
+
+
 def render_burndown_with_mc_band(
     weekly_remaining, p10_total=None, p90_total=None, horizon_weeks=4, id_prefix="dash",
+    provenance=None,
 ):
     """One `<svg>`, one xof/yof pair shared by the historical polyline AND the band polygon --
     "burndown and MC band on the same axes" enforced STRUCTURALLY (there is no second scale to
-    accidentally diverge), not just visually. Band wash = the SAME hue as the burndown line
-    (categorical slot 0), ~10% opacity, an uncertainty overlay on the ONE series, never a second
+    accidentally diverge), not just visually. Band = a 45-deg HATCH (issue #265/D4 Design 4 --
+    "a soft fill reads as data, hatching reads as inference"), stroked in the SAME hue as the
+    burndown line (categorical slot 0), an uncertainty overlay on the ONE series, never a second
     identity. Single series -> no legend box; the band gets a direct text label instead.
     `weekly_remaining`: [(label, count), ...] ascending; `p10_total`/`p90_total`: the MC band's
     endpoints (from metric_11, reused not re-derived -- Decision 4), each projected `horizon_weeks`
@@ -571,7 +622,7 @@ def render_burndown_with_mc_band(
         return _absent_svg(
             "Burndown: no goal completion data",
             "fact_goal.terminal_ts not populated yet",
-            id_prefix=id_prefix,
+            id_prefix=id_prefix, provenance=provenance,
         )
     labels = [w[0] for w in weekly_remaining]
     counts = [w[1] for w in weekly_remaining]
@@ -606,7 +657,9 @@ def render_burndown_with_mc_band(
         (last_x, yof(last_v)), (horizon_x, yof(p90_total)), (horizon_x, yof(p10_total)),
     ]
     pts_str = " ".join(f"{x:.1f},{y:.1f}" for x, y in band_pts)
-    parts.append(f'<polygon points="{pts_str}" fill="var(--{id_prefix}-cat-{slot})" opacity="0.10"/>')
+    pattern_id, pattern_def = _forecast_hatch_defs(id_prefix, slot)
+    parts.append(f'<defs>{pattern_def}</defs>')
+    parts.append(f'<polygon points="{pts_str}" fill="url(#{pattern_id})"/>')
     parts.append(
         f'<line x1="{last_x:.1f}" y1="{yof(p90_total):.1f}" x2="{horizon_x:.1f}" '
         f'y2="{yof(p90_total):.1f}" stroke="var(--{id_prefix}-cat-{slot})" stroke-width="1" '
@@ -690,7 +743,7 @@ _HANDOFF_NODE_R_MIN, _HANDOFF_NODE_R_SPAN = 8, 16
 _HANDOFF_EDGE_W_MIN, _HANDOFF_EDGE_W_SPAN = 1, 5
 
 
-def render_handoff_graph_by_area(rows, id_prefix="dash"):
+def render_handoff_graph_by_area(rows, id_prefix="dash", provenance=None):
     """Star graph (issue #127 Decision 1): one hub node ("all hand-offs"), one spoke per area.
     `fact_handoff` carries exactly ONE `area` column per row -- no `from_area`/`to_area` pair --
     so a literal directed area-to-area graph cannot be built without inventing an actor-to-area
@@ -707,14 +760,21 @@ def render_handoff_graph_by_area(rows, id_prefix="dash"):
         return _absent_svg(
             "Handoff graph by area: no data",
             "fact_handoff has no rows with a linked issue",
-            id_prefix=id_prefix,
+            id_prefix=id_prefix, provenance=provenance,
         )
     n = len(rows)
     total = sum(r["handoff_count"] for r in rows)
     max_count = max(r["handoff_count"] for r in rows) or 1
     areas = [r["area"] for r in rows]
-    slot_of, other_used = _categorical_slots(areas, cap=len(CATEGORICAL))
-    other_slot = len(CATEGORICAL) - 1
+    # issue #265 (D4) Design 1a, independent plan-review Finding 2: PANEL_MIX has ONE FEWER
+    # categorical slot than CATEGORICAL (7 vs 8) -- BOTH the fold cap passed to
+    # _categorical_slots() and the local `other_slot` must derive from the SAME value, or a
+    # 9-area call under id_prefix="panel" folds excess areas into real slot cap-1=6 while
+    # other_slot still reads 7 (CATEGORICAL's own), so other_names comes back empty and the
+    # "Other" label never fires -- a silent wrong fold, not a crash.
+    cap = len(PANEL_MIX) if id_prefix == "panel" else len(CATEGORICAL)
+    slot_of, other_used = _categorical_slots(areas, cap=cap)
+    other_slot = cap - 1
     other_names = [a for a, s in slot_of.items() if s == other_slot] if other_used else []
 
     aria = f"Handoff volume by area: {n} area(s), {total} total"

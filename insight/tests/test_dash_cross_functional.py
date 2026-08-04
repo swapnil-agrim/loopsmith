@@ -244,3 +244,50 @@ def test_negative_control_proves_the_absent_distinctness_check_has_teeth():
     )
     with pytest.raises(AssertionError, match="colour channel"):
         _assert_absent_distinct_from(mutated_absent, pass_cell)
+
+
+# --------------------------------------------------------------------------- issue #265 (D4) Design 5:
+# two absence vocabularies on one page, deliberately, and genuinely decoupled
+
+
+def test_render_gate_matrix_empty_rows_branch_is_panel_material_regardless_of_id_prefix_argument():
+    """issue #265 (D4) Design 5, independent plan-review Finding 1: `_render_gate_matrix`'s
+    empty-rows branch is hardcoded to panel material -- it does NOT read its own `id_prefix`
+    parameter for this branch at all (that parameter governs only the verdict-badge cells further
+    down, a different code path only reached when `rows` is non-empty). Proves the two paths are
+    genuinely decoupled, not decoupled only by accident of the one real call site's current
+    argument -- every value tried here (including a nonsense one) produces the SAME panel-material
+    output, because the empty-rows branch never looks at `id_prefix` at all."""
+    from insight.dash.cross_functional import _render_gate_matrix
+
+    outputs = set()
+    for id_prefix in ("dash", "panel", "something-else-entirely"):
+        html_text = _render_gate_matrix([], id_prefix=id_prefix)
+        assert 'class="data-state-not-measured"' in html_text
+        assert "var(--dash-status-absent)" not in html_text
+        assert "no alignment-collect pack has ever been ingested" in html_text
+        outputs.add(html_text)
+    assert len(outputs) == 1, "the empty-rows branch's output varied with id_prefix -- not decoupled"
+
+
+def test_gate_matrix_and_prose_absence_panels_coexist_as_two_distinct_vocabularies(conn):
+    """issue #265 (D4) Design 5: cross-functional.html legitimately shows BOTH vocabularies at
+    once -- the small achromatic dash-status ABSENT badge inside a POPULATED verdict grid (still
+    `id_prefix="dash"`, unchanged), and the full panel-material not-measured blocks in the two
+    ALWAYS-absent prose panels below it (risk-review, alignment-drift). Not an inconsistency this
+    plan introduces -- the pre-existing STATUS-vs-DATA_STATE split, now made visually consistent
+    with the rest of the panel ground on the DATA_STATE side only."""
+    from insight.dash.cross_functional import render_cross_functional_view
+
+    load_fixture_jsonl(conn, FIXTURES / "24.jsonl")
+    html_text, _ = render_cross_functional_view(conn, now=NOW)
+    sections = _sections(html_text)
+
+    matrix_panel = sections["panel-gate-matrix"]
+    assert "var(--dash-status-" in matrix_panel  # verdict badges: still dash, unchanged
+
+    risk_panel = sections["panel-risk-review"]
+    drift_panel = sections["panel-alignment-drift"]
+    for panel in (risk_panel, drift_panel):
+        assert 'class="data-state-not-measured"' in panel
+        assert "var(--dash-status-" not in panel

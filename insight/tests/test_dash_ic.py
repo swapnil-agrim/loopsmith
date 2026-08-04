@@ -246,9 +246,16 @@ def test_genuinely_idle_actor_who_has_appeared_does_not_get_the_suspect_banner(c
 # --------------------------------------------------------------------------- render_ic_view shell
 
 
-def test_empty_my_queue_reuses_the_existing_absent_svg_unmodified(conn):
+def test_empty_my_queue_renders_via_the_panel_not_measured_material(conn):
+    """issue #265 (D4) Steps 7-9: deliberately updated, not reverted -- ic.py's render_aging_wip
+    call now passes id_prefix="panel" (Design 6, this page's own migration), so an empty "my
+    queue" no longer renders the old STATUS["ABSENT"] shell (aria-label="Aging WIP: no open
+    claims") -- it dispatches wholesale to colors.not_measured_svg, whose own fixed aria-label
+    ("not measured: {explain_text}") replaces the caller-supplied one (Design 3's own documented
+    contract). "no open claims measured" (the explain_text itself) still survives verbatim inside
+    that new aria-label, so this is a rename, not a loss of information."""
     html_text, _ = render_ic_view(conn, "alice", now=NOW)
-    assert 'aria-label="Aging WIP: no open claims"' in html_text
+    assert 'aria-label="not measured: no open claims measured"' in html_text
     assert "no open claims measured" in html_text
 
 

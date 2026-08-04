@@ -52,8 +52,10 @@ def test_contrast_registry_references_only_real_tokens():
 def test_every_exported_color_token_has_a_registered_contrast_pairing():
     referenced_as_fg = {p["fg"] for p in CONTRAST_PAIRS}
     # CHROME.surface itself is exempt -- a background is not a thing that needs contrast
-    # against itself.
-    exempt = {"CHROME.surface"}
+    # against itself. issue #265 (D4) Design 2: PANEL.ground/panel/raised are the panel ground's
+    # own pure backgrounds (panel bezel, card face, board-cell face) -- never a foreground, same
+    # exemption reasoning as CHROME.surface.
+    exempt = {"CHROME.surface", "PANEL.ground", "PANEL.panel", "PANEL.raised"}
     assert (_all_exported_color_tokens() - exempt) <= referenced_as_fg
 
 
@@ -68,6 +70,29 @@ def test_every_registered_pair_clears_its_floor_in_both_modes():
                 f"{pair['fg']} on {pair['bg']} ({mode}): {ratio:.2f} < {pair['floor']} -- "
                 f"{pair['why']}"
             )
+
+
+def test_sequential_blue_light_dark_halves_are_not_double_counted_as_bare_hex_containers():
+    # issue #265 (D4): _all_exported_color_tokens() has two discovery routes for lists of bare
+    # hex strings -- shape 2 (a *_LIGHT/*_DARK pair, paired by name into "SEQUENTIAL_BLUE[i]",
+    # which is what CONTRAST_PAIRS actually registers) and shape 3 (any other bare-hex list,
+    # claimed under its OWN name, added for PANEL_MIX/PANEL_SEQ in this same issue). Without an
+    # exclusion, shape 3 ALSO claims SEQUENTIAL_BLUE_LIGHT/_DARK under their own names, since
+    # they are structurally indistinguishable from PANEL_MIX/PANEL_SEQ (a list of bare hex) --
+    # the same colours would then be discovered twice, under two different token names. Proves
+    # the paired name IS discovered and the two half-names are NOT, so the shapes cannot
+    # double-count the same list.
+    tokens = _all_exported_color_tokens()
+    assert "SEQUENTIAL_BLUE[0]" in tokens
+    assert "SEQUENTIAL_BLUE_LIGHT[0]" not in tokens
+    assert "SEQUENTIAL_BLUE_DARK[0]" not in tokens
+    assert not any(t.startswith("SEQUENTIAL_BLUE_LIGHT[") for t in tokens)
+    assert not any(t.startswith("SEQUENTIAL_BLUE_DARK[") for t in tokens)
+    # negative control: PANEL_MIX/PANEL_SEQ have no *_LIGHT/*_DARK sibling, so they SHOULD be
+    # claimed under their own name by shape 3 -- proves shape 3 itself still works, it is only
+    # the *_LIGHT/*_DARK halves that must be excluded from it.
+    assert "PANEL_MIX[0]" in tokens
+    assert "PANEL_SEQ[0]" in tokens
 
 
 def test_every_exempt_pair_names_its_second_channel():

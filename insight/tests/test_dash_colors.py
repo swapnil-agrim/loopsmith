@@ -11,13 +11,18 @@ from insight.dash import render as dash_render
 from insight.dash.colors import (
     ALL_PAIRS_CAP,
     CATEGORICAL,
+    PANEL,
+    PANEL_MIX,
+    PANEL_SEQ,
     SEQUENTIAL_BLUE_DARK,
     SEQUENTIAL_BLUE_LIGHT,
     SPACE,
     STATUS,
     TYPE_SCALE,
+    contrast_ratio,
     not_measured_block,
     not_measured_svg,
+    panel_css_vars,
     status_mark,
     texture_defs,
     viz_css_vars,
@@ -263,3 +268,68 @@ def test_not_measured_svg_and_not_measured_block_pass_assert_self_contained():
     svg = not_measured_svg("no instrument", "no writer · fact_event.reason_class")
     html_text = f"<html><body>{block}<svg>{svg}</svg></body></html>"
     dash_render.assert_self_contained(html_text)  # must not raise
+
+
+# --------------------------------------------------------------------------- issue #265 (D4),
+# Step 1: PANEL_SEQ + panel_css_vars()'s new chart-role vars.
+
+
+def test_panel_seq_is_pinned_and_ten_long():
+    pinned = [
+        "#141a1c", "#2e2a1d", "#48391f", "#624920", "#7c5822",
+        "#976823", "#b17725", "#cb8726", "#e59628", "#ffa629",
+    ]
+    assert PANEL_SEQ == pinned
+    assert len(PANEL_SEQ) == 10
+    # Endpoints match the two named source tokens verbatim (Design 1: linear-interpolated
+    # between these two, not an independently hand-picked ramp).
+    assert PANEL_SEQ[0] == PANEL["raised"]
+    assert PANEL_SEQ[-1] == PANEL["amber"]
+
+
+def test_panel_seq_monotonically_increases_in_contrast_against_the_panel_ground():
+    ratios = [contrast_ratio(hexv, PANEL["panel"]) for hexv in PANEL_SEQ]
+    for i in range(len(ratios) - 1):
+        assert ratios[i] < ratios[i + 1], (
+            f"PANEL_SEQ must be monotonically increasing in contrast against PANEL['panel'], "
+            f"bucket {i} -> {i + 1}: {ratios[i]:.2f} !< {ratios[i + 1]:.2f}"
+        )
+
+
+#: Every `--panel-*` var name any chart primitive under id_prefix="panel" could dereference
+#: (colors.py Design 1's new-var table) -- the full set panel_css_vars() must emit, on top of the
+#: PANEL/PANEL_ALPHA/PANEL_MIX/font vars it already emitted before issue #265.
+_PANEL_CHART_ROLE_VARS = (
+    ["--panel-ink:", "--panel-ink2:", "--panel-muted:", "--panel-baseline:", "--panel-gridline:",
+     "--panel-surface:", "--panel-delta_good:", "--panel-status-fail:"]
+    + [f"--panel-cat-{i}:" for i in range(len(PANEL_MIX))]
+    + [f"--panel-seq-{i}:" for i in range(len(PANEL_SEQ))]
+    + [f"--panel-text-{k}:" for k in TYPE_SCALE]
+    + [f"--panel-space-{k}:" for k in SPACE]
+    + ["--panel-radius-sm:", "--panel-border-hairline:"]
+)
+
+
+def test_panel_css_vars_declares_every_new_chart_role_var():
+    css = panel_css_vars()
+    missing = [name for name in _PANEL_CHART_ROLE_VARS if name not in css]
+    assert not missing, f"panel_css_vars() never emits: {missing}"
+
+
+def test_negative_control_proves_the_panel_css_vars_presence_check_has_teeth():
+    """Not shipped code -- strips one var declaration from a copy of the emitted CSS and shows
+    the exact same presence check above now fails, proving it isn't vacuously true."""
+    css = panel_css_vars()
+    assert "--panel-cat-3:" in css  # sanity: the var this control removes really is present
+    mutated = css.replace("--panel-cat-3:", "--panel-cat-3-DELETED:")
+    missing = [name for name in _PANEL_CHART_ROLE_VARS if name not in mutated]
+    assert missing == ["--panel-cat-3:"], (
+        "fixture regressed: mutating the CSS should make exactly one var name go missing"
+    )
+
+
+def test_panel_cat_has_seven_slots_one_fewer_than_categorical():
+    # Design 1a: PANEL_MIX has 7 entries, CATEGORICAL has 8 -- the panel ground folds to "Other"
+    # one area sooner (accepted tradeoff, plan §5).
+    assert len(PANEL_MIX) == 7
+    assert len(CATEGORICAL) == 8

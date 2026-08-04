@@ -23,14 +23,17 @@ from insight.metrics.loader import load_metrics
 #: `.stat-tile*` rule group precedent (charts.py's own comment on manager.py's _STYLE).
 #: issue #264: `viz_css_vars()`, not `base_style()` -- see manager.py's own comment on this same
 #: substitution for the full reasoning (instrument.page_open supplies the generic chrome now).
+#: issue #265 (D4) Design 7: same mechanical --dash- -> --panel- find/replace as manager.py's own
+#: .stat-tile* rule group -- see that module's comment for the full reasoning. h3/.tile-pair
+#: untouched (out of Design 7's scope).
 _STYLE = f"""
 {viz_css_vars()}
-.stat-tile {{ display: inline-block; padding: var(--dash-space-3) var(--dash-space-4);
-             margin: 0 var(--dash-space-3) var(--dash-space-3) 0;
-             border: var(--dash-border-hairline) solid var(--dash-gridline);
-             border-radius: var(--dash-radius-sm); min-width: 10rem; }}
-.stat-tile-label {{ font-size: var(--dash-text-small); color: var(--dash-ink2); }}
-.stat-tile-value {{ font-size: var(--dash-text-display); font-family: var(--dash-font-mono);
+.stat-tile {{ display: inline-block; padding: var(--panel-space-3) var(--panel-space-4);
+             margin: 0 var(--panel-space-3) var(--panel-space-3) 0;
+             border: var(--panel-border-hairline) solid var(--panel-gridline);
+             border-radius: var(--panel-radius-sm); min-width: 10rem; }}
+.stat-tile-label {{ font-size: var(--panel-text-small); color: var(--panel-ink2); }}
+.stat-tile-value {{ font-size: var(--panel-text-display); font-family: var(--panel-font-mono);
                     font-variant-numeric: tabular-nums; }}
 .tile-pair {{ display: flex; flex-wrap: wrap; }}
 h3 {{ font-size: var(--dash-text-subhead); margin-top: var(--dash-space-5); }}
@@ -136,6 +139,7 @@ def _render_speed_quality(speed_row, quality_row, speed_coverage=None, quality_c
         parts.append(_absent_line(
             "no terminal goal has been measured yet (fact_goal.outcome='done' with a "
             "terminal_ts) -- metric #1 has zero rows.", id_prefix=id_prefix,
+            provenance="no writer · fact_goal.outcome='done' (metric_1 has zero rows)",
         ))
     else:
         parts.append(
@@ -148,6 +152,7 @@ def _render_speed_quality(speed_row, quality_row, speed_coverage=None, quality_c
         parts.append(_absent_line(
             "no alignment-collect pack has ever been ingested -- metric #5 has zero rows.",
             id_prefix=id_prefix,
+            provenance="no writer · insight.ingest.collectors (alignment-collect never run)",
         ))
     else:
         rate = quality_row.get("change_failure_rate")
@@ -206,6 +211,7 @@ def _render_impact(rows, coverage=None, id_prefix="dash"):
         parts.append(_absent_line(
             "no goal has been classified by source/lane yet -- metric #9 has zero rows.",
             id_prefix=id_prefix,
+            provenance="no writer · fact_goal source/lane classification (metric_9 has zero rows)",
         ))
     else:
         total = sum(cnt for _src, cnt, _sh in shares)
@@ -223,6 +229,7 @@ def _render_impact(rows, coverage=None, id_prefix="dash"):
         "no counterweight defined in spec for Impact (#9) -- L474 pairs #1↔#5 and "
         "#12↔#24 only; rendered without one rather than inventing a pairing.",
         id_prefix=id_prefix,
+        provenance="no writer · spec L474 (Impact/#9 has no counterweight pairing defined)",
     ))
     return "".join(parts)
 
@@ -241,6 +248,7 @@ def _render_effectiveness(id_prefix="dash"):
             "intervention rate (#12/#13) is labelled -- data_status: dark. This is a labelled "
             "proxy slot, not a fabricated survey score.",
             id_prefix=id_prefix,
+            provenance="no writer · insight/metrics/8.sql does not exist; #12/#13 are dark",
         )
         + "</div>"
     )
@@ -269,6 +277,7 @@ def _render_portfolio(rows, id_prefix="dash"):
             + _absent_line(
                 "no project has been ingested yet -- dim_project has zero rows.",
                 id_prefix=id_prefix,
+                provenance="no writer · dim_project (zero rows ingested)",
             )
             + "</div>"
         )
@@ -357,22 +366,24 @@ individual grain -- zero exceptions (stricter than the manager view).</p>
 
 <section id="panel-speed-quality">
 <h2>Speed &amp; Quality (DX Core-4 #1 / #5, throughput/quality counterweight pair)</h2>
-{_render_speed_quality(speed_row, quality_row, speed_coverage, quality_coverage)}
+{_render_speed_quality(
+    speed_row, quality_row, speed_coverage, quality_coverage, id_prefix="panel",
+)}
 </section>
 
 <section id="panel-impact">
 <h2>Impact (DX Core-4 #9)</h2>
-{_render_impact(impact_rows, impact_coverage)}
+{_render_impact(impact_rows, impact_coverage, id_prefix="panel")}
 </section>
 
 <section id="panel-effectiveness">
 <h2>Effectiveness (DX Core-4, labelled proxy)</h2>
-{_render_effectiveness()}
+{_render_effectiveness(id_prefix="panel")}
 </section>
 
 <section id="panel-portfolio">
 <h2>Portfolio (cross-project throughput, park rate, gate coverage, #41)</h2>
-{_render_portfolio(portfolio_rows)}
+{_render_portfolio(portfolio_rows, id_prefix="panel")}
 </section>
 
 <script type="application/json" id="insight-leadership-data">{json_script(payload)}</script>

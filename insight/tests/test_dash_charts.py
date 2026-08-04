@@ -402,13 +402,6 @@ def test_burndown_line_and_band_share_one_svg_and_one_axis():
     assert first_x == "36.0"
 
 
-def test_burndown_band_reuses_the_burndown_hue():
-    out = charts.render_burndown_with_mc_band(_BURN_WEEKLY, p10_total=3, p90_total=9)
-    polyline = re.search(r"<polyline[^>]*stroke=\"([^\"]+)\"", out).group(1)
-    polygon = re.search(r"<polygon[^>]*fill=\"([^\"]+)\"", out).group(1)
-    assert polyline == polygon == "var(--dash-cat-0)"
-
-
 def test_burndown_never_emits_a_literal_hex_in_a_mark():
     out = charts.render_burndown_with_mc_band(_BURN_WEEKLY, p10_total=3, p90_total=9)
     assert not _HEX_IN_MARK.search(out)
@@ -577,3 +570,146 @@ def test_every_primitive_output_passes_assert_self_contained():
     ]
     for out in outputs:
         assert_self_contained(f"<html><body>{out}</body></html>")  # must not raise
+
+
+# --------------------------------------------------------------------------- issue #265 (D4)
+# Step 3: panel-scoped absence dispatch. `_absent_svg`/`_absent_line` gain a `provenance=None`
+# parameter and, ONLY when `id_prefix="panel"`, delegate to colors.not_measured_svg/_block instead
+# of the STATUS["ABSENT"] status_mark() shell (Design 3) -- the default `id_prefix="dash"` path
+# with no provenance passed is byte-identical to before, which is what keeps the six pinned
+# ABSENT-shape tests above green BY CONSTRUCTION, not because they were rewritten.
+
+_ABSENT_EMPTY_CALLS = {
+    "aging_wip": lambda **kw: charts.render_aging_wip([], now=_NOW, **kw),
+    "scatter": lambda **kw: charts.render_percentile_scatter([], **kw),
+    "flow_lanes": lambda **kw: charts.render_flow_lanes([], **kw),
+    "burndown": lambda **kw: charts.render_burndown_with_mc_band(
+        [], p10_total=None, p90_total=None, **kw),
+    "handoff": lambda **kw: charts.render_handoff_graph_by_area([], **kw),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_ABSENT_EMPTY_CALLS))
+def test_absent_primitive_default_dash_prefix_unchanged_with_provenance_none(name):
+    out = _ABSENT_EMPTY_CALLS[name](id_prefix="dash", provenance=None)
+    assert 'fill="var(--dash-status-absent)"' in out
+    assert "not measured" not in out.lower()
+
+
+@pytest.mark.parametrize("name", sorted(_ABSENT_EMPTY_CALLS))
+def test_absent_primitive_panel_prefix_dispatches_to_not_measured_material(name):
+    out = _ABSENT_EMPTY_CALLS[name](
+        id_prefix="panel", provenance="no writer · fact_thing.reason_class",
+    )
+    assert 'fill="var(--dash-status-absent)"' not in out
+    assert "not measured" in out.lower()
+    assert "no writer · fact_thing.reason_class" in out
+    assert 'role="img"' in out
+    assert 'aria-label="not measured:' in out
+
+
+@pytest.mark.parametrize("name", sorted(_ABSENT_EMPTY_CALLS))
+def test_absent_primitive_panel_prefix_without_provenance_raises(name):
+    with pytest.raises(ValueError):
+        _ABSENT_EMPTY_CALLS[name](id_prefix="panel", provenance=None)
+
+
+def test_negative_control_proves_the_panel_dispatch_check_has_teeth():
+    """Not shipped code -- the OLD (pre-#265) dash-only ABSENT shell would fail the exact
+    assertion `test_absent_primitive_panel_prefix_dispatches_to_not_measured_material` makes
+    (no dash-status-absent fill), proving that check is not vacuously true."""
+    old_shell_out = charts.render_aging_wip([], now=_NOW, id_prefix="dash")  # pre-#265 shape
+    with pytest.raises(AssertionError):
+        assert 'fill="var(--dash-status-absent)"' not in old_shell_out
+
+
+# -- _absent_line: no render_* primitive in this file calls it (manager.py/leadership.py/
+# cross_functional.py do -- issue #265 Steps 7-10, out of scope for this half) -- but Design 3
+# gives it the identical provenance/dispatch mechanism, proven directly against the function so
+# the capability is real before any page wires it in.
+
+def test_absent_line_default_dash_prefix_unchanged_with_provenance_none():
+    out = charts._absent_line("no open claims measured", id_prefix="dash", provenance=None)
+    assert 'fill="var(--dash-status-absent)"' in out
+    assert "not measured" not in out.lower()
+
+
+def test_absent_line_panel_prefix_dispatches_to_not_measured_block():
+    out = charts._absent_line(
+        "no open claims measured", id_prefix="panel",
+        provenance="no writer · fact_event.reason_class",
+    )
+    assert 'class="data-state-not-measured"' in out
+    assert "not measured" in out.lower()
+    assert "no writer · fact_event.reason_class" in out
+    assert 'fill="var(--dash-status-absent)"' not in out
+
+
+def test_absent_line_panel_prefix_without_provenance_raises():
+    with pytest.raises(ValueError):
+        charts._absent_line("no open claims measured", id_prefix="panel", provenance=None)
+
+
+# --------------------------------------------------------------------------- issue #265 (D4)
+# Step 4: render_handoff_graph_by_area's prefix-aware categorical cap, BOTH sites (Design 1a,
+# independent plan-review Finding 2: _categorical_slots(..., cap=...) AND other_slot = cap - 1
+# must derive from the SAME value, or the "Other" label silently never fires past 7 areas).
+
+def test_handoff_graph_by_area_panel_prefix_folds_to_other_past_panel_mix_cap():
+    from insight.dash.colors import PANEL_MIX
+    rows = [{"area": f"area{i}", "handoff_count": i + 1} for i in range(len(PANEL_MIX) + 2)]
+    out = charts.render_handoff_graph_by_area(rows, id_prefix="panel", provenance="irrelevant")
+    assert "Other" in out, (
+        "Design 1a / Finding 2: past PANEL_MIX's 7-slot cap, excess areas must fold into a "
+        "shared 'Other' slot -- a silent wrong fold (every area keeps its own name, several "
+        "sharing one visual slot) produces no crash and no 'Other' text at all"
+    )
+    fills = set(re.findall(r"var\(--panel-cat-\d\)", out))
+    assert len(fills) == len(PANEL_MIX)
+    # The "Other" label must appear on MORE THAN ONE spoke's text (the actual folded areas), not
+    # just vanish into an empty other_names list the way Finding 2's bug would silently do.
+    other_count = out.count("Other (")
+    assert other_count >= 2, (
+        f"expected at least 2 folded areas labelled 'Other (<count>)', got {other_count} -- "
+        "if other_slot didn't derive from the same cap as _categorical_slots, other_names comes "
+        "back empty and every folded area keeps showing its own individual name instead"
+    )
+
+
+def test_handoff_graph_by_area_dash_prefix_cap_is_unchanged_at_eight():
+    out = charts.render_handoff_graph_by_area(
+        [{"area": f"area{i}", "handoff_count": i + 1} for i in range(len(CATEGORICAL) + 2)],
+    )
+    fills = set(re.findall(r"var\(--dash-cat-\d\)", out))
+    assert len(fills) == len(CATEGORICAL)
+
+
+# --------------------------------------------------------------------------- issue #265 (D4)
+# Step 5: the forecast band is hatched, not a soft opacity fill (Design 4). Replaces
+# test_burndown_band_reuses_the_burndown_hue (deliberately, disclosed -- plan §2/§4: a hatched
+# band is definitionally incompatible with "band fill literally equals line stroke", which is
+# exactly done_when 3's point).
+
+def test_burndown_band_is_hatched_and_shares_the_line_hue():
+    out = charts.render_burndown_with_mc_band(_BURN_WEEKLY, p10_total=3, p90_total=9)
+    polyline_stroke = re.search(r'<polyline[^>]*stroke="([^"]+)"', out).group(1)
+    polygon_fill = re.search(r'<polygon[^>]*fill="([^"]+)"', out).group(1)
+    # The band is no longer a bare var()+opacity fill -- it's a pattern reference.
+    m = re.match(r'url\(#([^)]+)\)', polygon_fill)
+    assert m, f"expected the band's fill to be a url(#...) pattern reference, got {polygon_fill!r}"
+    pattern_id = m.group(1)
+    pattern_block = re.search(
+        rf'<pattern id="{re.escape(pattern_id)}"[^>]*>.*?</pattern>', out, re.S,
+    )
+    assert pattern_block, f"no <pattern id=\"{pattern_id}\"> defined for the band's fill to reference"
+    pattern_stroke = re.search(r'stroke="([^"]+)"', pattern_block.group(0)).group(1)
+    # The pattern's own stroke carries the SAME hue as the burndown line -- the new invariant.
+    assert pattern_stroke == polyline_stroke == "var(--dash-cat-0)"
+    assert 'opacity="0.10"' not in out, "hatch density should carry the 'soft' reading now, not opacity"
+
+
+def test_negative_control_proves_the_burndown_hatch_check_has_teeth():
+    """Not shipped code -- a bare var()+opacity fill (the OLD pre-#265 shape) has no url(#...)
+    pattern reference at all, proving the assertion above is not vacuously true."""
+    old_style_polygon_fill = "var(--dash-cat-0)"  # the pre-#265 literal fill value
+    assert not re.match(r'url\(#([^)]+)\)', old_style_polygon_fill)

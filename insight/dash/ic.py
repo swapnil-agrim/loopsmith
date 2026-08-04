@@ -54,23 +54,25 @@ actor is a trustworthy, measured zero (Decision 8/9), not a masked absence.
 import datetime
 import html
 
-from insight.dash.charts import render_aging_wip, render_aging_wip_table, render_stat_tile
-from insight.dash.colors import status_mark, texture_defs, viz_css_vars
+from insight.dash.charts import _absent_line, render_aging_wip, render_aging_wip_table, render_stat_tile
+from insight.dash.colors import viz_css_vars
 from insight.dash.instrument import page_close, page_open
 from insight.dash.render import json_script
 
 # issue #264: `viz_css_vars()`, not `base_style()` -- see manager.py's own comment on this same
 # substitution for the full reasoning (instrument.page_open supplies the generic chrome now).
+# issue #265 (D4) Design 7: same mechanical --dash- -> --panel- find/replace as manager.py's own
+# .stat-tile* rule group -- see that module's comment for the full reasoning.
 _STYLE = f"""
 {viz_css_vars()}
-.stat-tile {{ display: inline-block; padding: var(--dash-space-3) var(--dash-space-4);
-             margin: 0 var(--dash-space-3) var(--dash-space-3) 0;
-             border: var(--dash-border-hairline) solid var(--dash-gridline);
-             border-radius: var(--dash-radius-sm); min-width: 10rem; }}
-.stat-tile-label {{ font-size: var(--dash-text-small); color: var(--dash-ink2); }}
-.stat-tile-value {{ font-size: var(--dash-text-display); font-family: var(--dash-font-mono);
+.stat-tile {{ display: inline-block; padding: var(--panel-space-3) var(--panel-space-4);
+             margin: 0 var(--panel-space-3) var(--panel-space-3) 0;
+             border: var(--panel-border-hairline) solid var(--panel-gridline);
+             border-radius: var(--panel-radius-sm); min-width: 10rem; }}
+.stat-tile-label {{ font-size: var(--panel-text-small); color: var(--panel-ink2); }}
+.stat-tile-value {{ font-size: var(--panel-text-display); font-family: var(--panel-font-mono);
                     font-variant-numeric: tabular-nums; }}
-.stat-tile-delta {{ font-size: var(--dash-text-small); color: var(--dash-ink2); }}
+.stat-tile-delta {{ font-size: var(--panel-text-small); color: var(--panel-ink2); }}
 """
 
 
@@ -227,14 +229,20 @@ def _actor_ever_appeared(conn, actor):
 # --------------------------------------------------------------------------- rendering helpers
 
 def _render_blocked_on_me(rows, handoff_ever_ingested):
+    """issue #265 (D4) Design 6: routed through charts._absent_line's panel-material dispatch
+    instead of hand-rolling its own `<svg>` + `status_mark` + `texture_defs` -- ic.py no longer
+    imports either of those directly (test_ic_has_no_bespoke_absence_vocabulary_of_its_own).
+    Plain text now, not a raw HTML fragment -- `_absent_line`'s panel branch (`not_measured_
+    block`) `html.escape()`s `explain_text`, unlike the pre-#265 body, which spliced the
+    <code>/&mdash;/&quot; markup in raw. Pinned substrings ("No hand-off has ever been recorded
+    for this project yet", "Nothing blocked on you right now.") are unchanged."""
     if not rows:
         if not handoff_ever_ingested:
-            return (
-                '<p><svg width="16" height="16" viewBox="0 0 16 16" role="img" '
-                'aria-label="ABSENT">' + texture_defs() + status_mark("ABSENT", 6, 8) + '</svg> '
-                "No hand-off has ever been recorded for this project yet "
-                "(<code>fact_handoff</code> has never been populated) &mdash; different from "
-                "&quot;nothing blocked on you right now&quot;.</p>"
+            return _absent_line(
+                "No hand-off has ever been recorded for this project yet (fact_handoff has "
+                'never been populated) -- different from "nothing blocked on you right now".',
+                id_prefix="panel",
+                provenance="no writer · fact_handoff (project has never ingested a hand-off)",
             )
         return "<p>Nothing blocked on you right now.</p>"
     body = "".join(
@@ -251,18 +259,20 @@ def _render_blocked_on_me(rows, handoff_ever_ingested):
 
 
 def _render_cost(cost_row):
+    """issue #265 (D4) Design 6: same panel-material routing as _render_blocked_on_me above,
+    replacing the hand-rolled `<svg>` + `status_mark` + `texture_defs`. Pinned substring
+    ("tokens_in/tokens_out/cost_cents have zero writers") is unchanged."""
     tin, tout, cost_cents, n = cost_row
     if not n:
-        return (
-            '<svg width="480" height="40" viewBox="0 0 480 40" role="img" '
-            'aria-label="My cost: not yet instrumented">'
-            + texture_defs() + status_mark("ABSENT", 20, 20) +
-            '<text x="140" y="24" font-size="var(--dash-text-body)" fill="var(--dash-ink2)">not yet instrumented '
-            "(tokens_in/tokens_out/cost_cents have zero writers)</text></svg>"
+        return _absent_line(
+            "not yet instrumented (tokens_in/tokens_out/cost_cents have zero writers).",
+            id_prefix="panel",
+            provenance="no writer · fact_event.tokens_in/tokens_out/cost_cents (zero writers)",
         )
     return render_stat_tile(
         "My cost (tokens in/out, cents)",
         f"{tin or 0} / {tout or 0} / {cost_cents or 0}",
+        id_prefix="panel",
     )
 
 
@@ -320,17 +330,22 @@ to this one resolved actor, with the single exception of a hand-off counterparty
 "Blocked on me").</p>
 
 <h2>My queue ({len(my_queue_rows)})</h2>
-{render_aging_wip(my_queue_rows, now=now)}
+{render_aging_wip(
+    my_queue_rows, now=now, id_prefix="panel",
+    provenance="no writer · fact_event (claimed/done/parked/failed, actor-scoped)",
+)}
 {render_aging_wip_table(my_queue_rows, now=now)}
 
 <h2>Blocked on me ({len(blocked_rows)})</h2>
 {_render_blocked_on_me(blocked_rows, handoff_ever_ingested)}
 
 <h2>My parks</h2>
-{render_stat_tile("My parks (reason class not yet instrumented)", park_count)}
+{render_stat_tile(
+    "My parks (reason class not yet instrumented)", park_count, id_prefix="panel",
+)}
 
 <h2>My gate verdicts (given)</h2>
-{render_stat_tile("PR verdicts given", len(verdict_rows))}
+{render_stat_tile("PR verdicts given", len(verdict_rows), id_prefix="panel")}
 
 <h2>My cost</h2>
 {_render_cost(cost_row)}

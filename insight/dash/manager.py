@@ -65,16 +65,21 @@ from insight.metrics.loader import load_metrics
 #: th,td/.banner/code chrome instead (see instrument.FRAME_CSS's own generic-content block).
 #: `_STYLE` must keep starting with `viz_css_vars()`'s own literal output --
 #: test_dash_no_bare_spacing_or_font_size.py does `module._STYLE.replace(viz_css_vars(), "")`.
+#: issue #265 (D4) Design 7: the .stat-tile* rule group reads --panel-* now (mechanical
+#: find/replace of --dash- -> --panel-, no new rule, no visual redesign) -- this page's own
+#: charts.py calls (below) all pass id_prefix="panel" now, so the CSS driving the same tiles must
+#: read the same token family panel_css_vars() (already emitted by instrument.page_open()) names.
+#: h3 is untouched -- Design 7's scope is the four .stat-tile* rules only.
 _STYLE = f"""
 {viz_css_vars()}
-.stat-tile {{ display: inline-block; padding: var(--dash-space-3) var(--dash-space-4);
-             margin: 0 var(--dash-space-3) var(--dash-space-3) 0;
-             border: var(--dash-border-hairline) solid var(--dash-gridline);
-             border-radius: var(--dash-radius-sm); min-width: 10rem; }}
-.stat-tile-label {{ font-size: var(--dash-text-small); color: var(--dash-ink2); }}
-.stat-tile-value {{ font-size: var(--dash-text-display); font-family: var(--dash-font-mono);
+.stat-tile {{ display: inline-block; padding: var(--panel-space-3) var(--panel-space-4);
+             margin: 0 var(--panel-space-3) var(--panel-space-3) 0;
+             border: var(--panel-border-hairline) solid var(--panel-gridline);
+             border-radius: var(--panel-radius-sm); min-width: 10rem; }}
+.stat-tile-label {{ font-size: var(--panel-text-small); color: var(--panel-ink2); }}
+.stat-tile-value {{ font-size: var(--panel-text-display); font-family: var(--panel-font-mono);
                     font-variant-numeric: tabular-nums; }}
-.stat-tile-delta {{ font-size: var(--dash-text-small); color: var(--dash-ink2); }}
+.stat-tile-delta {{ font-size: var(--panel-text-small); color: var(--panel-ink2); }}
 h3 {{ font-size: var(--dash-text-subhead); margin-top: var(--dash-space-5); }}
 """
 
@@ -143,10 +148,19 @@ def _render_park_taxonomy(rate_row, reason_class_count, coverage=None, id_prefix
     parts = ["<h3>Park rate</h3>"]
     if not rate_row or not rate_row.get("terminal_count"):
         parts.append(_absent_line(
-            "no terminal goals recorded yet (<code>fact_goal.outcome</code> is not populated on "
-            "any row measured today) &mdash; a measured zero over an empty terminal population, "
-            "not a broken instrument.",
+            # issue #265 (D4) Step 7: plain text now, not a raw HTML fragment -- when id_prefix
+            # is "panel", _absent_line delegates to colors.not_measured_block, which
+            # html.escape()s explain_text (unlike the "dash" body, which splices it in raw). The
+            # PRE-#265 text embedded literal <code>/&mdash; markup, which would have come out
+            # double-escaped ("&amp;mdash;", a literal "<code>" tag as visible text) through that
+            # path -- a real bug this rewrite avoids, not a wording preference. Every substring
+            # test_dash_manager.py pins ("no terminal goals recorded yet") is a prefix of this
+            # string, so it survives unchanged.
+            "no terminal goals recorded yet (fact_goal.outcome is not populated on any row "
+            "measured today) -- a measured zero over an empty terminal population, not a broken "
+            "instrument.",
             id_prefix=id_prefix,
+            provenance="no writer · fact_goal.outcome (not populated on any row measured today)",
         ))
     else:
         rate = rate_row.get("park_rate") or 0.0
@@ -162,10 +176,12 @@ def _render_park_taxonomy(rate_row, reason_class_count, coverage=None, id_prefix
     parts.append("<h3>Park taxonomy (why it stopped)</h3>")
     if not reason_class_count:
         parts.append(_absent_line(
-            "no instrument. <code>fact_event.reason_class</code> has zero writers anywhere in "
-            "the ingest path today &mdash; this is not a measured zero, it is the complete "
-            "absence of a data path.",
+            # Same plain-text rationale as the park-rate branch above.
+            "no instrument. fact_event.reason_class has zero writers anywhere in the ingest "
+            "path today -- this is not a measured zero, it is the complete absence of a data "
+            "path.",
             id_prefix=id_prefix,
+            provenance="no writer · fact_event.reason_class (zero writers in the ingest path)",
         ))
     else:
         parts.append(
@@ -185,12 +201,16 @@ def _render_review_cycle_distribution(id_prefix="dash"):
     no live branch this function can ever render without new ingest work outside this story's
     scope (see .sdlc/plans/127.md Risk 4)."""
     return _absent_line(
-        "no ingest path exists for this data at all. <code>review_cycles</code> lives only in "
-        "per-goal state JSON (<code>.sdlc/state/work/&lt;goal&gt;.json</code>, written by "
-        "<code>work.py</code>'s own <code>_record</code>/<code>_save</code>), never ingested "
-        "into the store &mdash; not a dark metric, not an empty view, a complete absence of any "
-        "route from this data to the store.",
+        # issue #265 (D4) Step 7: plain text now -- see _render_park_taxonomy's own comment
+        # above for why the pre-#265 <code>/&mdash; markup could not survive a panel-material
+        # dispatch (it would double-escape). "no ingest path exists for this data at all" and
+        # "review_cycles" both remain intact substrings for test_dash_manager.py's pins.
+        "no ingest path exists for this data at all. review_cycles lives only in per-goal "
+        "state JSON (.sdlc/state/work/<goal>.json, written by work.py's own _record/_save), "
+        "never ingested into the store -- not a dark metric, not an empty view, a complete "
+        "absence of any route from this data to the store.",
         id_prefix=id_prefix,
+        provenance="no writer · insight ingest (review_cycles is never read from .sdlc state)",
     )
 
 
@@ -225,11 +245,14 @@ def render_manager_view(conn, now=None, metrics_dir=None):
     reason_class_count = _reason_class_measured_count(conn)
 
     if wip_row is None:
-        wip_stat_html = _absent_line("no claimed/done/parked/failed event has ever been measured.")
+        wip_stat_html = _absent_line(
+            "no claimed/done/parked/failed event has ever been measured.",
+            id_prefix="panel", provenance="no writer · fact_event (claimed/done/parked/failed)",
+        )
     else:
         wip_coverage = extract_coverage("7", registry["7"]["reliability_class"], wip_row)
         wip_stat_html = (
-            render_stat_tile("WIP (open claims)", wip_row["wip_count"])
+            render_stat_tile("WIP (open claims)", wip_row["wip_count"], id_prefix="panel")
             + coverage_denominator_html(wip_coverage)
         )
 
@@ -275,29 +298,38 @@ individual grain except aging WIP (below) and hand-off response (not rendered on
 
 <section id="panel-burndown">
 <h2>Burndown + Monte Carlo band</h2>
-{render_burndown_with_mc_band(weekly_remaining, p10_total=p10_total, p90_total=p90_total)}
+{render_burndown_with_mc_band(
+    weekly_remaining, p10_total=p10_total, p90_total=p90_total, id_prefix="panel",
+    provenance="no writer · fact_goal.terminal_ts (not populated on any row measured today)",
+)}
 </section>
 
 <section id="panel-wip-aging">
 <h2>WIP and aging</h2>
 {wip_stat_html}
-{render_aging_wip(aging_rows, now=now)}
+{render_aging_wip(
+    aging_rows, now=now, id_prefix="panel",
+    provenance="no writer · fact_event (claimed/done/parked/failed, metric_10)",
+)}
 {render_aging_wip_table(aging_rows, now=now)}
 </section>
 
 <section id="panel-handoff-graph">
 <h2>Handoff graph (by area)</h2>
-{render_handoff_graph_by_area(handoff_rows)}
+{render_handoff_graph_by_area(
+    handoff_rows, id_prefix="panel",
+    provenance="no writer · fact_handoff (no rows with a linked issue)",
+)}
 </section>
 
 <section id="panel-park-taxonomy">
 <h2>Park taxonomy</h2>
-{_render_park_taxonomy(park_rate_row, reason_class_count, park_coverage)}
+{_render_park_taxonomy(park_rate_row, reason_class_count, park_coverage, id_prefix="panel")}
 </section>
 
 <section id="panel-review-cycles">
 <h2>Review-cycle distribution</h2>
-{_render_review_cycle_distribution()}
+{_render_review_cycle_distribution(id_prefix="panel")}
 </section>
 
 <script type="application/json" id="insight-manager-data">{json_script(payload)}</script>

@@ -24,10 +24,12 @@ splices one bogus quoted family into a real rendered page and proves the same as
 
 WHAT THIS DOES NOT COVER, stated so the pass is not read as wider than it is: it scans CSS
 `font-family:` DECLARATIONS only. Inline-SVG `font-family="..."` ATTRIBUTES use `=` and no
-quotes around the family, so this regex cannot see them, and `panel._bars()` / `panel._strip()`
-do currently emit `font-family="PlexMono,monospace"` -- the same defect, uncaught here. That is
-chart-internal markup, deliberately out of scope for issue #264 (#265 owns it); this note exists
-so the gap is visible rather than silently implied to be covered.
+quotes around the family, so this regex cannot see them -- that gap was chart-internal markup,
+deliberately out of scope for issue #264. issue #265 (D4, Design 8) closes it with a dedicated
+guard, `test_dash_svg_font_family_attribute_uses_a_token.py`, which scans every `insight/dash/*.py`
+file's raw source for the attribute form directly; `panel._bars()`/`panel._strip()` now emit
+`font-family="var(--panel-font-mono)"` rather than the literal `"PlexMono,monospace"` this
+docstring used to name as the live, uncaught defect.
 """
 import datetime
 import re

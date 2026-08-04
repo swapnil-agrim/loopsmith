@@ -155,3 +155,27 @@ def test_negative_control_proves_the_leak_methodology_has_teeth(conn):
     rendered_fragment = " ".join(f"{r['actor_id']} {r['goal_id']}" for r in rows)
     with pytest.raises(AssertionError):
         _assert_carol_absent(rendered_fragment)
+
+
+def test_ic_has_no_bespoke_absence_vocabulary_of_its_own():
+    """issue #265 (D4) Design 6: before this issue, `_render_blocked_on_me`/`_render_cost`
+    hand-rolled their own inline `<svg>` + `status_mark()` + `texture_defs()`, importing both
+    directly from `insight.dash.colors` -- a THIRD, undocumented absence vocabulary on this page
+    (alongside `render_aging_wip`'s primitive and `instrument.py`'s own board), bypassing
+    `id_prefix` entirely. Both functions are now rewritten to call `charts._absent_line(...,
+    id_prefix="panel", ...)` instead, and `ic.py` drops the direct `status_mark`/`texture_defs`
+    imports. AST-level (not a source-text grep, which would also match this module's own
+    docstrings/comments naming what it deliberately no longer imports) -- pins the STRUCTURE."""
+    import ast
+    import inspect
+
+    import insight.dash.ic as ic_mod
+
+    source = inspect.getsource(ic_mod)
+    tree = ast.parse(source)
+    imported_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            imported_names.update(a.name for a in node.names)
+    assert "status_mark" not in imported_names, imported_names
+    assert "texture_defs" not in imported_names, imported_names

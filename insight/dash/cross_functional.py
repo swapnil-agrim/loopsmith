@@ -102,12 +102,24 @@ def _matrix_cell_svg(status, id_prefix="dash"):
 def _render_gate_matrix(rows, id_prefix="dash"):
     """Section body for panel-gate-matrix. rows == [] (metric_24 has zero rows because no
     alignment-collect/v1 pack was ever ingested) reuses insight.dash.charts._absent_line
-    unmodified, same primitive leadership.py already uses for its own empty-state branches."""
+    unmodified, same primitive leadership.py already uses for its own empty-state branches.
+
+    issue #265 (D4) Design 5, independent plan-review Finding 1: the empty-rows branch is
+    hardcoded to `id_prefix="panel"` -- NOT threaded through this function's own `id_prefix`
+    parameter, which governs ONLY the verdict-badge cells further down (`_matrix_cell_svg`, a
+    different code path, reached only when `rows` is non-empty). This function's one real call
+    site (`render_cross_functional_view`) always wants panel material here regardless of what it
+    passes for `id_prefix` -- a second parameter would add API surface with only one legal value
+    ever passed (the exact "parameter that looks general but is special-cased" trap
+    .sdlc/plans/263.md's own Decision 2 warns against). Naively passing `id_prefix="panel"` at
+    the call site instead would ALSO flip every verdict badge to "panel", which
+    `panel_css_vars()` does not carry the full PASS/WARN/FAIL/ABSENT vocabulary for -- the exact
+    undefined-custom-property trap this module's own docstring warns about."""
     if not rows:
         return _absent_line(
             "no alignment-collect pack has ever been ingested -- metric #24 has zero rows.",
-            id_prefix=id_prefix,
-            emit_defs=False,  # the page emits <defs> once -- see render_cross_functional_view
+            id_prefix="panel",
+            provenance="no writer · insight.ingest.collectors (alignment-collect never run)",
         )
     row_html = []
     for row in rows:
@@ -154,7 +166,8 @@ def _render_risk_review():
             "ingested: insight.ingest.collectors.SOURCES lists only alignment-collect, "
             "discovery-scan, and pipeline-card. There is no insight/metrics/*.sql view for "
             "this row. Wiring risk-detect in is a follow-up story, not this one.",
-            emit_defs=False,  # the page emits <defs> once
+            id_prefix="panel",
+            provenance="no writer · insight.ingest.collectors (risk-detect/v1 never ingested)",
         )
         + "</div>"
     )
@@ -176,7 +189,11 @@ def _render_alignment_drift():
             "(insight/ingest/ledger_writer.py only ever populates project_id, goal_id, ts, "
             "actor_id, kind, reliability_class). There is no insight/metrics/*.sql view for "
             "this row either.",
-            emit_defs=False,  # the page emits <defs> once
+            id_prefix="panel",
+            provenance=(
+                "no writer · fact_event.gate/verdict/phase/cycle "
+                "(ledger_writer.py never populates them)"
+            ),
         )
         + "</div>"
     )

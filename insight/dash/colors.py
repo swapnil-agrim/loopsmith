@@ -164,6 +164,23 @@ PANEL = {
 # light CATEGORICAL ramp, whose mid-tones vanish against a #080b0c ground.
 PANEL_MIX = ["#5ce0b0", "#ffa629", "#5aa9d6", "#ff5f52", "#b98ce0", "#d6b45a", "#7f8b8f"]
 
+# issue #265 (D4), Design 1: the panel ground's own magnitude ramp for render_aging_wip's age
+# bucket 0..9, sourced from colors.PANEL* (not CATEGORICAL/SEQUENTIAL_BLUE) so the panel ground
+# has exactly one palette. Linear RGB interpolation between PANEL["raised"] (#141a1c, board-cell
+# face -- the receding end, intentionally near-invisible against the panel ground, mirroring
+# SEQUENTIAL_BLUE_DARK's own intentionally low-contrast floor) and PANEL["amber"] (#ffa629,
+# panel.py's own established "bar fill" accent -- see _bars()'s amber/amber-deep gradient), 10
+# steps. Computed once via plain linear interpolation (verified this session: contrast against
+# PANEL["panel"] is 1.06, 1.31, 1.68, 2.22, 2.92, 3.85, 4.93, 6.26, 7.77, 9.57 -- strictly
+# monotonically increasing, same shape as SEQUENTIAL_BLUE_DARK's own pinned ramp) and pinned as
+# literals, not computed at import time -- matching this module's own static-token convention for
+# SEQUENTIAL_BLUE_LIGHT/_DARK. The ONE new hex literal this plan introduces; derived math over two
+# existing tokens, not an independent colour pick.
+PANEL_SEQ = [
+    "#141a1c", "#2e2a1d", "#48391f", "#624920", "#7c5822",
+    "#976823", "#b17725", "#cb8726", "#e59628", "#ffa629",
+]
+
 # Hairlines and textures are expressed as alpha over the ground so they hold up on every card
 # elevation without a per-surface value.
 PANEL_ALPHA = {
@@ -182,12 +199,37 @@ def panel_css_vars(prefix="panel"):
     """Emit the instrument palette as CSS custom properties, plus the two embedded @font-face
     rules. `insight.dash.panel` references `var(--panel-*)` for every colour it draws -- including
     inline-SVG `fill`/`stroke`, which resolve custom properties exactly as CSS does -- so the
-    module itself contains no colour literal."""
+    module itself contains no colour literal.
+
+    issue #265 (D4), Design 1: also emits the chart-role vocabulary `insight.dash.charts`' five
+    `render_*` primitives read when called with `id_prefix="panel"` -- `ink`/`ink2`/`muted`
+    (text), `baseline`/`gridline` (hairlines), `surface` (cutout stroke), `delta_good`/
+    `status-fail` (stat-tile direction glyphs), `cat-0..N-1` (categorical, sourced from
+    PANEL_MIX -- one fewer slot than CATEGORICAL, see Design 1a), `seq-0..9` (magnitude ramp,
+    PANEL_SEQ), plus the mode-invariant `text-*`/`space-*`/`radius-sm`/`border-hairline` scales
+    verbatim from TYPE_SCALE/SPACE/RADIUS_SM/BORDER_HAIRLINE (unchanged from viz_css_vars()'s own
+    invariant block). Every source is PANEL*/the mode-invariant scales -- never CATEGORICAL/
+    SEQUENTIAL_BLUE/CHROME -- so the panel ground keeps exactly one palette (done_when 1)."""
     parts = [f"--{prefix}-{k}: {v};" for k, v in PANEL.items()]
     parts += [f"--{prefix}-{k}: {v};" for k, v in PANEL_ALPHA.items()]
     parts += [f"--{prefix}-mix-{i}: {c};" for i, c in enumerate(PANEL_MIX)]
     parts.append(f"--{prefix}-font-sans: {FONT_SANS_STACK};")
     parts.append(f"--{prefix}-font-mono: {FONT_MONO_STACK};")
+    # --------------------------------------------------------------- chart-role layer (issue #265)
+    parts.append(f"--{prefix}-ink: {PANEL['bone']};")
+    parts.append(f"--{prefix}-ink2: {PANEL['dim']};")
+    parts.append(f"--{prefix}-muted: {PANEL['faint']};")
+    parts.append(f"--{prefix}-baseline: {PANEL_ALPHA['rule-hard']};")
+    parts.append(f"--{prefix}-gridline: {PANEL_ALPHA['grid']};")
+    parts.append(f"--{prefix}-surface: {PANEL['panel']};")
+    parts.append(f"--{prefix}-delta_good: {PANEL['cyan']};")
+    parts.append(f"--{prefix}-status-fail: {PANEL['red']};")
+    parts += [f"--{prefix}-cat-{i}: {c};" for i, c in enumerate(PANEL_MIX)]
+    parts += [f"--{prefix}-seq-{i}: {c};" for i, c in enumerate(PANEL_SEQ)]
+    parts += [f"--{prefix}-text-{k}: {v};" for k, v in TYPE_SCALE.items()]
+    parts += [f"--{prefix}-space-{k}: {v};" for k, v in SPACE.items()]
+    parts.append(f"--{prefix}-radius-sm: {RADIUS_SM};")
+    parts.append(f"--{prefix}-border-hairline: {BORDER_HAIRLINE};")
     return f""":root {{ color-scheme: dark; {" ".join(parts)} }}
 @font-face {{ font-family: "Atkinson Hyperlegible"; font-style: normal; font-weight: 400;
   font-display: swap; src: url(data:font/woff2;base64,{FONT_SANS_WOFF2_BASE64}) format("woff2"); }}
@@ -537,6 +579,59 @@ CONTRAST_PAIRS = [
                           "by design, which is exactly why that existing test asserts only "
                           "monotonicity and not a floor"}
       for i in range(_SEQ_STEPS)],
+
+    # -- issue #265 (D4) Design 2: the panel ground's own chart-role tokens. PANEL.ground/panel/
+    # raised are pure backgrounds (never a foreground) -- exempted in
+    # test_dash_contrast.py's own `exempt` set, exactly like CHROME.surface's existing exemption,
+    # not listed here as rows (a background needs no contrast row against itself).
+    {"fg": "PANEL.bone", "bg": "PANEL.panel", "floor": 4.5,
+     "why": "primary chart text under id_prefix=\"panel\" (colors.py panel_css_vars()'s --panel-"
+            "ink, sourced from PANEL['bone']) -- not_measured_svg's own 'not measured' label, "
+            "direct bar/spoke labels"},
+    {"fg": "PANEL.dim", "bg": "PANEL.panel", "floor": 4.5,
+     "why": "secondary chart text (--panel-ink2, sourced from PANEL['dim']) -- explain/provenance "
+            "sentences, axis labels"},
+    {"fg": "PANEL.faint", "bg": "PANEL.panel", "floor": 3.0,
+     "why": "tertiary/axis-tick glyph (--panel-muted, sourced from PANEL['faint']) -- clears at "
+            "3.08, barely; flagged here so a future palette tweak that nudges this value down is "
+            "caught by test_every_registered_pair_clears_its_floor_in_both_modes before it ships"},
+    {"fg": "PANEL.cyan", "bg": "PANEL.panel", "floor": 3.0,
+     "why": "stat-tile good-direction glyph (--panel-delta_good, sourced from PANEL['cyan']) -- "
+            "11.35, comfortable margin"},
+    {"fg": "PANEL.red", "bg": "PANEL.panel", "floor": 3.0,
+     "why": "stat-tile bad-direction glyph (--panel-status-fail, sourced from PANEL['red']) -- "
+            "6.24, comfortable margin"},
+    {"fg": "PANEL.amber", "bg": "PANEL.panel", "floor": 3.0,
+     "why": "bar-fill / signal accent, non-text mark (panel.py's own annunciator/p50 marker/bar "
+            "fill, and PANEL_SEQ's own bright end) -- 9.57, comfortable margin"},
+    {"fg": "PANEL.void-ink", "bg": "PANEL.panel", "floor": 3.0,
+     "why": "the achromatic 'NO DATA'/'UNBUILT'/'NO SENSOR' short-label text instrument.py's own "
+            "board/readouts already use -- clears at 3.08, barely, same margin note as "
+            "PANEL.faint above (both happen to share the same hex today)"},
+    {"fg": "PANEL.amber-deep", "bg": "PANEL.panel", "floor": None,
+     "second_channel": "bar-gradient foot colour (panel._bars()'s linearGradient) -- never shown "
+                        "as an isolated flat fill, always the receding end of a gradient whose "
+                        "bright end (PANEL.amber) IS floored above"},
+    {"fg": "PANEL.cyan-deep", "bg": "PANEL.panel", "floor": None,
+     "second_channel": "live-tick gradient foot colour -- same reasoning as PANEL.amber-deep, "
+                        "never an isolated flat fill"},
+    {"fg": "PANEL.void", "bg": "PANEL.panel", "floor": None,
+     "second_channel": "ABSENT fill -- always co-rendered with the dashed border + hatch + "
+                        "'not measured'/'NO DATA' label, never colour alone, per PANEL's own "
+                        "'not a status hue' docstring"},
+    *[{"fg": f"PANEL_MIX[{i}]", "bg": "PANEL.panel", "floor": None,
+       "second_channel": "an adjacent legend swatch or direct label, always rendered beside it -- "
+                          "mirrors CATEGORICAL's own row, same reasoning, same ALL_PAIRS_CAP/"
+                          "shared-legend mechanism, just PANEL-native colours"}
+      for i in range(len(PANEL_MIX))],
+    *[{"fg": f"PANEL_SEQ[{i}]", "bg": "PANEL.panel", "floor": None,
+       "second_channel": "render_aging_wip direct-labels every bar; the table twin is a "
+                          "plain-text equivalent; ramp POSITION, monotonically pinned by "
+                          "test_panel_seq_monotonically_increases_in_contrast_against_the_panel_"
+                          "ground, is the ordering cue -- verbatim the same reasoning "
+                          "SEQUENTIAL_BLUE's own row above already states, because it is the same "
+                          "design, just PANEL-native colours"}
+      for i in range(len(PANEL_SEQ))],
 ]
 
 
@@ -555,12 +650,26 @@ def _is_light_dark_leaf(value):
     return isinstance(value, dict) and _is_hex(value.get("light")) and _is_hex(value.get("dark"))
 
 
+def _is_bare_hex_container(value):
+    """True for a dict or list whose entries are ALL bare hex strings (not `{"light","dark"}`
+    leaves) -- the shape PANEL (dict) and PANEL_MIX/PANEL_SEQ (lists) share. issue #265 (D4)
+    Design 2, Route i: a second, dark-only/mode-invariant discovery shape, alongside
+    `_is_light_dark_leaf()`'s light+dark shape -- extending discovery rather than giving
+    PANEL/PANEL_MIX/PANEL_SEQ a synthetic light/dark leaf, which would contradict PANEL's own
+    docstring rejecting a light mode."""
+    if isinstance(value, dict):
+        return bool(value) and all(_is_hex(v) for v in value.values())
+    if isinstance(value, list):
+        return bool(value) and all(_is_hex(v) for v in value)
+    return False
+
+
 def _all_exported_color_tokens():
     """Derived generically from this module's own top-level constants -- NOT a hand-enumerated
     list of the four containers that happened to exist when this was first written (PR review
     finding 1 on issue #262/D1: a hand-enumerated list is defeated by any NEW colour-bearing
-    container, since it is simply never mentioned here). Two structural shapes are recognized,
-    matching every colour container this module actually defines:
+    container, since it is simply never mentioned here). Structural shapes recognized, matching
+    every colour container this module actually defines:
 
     1. A dict (STATUS, CHROME, or any future sibling) or a list (CATEGORICAL, or any future
        sibling) whose entries are `_is_light_dark_leaf()` dicts -> one token per entry, named
@@ -569,20 +678,61 @@ def _all_exported_color_tokens():
        _DARK, or any future sequential-ramp sibling) -- a genuinely different shape (no "light"/
        "dark" *keys* to sniff, since the two modes are two whole lists), so paired by name
        instead -> one token per index, named "BASE[index]".
+    3. (issue #265, D4, Design 2, Route i) A dict or list whose entries are ALL bare hex strings,
+       none of them `_is_light_dark_leaf()` dicts (PANEL, PANEL_MIX, PANEL_SEQ) -> one
+       mode-invariant token per entry, same "NAME.key"/"NAME[index]" naming. Checked only for
+       containers shape 1 didn't already claim (a dict of light/dark leaves is never also a bare
+       hex container, since its values are dicts, not hex strings -- but stated as an explicit
+       `elif` below so the two shapes can never double-count the same container).
 
-    Adding a brand-new top-level dict/list that matches either shape is picked up automatically,
-    with no edit needed here -- that is what makes the registry mechanical rather than a
-    hardcoded list that rots (see test_every_exported_color_token_has_a_registered_contrast_
-    pairing, which fails loudly for any token this misses)."""
+    Precedence between shapes 2 and 3 (issue #265, D4, contrast-registry fix): a list that is
+    itself one HALF of a shape-2 `*_LIGHT`/`*_DARK` pair (SEQUENTIAL_BLUE_LIGHT/_DARK) is
+    structurally indistinguishable from a shape-3 bare-hex container (PANEL_MIX/PANEL_SEQ are
+    also plain lists of bare hex) -- both are "a list of bare hex strings". Shape 2 takes
+    precedence: such a list is discovered ONLY as the paired "BASE[index]" token (what
+    CONTRAST_PAIRS actually registers for SEQUENTIAL_BLUE), never additionally under its own
+    `*_LIGHT`/`*_DARK` name via shape 3 -- otherwise the same colours would be discovered twice
+    under two different names, and test_every_exported_color_token_has_a_registered_contrast_
+    pairing would report the `*_LIGHT`/`*_DARK` names as unregistered (they are never referenced
+    as such in CONTRAST_PAIRS, since the pairing already covers them). The shape-2 pairing itself
+    is computed first, below, so this precedence can be applied while shape 3 is being decided.
+
+    Adding a brand-new top-level dict/list that matches any shape is picked up automatically, with
+    no edit needed here -- that is what makes the registry mechanical rather than a hardcoded list
+    that rots (see test_every_exported_color_token_has_a_registered_contrast_pairing, which fails
+    loudly for any token this misses)."""
     mod = vars(sys.modules[__name__])
+
+    # Shape 2's *_LIGHT/*_DARK halves, computed first so shape 3 (below) knows to skip them --
+    # see the precedence note above.
+    shape2_halves = set()
+    for attr_name, value in mod.items():
+        if not (attr_name.endswith("_LIGHT") and isinstance(value, list)):
+            continue
+        if not (value and all(_is_hex(v) for v in value)):
+            continue
+        base = attr_name[: -len("_LIGHT")]
+        dark_value = mod.get(f"{base}_DARK")
+        if isinstance(dark_value, list) and len(dark_value) == len(value):
+            shape2_halves.add(attr_name)
+            shape2_halves.add(f"{base}_DARK")
+
     names = set()
     for attr_name, value in mod.items():
         if attr_name.startswith("_") or not attr_name.isupper():
             continue
         if isinstance(value, dict):
-            names |= {f"{attr_name}.{k}" for k, v in value.items() if _is_light_dark_leaf(v)}
-        elif isinstance(value, list) and value and all(_is_light_dark_leaf(v) for v in value):
-            names |= {f"{attr_name}[{i}]" for i in range(len(value))}
+            if any(_is_light_dark_leaf(v) for v in value.values()):
+                names |= {f"{attr_name}.{k}" for k, v in value.items() if _is_light_dark_leaf(v)}
+            elif _is_bare_hex_container(value):
+                names |= {f"{attr_name}.{k}" for k in value}
+        elif isinstance(value, list) and value:
+            if all(_is_light_dark_leaf(v) for v in value):
+                names |= {f"{attr_name}[{i}]" for i in range(len(value))}
+            elif attr_name in shape2_halves:
+                continue  # shape 2's own pairing (below) claims this list, not shape 3
+            elif _is_bare_hex_container(value):
+                names |= {f"{attr_name}[{i}]" for i in range(len(value))}
     for attr_name, value in mod.items():
         if not (attr_name.endswith("_LIGHT") and isinstance(value, list)):
             continue
@@ -598,10 +748,21 @@ def _all_exported_color_tokens():
 
 def _resolve(token_path, mode):
     """Resolve a CONTRAST_PAIRS token path (e.g. "CHROME.ink", "STATUS.WARN", "CATEGORICAL[2]",
-    "SEQUENTIAL_BLUE[7]", "CHROME.on-status") to its hex string for the given mode ("light" or
-    "dark"). Plumbing for the contrast-registry tests in test_dash_contrast.py."""
+    "SEQUENTIAL_BLUE[7]", "CHROME.on-status", "PANEL.bone", "PANEL_MIX[0]", "PANEL_SEQ[3]") to its
+    hex string for the given mode ("light" or "dark"). Plumbing for the contrast-registry tests in
+    test_dash_contrast.py.
+
+    issue #265 (D4) Design 2: PANEL.*/PANEL_MIX[*]/PANEL_SEQ[*] return the SAME value regardless
+    of `mode` -- exactly the pattern already used for "CHROME.on-status" above -- because PANEL is
+    dark-only by design (its own docstring explicitly rejects a light mode)."""
     if token_path == "CHROME.on-status":
         return CHROME["ink"]["light"]  # fixed, never mode-flipped -- see viz_css_vars()'s comment
+    if token_path.startswith("PANEL."):
+        return PANEL[token_path.split(".", 1)[1]]  # mode-invariant, dark-only by design
+    if token_path.startswith("PANEL_MIX["):
+        return PANEL_MIX[int(token_path[len("PANEL_MIX["):-1])]  # mode-invariant
+    if token_path.startswith("PANEL_SEQ["):
+        return PANEL_SEQ[int(token_path[len("PANEL_SEQ["):-1])]  # mode-invariant
     if token_path.startswith("STATUS."):
         return STATUS[token_path.split(".", 1)[1]][mode]
     if token_path.startswith("CHROME."):
