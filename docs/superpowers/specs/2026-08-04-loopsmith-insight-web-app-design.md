@@ -53,6 +53,71 @@ them. The web tier consumes it over HTTP and **never reimplements any part of it
 
 ---
 
+## 2.1 Independence: Insight must be extractable to its own repository
+
+**Requirement (author, 2026-08-04):** LoopSmith Insight and LoopSmith Core are separate entities.
+Insight will be lifted into its own repository later, so nothing may exist that would prevent
+`git mv insight/ ../loopsmith-insight/` from producing a working, fully-tested project.
+
+### 2.1.1 What is already clean
+
+Verified, not assumed:
+
+* **Neither imports the other.** `tests/test_import_boundary.py` enforces both directions by
+  parsing every file with `ast` — not grep, so an alias or a docstring mention cannot fool it. Its
+  own docstring states the rule this requirement depends on: *"THE ALLOWED COUPLING IS FILE FORMATS
+  ONLY."*
+* `insight/` imports nothing outside the standard library except `duckdb`.
+* `insight/pyproject.toml` already declares a **separate distribution**, `loopsmith-insight`. There
+  is no root `pyproject.toml` — the plugin is not a Python distribution at all.
+
+The Python code boundary is therefore already correct and does not need work.
+
+### 2.1.2 What would actually break, and why imports are the wrong thing to look at
+
+Two guarantees are enforced today **only because both projects sit in one checkout**. Neither is an
+import, so no import checker will ever flag them, and both fail *silently* on extraction:
+
+1. **`tests/test_git_reader_velocity_parity.py`** proves `insight.ingest.git_reader.measure_window()`
+   returns the same measurement as the plugin's `skills/sdlc-velocity/scripts/velocity.py`. Two
+   independent implementations, held in agreement by a test that needs both trees present. After
+   extraction the test cannot run, and the two drift apart with green suites on both sides.
+2. **`tests/test_vocabulary_coverage.py`** ties the plugin's `ledger.EVENT_KINDS` to its emitting
+   call sites — and `insight/ingest` reads exactly those kinds. Rename a kind in the engine and
+   Insight goes quietly blind to it; nothing on either side fails.
+
+Three further items are scaffolding rather than semantics: one `ci.yml` holding both jobs, the root
+`LICENSE`/`README` carve-out, and `.sdlc/config.json`'s two-suite verify command.
+
+### 2.1.3 The mechanism: a versioned data contract plus a standalone proof
+
+The engine→product coupling is *supposed* to exist — a JSONL file format is the product's input.
+The defect is that it is currently enforced by **co-location** instead of by a contract. So:
+
+* The formats Insight consumes (ledger entries, the telemetry event stream, goal frontmatter,
+  `config.json`, `state/*`) are **documented and versioned**, with **golden fixture files committed
+  inside `insight/`**.
+* The cross-repo tests above are replaced by **contract tests that run independently on each side
+  against those same fixtures**. The engine asserts it still *writes* the contract; Insight asserts
+  it still *reads* it. Neither needs the other's source, so both survive extraction, and a
+  breaking engine change fails the engine's own suite.
+* An unknown field must remain ignorable by an older reader — `ledger.py`'s existing contract —
+  so the format can evolve without lockstep releases.
+
+And the proof that makes this real rather than aspirational: **a test that copies `insight/` alone
+into a temporary directory, with no plugin present, and runs its entire suite there.** If that
+passes, extractability is demonstrated on every CI run instead of being discovered the day someone
+tries it (E15.S3).
+
+### 2.1.4 Binding on all new work in this spec
+
+Everything the web application adds — `insight/api/`, `insight/web/`, the Compose file, the
+Dockerfiles, the seed data — **lives under `insight/`**. Nothing lands at the repository root.
+`insight/web/` gets a BUSL marker convention for `.ts`/`.tsx`, and the import-boundary checker is
+extended to both new directories so the AST guard keeps covering them.
+
+---
+
 ## 3. The central design decision: absence enforced by the type system
 
 Insight's one defensible claim is **ABSENT ≠ PASS** — an unmeasured metric must never be readable
@@ -216,14 +281,20 @@ that prove the leak invariants move with them. The HTML rendering is dropped.
 ## 7. Repository layout
 
 ```
-insight/
-  api/          FastAPI service (BUSL) — thin transport over the analytics core
-  web/          Next.js application (BUSL)
-  dash/         retained: panel.py (offline artifact) + colors.py (token source of truth)
-  metrics/      unchanged — 34 .sql files
-  gaps/         unchanged
-  ingest/       unchanged
+insight/                    <- the entire extraction unit; `git mv insight/ ../` must just work
+  api/                      FastAPI service (BUSL) — thin transport over the analytics core
+  web/                      Next.js application (BUSL)
+  dash/                     retained: panel.py (offline artifact) + colors.py (token source)
+  metrics/                  unchanged — 34 .sql files
+  gaps/        ingest/       unchanged
+  contract/                 versioned format docs + golden fixtures (E15.S4)
+  docker-compose.yml        NOT at the repository root — see §2.1.4
+  Dockerfile.web  Dockerfile.api
+  pyproject.toml            already a separate distribution: loopsmith-insight
 ```
+
+Nothing this spec adds may land at the repository root. Anything that does is, by definition, a
+thing that will not travel when `insight/` is extracted.
 
 The BUSL header marker and the plugin/insight import-boundary tests extend to both new
 directories; `insight/web/` needs a marker convention for `.ts`/`.tsx` (E15.S2).
@@ -235,19 +306,32 @@ directories; `insight/web/` needs a marker convention for `.ts`/`.tsx` (E15.S2).
 Ordered so each depends only on what precedes it. The loop claims goals in **issue-number order**,
 so issues are created in exactly this sequence.
 
-### E15 — The gate, first (2 stories) — BLOCKING
+### E15 — The gate and extractability, first (4 stories) — BLOCKING
 
 Nothing else may land before this. The verify gate is currently `pytest tests/ && pytest
 insight/tests/`, and CI gates `main` on four Python jobs. A Next.js app merged today would pass all
 four while being entirely untested — the same shape as the stale-head defect that previously shipped
-bugs to protected `main` past four green checks.
+bugs to protected `main` past four green checks. §2.1's independence requirement also has to bind
+*before* new directories exist, not be retrofitted across 20 stories of web code.
 
 - **S1** — Extend the verify gate and CI with a web job: type-check (`tsc --noEmit`), lint, unit
   tests, and a production build. *Done when* a deliberately broken `.tsx` — a type error and a
   failing test, committed on a scratch branch — **fails** the gate. A gate that has never been seen
   to fail is not a gate.
-- **S2** — Repo layout, BUSL markers for `.ts`/`.tsx`, and the import-boundary rule extended to the
-  new directories. *Done when* a test proves a plugin file importing from `insight/web/` fails.
+- **S2** — Repo layout under `insight/` only (§2.1.4), BUSL markers for `.ts`/`.tsx`, and the AST
+  import-boundary checker extended to `insight/api/` and `insight/web/`. *Done when* a test proves a
+  plugin file importing from `insight/` fails **and** that the new directories are actually walked
+  by the checker — a guard that skips the new tree is worse than none, because it reads as covered.
+- **S3** — **The standalone-extraction proof** (§2.1.3). A test copies `insight/` alone into a
+  temporary directory, with no plugin tree present, and runs its full suite there. *Done when* that
+  test passes in CI **and** is shown to fail when `insight/` is made to depend on something outside
+  itself. This is what converts "extractable" from a claim into a fact checked on every run.
+- **S4** — **Freeze the engine↔product data contract** (§2.1.3). Document and version the ledger,
+  telemetry-event, goal-frontmatter and `config.json` formats Insight reads; commit golden fixtures
+  under `insight/`; replace `test_git_reader_velocity_parity.py` and the Insight-facing half of
+  `test_vocabulary_coverage.py` with contract tests that run **independently on each side** against
+  those fixtures. *Done when* renaming an event kind in the engine fails the **engine's own** suite,
+  with no reference to `insight/` anywhere in the failing test.
 
 ### E16 — The API contract (3 stories)
 
@@ -309,7 +393,7 @@ guarantee, asserted on the whole response.
   the entire trust boundary rests on that, so it is verified rather than assumed.
 - **S2** — Error and empty states; run documentation.
 
-**24 stories.** At this repository's measured median of 1.26 h/goal, roughly 30 hours of loop time.
+**26 stories.** At this repository's measured median of 1.26 h/goal, roughly 33 hours of loop time.
 
 ---
 
@@ -335,3 +419,5 @@ Explicitly out of scope, to be filed separately rather than absorbed:
 | A leak invariant is lost in the port | The existing leak tests move to the API *with* the queries; E19.S2 asserts on whole response bodies |
 | Acceptance clauses satisfiable by inert artifacts | Every clause in §8 is phrased as observable behaviour; several explicitly require seeing the check fail |
 | Two frontends rot | `insight/dash/` is deliberately reduced to `panel.py` + `colors.py`; the persona renderers are retired, not maintained in parallel |
+| Extraction breaks silently — the coupling is semantic, not an import, so no import checker sees it | E15.S3's standalone-suite proof runs every CI run; E15.S4 converts the two co-location-only guarantees into contract tests that run independently on each side |
+| New web work quietly lands at the repo root and cannot travel | §2.1.4 is binding; E15.S2 lands before any web code exists, so the rule constrains all 20+ later stories rather than being retrofitted |
