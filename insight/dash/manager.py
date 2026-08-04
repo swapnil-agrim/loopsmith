@@ -52,15 +52,21 @@ from insight.dash.charts import (
     render_handoff_graph_by_area,
     render_stat_tile,
 )
+from insight.dash.colors import viz_css_vars
+from insight.dash.instrument import page_close, page_open
 from insight.dash.render import coverage_denominator_html, extract_coverage, json_script
-from insight.dash.shell import base_style
 from insight.metrics.loader import load_metrics
 
 #: This page uses render_stat_tile (WIP count, park rate) exactly like ic.py does, so it needs
 #: the same `.stat-tile*` rule group ic.py's own _STYLE carries -- render.py does not use stat
 #: tiles at all, so this is page-specific, not a sixth common group base_style() should absorb.
+#: issue #264: `viz_css_vars()`, not `base_style()` -- this page no longer calls the old light
+#: shell; the shared instrument frame (`instrument.page_open`) supplies the generic h1/h2/table/
+#: th,td/.banner/code chrome instead (see instrument.FRAME_CSS's own generic-content block).
+#: `_STYLE` must keep starting with `viz_css_vars()`'s own literal output --
+#: test_dash_no_bare_spacing_or_font_size.py does `module._STYLE.replace(viz_css_vars(), "")`.
 _STYLE = f"""
-{base_style()}
+{viz_css_vars()}
 .stat-tile {{ display: inline-block; padding: var(--dash-space-3) var(--dash-space-4);
              margin: 0 var(--dash-space-3) var(--dash-space-3) 0;
              border: var(--dash-border-hairline) solid var(--dash-gridline);
@@ -258,14 +264,11 @@ def render_manager_view(conn, now=None, metrics_dir=None):
         "reason_class_measured_count": reason_class_count,
     }
 
-    html_text = f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>LoopSmith Insight -- Manager view</title>
-<style>{_STYLE}</style>
-</head>
-<body class="viz-root">
+    # The page's own <title> text is preserved exactly (issue #264 Step 6) -- only the head/nav
+    # around it now come from the shared instrument.page_open()/page_close() shell.
+    head = page_open("LoopSmith Insight -- Manager view", current="manager", extra_css=_STYLE)
+
+    html_text = f"""{head}
 <h1>LoopSmith Insight -- Manager view</h1>
 <p>Generated {html.escape(generated_at)}. Team-wide: no metric on this page renders at
 individual grain except aging WIP (below) and hand-off response (not rendered on this page).</p>
@@ -301,8 +304,7 @@ individual grain except aging WIP (below) and hand-off response (not rendered on
 <footer>Self-contained: no network fetch, no external script/style/font reference. Data is
 inlined above. No individual-grain metric appears on this page except aging WIP (panel-wip-aging)
 and hand-off response (not rendered here) -- see this module's own docstring.</footer>
-</body>
-</html>"""
+{page_close()}"""
 
     summary = {
         "burndown_weeks": len(weekly_remaining),

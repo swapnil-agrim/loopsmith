@@ -55,12 +55,14 @@ import datetime
 import html
 
 from insight.dash.charts import render_aging_wip, render_aging_wip_table, render_stat_tile
-from insight.dash.colors import status_mark, texture_defs
+from insight.dash.colors import status_mark, texture_defs, viz_css_vars
+from insight.dash.instrument import page_close, page_open
 from insight.dash.render import json_script
-from insight.dash.shell import base_style
 
+# issue #264: `viz_css_vars()`, not `base_style()` -- see manager.py's own comment on this same
+# substitution for the full reasoning (instrument.page_open supplies the generic chrome now).
 _STYLE = f"""
-{base_style()}
+{viz_css_vars()}
 .stat-tile {{ display: inline-block; padding: var(--dash-space-3) var(--dash-space-4);
              margin: 0 var(--dash-space-3) var(--dash-space-3) 0;
              border: var(--dash-border-hairline) solid var(--dash-gridline);
@@ -306,14 +308,11 @@ def render_ic_view(conn, actor, project_id=None, now=None):
         },
     }
 
-    html_text = f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>LoopSmith Insight -- IC view</title>
-<style>{_STYLE}</style>
-</head>
-<body class="viz-root">
+    # The page's own <title> text is preserved exactly (issue #264 Step 8) -- only the head/nav
+    # around it now come from the shared instrument.page_open()/page_close() shell.
+    head = page_open("LoopSmith Insight -- IC view", current="ic", extra_css=_STYLE)
+
+    html_text = f"""{head}
 {banner}
 <h1>LoopSmith Insight -- IC view for {html.escape(actor)}</h1>
 <p>Generated {html.escape(generated_at)}. Own data only: every row on this page is scoped in SQL
@@ -340,8 +339,7 @@ to this one resolved actor, with the single exception of a hand-off counterparty
 <footer>Self-contained: no network fetch, no external script/style/font reference. Data is inlined
 above. This page authenticates the actor it was BUILT for, not the person viewing it -- see this
 module's own docstring.</footer>
-</body>
-</html>"""
+{page_close()}"""
 
     summary = {
         "actor": actor,

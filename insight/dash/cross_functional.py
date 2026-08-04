@@ -25,13 +25,15 @@ import datetime
 import html
 
 from insight.dash.charts import _absent_line
-from insight.dash.colors import status_mark, texture_defs
+from insight.dash.colors import status_mark, texture_defs, viz_css_vars
+from insight.dash.instrument import page_close, page_open
 from insight.dash.render import json_script
-from insight.dash.shell import base_style
 from insight.metrics.loader import load_metrics
 
+# issue #264: `viz_css_vars()`, not `base_style()` -- see manager.py's own comment on this same
+# substitution for the full reasoning (instrument.page_open supplies the generic chrome now).
 _STYLE = f"""
-{base_style()}
+{viz_css_vars()}
 .matrix-scope-note, .matrix-absent-note {{ color: var(--dash-ink2); }}
 """
 
@@ -129,10 +131,13 @@ def _render_gate_matrix(rows, id_prefix="dash"):
             + "".join(cells) + "</tr>"
         )
     header_cells = "".join(f"<th>{html.escape(label)}</th>" for _gate, label in _GATE_HEADERS)
+    # issue #264: the wrapper carries the horizontal-scroll guard, never the <table> itself --
+    # `overflow-x:auto` on a `display:table` box behaves inconsistently across engines (plan
+    # .sdlc/plans/264.md Sec 1.5). instrument.FRAME_CSS's `.table-scroll` rule supplies it.
     return (
-        "<table><thead><tr>"
+        '<div class="table-scroll"><table><thead><tr>'
         f"<th>Project</th><th>Window (collected)</th>{header_cells}"
-        f"</tr></thead><tbody>{''.join(row_html)}</tbody></table>"
+        f"</tr></thead><tbody>{''.join(row_html)}</tbody></table></div>"
     )
 
 
@@ -206,14 +211,13 @@ def render_cross_functional_view(conn, now=None, metrics_dir=None):
         "alignment_drift_status": "absent",
     }
 
-    html_text = f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>LoopSmith Insight -- Cross-functional view</title>
-<style>{_STYLE}</style>
-</head>
-<body class="viz-root">
+    # The page's own <title> text is preserved exactly (issue #264 Step 9) -- only the head/nav
+    # around it now come from the shared instrument.page_open()/page_close() shell.
+    head = page_open(
+        "LoopSmith Insight -- Cross-functional view", current="cross-functional", extra_css=_STYLE,
+    )
+
+    html_text = f"""{head}
 <!-- The ABSENT hatch pattern, defined ONCE for the whole document (issue #133 review). Its id is
      derived from id_prefix, which also names the CSS vars status_mark() reads, so it cannot be
      varied per element -- defining it once is the only way a page with several ABSENT states
@@ -253,8 +257,7 @@ distinguish those two states; this matrix only claims the one it can.</p>
 <script type="application/json" id="insight-cross-functional-data">{json_script(payload)}</script>
 <footer>Self-contained: no network fetch, no external script/style/font reference. Data is
 inlined above. No individual-grain metric appears anywhere on this page.</footer>
-</body>
-</html>"""
+{page_close()}"""
 
     summary = {
         "gate_matrix_window_count": len(matrix_rows),

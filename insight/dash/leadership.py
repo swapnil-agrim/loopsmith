@@ -14,14 +14,17 @@ import datetime
 import html
 
 from insight.dash.charts import _absent_line, render_stat_tile
+from insight.dash.colors import viz_css_vars
+from insight.dash.instrument import page_close, page_open
 from insight.dash.render import coverage_denominator_html, extract_coverage, json_script
-from insight.dash.shell import base_style
 from insight.metrics.loader import load_metrics
 
 #: This page uses render_stat_tile exactly like manager.py/ic.py do -- same page-specific
 #: `.stat-tile*` rule group precedent (charts.py's own comment on manager.py's _STYLE).
+#: issue #264: `viz_css_vars()`, not `base_style()` -- see manager.py's own comment on this same
+#: substitution for the full reasoning (instrument.page_open supplies the generic chrome now).
 _STYLE = f"""
-{base_style()}
+{viz_css_vars()}
 .stat-tile {{ display: inline-block; padding: var(--dash-space-3) var(--dash-space-4);
              margin: 0 var(--dash-space-3) var(--dash-space-3) 0;
              border: var(--dash-border-hairline) solid var(--dash-gridline);
@@ -283,10 +286,13 @@ def _render_portfolio(rows, id_prefix="dash"):
         '<div id="tile-portfolio">'
         '<p class="portfolio-note">Manager view is team-wide, not scoped to a single project -- '
         "every drill-through link below opens the SAME manager.html.</p>"
-        "<table><thead><tr>"
+        # issue #264: the wrapper carries the horizontal-scroll guard, never the <table> itself --
+        # `overflow-x:auto` on a `display:table` box behaves inconsistently across engines (plan
+        # .sdlc/plans/264.md Sec 1.5). instrument.FRAME_CSS's `.table-scroll` rule supplies it.
+        '<div class="table-scroll"><table><thead><tr>'
         "<th>Project</th><th>Throughput (done)</th><th>Park rate</th><th>Gate coverage</th>"
         "<th>Drill-through</th>"
-        f"</tr></thead><tbody>{row_html}</tbody></table>"
+        f"</tr></thead><tbody>{row_html}</tbody></table></div>"
         "</div>"
     )
 
@@ -340,14 +346,11 @@ def render_leadership_view(conn, now=None, metrics_dir=None):
         "portfolio": portfolio_payload,
     }
 
-    html_text = f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>LoopSmith Insight -- Leadership view</title>
-<style>{_STYLE}</style>
-</head>
-<body class="viz-root">
+    # The page's own <title> text is preserved exactly (issue #264 Step 7) -- only the head/nav
+    # around it now come from the shared instrument.page_open()/page_close() shell.
+    head = page_open("LoopSmith Insight -- Leadership view", current="leadership", extra_css=_STYLE)
+
+    html_text = f"""{head}
 <h1>LoopSmith Insight -- Leadership view</h1>
 <p>Generated {html.escape(generated_at)}. Aggregate only: no metric on this page renders at
 individual grain -- zero exceptions (stricter than the manager view).</p>
@@ -375,8 +378,7 @@ individual grain -- zero exceptions (stricter than the manager view).</p>
 <script type="application/json" id="insight-leadership-data">{json_script(payload)}</script>
 <footer>Self-contained: no network fetch, no external script/style/font reference. Data is
 inlined above. No individual-grain metric appears anywhere on this page.</footer>
-</body>
-</html>"""
+{page_close()}"""
 
     summary = {
         "speed_done_count": speed_row["done_count"] if speed_row else None,
