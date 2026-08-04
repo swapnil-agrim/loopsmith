@@ -46,19 +46,19 @@ FRAME_CSS = """
 *{box-sizing:border-box}
 body{
   margin:0; background:var(--panel-ground); color:var(--panel-bone);
-  font-family:'Atkinson',ui-sans-serif,sans-serif; font-size:13px; line-height:1.5;
+  font-family:var(--panel-font-sans); font-size:13px; line-height:1.5;
   -webkit-font-smoothing:antialiased;
   background-image:
     radial-gradient(ellipse 90% 60% at 50% -10%, var(--panel-glow), transparent 70%),
     repeating-linear-gradient(0deg, var(--panel-grain) 0 1px, transparent 1px 4px);
 }
-.mono{font-family:'PlexMono',ui-monospace,monospace; font-variant-numeric:tabular-nums}
+.mono{font-family:var(--panel-font-mono); font-variant-numeric:tabular-nums}
 .wrap{max-width:1500px; margin:0 auto; padding:calc(var(--s)*3) calc(var(--s)*4) calc(var(--s)*10)}
 
 /* ---- masthead ------------------------------------------------------------------ */
 .mast{display:flex; align-items:baseline; gap:calc(var(--s)*2); flex-wrap:wrap;
   padding-bottom:calc(var(--s)*2); border-bottom:1px solid var(--panel-rule-hard)}
-.mark{font-family:'PlexMono',monospace; font-size:11px; letter-spacing:.34em;
+.mark{font-family:var(--panel-font-mono); font-size:11px; letter-spacing:.34em;
   text-transform:uppercase; color:var(--panel-amber)}
 .mast h1{font-size:26px; font-weight:400; margin:0; letter-spacing:-.015em}
 .mast .meta{margin-left:auto; font-size:11px; color:var(--panel-faint); letter-spacing:.05em}
@@ -74,16 +74,16 @@ body{
   border:1px solid var(--panel-rule)}
 .ro{background:var(--panel-panel); padding:calc(var(--s)*2.5) calc(var(--s)*2.5) calc(var(--s)*2)}
 .ro .lab{font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--panel-dim)}
-.ro .val{font-family:'PlexMono',monospace; font-size:44px; line-height:1.05; letter-spacing:-.035em;
+.ro .val{font-family:var(--panel-font-mono); font-size:44px; line-height:1.05; letter-spacing:-.035em;
   margin-top:calc(var(--s)*1.5)}
 .ro .unit{font-size:15px; color:var(--panel-faint); margin-left:4px}
 .ro .cov{margin-top:var(--s); font-size:10.5px; color:var(--panel-faint);
-  font-family:'PlexMono',monospace; border-top:1px solid var(--panel-rule); padding-top:6px}
-.ro.absent .val{font-family:'PlexMono',monospace; font-size:19px; color:var(--panel-void-ink);
+  font-family:var(--panel-font-mono); border-top:1px solid var(--panel-rule); padding-top:6px}
+.ro.absent .val{font-family:var(--panel-font-mono); font-size:19px; color:var(--panel-void-ink);
   letter-spacing:.08em}
 .ro.absent{background:
   repeating-linear-gradient(45deg,var(--panel-hatch-soft) 0 3px,transparent 3px 7px), var(--panel-panel)}
-.cls{float:right; font-family:'PlexMono',monospace; font-size:9.5px; letter-spacing:.1em;
+.cls{float:right; font-family:var(--panel-font-mono); font-size:9.5px; letter-spacing:.1em;
   color:var(--panel-faint); border:1px solid var(--panel-rule-hard); border-radius:2px; padding:1px 5px}
 
 /* ---- two-column body ----------------------------------------------------------- */
@@ -100,7 +100,7 @@ body{
   padding:calc(var(--s)*2.5)}
 .card h3{margin:0 0 calc(var(--s)*.5); font-size:12.5px; font-weight:400; letter-spacing:.02em}
 .card .sub{font-size:10.5px; color:var(--panel-faint); margin-bottom:calc(var(--s)*2);
-  font-family:'PlexMono',monospace}
+  font-family:var(--panel-font-mono)}
 
 /* ---- right rail ---------------------------------------------------------------- */
 .alert{border-left:2px solid var(--panel-amber); padding:calc(var(--s)*1.25) 0 calc(var(--s)*1.25) calc(var(--s)*1.5);
@@ -108,7 +108,7 @@ body{
 .alert.crit{border-left-color:var(--panel-red)}
 .alert.void{border-left-color:var(--panel-void-ink); border-left-style:dashed}
 .alert .t{font-size:12px}
-.alert .d{font-size:10.5px; color:var(--panel-faint); margin-top:3px; font-family:'PlexMono',monospace}
+.alert .d{font-size:10.5px; color:var(--panel-faint); margin-top:3px; font-family:var(--panel-font-mono)}
 
 /* ---- the board: all 42, lit or dark -------------------------------------------- */
 .band{margin-bottom:calc(var(--s)*2.5)}
@@ -124,9 +124,9 @@ body{
 .cell{background:var(--panel-raised); padding:calc(var(--s)*1.25) calc(var(--s)*1.5); min-height:62px;
   display:flex; flex-direction:column; justify-content:space-between;
   box-shadow:0 0 0 1px var(--panel-rule)}
-.cell .id{font-family:'PlexMono',monospace; font-size:9.5px; color:var(--panel-faint)}
+.cell .id{font-family:var(--panel-font-mono); font-size:9.5px; color:var(--panel-faint)}
 .cell .nm{font-size:11.5px; line-height:1.3; margin-top:2px}
-.cell .n{font-family:'PlexMono',monospace; font-size:10px; color:var(--panel-cyan); margin-top:5px}
+.cell .n{font-family:var(--panel-font-mono); font-size:10px; color:var(--panel-cyan); margin-top:5px}
 .cell.dark, .cell.unbuilt{
   background:repeating-linear-gradient(45deg,var(--panel-hatch) 0 3px,transparent 3px 7px), var(--panel-void);
   color:var(--panel-void-ink)}
@@ -135,7 +135,7 @@ body{
 .cell.unbuilt{opacity:.72}
 
 footer{margin-top:calc(var(--s)*5); padding-top:calc(var(--s)*2); border-top:1px solid var(--panel-rule);
-  font-size:10.5px; color:var(--panel-faint); font-family:'PlexMono',monospace}
+  font-size:10.5px; color:var(--panel-faint); font-family:var(--panel-font-mono)}
 
 @media (max-width:1080px){
   .cols{grid-template-columns:1fr}
@@ -148,7 +148,7 @@ footer{margin-top:calc(var(--s)*5); padding-top:calc(var(--s)*2); border-top:1px
    test_dash_reflow.py, a later step of this same goal. */
 .persona-nav{display:flex; flex-wrap:wrap; gap:calc(var(--s)*2.5); margin-bottom:calc(var(--s)*3);
   padding-bottom:calc(var(--s)*2); border-bottom:1px solid var(--panel-rule-hard)}
-.persona-nav a{font-family:'PlexMono',monospace; font-size:11px; letter-spacing:.08em;
+.persona-nav a{font-family:var(--panel-font-mono); font-size:11px; letter-spacing:.08em;
   text-transform:uppercase; color:var(--panel-faint); text-decoration:none;
   padding-bottom:4px; border-bottom:2px solid transparent}
 .persona-nav a[aria-current="page"]{color:var(--panel-bone); border-bottom-color:var(--panel-amber)}
@@ -166,7 +166,7 @@ th{color:var(--panel-dim); font-weight:400; text-transform:uppercase; letter-spa
   font-size:10.5px}
 .banner{background:var(--panel-panel); border:1px solid var(--panel-rule); border-radius:3px;
   padding:calc(var(--s)*2) calc(var(--s)*2.5); margin-bottom:calc(var(--s)*3)}
-code{font-family:'PlexMono',monospace; font-size:.9em; color:var(--panel-cyan)}
+code{font-family:var(--panel-font-mono); font-size:.9em; color:var(--panel-cyan)}
 
 /* ---- table-overflow guard (issue #264, NEW) -------------------------------------- */
 /* Applied to a WRAPPER, never to <table> itself: `overflow-x:auto` on a `display:table` box

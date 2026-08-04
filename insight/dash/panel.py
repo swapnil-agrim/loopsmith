@@ -189,7 +189,7 @@ CSS = """
 .instr{margin-top:calc(var(--s)*3); padding:calc(var(--s)*2.5) calc(var(--s)*3);
   background:var(--panel-panel); border:1px solid var(--panel-rule); border-radius:3px;
   display:grid; grid-template-columns:auto 1fr; gap:calc(var(--s)*4); align-items:center}
-.instr .big{font-family:'PlexMono',monospace; font-size:40px; line-height:1; letter-spacing:-.03em}
+.instr .big{font-family:var(--panel-font-mono); font-size:40px; line-height:1; letter-spacing:-.03em}
 .instr .big .den{color:var(--panel-faint); font-size:22px}
 .ribbon{display:flex; gap:3px; align-items:flex-end; height:38px}
 .tick{flex:1; border-radius:1px; min-width:4px}
@@ -209,7 +209,7 @@ CSS = """
 .mixkey{display:grid; grid-template-columns:1fr auto; gap:2px 10px; font-size:11px}
 .mixkey .k{color:var(--panel-bone)} .mixkey .k i{display:inline-block; width:8px; height:8px;
   border-radius:1px; margin-right:6px}
-.mixkey .v{font-family:'PlexMono',monospace; font-size:10.5px; color:var(--panel-dim)}
+.mixkey .v{font-family:var(--panel-font-mono); font-size:10.5px; color:var(--panel-dim)}
 
 @media (max-width:1080px){ .instr{grid-template-columns:1fr} }
 """
