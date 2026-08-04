@@ -66,6 +66,14 @@ staring at a manifest, so the README must say it out loud, and
 stays (`source: "./"`, `license: MIT`), the README section must keep naming `plugin.json` and
 `install.sh`. (`install.sh` copies only hooks/, skills/, commands/, so the copy path never carries
 BUSL files at all — which is exactly why the README must distinguish the two install paths.)
+
+ONE GUARD HERE IS NOT ABOUT THE LICENCE: `test_no_docker_or_compose_files_at_the_repository_root`
+(issue #296) checks a *folder* boundary — spec §7 puts compose/Dockerfile artifacts under
+`insight/` for the same reason everything else in this file must be — but it is not itself a
+marker or licence-text check. It lives here anyway, a deliberate cross-cutting exception to this
+file's own remit, because no better home exists (it is not an AST import check, so it does not
+belong in test_import_boundary.py either) and fewest files wins over a third guard file for one
+test.
 """
 import json
 import os
@@ -77,6 +85,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 INSIGHT = ROOT / "insight"
 HEADER_FILE = INSIGHT / "HEADER.txt"
+WEB = INSIGHT / "web"
 
 #: PEP 263 / CPython's tokenizer. Deliberately NOT `\bcoding` — that rejects
 #: `# encoding: utf-8`, the commonest cookie form, on a correctly-marked file.
@@ -146,6 +155,56 @@ def _files_missing_header(root, marker):
 
 def _marker():
     return HEADER_FILE.read_text(encoding="utf-8-sig").strip()
+
+
+def _owned_ts_files(root):
+    """Every .ts/.tsx file under `root`, same structural skip as `_owned_py_files` (no name skip,
+    no git) -- see the module docstring. Two glob patterns because a module is either `.ts` or
+    `.tsx`, never both."""
+    out = []
+    for pattern in ("*.[tT][sS]", "*.[tT][sS][xX]"):
+        for path in root.rglob(pattern):
+            rel = path.relative_to(root)
+            if "__pycache__" in rel.parts or any(q.endswith(".egg-info") for q in rel.parts):
+                continue
+            if any(_is_virtualenv(root.joinpath(*rel.parts[:i + 1]))
+                   for i in range(len(rel.parts) - 1)):
+                continue
+            out.append(path)
+    return sorted(out)
+
+
+def _ts_marker(py_marker):
+    """Derive the `//`-led `.ts`/`.tsx` marker MECHANICALLY from the one stored `.py` marker in
+    HEADER.txt -- swap only the leading `#` comment-leader for `//`, leave the payload untouched,
+    so the two markers cannot say different things. An empty py_marker (an emptied HEADER.txt) maps
+    to an empty ts_marker too, so `_carries_marker`'s equality check keeps failing loud (flagging
+    every file) instead of going silently permissive -- same contract
+    test_checker_flags_everything_when_the_marker_is_empty already pins for .py."""
+    return "//" + py_marker[1:] if py_marker.startswith("#") else py_marker
+
+
+def _files_missing_ts_header(root, marker):
+    """The `.ts`/`.tsx` analogue of `_files_missing_header` -- same `_carries_marker` equality
+    check (shebang/coding-cookie skip included, harmlessly inert for TS), different file set."""
+    return sorted(
+        str(p.relative_to(root))
+        for p in _owned_ts_files(root)
+        if not _carries_marker(p.read_text(encoding="utf-8-sig", errors="replace"), marker)
+    )
+
+
+def _refuse_if_stale(probe):
+    """Shared by the planted-probe tests below (this file's and, independently re-typed rather than
+    imported per this module's own no-shared-test-helper convention, test_import_boundary.py's): a
+    stale leftover from a previous killed/failed run must refuse to run silently over it, with a
+    message naming the exact path, rather than double-write and pass for the wrong reason. Factored
+    out so the refusal itself can be pinned directly
+    (test_stale_probe_guard_fires_with_a_legible_message) instead of trusted to fire correctly on
+    faith, since a clean run must never actually observe it."""
+    assert not probe.exists(), (
+        f"stale probe from a previous failed run -- delete it and rerun: {probe}"
+    )
 
 
 def _licence_section():
@@ -269,6 +328,58 @@ def test_checker_finds_nested_files(tmp_path):
         os.path.join("ingest", "readers", "ledger.py")]
 
 
+def test_ts_marker_is_derived_mechanically_from_the_py_marker():
+    py_marker = _marker()
+    ts_marker = _ts_marker(py_marker)
+    assert ts_marker == "//" + py_marker[1:], "the // marker must be a swap, never retyped"
+    assert ts_marker.startswith("// SPDX-License-Identifier: BUSL-1.1")
+
+
+def test_ts_marker_is_empty_when_the_py_marker_is_empty():
+    """Mirrors test_checker_flags_everything_when_the_marker_is_empty for .py: an emptied
+    HEADER.txt must still make the .ts/.tsx checker flag everything, never pass everything."""
+    assert _ts_marker("") == ""
+
+
+def test_ts_checker_flags_a_headerless_ts_or_tsx_file(tmp_path):
+    marker = _ts_marker(_marker())
+    (tmp_path / "good.tsx").write_text(marker + "\nexport const x = 1\n", encoding="utf-8")
+    (tmp_path / "good.ts").write_text(marker + "\nexport const y = 1\n", encoding="utf-8")
+    (tmp_path / "bad.tsx").write_text("export const z = 1\n", encoding="utf-8")
+    assert _files_missing_ts_header(tmp_path, marker) == ["bad.tsx"]
+
+
+def test_ts_checker_flags_everything_when_the_marker_is_empty(tmp_path):
+    (tmp_path / "good.tsx").write_text(
+        _ts_marker(_marker()) + "\nexport const x = 1\n", encoding="utf-8")
+    assert _files_missing_ts_header(tmp_path, "") == ["good.tsx"]
+
+
+def test_deriving_the_ts_marker_does_not_change_the_py_marker_or_checker(tmp_path):
+    """Clause 2's other half: adding the .ts/.tsx path must not perturb the existing .py marker or
+    _files_missing_header. Reads HEADER.txt itself (never retypes it) before and after calling
+    _ts_marker, then re-runs the existing .py fixture behaviour."""
+    before = _marker()
+    _ts_marker(before)
+    assert _marker() == before, "_ts_marker must be a pure read, not a mutation"
+    (tmp_path / "bad.py").write_text("x = 1\n", encoding="utf-8")
+    assert _files_missing_header(tmp_path, before) == ["bad.py"]
+
+
+def test_stale_probe_guard_fires_with_a_legible_message(tmp_path):
+    """Pins the refusal in `_refuse_if_stale` directly: a leftover file from a previous killed or
+    failed run must make the guard raise, and the message must name the offending path, rather
+    than trusting -- on faith -- that a real planted-probe test would somehow surface it. Neither
+    test_a_planted_plugin_import_in_the_real_insight_web_is_caught (test_import_boundary.py) nor
+    test_a_planted_markerless_tsx_in_the_real_insight_web_is_caught (below) ever exercises this
+    path on a clean run -- by construction, the probe they plant never pre-exists -- so this is the
+    only place either behaviour is actually pinned."""
+    probe = tmp_path / "stale.tsx"
+    probe.write_text("leftover from a previous run\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match=re.escape(str(probe))):
+        _refuse_if_stale(probe)
+
+
 # --------------------------------------------------------------------------- the tree
 
 
@@ -280,6 +391,50 @@ def test_every_insight_source_carries_the_marker():
         "these insight/ sources are missing the BUSL marker (see insight/HEADER.txt):\n  "
         + "\n  ".join(missing)
     )
+
+
+def test_every_insight_ts_source_carries_the_marker():
+    """The .ts/.tsx analogue of the .py test above, and DELIBERATELY UNCONDITIONAL -- no
+    `if not WEB.is_dir(): pytest.skip(...)` guard, unlike that one. insight/web/ exists as of this
+    story (issue #296), so the "the directory doesn't even exist yet" vacuity the .py guard was
+    written to skip past at E0.S2 does not apply here; this runs against the real tree on every
+    invocation, exactly the way the .py guard eventually did.
+
+    This is the whole point of clause 2: without an unconditional real-tree check, a future story
+    (E17.S1) could land fifty unmarked .tsx files and this suite would stay green forever, because
+    the fixture tests above only prove the checker CAN catch a planted violation in a tmp_path --
+    never that anyone actually ran it against the real insight/web/. See this file's own module
+    docstring, "WHY THE CHECKER IS TESTED, NOT JUST THE TREE" -- the identical argument, restated
+    here because it is what justifies running unconditionally rather than skipping until content
+    exists.
+
+    Vacuous TODAY, by design: insight/web/ carries no real .ts/.tsx yet (E17.S1), so
+    _owned_ts_files(INSIGHT) is empty and this passes trivially -- the same zero-files-today,
+    real-coverage-the-day-a-file-lands shape the .py guard had at E0.S2, and the direct reason it
+    is safe to ship unconditional now rather than deferred behind a skip.
+    """
+    missing = _files_missing_ts_header(INSIGHT, _ts_marker(_marker()))
+    assert not missing, (
+        "these insight/ .ts/.tsx sources are missing the BUSL marker (see insight/HEADER.txt):\n  "
+        + "\n  ".join(missing)
+    )
+
+
+def test_a_planted_markerless_tsx_in_the_real_insight_web_is_caught():
+    """Clause 4's proof, the licence-boundary half (issue #296): a marker-less .tsx planted inside
+    the REAL insight/web/ directory must be caught by the real checker against the real tree, not a
+    tmp_path look-alike. A guard that silently skips a directory is worse than no guard, because the
+    board reads as covered; only planting inside the real path proves the walk actually reaches it.
+    Removed in `finally` so a failed assertion never leaves litter."""
+    probe = WEB / "_e15s2_marker_probe.tsx"
+    _refuse_if_stale(probe)
+    probe.write_text("export const x = 1\n", encoding="utf-8")
+    try:
+        missing = _files_missing_ts_header(INSIGHT, _ts_marker(_marker()))
+        assert str(probe.relative_to(INSIGHT)) in missing, (
+            f"planting a markerless .tsx inside insight/web/ was not caught: {missing}")
+    finally:
+        probe.unlink()
 
 
 # --------------------------------------------------------------------------- the two licences
@@ -341,3 +496,27 @@ def test_marketplace_source_still_implies_the_readme_warning():
                 f"marketplace install puts BUSL files on disk from an MIT-declared package. The "
                 f"README's License section must explain that, and it no longer mentions {needle!r}."
             )
+
+
+def test_no_docker_or_compose_files_at_the_repository_root():
+    """Layout regression guard, issue #296 clause 1: spec §7 puts docker-compose.yml,
+    Dockerfile.web, and Dockerfile.api under insight/ specifically so `git mv insight/ ../` carries
+    them -- anything at the repository root is, by definition, left behind. No such file exists
+    anywhere in this repo yet (E17.S1/E22.S1 author them); this guard has zero real coverage today,
+    which is exactly why it's cheap to ship ahead of the first file it will ever catch.
+
+    Five glob patterns, not two, because Compose V2 changed its own preferred discovery order:
+    `compose.yaml` and `compose.yml` (checked separately -- `docker-compose*` catches neither, and
+    verified directly rather than assumed) are now Compose's first choice, with `docker-compose.yml`
+    kept only as a V1-compatibility fallback; `Containerfile` is the OCI-neutral name Podman and
+    buildah accept as a `Dockerfile` synonym. Missing any one of the five would let that specific
+    filename sit at the root undetected while every other one was caught -- coverage that looks
+    complete without being complete."""
+    hits = (
+        sorted(p.name for p in ROOT.glob("docker-compose*"))
+        + sorted(p.name for p in ROOT.glob("Dockerfile*"))
+        + sorted(p.name for p in ROOT.glob("compose.yaml"))
+        + sorted(p.name for p in ROOT.glob("compose.yml"))
+        + sorted(p.name for p in ROOT.glob("Containerfile*"))
+    )
+    assert not hits, f"these must live under insight/, not the repository root (spec §7): {hits}"

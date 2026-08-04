@@ -111,10 +111,23 @@ there — but a future insight/ingest/*.py could use the identical call to load,
 skills/sdlc-loop/scripts/frontmatter.py by file path, and this guard would not flag it: the call
 produces no Import/ImportFrom node regardless of which side of the boundary its target file sits on.
 That IS the code coupling spec §1.1 rule 1 forbids. This guard does not attempt to detect it.
+
+A THIRD residue, named here because this file is the AST guard and TypeScript cannot be parsed by
+it: `.ts`/`.tsx` under insight/api/ and insight/web/ get no import-boundary check at all from this
+file — `ast.parse` cannot read them, and no regex scanner is built here (issue #296 deliberately
+stops short of one; a regex import-matcher for TS is real tooling, not five lines, and untested
+tooling is worse than an honest gap). tests/test_licence_boundary.py's `.ts`/`.tsx` marker
+convention proves the WALK reaches insight/api/ and insight/web/; it says nothing about what those
+files import. E17.S1, once ESLint and real TS source exist, owns this residue — that story gets a
+real parser (the TS compiler API or an ESLint rule) for free, at the point there is something real
+to point it at.
 """
 import ast
 import os
 import pathlib
+import re
+
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -194,6 +207,19 @@ def _boundary_violations(root, banned):
         if hits:
             violations.append(f"{rel}: imports {', '.join(sorted(hits))}")
     return sorted(violations)
+
+
+def _refuse_if_stale(probe):
+    """A stale leftover from a previous killed/failed run must refuse to run silently over it, with
+    a message naming the exact path, rather than double-write and pass for the wrong reason.
+    Re-typed here rather than imported from tests/test_licence_boundary.py's identical helper — see
+    this file's own module docstring on why no shared test-helper module exists in this repo.
+    Factored out so the refusal itself can be pinned directly
+    (test_stale_probe_guard_fires_with_a_legible_message) rather than only trusted on faith, since a
+    clean run must never actually observe it fire."""
+    assert not probe.exists(), (
+        f"stale probe from a previous failed run -- delete it and rerun: {probe}"
+    )
 
 
 # --------------------------------------------------------------------------- the tree, both directions
@@ -445,3 +471,36 @@ def test_egg_info_is_skipped(tmp_path):
     p.parent.mkdir(parents=True)
     p.write_text("import insight\n", encoding="utf-8")
     assert _boundary_violations(tmp_path, _BANNED_INSIGHT) == []
+
+
+# --------------------------------------------------------------------------- clause 4, planted in the real tree
+
+
+def test_a_planted_plugin_import_in_the_real_insight_web_is_caught():
+    """Clause 4's proof (issue #296): plant a REAL `import skills` file inside the REAL
+    insight/web/ directory -- not a look-alike tmp_path fixture -- and assert the same
+    _boundary_violations(ROOT / "insight", _BANNED_PLUGIN) call the tree test above uses actually
+    catches it. A guard that silently skips a directory is worse than no guard, because the board
+    reads as covered; only planting inside the real path proves the walk actually reaches it.
+    Removed in `finally` so a failed assertion can never leave litter in the tree."""
+    probe = ROOT / "insight" / "web" / "_e15s2_import_boundary_probe.py"
+    _refuse_if_stale(probe)
+    probe.write_text("import skills\n", encoding="utf-8")
+    try:
+        violations = _boundary_violations(ROOT / "insight", _BANNED_PLUGIN)
+        expected = os.path.join("web", "_e15s2_import_boundary_probe.py") + ": imports skills"
+        assert expected in violations, f"planting inside insight/web/ was not caught: {violations}"
+    finally:
+        probe.unlink()
+
+
+def test_stale_probe_guard_fires_with_a_legible_message(tmp_path):
+    """Pins the refusal in `_refuse_if_stale` directly: a leftover file from a previous killed or
+    failed run must make the guard raise, and the message must name the offending path, rather than
+    trusting -- on faith -- that the planted-probe test above would somehow surface it. That test
+    never actually exercises this path on a clean run -- by construction, the probe it plants never
+    pre-exists -- so this is the only place the behaviour is pinned."""
+    probe = tmp_path / "stale.py"
+    probe.write_text("leftover from a previous run\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match=re.escape(str(probe))):
+        _refuse_if_stale(probe)
