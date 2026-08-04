@@ -46,3 +46,5 @@
 {"actor": "swapnil-agrim", "goal": "264", "id": "swapnil-agrim:46", "kind": "phase", "phase": "implement", "state": "start", "ts": "2026-08-04T06:25:02Z"}
 {"actor": "swapnil-agrim", "goal": "264", "id": "swapnil-agrim:47", "kind": "phase", "phase": "implement", "state": "end", "ts": "2026-08-04T06:28:10Z"}
 {"actor": "swapnil-agrim", "command_sha256": "4919ffaf89dc7d01c4afb8f5566a97f969671d9b623619594899cc72bedfbef4", "exit": 0, "goal": "264", "id": "swapnil-agrim:48", "kind": "verify", "ms": 61245, "ok": true, "ts": "2026-08-04T06:42:09Z"}
+{"actor": "swapnil-agrim", "cycle": 1, "gate": "post_review", "goal": "264", "id": "swapnil-agrim:49", "kind": "gate", "ts": "2026-08-04T06:55:50Z", "verdict": "block", "why": "Blocking: the shared frame ships a font-family REGRESSION to the four persona pages. instrument.FRAME_CSS declares body{font-family:'Atkinson',...} and .mono/.mark/.ro .val/... {font-family:'PlexMono'"}
+{"actor": "swapnil-agrim", "command_sha256": "4919ffaf89dc7d01c4afb8f5566a97f969671d9b623619594899cc72bedfbef4", "exit": 0, "goal": "264", "id": "swapnil-agrim:50", "kind": "verify", "ms": 67987, "ok": true, "ts": "2026-08-04T06:58:05Z"}
