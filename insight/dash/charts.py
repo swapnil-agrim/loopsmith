@@ -55,7 +55,7 @@ def _absent_svg(aria_label, explain_text, id_prefix="dash"):
         f'role="img" aria-label="{html.escape(aria_label)}">'
         f'{texture_defs(id_prefix)}'
         f'{status_mark("ABSENT", _ABSENT_CX, _ABSENT_CY, id_prefix=id_prefix)}'
-        f'<text x="{_ABSENT_EXPLAIN_X}" y="{_ABSENT_CY + 4}" font-size="13" '
+        f'<text x="{_ABSENT_EXPLAIN_X}" y="{_ABSENT_CY + 4}" font-size="var(--{id_prefix}-text-body)" '
         f'fill="var(--{id_prefix}-ink2)">{html.escape(explain_text)}</text>'
         f'</svg>'
     )
@@ -253,7 +253,7 @@ def render_aging_wip(rows, now=None, id_prefix="dash"):
             f'rx="4" fill="var(--{id_prefix}-seq-{bucket})"/>'
         )
         parts.append(
-            f'<text x="{text_x:.1f}" y="{text_y}" font-size="11" fill="var(--{id_prefix}-ink2)">'
+            f'<text x="{text_x:.1f}" y="{text_y}" font-size="var(--{id_prefix}-text-caption)" fill="var(--{id_prefix}-ink2)">'
             f'{html.escape(it["actor_id"])} — {it["age_days"]}d</text>'
         )
     parts.append("</svg>")
@@ -372,7 +372,7 @@ def render_percentile_scatter(rows, percentiles=(50, 90), id_prefix="dash"):
             f'stroke="var(--{id_prefix}-gridline)" stroke-width="1"/>'
         )
         parts.append(
-            f'<text x="{axis_x2 - 2}" y="{y - 3:.1f}" font-size="10" text-anchor="end" '
+            f'<text x="{axis_x2 - 2}" y="{y - 3:.1f}" font-size="var(--{id_prefix}-text-micro)" text-anchor="end" '
             f'fill="var(--{id_prefix}-ink2)">p{p}: {ref_values[p]}s</text>'
         )
     for r in rows:
@@ -612,7 +612,7 @@ def render_burndown_with_mc_band(
         f'opacity="0.5"/>'
     )
     parts.append(
-        f'<text x="{horizon_x - 2:.1f}" y="{yof(p90_total) - 4:.1f}" font-size="10" '
+        f'<text x="{horizon_x - 2:.1f}" y="{yof(p90_total) - 4:.1f}" font-size="var(--{id_prefix}-text-micro)" '
         f'text-anchor="end" fill="var(--{id_prefix}-ink2)">p10-p90 ({horizon_weeks}w band)</text>'
     )
     line_pts = " ".join(f"{xof(i):.1f},{yof(v):.1f}" for i, v in enumerate(counts))
@@ -621,7 +621,7 @@ def render_burndown_with_mc_band(
         f'stroke-width="2"/>'
     )
     parts.append(
-        f'<text x="{_BURN_PAD_LEFT}" y="{_BURN_PAD_TOP - 4}" font-size="11" '
+        f'<text x="{_BURN_PAD_LEFT}" y="{_BURN_PAD_TOP - 4}" font-size="var(--{id_prefix}-text-caption)" '
         f'fill="var(--{id_prefix}-ink2)">remaining (actual)</text>'
     )
     parts.append("</svg>")
@@ -718,7 +718,7 @@ def render_handoff_graph_by_area(rows, id_prefix="dash"):
         f'aria-label="{html.escape(aria)}">',
         f'<circle cx="{_HANDOFF_HUB_CX}" cy="{_HANDOFF_HUB_CY}" r="{_HANDOFF_HUB_R}" '
         f'fill="var(--{id_prefix}-baseline)"/>',
-        f'<text x="{_HANDOFF_HUB_CX}" y="{_HANDOFF_HUB_CY + 4}" font-size="11" '
+        f'<text x="{_HANDOFF_HUB_CX}" y="{_HANDOFF_HUB_CY + 4}" font-size="var(--{id_prefix}-text-caption)" '
         f'text-anchor="middle" fill="var(--{id_prefix}-ink2)">all hand-offs</text>',
     ]
     for i, r in enumerate(rows):
@@ -739,7 +739,7 @@ def render_handoff_graph_by_area(rows, id_prefix="dash"):
             f'fill="var(--{id_prefix}-cat-{slot})"/>'
         )
         parts.append(
-            f'<text x="{nx:.1f}" y="{ny - node_r - 4:.1f}" font-size="11" text-anchor="middle" '
+            f'<text x="{nx:.1f}" y="{ny - node_r - 4:.1f}" font-size="var(--{id_prefix}-text-caption)" text-anchor="middle" '
             f'fill="var(--{id_prefix}-ink2)">{html.escape(str(label))} '
             f'({r["handoff_count"]})</text>'
         )

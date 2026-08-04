@@ -26,16 +26,27 @@ def base_style():
     """The five CSS rule-groups every dash page shares, plus `viz_css_vars()` -- `body` text/
     background, `h1`/`h2` sizing, `table`/`th,td` layout, `.banner` (the cold-start/warning
     banner every page can render), and `footer` (the self-contained-page disclosure line every
-    page ends with). No page-specific selector belongs here -- see this module's own docstring."""
+    page ends with). No page-specific selector belongs here -- see this module's own docstring.
+
+    issue #262 (D1): every font-size/spacing/border/radius literal below is retokenized onto
+    `insight.dash.colors`' type/spacing scale (Migration inventory) -- a CSS-VALUE substitution
+    only, no selector added/removed/renamed except the new `code {...}` rule (Decision 10's
+    zero-markup-change mono win: every existing `<code>` usage across the codebase gets the mono
+    treatment for free). `10px` (th/td horizontal padding) is a NAMED exception, kept literal
+    (Decision 5) -- no scale step lands within 2px of it either direction."""
     return f"""
 {viz_css_vars()}
-body {{ font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-       margin: 2rem; color: var(--dash-ink); background: var(--dash-surface); }}
-h1 {{ font-size: 1.4rem; }} h2 {{ font-size: 1.1rem; margin-top: 2rem; }}
+body {{ font-family: var(--dash-font-sans); font-size: var(--dash-text-body); line-height: 1.5;
+       margin: var(--dash-space-7); color: var(--dash-ink); background: var(--dash-surface); }}
+h1 {{ font-size: var(--dash-text-title); }}
+h2 {{ font-size: var(--dash-text-head); margin-top: var(--dash-space-7); }}
 table {{ border-collapse: collapse; width: 100%; }}
-th, td {{ text-align: left; padding: 4px 10px; border-bottom: 1px solid var(--dash-gridline);
-          font-size: 13px; }}
-.banner {{ background: var(--dash-status-warn); border: 1px solid var(--dash-baseline);
-          padding: .75rem 1rem; border-radius: 6px; margin-bottom: 1.5rem; color: var(--dash-on-status); }}
-footer {{ margin-top: 2rem; font-size: 12px; color: var(--dash-muted); }}
+th, td {{ text-align: left; padding: var(--dash-space-1) 10px;
+          border-bottom: var(--dash-border-hairline) solid var(--dash-gridline);
+          font-size: var(--dash-text-body); }}
+.banner {{ background: var(--dash-status-warn); border: var(--dash-border-hairline) solid var(--dash-baseline);
+          padding: var(--dash-space-3) var(--dash-space-4); border-radius: var(--dash-radius-sm);
+          margin-bottom: var(--dash-space-6); color: var(--dash-on-status); }}
+footer {{ margin-top: var(--dash-space-7); font-size: var(--dash-text-small); color: var(--dash-muted); }}
+code {{ font-family: var(--dash-font-mono); font-variant-numeric: tabular-nums; }}
 """

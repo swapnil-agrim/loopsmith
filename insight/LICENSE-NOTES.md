@@ -34,3 +34,34 @@ carve-out is stated in the root `README.md` and in `insight/LICENSE`. A root `NO
 standard way to make it unmissable. Tracked as **issue #162**, which also has to relax
 `test_plugin_licence_is_still_mit` — as written, that assertion would reject the very carve-out
 sentence the fix needs.
+
+## Third-party fonts embedded in `insight/dash/` (2026-08-04, issue #262)
+
+`insight/dash/fonts.py` embeds two subsetted, base64-encoded WOFF2 font payloads, referenced via
+`@font-face { src: url(data:font/woff2;base64,...) }` inside `insight.dash.colors.viz_css_vars()`
+— the design spec's "distinctive humanist sans for prose/headings, a mono for every number,
+identifier, timestamp and provenance line," embedded rather than linked because every `insight
+dash --out` page is a single, independently-portable, self-contained HTML file with no server
+round-trip (`render.py`'s own `assert_self_contained()`).
+
+Both faces are licensed under the **SIL Open Font License, Version 1.1** — a copy of the OFL 1.1
+text ships alongside the embedding module at `insight/dash/fonts/OFL-atkinson-hyperlegible.txt`
+and `insight/dash/fonts/OFL-ibm-plex-mono.txt` respectively, as OFL 1.1's own Requirement clause
+directs ("Copies of the OFL... must be distributed with any Font Software that includes the
+Reserved Font Name(s)"). Neither face's own licence text or copyright notice was altered.
+
+- **Atkinson Hyperlegible** (sans, prose/headings) — Copyright 2020 Braille Institute of America,
+  Inc. Fetched from the canonical upstream release,
+  <https://github.com/googlefonts/atkinson-hyperlegible> (Google Fonts' own unmodified mirror of
+  the Braille Institute's release).
+- **IBM Plex Mono** (mono, numbers/identifiers/timestamps/provenance lines) — Copyright 2017 IBM
+  Corp. with Reserved Font Name "Plex". Fetched from IBM's own
+  <https://github.com/IBM/plex> release `@ibm/plex-mono@2.5.0`.
+
+**Subsetting performed** (build-time only, never at runtime): both faces reduced to their Regular
+weight, Basic Latin + Latin-1 Supplement (`U+0000-00FF` — the only range `insight/dash/*.py`'s own
+`html.escape()`'d, plain-ASCII-source output ever emits), WOFF2 flavor, via `fonttools`'
+`pyftsubset`. No italic, no bold weight embedded — headings and stat-tile values use the browser's
+synthetic/faux bold instead, an accepted v1 simplification. `fonttools` and its `brotli` WOFF2
+extension are implement-time-only tools; neither is a runtime dependency of `insight/` and neither
+appears in `insight/pyproject.toml`'s `dependencies`, which stays `duckdb~=1.4` only.
