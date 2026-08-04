@@ -21,6 +21,13 @@ page, and require each one to be declared by an `@font-face` in that same docume
 names (`monospace`, `ui-sans-serif`, `sans-serif`) are CSS generic/system keywords, not embedded
 faces, and are correctly exempt. Falsifiable by construction -- the negative control below
 splices one bogus quoted family into a real rendered page and proves the same assertion fails.
+
+WHAT THIS DOES NOT COVER, stated so the pass is not read as wider than it is: it scans CSS
+`font-family:` DECLARATIONS only. Inline-SVG `font-family="..."` ATTRIBUTES use `=` and no
+quotes around the family, so this regex cannot see them, and `panel._bars()` / `panel._strip()`
+do currently emit `font-family="PlexMono,monospace"` -- the same defect, uncaught here. That is
+chart-internal markup, deliberately out of scope for issue #264 (#265 owns it); this note exists
+so the gap is visible rather than silently implied to be covered.
 """
 import datetime
 import re
