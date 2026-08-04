@@ -436,6 +436,28 @@ def main(argv=None):
         manager_path.write_text(manager_html, encoding="utf-8", errors="replace")
         print("insight dash: wrote %s (manager view)" % manager_path)
 
+        # Delivery panel (panel.html): the designed, information-dense entry point, and the file
+        # `--serve` opens by default. Built alongside the persona views rather than replacing
+        # them -- those carry per-persona metric selections this page does not reproduce.
+        #
+        # Deliberately NOT wrapped in the MetricLoadError/CoverageDenominatorMissing guard the
+        # four views above share. Those views load the metric catalog and refuse to render without
+        # it; the panel reads the store defensively and renders a metric's ABSENCE as its normal
+        # output, so there is no catalog-load failure for it to catch. A panel that could not
+        # render when metrics are missing would be unable to report the one thing it exists to
+        # report -- how much of the instrumentation is actually live.
+        from insight.dash.panel import render_panel
+
+        panel_conn = open_store(args.db)
+        try:
+            panel_html = render_panel(panel_conn, db_label=str(db_path))
+        finally:
+            panel_conn.close()
+        assert_self_contained(panel_html)
+        panel_path = out_dir / "panel.html"
+        panel_path.write_text(panel_html, encoding="utf-8", errors="replace")
+        print("insight dash: wrote %s (delivery panel)" % panel_path)
+
         # Leadership persona view (issue #131, E5.S1): a FOURTH, team-wide file,
         # leadership.html, built from yet another fresh connection (manager_conn above is
         # already closed). UNCONDITIONAL, like manager.html: no per-viewer identity to resolve,
