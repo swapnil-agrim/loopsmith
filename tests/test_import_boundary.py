@@ -216,7 +216,12 @@ def _refuse_if_stale(probe):
     this file's own module docstring on why no shared test-helper module exists in this repo.
     Factored out so the refusal itself can be pinned directly
     (test_stale_probe_guard_fires_with_a_legible_message) rather than only trusted on faith, since a
-    clean run must never actually observe it fire."""
+    clean run must never actually observe it fire. A leftover probe abandoned by a SIGKILL rather
+    than cleaned up trips both guard files at once -- it reads as a boundary violation to this
+    file's own ambient real-tree scan and, if it also lacks the licence marker, as an unmarked
+    source to test_licence_boundary.py's ambient scan, so one root cause fans out into two
+    unrelated-looking failures across two files; this guard already names the exact path to
+    delete, which is exactly what a maintainer seeing both fail at once should go looking for."""
     assert not probe.exists(), (
         f"stale probe from a previous failed run -- delete it and rerun: {probe}"
     )

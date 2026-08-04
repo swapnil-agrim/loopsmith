@@ -202,7 +202,13 @@ def _refuse_if_stale(probe):
     message naming the exact path, rather than double-write and pass for the wrong reason. Factored
     out so the refusal itself can be pinned directly
     (test_stale_probe_guard_fires_with_a_legible_message) instead of trusted to fire correctly on
-    faith, since a clean run must never actually observe it."""
+    faith, since a clean run must never actually observe it. A leftover probe abandoned by a
+    SIGKILL rather than cleaned up trips both guard files at once -- it reads as an unmarked
+    source to this file's own ambient real-tree scan and, if it also carries a banned import, as
+    a boundary violation to test_import_boundary.py's ambient scan, so one root cause fans out
+    into two unrelated-looking failures across two files; this guard already names the exact path
+    to delete, which is exactly what a maintainer seeing both fail at once should go looking
+    for."""
     assert not probe.exists(), (
         f"stale probe from a previous failed run -- delete it and rerun: {probe}"
     )
@@ -437,10 +443,23 @@ def test_every_insight_ts_source_carries_the_marker_stays_unconditional():
     claims" pin test_loop.py's test_spend_cli_verb_accumulates_is_unmodified uses via
     inspect.getsource, rather than trusting the docstring on faith.
 
-    KNOWN RESIDUE: this pins only the absence of a `pytest.skip` call in that one function's body;
-    it does not stop a differently-shaped route to the same vacuity (an early `return` before the
-    assertion, or a change inside `_files_missing_ts_header`/`_owned_ts_files` themselves). The
-    identical class of exposure already exists, unremarked, in
+    KNOWN RESIDUE: this pins only the absence of an attribute call literally named `skip` (i.e.
+    `pytest.skip(...)`) inside that one function's own body and decorators; it does not stop a
+    differently-shaped route to the same vacuity (an early `return` before the assertion, or a
+    change inside `_files_missing_ts_header`/`_owned_ts_files` themselves). Nor does it stop five
+    further routes, each tried and verified to escape it: a bare-name `skip()` reached via `from
+    pytest import skip` (the call site is an `ast.Name`, not the `ast.Attribute` this walk
+    matches, so it never enters `called` at all); a `@pytest.mark.skipif(...)` decorator (walked
+    along with the rest of the function, but its attribute name is `skipif`, not `skip`);
+    `pytest.importorskip(...)` (attribute name `importorskip`, same miss); a wrapper helper that
+    itself calls `pytest.skip` on this function's behalf (`inspect.getsource` only sees this
+    function's own body, so a skip buried one call away is invisible to it); and a `try/except`
+    around the assertion that swallows it without ever calling anything named `skip`. This pin is
+    deliberately scoped to the ONE regression PR #322's mutation-testing finding named --
+    re-adding `pytest.skip` to this function's body -- not a general vacuity detector, and must
+    not be read as one: an over-claiming pin is worse than none, which is this story's own thesis
+    ("A guard that silently skips a directory is worse than no guard," above) applied to itself.
+    The identical class of exposure already exists, unremarked, in
     test_every_insight_source_carries_the_marker's own `if not INSIGHT.is_dir(): pytest.skip(...)`
     line: nothing pins that guard to exactly "the directory does not exist" either, so a future
     edit could widen its condition (e.g. to "or has no .py files") and nothing in this file would
