@@ -93,3 +93,12 @@
 {"actor": "swapnil-agrim", "command_sha256": "eb362654ecf225ec9ac64223bd5e1ea25dff97f589e481b4e1b34b1584cc529f", "exit": 0, "goal": "296", "id": "swapnil-agrim:93", "kind": "verify", "ms": 69497, "ok": true, "ts": "2026-08-04T11:44:03Z"}
 {"actor": "swapnil-agrim", "cycle": 1, "gate": "post_review", "goal": "296", "id": "swapnil-agrim:94", "kind": "gate", "ts": "2026-08-04T11:58:35Z", "verdict": "block", "why": "Mutation testing found guard blindness on the exact axis this story exists to close. The clause-4 probes plant a violation under insight/web/ ONLY \u2014 nothing is ever planted under insight/api/ \u2014 so a r"}
 {"actor": "swapnil-agrim", "command_sha256": "eb362654ecf225ec9ac64223bd5e1ea25dff97f589e481b4e1b34b1584cc529f", "exit": 0, "goal": "296", "id": "swapnil-agrim:95", "kind": "verify", "ms": 65525, "ok": true, "ts": "2026-08-04T12:12:30Z"}
+{"actor": "swapnil-agrim", "command_sha256": "eb362654ecf225ec9ac64223bd5e1ea25dff97f589e481b4e1b34b1584cc529f", "exit": 0, "goal": "296", "id": "swapnil-agrim:96", "kind": "verify", "ms": 69886, "ok": true, "ts": "2026-08-04T12:27:09Z"}
+{"actor": "swapnil-agrim", "gate": "post_review", "goal": "296", "id": "swapnil-agrim:97", "kind": "gate", "ts": "2026-08-04T12:27:43Z", "verdict": "pass"}
+{"actor": "swapnil-agrim", "goal": "296", "id": "swapnil-agrim:98", "kind": "phase", "phase": "review", "state": "end", "ts": "2026-08-04T12:27:43Z"}
+{"actor": "swapnil-agrim", "gate": "merge", "goal": "296", "id": "swapnil-agrim:99", "kind": "gate", "ts": "2026-08-04T12:27:49Z", "verdict": "block", "why": "not safe to merge (mergeStateStatus=BLOCKED)"}
+{"actor": "swapnil-agrim", "goal": "296", "id": "swapnil-agrim:100", "kind": "phase", "phase": "retro", "state": "start", "ts": "2026-08-04T12:28:15Z"}
+{"actor": "swapnil-agrim", "gate": "merge", "goal": "296", "id": "swapnil-agrim:101", "kind": "gate", "ts": "2026-08-04T12:31:33Z", "verdict": "block", "why": "not safe to merge (mergeStateStatus=BLOCKED)"}
+{"actor": "swapnil-agrim", "gate": "merge", "goal": "296", "id": "swapnil-agrim:102", "kind": "gate", "ts": "2026-08-04T12:33:13Z", "verdict": "pass"}
+{"actor": "swapnil-agrim", "gate": "code_review", "goal": "296", "id": "swapnil-agrim:103", "kind": "gate", "ts": "2026-08-04T12:33:15Z", "verdict": "pass"}
+{"actor": "swapnil-agrim", "goal": "296", "id": "swapnil-agrim:104", "kind": "phase", "phase": "retro", "state": "end", "ts": "2026-08-04T12:33:50Z"}
