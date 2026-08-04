@@ -15,14 +15,69 @@ narrower, defensive invariant of its own; see `_derive_state`'s docstring below)
 This module carries no CSS of its own (`_STYLE`) -- `.dash-number`/`.dash-number-label`/
 `.dash-number-value`'s rules live in `insight.dash.colors.viz_css_vars()` (a global primitive,
 same as `.data-state-not-measured` above them), not a page-specific block, since this component
-is not itself a page (.sdlc/plans/263.md Decision 4)."""
+is not itself a page (.sdlc/plans/263.md Decision 4).
+
+`render_number` emits a numeral in exactly two places, never a third: the tile's own value,
+inside `<div class="dash-number-value">` (built here), and -- only when `coverage` is not None --
+`coverage_denominator_html(coverage)`'s own `<span class="coverage-denom">`, concatenated directly
+after the tile, never inside it. CORRECTED CLAIM (#263 PR-review finding 1: an earlier revision of
+this docstring claimed the first of these two was the ONLY numeral-bearing output, which was
+false -- the `.coverage-denom` span is also a numeral, and it carried no
+`font-variant-numeric: tabular-nums` treatment at all until this fix): both `.dash-number-value`
+and `.coverage-denom` have their own `font-variant-numeric: tabular-nums` rule in
+`insight.dash.colors.viz_css_vars()`, so every numeral `render_number` can ever emit -- the tile's
+own value, and the coverage-denominator span appended after it -- resolves to a tabular-nums CSS
+rule; there is no third code path in `render_number` that emits a numeral outside these two
+wrappers. (The `population` "N of M" text is not a third path: it is formatted straight into
+`value_text` below, so it renders INSIDE `.dash-number-value`, not outside it.)"""
 import html
 
 from insight.dash.colors import not_measured_block
-from insight.dash.render import CoverageDenominatorMissing, coverage_denominator_html
+from insight.dash.render import (
+    _COVERAGE_COLUMNS,
+    CoverageDenominatorMissing,
+    coverage_denominator_html,
+)
 
 _STATE_CSS_SUFFIX = {"measured": "measured", "empty_result": "empty-result",
                       "not_measured": "not-measured"}
+
+_VALID_RELIABILITY_CLASSES = (1, 2)
+
+
+def _validate_coverage_shape(coverage):
+    """Guards `coverage_denominator_html(coverage)` (render.py:180) against an opaque `KeyError`
+    (#263 PR-review finding 2): that function does a bare `coverage["coverage_pct"]`/
+    `coverage["class1_count"]`/etc. lookup, trusting its caller already validated the dict's shape
+    the way `insight.dash.render.extract_coverage()` does. A D5/D6/D8 caller who hand-builds a
+    `coverage` dict instead of calling `extract_coverage()` on the metric's own row would otherwise
+    get that raw `KeyError` instead of this component's own documented diagnostic. Runs for EVERY
+    non-None `coverage` dict regardless of `reliability_class` -- a malformed dict is a caller bug
+    independent of which class the metric happens to declare (the finding's own repro uses
+    reliability_class=2, but the same crash is reachable at reliability_class=1 too, since
+    `render_number` appends `coverage_denominator_html(coverage)` unconditionally whenever
+    `coverage` is not None).
+
+    Column set is `insight.dash.render._COVERAGE_COLUMNS` (imported, never re-derived -- S3, same
+    posture as `CoverageDenominatorMissing`/`coverage_denominator_html` above): the two modules'
+    idea of "a complete coverage dict" cannot drift apart.
+
+    Presence-of-KEY only, never truthiness, matching `extract_coverage()`'s own check: a
+    present-but-`None` `coverage_pct` is legitimate (`total_count == 0`, via the SQL's own
+    `NULLIF` guard -- `coverage_denominator_html` already renders that as "n/a") and must NOT
+    raise here."""
+    if coverage is None:
+        return
+    missing = [c for c in _COVERAGE_COLUMNS if c not in coverage]
+    if missing:
+        raise CoverageDenominatorMissing(
+            f"render_number(): coverage dict is missing key(s) {missing} -- a hand-built "
+            "coverage dict must carry all four columns insight.dash.render.extract_coverage() "
+            "returns (class1_count, class2_count, total_count, coverage_pct), even when a value "
+            "is legitimately None (e.g. coverage_pct over an empty population). Call "
+            "insight.dash.render.extract_coverage() on the metric's own row and thread its result "
+            "into render_number()'s coverage= argument instead of hand-building this dict."
+        )
 
 
 def _derive_state(value, reliability_class, coverage):
@@ -92,6 +147,11 @@ def render_number(label, value, reliability_class, coverage=None, population=Non
     reliability_class: 1 or 2, the metric's own declared class (insight.metrics.header's
     `reliability_class` field, same value load_metrics()/extract_coverage() already take). Ignored
     entirely when not_measured is True -- a not-measured tile never needs to know its class.
+    Validated when not_measured is False: any value other than 1 or 2 raises ValueError (#263
+    PR-review finding 3) -- insight.metrics.header enforces (1, 2) upstream so this is unreachable
+    from real metric data, but it is an unenforced invariant on this P0 surface otherwise: a stale
+    or hand-built caller value outside {1, 2} would silently take the reliability_class-1-shaped
+    rendering path instead of being refused.
 
     coverage: the dict returned by insight.dash.render.extract_coverage(metric_id,
     reliability_class, row) for this same row, or None (extract_coverage already returns None for
@@ -103,6 +163,15 @@ def render_number(label, value, reliability_class, coverage=None, population=Non
     is even inspected for None, so a class-2 call with a missing coverage denominator can never
     escape the refusal by having a null value (the metric_17 shape above). Ignored when
     not_measured is True.
+
+    When `coverage` IS given (not None, any reliability_class), its own key completeness is
+    validated -- presence of all four of insight.dash.render's own COVERAGE_DENOMINATOR_COLUMNS
+    (`class1_count`, `class2_count`, `total_count`, `coverage_pct`), presence-of-KEY only, never
+    truthiness, matching extract_coverage()'s own check: `coverage_pct` may legitimately be
+    present-but-None (an empty-population `NULLIF`-derived n/a). A dict missing one of the four
+    keys raises CoverageDenominatorMissing naming the missing key(s), instead of the opaque
+    KeyError coverage_denominator_html() would otherwise raise deep inside this function's own
+    Returns step (#263 PR-review finding 2 -- see _validate_coverage_shape's own docstring).
 
     population: int or None. The total row/item count `value` was measured against (e.g. 39 in
     spec Sec.2's own "0 of 39" example) -- rendered as "{value} of {population}" instead of a bare
@@ -134,6 +203,19 @@ def render_number(label, value, reliability_class, coverage=None, population=Non
     unchanged. provenance names the missing writer (Task 3 of #263, e.g. "no writer \xb7
     fact_event.reason_class"). Supplying either one while not_measured is False raises ValueError
     (caller confusion -- describing a real numeral as if it were absent).
+
+    Raises ValueError when not_measured is False and reliability_class is not 1 or 2 -- checked
+    before every other not_measured=False validation below (explain_text/provenance, the coverage
+    shape check, the state-derivation checks). insight.metrics.header enforces (1, 2) upstream, so
+    any other value here is a stale or hand-built caller mistake, never real metric data; without
+    this check the value silently took the reliability_class-1-shaped rendering path instead of
+    being refused (#263 PR-review finding 3).
+
+    Raises CoverageDenominatorMissing when not_measured is False and `coverage` is not None but is
+    missing one of its four required keys (presence-of-key, not truthiness -- a present-but-None
+    `coverage_pct` does NOT raise). Checked for ANY reliability_class, before the
+    class-2-and-coverage-is-None refusal below (#263 PR-review finding 2; see
+    _validate_coverage_shape's own docstring for the full reasoning).
 
     Raises CoverageDenominatorMissing (reusing insight.dash.render's own exception class
     unchanged, S3) when not_measured is False, reliability_class == 2, and coverage is None --
@@ -172,12 +254,22 @@ def render_number(label, value, reliability_class, coverage=None, population=Non
             )
         return not_measured_block(explain_text, provenance)
 
+    if reliability_class not in _VALID_RELIABILITY_CLASSES:
+        raise ValueError(
+            f"render_number(): reliability_class must be 1 or 2 (insight.metrics.header's own "
+            f"reliability_class field), got {reliability_class!r} -- reliability_class is "
+            "enforced to (1, 2) upstream by insight.metrics.header, so a value outside that set "
+            "here means a stale/hand-built caller value, not real metric data; without this "
+            "check render_number silently took the reliability_class-1-shaped rendering path "
+            "for any other value (#263 PR-review finding 3)"
+        )
     if explain_text is not None or provenance is not None:
         raise ValueError(
             "render_number(): explain_text/provenance are only used when not_measured=True; got "
             f"not_measured=False with value={value!r} -- this looks like caller confusion "
             "between describing a real numeral and describing an absence"
         )
+    _validate_coverage_shape(coverage)  # may raise CoverageDenominatorMissing -- see its own docstring
     state = _derive_state(value, reliability_class, coverage)  # may raise CoverageDenominatorMissing/ValueError
     value_text = f"{fmt(value)} of {population}" if population is not None else fmt(value)
     css_class = f"data-state-{_STATE_CSS_SUFFIX[state]}"

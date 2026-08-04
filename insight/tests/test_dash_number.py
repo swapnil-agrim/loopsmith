@@ -106,6 +106,58 @@ def test_render_number_rejects_explain_text_or_provenance_on_a_real_value():
         render_number("WIP", 5, 1, provenance="should not be here")
 
 
+# --------------------------------------------------------------------------- #263 PR-review
+# finding 2: a malformed coverage dict must raise this component's own documented
+# CoverageDenominatorMissing diagnostic, never an opaque KeyError from inside
+# coverage_denominator_html().
+
+def test_render_number_refuses_a_coverage_dict_missing_a_key():
+    """The finding's own repro: a caller hand-builds `coverage` instead of calling
+    extract_coverage() and forgets coverage_pct. Without the fix this reaches
+    coverage_denominator_html() and raises a bare KeyError; the component must instead raise its
+    own CoverageDenominatorMissing, naming the missing key."""
+    coverage = {"class1_count": 5, "class2_count": 3, "total_count": 8}  # coverage_pct missing
+    with pytest.raises(CoverageDenominatorMissing) as excinfo:
+        render_number("Prevented rework", 0, 2, coverage=coverage)
+    assert "coverage_pct" in str(excinfo.value)
+
+
+def test_render_number_refuses_a_malformed_coverage_dict_even_at_reliability_class_1():
+    """The check is not gated on reliability_class == 2 -- render_number appends
+    coverage_denominator_html(coverage) unconditionally whenever coverage is not None, so a
+    class-1 caller who mistakenly hands in a malformed coverage dict must be refused too."""
+    coverage = {"class1_count": 5, "class2_count": 3, "total_count": 8}  # coverage_pct missing
+    with pytest.raises(CoverageDenominatorMissing):
+        render_number("Some class-1 metric", 5, 1, coverage=coverage)
+
+
+def test_render_number_renders_a_present_but_none_coverage_pct_without_raising():
+    """Presence-of-key, not truthiness (matching extract_coverage()'s own check): coverage_pct
+    may legitimately be None (total_count == 0, via the SQL's own NULLIF guard) and must render
+    "n/a", not raise."""
+    coverage = {"class1_count": 0, "class2_count": 0, "total_count": 0, "coverage_pct": None}
+    out = render_number("Prevented rework", 0, 2, coverage=coverage)
+    assert 'class="coverage-denom"' in out
+    assert "n/a" in out
+
+
+# --------------------------------------------------------------------------- #263 PR-review
+# finding 3: reliability_class must be validated, not silently take the class-1-shaped path.
+
+@pytest.mark.parametrize("bad_class", [0, 3, -1, None, "2"])
+def test_render_number_rejects_an_invalid_reliability_class(bad_class):
+    with pytest.raises(ValueError):
+        render_number("x", 0, bad_class)
+
+
+def test_render_number_accepts_reliability_class_1_and_2():
+    """Negative control for the parametrized rejection above -- the two real, valid classes must
+    still render normally."""
+    assert "dash-number" in render_number("x", 5, 1)
+    coverage = {"class1_count": 1, "class2_count": 0, "total_count": 1, "coverage_pct": 1.0}
+    assert "dash-number" in render_number("x", 5, 2, coverage=coverage)
+
+
 def test_render_number_not_measured_requires_both_explain_text_and_provenance():
     with pytest.raises(ValueError):
         render_number("Review cycles", None, 1, not_measured=True, explain_text="only one of the two")
