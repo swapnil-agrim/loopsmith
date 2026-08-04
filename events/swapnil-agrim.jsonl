@@ -80,3 +80,6 @@
 {"actor": "swapnil-agrim", "gate": "merge", "goal": "295", "id": "swapnil-agrim:80", "kind": "gate", "ts": "2026-08-04T10:44:48Z", "verdict": "pass"}
 {"actor": "swapnil-agrim", "gate": "code_review", "goal": "295", "id": "swapnil-agrim:81", "kind": "gate", "ts": "2026-08-04T10:44:51Z", "verdict": "pass"}
 {"actor": "swapnil-agrim", "goal": "295", "id": "swapnil-agrim:82", "kind": "phase", "phase": "retro", "state": "start", "ts": "2026-08-04T10:45:14Z"}
+{"actor": "swapnil-agrim", "goal": "295", "id": "swapnil-agrim:83", "kind": "phase", "phase": "retro", "state": "end", "ts": "2026-08-04T10:54:27Z"}
+{"actor": "swapnil-agrim", "goal": "295", "id": "swapnil-agrim:84", "kind": "park", "reason_class": "unknown", "ts": "2026-08-04T10:54:57Z", "why": "PR #321 merged (77b39c1) \u2014 the machinery landed and the LOCAL gate was watched failing on all four checks. Two of the four Done-when clauses need a human with repo-admin gh access, which this session "}
+{"actor": "swapnil-agrim", "goal": "296", "id": "swapnil-agrim:85", "kind": "phase", "phase": "research", "state": "start", "ts": "2026-08-04T10:55:36Z"}
