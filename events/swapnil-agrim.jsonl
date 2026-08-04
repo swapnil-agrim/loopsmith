@@ -68,3 +68,5 @@
 {"actor": "swapnil-agrim", "goal": "295", "id": "swapnil-agrim:68", "kind": "phase", "phase": "research", "state": "start", "ts": "2026-08-04T09:36:49Z"}
 {"actor": "swapnil-agrim", "goal": "295", "id": "swapnil-agrim:69", "kind": "phase", "phase": "research", "state": "end", "ts": "2026-08-04T09:43:50Z"}
 {"actor": "swapnil-agrim", "goal": "295", "id": "swapnil-agrim:70", "kind": "phase", "phase": "plan", "state": "start", "ts": "2026-08-04T09:43:50Z"}
+{"actor": "swapnil-agrim", "goal": "295", "id": "swapnil-agrim:71", "kind": "phase", "phase": "plan", "state": "end", "ts": "2026-08-04T09:58:54Z"}
+{"actor": "swapnil-agrim", "goal": "295", "id": "swapnil-agrim:72", "kind": "phase", "phase": "plan_review", "state": "start", "ts": "2026-08-04T09:58:59Z"}
