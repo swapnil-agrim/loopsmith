@@ -52,3 +52,10 @@ version = { file = "VERSION" }
 # a sibling package -- fixed now, before issue #117 lands the first real gap rule .sql file, so
 # there is never a window where the first real rule would silently vanish from a built wheel.
 "insight.gaps" = ["*.sql"]
+# dash/fonts/*.txt (issue #262, D1) is insight.dash's own first non-.py asset -- the two OFL
+# licence texts that must travel with the embedded, subsetted Atkinson Hyperlegible/IBM Plex
+# Mono WOFF2 payloads (OFL 1.1 Requirement: "Copies of the OFL... must be distributed with any
+# Font Software"). Without this line, packages=[...] alone ships only insight/dash/*.py and a
+# real (non-editable) wheel silently drops both licence files, same gap class as the two
+# entries above.
+"insight.dash" = ["fonts/*.txt"]

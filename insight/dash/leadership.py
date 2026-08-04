@@ -22,12 +22,15 @@ from insight.metrics.loader import load_metrics
 #: `.stat-tile*` rule group precedent (charts.py's own comment on manager.py's _STYLE).
 _STYLE = f"""
 {base_style()}
-.stat-tile {{ display: inline-block; padding: .75rem 1rem; margin: 0 .75rem .75rem 0;
-             border: 1px solid var(--dash-gridline); border-radius: 6px; min-width: 10rem; }}
-.stat-tile-label {{ font-size: 12px; color: var(--dash-ink2); }}
-.stat-tile-value {{ font-size: 1.6rem; }}
+.stat-tile {{ display: inline-block; padding: var(--dash-space-3) var(--dash-space-4);
+             margin: 0 var(--dash-space-3) var(--dash-space-3) 0;
+             border: var(--dash-border-hairline) solid var(--dash-gridline);
+             border-radius: var(--dash-radius-sm); min-width: 10rem; }}
+.stat-tile-label {{ font-size: var(--dash-text-small); color: var(--dash-ink2); }}
+.stat-tile-value {{ font-size: var(--dash-text-display); font-family: var(--dash-font-mono);
+                    font-variant-numeric: tabular-nums; }}
 .tile-pair {{ display: flex; flex-wrap: wrap; }}
-h3 {{ font-size: 1rem; margin-top: 1.25rem; }}
+h3 {{ font-size: var(--dash-text-subhead); margin-top: var(--dash-space-5); }}
 """
 
 #: Payload allowlists (issue #129: every widened `SELECT *` read needs its OWN allowlist).

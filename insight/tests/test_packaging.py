@@ -136,3 +136,16 @@ def test_pyproject_declares_package_data_for_gap_rule_sql_files():
         "-- packages=[...] alone silently drops them from a real wheel, see #108 Design "
         "decision H for the exact prior instance of this gap"
     )
+
+
+def test_pyproject_declares_package_data_for_dash_font_licence_files():
+    """Issue #262, D1: the two embedded WOFF2 fonts (insight/dash/fonts.py) ship under OFL 1.1,
+    which REQUIRES its licence text travel with the Font Software -- insight/dash/fonts/OFL-*.txt
+    (plain text, not .py) is insight.dash's own first non-.py asset, mirroring the exact gap the
+    two tests above already exist to catch for insight.metrics/insight.gaps's *.sql files."""
+    text = _pyproject_text()
+    assert re.search(r'"insight\.dash"\s*=\s*\[[^\]]*"fonts/\*\.txt"', text), (
+        "pyproject.toml must declare package-data for insight.dash's fonts/*.txt licence files "
+        "(issue #262) -- packages=[...] alone silently drops them from a real wheel, dropping "
+        "the OFL notice the embedded fonts' own licence requires ship alongside them"
+    )

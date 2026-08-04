@@ -5,13 +5,19 @@ CSS engine, so the validated palette and the resolved-hex contrast table are har
 durable proof, not re-derived at test time."""
 import re
 
+import pytest
+
 from insight.dash import render as dash_render
 from insight.dash.colors import (
     ALL_PAIRS_CAP,
     CATEGORICAL,
     SEQUENTIAL_BLUE_DARK,
     SEQUENTIAL_BLUE_LIGHT,
+    SPACE,
     STATUS,
+    TYPE_SCALE,
+    not_measured_block,
+    not_measured_svg,
     status_mark,
     texture_defs,
     viz_css_vars,
@@ -111,4 +117,112 @@ def test_status_mark_never_emits_a_literal_hex():
 def test_texture_defs_and_status_mark_pass_assert_self_contained():
     svg = f'<svg>{texture_defs()}{status_mark("ABSENT", 10, 10)}</svg>'
     html_text = f"<html><body>{svg}</body></html>"
+    dash_render.assert_self_contained(html_text)  # must not raise
+
+
+# --------------------------------------------------------------------------- issue #262 (D1):
+# type scale, spacing scale, embedded fonts, and the not_measured primitive.
+
+
+def test_viz_css_vars_declares_every_type_and_space_token():
+    css = viz_css_vars()
+    for k in TYPE_SCALE:
+        assert f"--dash-text-{k}:" in css
+    for k in SPACE:
+        assert f"--dash-space-{k}:" in css
+
+
+def test_viz_css_vars_declares_both_font_face_rules():
+    css = viz_css_vars()
+    assert css.count("@font-face") == 2
+    assert css.count("data:font/woff2;base64,") == 2
+
+
+def test_font_face_rules_are_outside_the_dark_mode_media_query():
+    css = viz_css_vars()
+    for block in _top_level_media_blocks(css):
+        if block.startswith("@media (prefers-color-scheme: dark)"):
+            assert "@font-face" not in block, (
+                "fonts are mode-invariant -- embedding ~25KB of base64 twice per mode is waste"
+            )
+            return
+    raise AssertionError("expected a @media (prefers-color-scheme: dark) block in viz_css_vars()")
+
+
+def test_not_measured_block_label_never_renders_a_bare_numeral():
+    # Scoped to the <p class="not-measured-label">...</p> substring specifically -- a legitimate
+    # explain_text naming a date or row count (e.g. "no writer configured since 2026-01-01") must
+    # not false-fail this test; the mechanical form of spec Sec.2's "never a numeral" is about the
+    # labeled value a reader is meant to read as the measurement, not arbitrary prose elsewhere.
+    out = not_measured_block("no writer configured since 2026-01-01", "no writer · fact_event.reason_class")
+    label = re.search(r'<p class="not-measured-label">(.*?)</p>', out).group(1)
+    assert not re.search(r"\d", label)
+    assert label == "not measured"
+
+
+def test_not_measured_block_always_includes_a_provenance_line():
+    out = not_measured_block("explain", "no writer · fact_event.reason_class")
+    provenance = re.search(r'<p class="not-measured-provenance">(.*?)</p>', out).group(1)
+    assert provenance == "<code>no writer · fact_event.reason_class</code>"
+
+
+def _top_level_media_blocks(css):
+    """Extract every top-level `@media (...) { ... }` block from `css` by balanced-brace
+    scanning -- a plain regex can't reliably find the matching close brace when the block's own
+    body contains further nested `{ }` pairs (e.g. `.data-state-not-measured {...}` sitting right
+    after a one-line `@media {...}` block with no newline between their closing braces)."""
+    blocks = []
+    i = 0
+    while True:
+        start = css.find("@media", i)
+        if start == -1:
+            break
+        open_brace = css.index("{", start)
+        depth = 0
+        j = open_brace
+        while True:
+            if css[j] == "{":
+                depth += 1
+            elif css[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        blocks.append(css[start:j + 1])
+        i = j + 1
+    return blocks
+
+
+def test_not_measured_texture_is_default_visible_not_gated():
+    css = viz_css_vars()
+    block_match = re.search(
+        r"\.data-state-not-measured \{[^}]*background-image[^}]*\}", css, re.S,
+    )
+    assert block_match, "expected a .data-state-not-measured rule with a background-image"
+    # Unlike .dash-texture-a11y (gated behind forced-colors/print), the not-measured hatch must
+    # not appear inside ANY @media block.
+    for block in _top_level_media_blocks(css):
+        assert ".data-state-not-measured" not in block
+
+
+@pytest.mark.parametrize("empty_provenance", ["", "   ", "\t\n"])
+def test_not_measured_block_rejects_empty_provenance(empty_provenance):
+    # PR review finding 5 on issue #262/D1: spec Sec.2 requires "a monospace provenance line
+    # naming the missing writer" -- an empty/whitespace-only string satisfies the call signature
+    # while rendering a hollow <code></code> that defeats the requirement. A real exception, not
+    # a bare `assert` (which vanishes under `python -O`).
+    with pytest.raises(ValueError):
+        not_measured_block("explain", empty_provenance)
+
+
+@pytest.mark.parametrize("empty_provenance", ["", "   ", "\t\n"])
+def test_not_measured_svg_rejects_empty_provenance(empty_provenance):
+    with pytest.raises(ValueError):
+        not_measured_svg("explain", empty_provenance)
+
+
+def test_not_measured_svg_and_not_measured_block_pass_assert_self_contained():
+    block = not_measured_block("no instrument", "no writer · fact_event.reason_class")
+    svg = not_measured_svg("no instrument", "no writer · fact_event.reason_class")
+    html_text = f"<html><body>{block}<svg>{svg}</svg></body></html>"
     dash_render.assert_self_contained(html_text)  # must not raise

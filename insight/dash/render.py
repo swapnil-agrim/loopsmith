@@ -83,13 +83,14 @@ def config_deep_link(field):
 _STYLE = f"""
 {base_style()}
 .dot-has {{ color: var(--dash-status-pass); }} .dot-empty {{ color: var(--dash-muted); }}
-.gap-card {{ border: 1px solid var(--dash-gridline); border-radius: 6px; padding: .75rem 1rem; margin-bottom: .75rem; }}
-.gap-card-what {{ margin: 0 0 .4rem; font-size: 1rem; }}
-.gap-card-evidence {{ margin: 0 0 .4rem; padding-left: 1.2rem; font-size: 12px; color: var(--dash-ink2); }}
-.gap-card-metric {{ margin: 0 0 .3rem; font-size: 12px; color: var(--dash-ink2); }}
+.gap-card {{ border: var(--dash-border-hairline) solid var(--dash-gridline); border-radius: var(--dash-radius-sm);
+            padding: var(--dash-space-3) var(--dash-space-4); margin-bottom: var(--dash-space-3); }}
+.gap-card-what {{ margin: 0 0 var(--dash-space-1); font-size: var(--dash-text-subhead); }}
+.gap-card-evidence {{ margin: 0 0 var(--dash-space-1); padding-left: var(--dash-space-5); font-size: var(--dash-text-small); color: var(--dash-ink2); }}
+.gap-card-metric {{ margin: 0 0 var(--dash-space-1); font-size: var(--dash-text-small); color: var(--dash-ink2); }}
 .gap-card-action {{ margin: 0; }}
-.gap-card-config-link {{ margin-left: .5rem; }}
-.gap-quiet-table td {{ font-size: 12px; }}
+.gap-card-config-link {{ margin-left: var(--dash-space-2); }}
+.gap-quiet-table td {{ font-size: var(--dash-text-small); }}
 """
 
 #: The 8 collector-derived metrics available with zero setup on day zero -- no ledger, no
