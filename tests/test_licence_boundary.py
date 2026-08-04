@@ -86,6 +86,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 INSIGHT = ROOT / "insight"
 HEADER_FILE = INSIGHT / "HEADER.txt"
 WEB = INSIGHT / "web"
+API = INSIGHT / "api"
 
 #: PEP 263 / CPython's tokenizer. Deliberately NOT `\bcoding` — that rejects
 #: `# encoding: utf-8`, the commonest cookie form, on a correctly-marked file.
@@ -369,11 +370,13 @@ def test_deriving_the_ts_marker_does_not_change_the_py_marker_or_checker(tmp_pat
 def test_stale_probe_guard_fires_with_a_legible_message(tmp_path):
     """Pins the refusal in `_refuse_if_stale` directly: a leftover file from a previous killed or
     failed run must make the guard raise, and the message must name the offending path, rather
-    than trusting -- on faith -- that a real planted-probe test would somehow surface it. Neither
-    test_a_planted_plugin_import_in_the_real_insight_web_is_caught (test_import_boundary.py) nor
-    test_a_planted_markerless_tsx_in_the_real_insight_web_is_caught (below) ever exercises this
-    path on a clean run -- by construction, the probe they plant never pre-exists -- so this is the
-    only place either behaviour is actually pinned."""
+    than trusting -- on faith -- that a real planted-probe test would somehow surface it. None of
+    the four planted-probe tests -- test_a_planted_plugin_import_in_the_real_insight_web_is_caught,
+    test_a_planted_plugin_import_in_the_real_insight_api_is_caught (both test_import_boundary.py),
+    test_a_planted_markerless_tsx_in_the_real_insight_web_is_caught, or
+    test_a_planted_markerless_py_in_the_real_insight_api_is_caught (both below) -- ever exercises
+    this path on a clean run: by construction, the probe each plants never pre-exists. So this is
+    the only place any of the four behaviours is actually pinned."""
     probe = tmp_path / "stale.tsx"
     probe.write_text("leftover from a previous run\n", encoding="utf-8")
     with pytest.raises(AssertionError, match=re.escape(str(probe))):
@@ -420,6 +423,45 @@ def test_every_insight_ts_source_carries_the_marker():
     )
 
 
+def test_every_insight_ts_source_carries_the_marker_stays_unconditional():
+    """Pins the "DELIBERATELY UNCONDITIONAL" property test_every_insight_ts_source_carries_the_marker
+    (above) only asserts in PROSE (F2, PR #322 mutation-testing finding on #322): re-adding an
+    `if not WEB.is_dir(): pytest.skip(...)` guard -- the exact shape
+    test_every_insight_source_carries_the_marker carries for `.py` -- would make that test vacuous
+    again while test_a_planted_markerless_tsx_in_the_real_insight_web_is_caught (below) stayed
+    green regardless, because that test calls `_files_missing_ts_header` directly and never goes
+    through this one. Nothing else in this file would notice the regression. Parses the test
+    function's own source via `ast` (never a substring match against the docstring itself, which
+    legitimately mentions "pytest.skip" in prose two lines up) and asserts no `pytest.skip` call
+    appears in its body -- the same class of "this test's body still does what its docstring
+    claims" pin test_loop.py's test_spend_cli_verb_accumulates_is_unmodified uses via
+    inspect.getsource, rather than trusting the docstring on faith.
+
+    KNOWN RESIDUE: this pins only the absence of a `pytest.skip` call in that one function's body;
+    it does not stop a differently-shaped route to the same vacuity (an early `return` before the
+    assertion, or a change inside `_files_missing_ts_header`/`_owned_ts_files` themselves). The
+    identical class of exposure already exists, unremarked, in
+    test_every_insight_source_carries_the_marker's own `if not INSIGHT.is_dir(): pytest.skip(...)`
+    line: nothing pins that guard to exactly "the directory does not exist" either, so a future
+    edit could widen its condition (e.g. to "or has no .py files") and nothing in this file would
+    fail. That is pre-existing residue, not a regression introduced here.
+    """
+    import ast
+    import inspect
+    src = inspect.getsource(test_every_insight_ts_source_carries_the_marker)
+    tree = ast.parse(src)
+    called = [
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    ]
+    assert "skip" not in called, (
+        "test_every_insight_ts_source_carries_the_marker must stay unconditional -- a pytest.skip "
+        "call anywhere in its body would make clause 4's real-tree proof prose again, with no "
+        "other test in this file left to notice"
+    )
+
+
 def test_a_planted_markerless_tsx_in_the_real_insight_web_is_caught():
     """Clause 4's proof, the licence-boundary half (issue #296): a marker-less .tsx planted inside
     the REAL insight/web/ directory must be caught by the real checker against the real tree, not a
@@ -433,6 +475,30 @@ def test_a_planted_markerless_tsx_in_the_real_insight_web_is_caught():
         missing = _files_missing_ts_header(INSIGHT, _ts_marker(_marker()))
         assert str(probe.relative_to(INSIGHT)) in missing, (
             f"planting a markerless .tsx inside insight/web/ was not caught: {missing}")
+    finally:
+        probe.unlink()
+
+
+def test_a_planted_markerless_py_in_the_real_insight_api_is_caught():
+    """Clause 4's proof, extended to insight/api/ (F1, PR #322 mutation-testing finding on #322):
+    the web-only .tsx probe above proves nothing about insight/api/, and a .tsx probe there would
+    be meaningless anyway -- insight/api/ is E16.S1's FastAPI service, real `.py` source, not a
+    TypeScript tree. insight/api/ holds no `.py` files at all today, so this guard's coverage there
+    is otherwise vacuous by omission, not by design the way test_every_insight_source_carries_the_
+    marker's zero-files-at-E0.S2 vacuity was: nothing has ever planted a violation in the real
+    insight/api/ to prove `_files_missing_header` actually reaches it. This plants a REAL
+    marker-less `.py` file inside the REAL insight/api/ directory -- not a tmp_path look-alike,
+    which cannot prove the real path isn't skipped -- and asserts the real `.py` marker checker
+    catches it. Removed in `finally` so a failed assertion never leaves litter. Distinct filename
+    from the import-boundary probe this file's sibling module plants in the same directory
+    (`_e15s2_api_import_boundary_probe.py`) so the two guards' probes can never collide."""
+    probe = API / "_e15s2_api_licence_marker_probe.py"
+    _refuse_if_stale(probe)
+    probe.write_text("x = 1\n", encoding="utf-8")
+    try:
+        missing = _files_missing_header(INSIGHT, _marker())
+        assert str(probe.relative_to(INSIGHT)) in missing, (
+            f"planting a markerless .py inside insight/api/ was not caught: {missing}")
     finally:
         probe.unlink()
 
@@ -505,18 +571,41 @@ def test_no_docker_or_compose_files_at_the_repository_root():
     anywhere in this repo yet (E17.S1/E22.S1 author them); this guard has zero real coverage today,
     which is exactly why it's cheap to ship ahead of the first file it will ever catch.
 
-    Five glob patterns, not two, because Compose V2 changed its own preferred discovery order:
-    `compose.yaml` and `compose.yml` (checked separately -- `docker-compose*` catches neither, and
-    verified directly rather than assumed) are now Compose's first choice, with `docker-compose.yml`
-    kept only as a V1-compatibility fallback; `Containerfile` is the OCI-neutral name Podman and
-    buildah accept as a `Dockerfile` synonym. Missing any one of the five would let that specific
-    filename sit at the root undetected while every other one was caught -- coverage that looks
-    complete without being complete."""
+    SEVEN glob patterns, not five (F3, PR #322 review): the original five --
+    `compose.yaml`/`compose.yml` (checked separately -- `docker-compose*` catches neither, and
+    verified directly rather than assumed) are Compose V2's preferred discovery order, with
+    `docker-compose.yml` (`docker-compose*`) kept only as a V1-compatibility fallback;
+    `Containerfile` is the OCI-neutral name Podman and buildah accept as a `Dockerfile` synonym --
+    catch the build artifacts themselves, but missed each one's IGNORE-file companion, which ships
+    beside it and must move with it under the same `git mv insight/ ../` extraction:
+    `.dockerignore` (Docker's build-context ignore file) and `.containerignore` (Podman/buildah's
+    identical mechanism for a Containerfile build, the same OCI-neutral parity that earned
+    `Containerfile*` its own pattern). Neither is caught by the five patterns above: a
+    per-Dockerfile ignore file (`Dockerfile.web.dockerignore`) IS already caught, because it starts
+    with the literal string `Dockerfile`, but the bare, dot-led `.dockerignore`/`.containerignore`
+    do not start with `Dockerfile`/`Containerfile` at all -- verified directly (see
+    test_dockerignore_and_containerignore_are_not_matched_by_the_dockerfile_globs below) rather than
+    assumed from the name alone. Missing any one of the seven would let that specific filename sit
+    at the root undetected while every other one was caught -- coverage that looks complete without
+    being complete."""
     hits = (
         sorted(p.name for p in ROOT.glob("docker-compose*"))
         + sorted(p.name for p in ROOT.glob("Dockerfile*"))
         + sorted(p.name for p in ROOT.glob("compose.yaml"))
         + sorted(p.name for p in ROOT.glob("compose.yml"))
         + sorted(p.name for p in ROOT.glob("Containerfile*"))
+        + sorted(p.name for p in ROOT.glob(".dockerignore"))
+        + sorted(p.name for p in ROOT.glob(".containerignore"))
     )
     assert not hits, f"these must live under insight/, not the repository root (spec §7): {hits}"
+
+
+def test_dockerignore_and_containerignore_are_not_matched_by_the_dockerfile_globs():
+    """Pins the empirical claim test_no_docker_or_compose_files_at_the_repository_root's docstring
+    makes (F3): `Dockerfile*`/`Containerfile*` do not match `.dockerignore`/`.containerignore` --
+    confirmed here with `fnmatch`, the same matching `pathlib.Path.glob` uses internally, rather
+    than trusted from the string shapes alone. If this ever turned out False, the two new patterns
+    above would be redundant, not additive, and the docstring's claim would be wrong."""
+    import fnmatch
+    assert not fnmatch.fnmatch(".dockerignore", "Dockerfile*")
+    assert not fnmatch.fnmatch(".containerignore", "Containerfile*")

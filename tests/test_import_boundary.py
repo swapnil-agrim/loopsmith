@@ -494,12 +494,35 @@ def test_a_planted_plugin_import_in_the_real_insight_web_is_caught():
         probe.unlink()
 
 
+def test_a_planted_plugin_import_in_the_real_insight_api_is_caught():
+    """Clause 4's proof, extended to insight/api/ (F1, PR #322 mutation-testing finding on #322):
+    the web-only probe above left insight/api/ unwalked in PRACTICE, not just in theory -- a
+    name-skip of "api", or an allowlist that re-includes "web" but omits "api", passed the whole
+    suite with only that probe planted. insight/api/ is also the directory that actually matters
+    here, not insight/web/: it is the FastAPI service E16.S1 gives real `.py` source to, while
+    insight/web/ (Next.js/TypeScript) carries ~zero `.py` files ever. Same shape as the web probe
+    above: a REAL `import skills` file inside the REAL insight/api/ directory -- not a tmp_path
+    look-alike, which cannot prove the real path isn't skipped -- removed in `finally` so a failed
+    assertion can never leave litter in the tree. Distinct filename from the web probe's own (both
+    are `_e15s2_import_boundary_probe*.py` but suffixed `_api`/bare) so the two can never collide on
+    disk even though they already live in different directories."""
+    probe = ROOT / "insight" / "api" / "_e15s2_api_import_boundary_probe.py"
+    _refuse_if_stale(probe)
+    probe.write_text("import skills\n", encoding="utf-8")
+    try:
+        violations = _boundary_violations(ROOT / "insight", _BANNED_PLUGIN)
+        expected = os.path.join("api", "_e15s2_api_import_boundary_probe.py") + ": imports skills"
+        assert expected in violations, f"planting inside insight/api/ was not caught: {violations}"
+    finally:
+        probe.unlink()
+
+
 def test_stale_probe_guard_fires_with_a_legible_message(tmp_path):
     """Pins the refusal in `_refuse_if_stale` directly: a leftover file from a previous killed or
     failed run must make the guard raise, and the message must name the offending path, rather than
-    trusting -- on faith -- that the planted-probe test above would somehow surface it. That test
-    never actually exercises this path on a clean run -- by construction, the probe it plants never
-    pre-exists -- so this is the only place the behaviour is pinned."""
+    trusting -- on faith -- that either planted-probe test above would somehow surface it. Neither
+    test ever actually exercises this path on a clean run -- by construction, the probe each plants
+    never pre-exists -- so this is the only place the behaviour is pinned."""
     probe = tmp_path / "stale.py"
     probe.write_text("leftover from a previous run\n", encoding="utf-8")
     with pytest.raises(AssertionError, match=re.escape(str(probe))):
