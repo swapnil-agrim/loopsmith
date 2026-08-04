@@ -12,6 +12,18 @@ does next. Four verdicts:
              escalating waits (cheap retries, never a hot loop, no permanent stop
              until the supervisor's max-runs cap).
 
+`relaunch` also covers the two endings that are neither success nor crash, and which this
+classifier originally had no name for -- so it charged both the escalating CRASH ladder:
+
+  * a session that LANDED GOALS and exited without any stop marker. This is the ordinary
+    outcome of a healthy overnight run, not a fault.
+  * a clean `LOOP STOP: blocked` -- the loop decided it could not proceed and said so.
+
+Measured live on 2026-08-04: consecutive runs that merged a PR and that stopped blocked-on-
+permissions were each scored "unclassified exit", walking the ladder to 300s -> 600s -> 1200s
+-> 3600s-forever. The loop then sleeps up to an hour BETWEEN SUCCESSFUL GOALS, which inverts
+what the backoff is for. Escalation must be reserved for endings we genuinely cannot explain.
+
 The classifier never talks to any API and adds zero LLM calls — it reads text.
 """
 import random, re, sys, time
@@ -23,10 +35,27 @@ _BUDGET = re.compile(r"^BUDGET\s*$|LOOP STOP: budget|stopped.{0,12}budget|budget
 _LIMIT = re.compile(r"(usage|rate).{0,3}limit|limit (reached|exhausted|hit)|out of (usage|quota)|"
                     r"hit your.{0,12}limit|quota exceeded", re.I)
 _RESET_AT = re.compile(r"reset[s]?\s*(?:at\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.I)
+# A clean, self-declared stop -- the loop naming its own blocker. NOT a crash.
+_BLOCKED = re.compile(r"LOOP STOP:\s*blocked", re.I)
+# The stop report, matched on its FULL shape ("N done, M parked") rather than a bare "N done",
+# which prose like "step 1 done" would trip. The captured count is checked > 0 at the call site:
+# the report's mere presence is not progress, and treating it as such would reset the supervisor's
+# attempt counter every cycle and hot-loop on a genuinely stuck backlog.
+_PROGRESS = re.compile(r"(\d+)\s+done,\s*\d+\s+parked", re.I)
+# The ONLY endings that earn the escalating ladder. Everything else that produced coherent output
+# gets a flat pause -- see the `classify` fall-through for why the default had to be inverted.
+_CRASH_SIG = re.compile(
+    r"traceback \(most recent call last\)|^killed\b|segmentation fault|out of memory|"
+    r"\boom\b(?!er)|fatal error|panic:|command not found|core dumped|"
+    r"connection reset|broken pipe|SIGKILL|SIGSEGV",
+    re.I | re.M)
 
 _BUDGET_PAUSE = 60
 _LIMIT_FALLBACK = [1800, 3600, 3600, 3600]      # unparseable limit: retry cheaply, capped waits
 _CRASH_BACKOFF = [300, 600, 1200, 3600]         # unknown crash: escalate, cap at 1h
+_BLOCKED_PAUSE = 300    # a fresh session often clears the cause; MAX_RUNS still bounds the retries
+_PROGRESS_PAUSE = 60    # it worked -- get the next goal started
+_UNKNOWN_PAUSE = 120    # named nothing, broke nothing: retry steadily, never escalate
 _JITTER = (120, 300)                            # never thunder exactly on the reset minute
 
 
@@ -57,8 +86,32 @@ def classify(tail_text, attempt=0, now=None, rng=None):
         return ("backoff", wait, "usage limit with no parseable reset time — capped retry")
     if _BUDGET.search(text):
         return ("relaunch", _BUDGET_PAUSE, "per-run budget stop — budgets reset on relaunch by design")
-    wait = _CRASH_BACKOFF[min(attempt, len(_CRASH_BACKOFF) - 1)]
-    return ("backoff", wait, "unclassified exit — escalating backoff")
+    # Below the usage-limit and budget checks ON PURPOSE. A session that lands a goal and THEN
+    # hits a limit must sleep until the reset -- relaunching into a closed door would burn the
+    # remaining runs for nothing.
+    if _BLOCKED.search(text):
+        return ("relaunch", _BLOCKED_PAUSE,
+                "clean blocked stop — not a crash; a fresh session often clears the cause")
+    landed = _PROGRESS.search(text)
+    if landed and int(landed.group(1)) > 0:
+        return ("relaunch", _PROGRESS_PAUSE,
+                f"session landed {landed.group(1)} goal(s) — progress, not a crash")
+    # DEFAULT INVERTED (2026-08-04). This used to escalate on anything it could not name, which
+    # made the common case pathological: a headless `claude -p` session prints only its final
+    # message, so a run that did real work and exited mid-goal waiting on CI left a tail like
+    # "Polling in the background; I'll report when the gate clears" -- no marker, no report. That
+    # was scored a crash, and three of them in a row put the supervisor to sleep for an hour
+    # between SUCCESSFUL goals.
+    #
+    # An ending we cannot name is not evidence of a crash. Escalation is now reserved for endings
+    # that look genuinely broken, plus an empty tail (which tells us nothing at all and is the one
+    # silence worth treating as failure). Anything else relaunches on a flat pause; the
+    # supervisor's MAX_RUNS cap remains the backstop against a pathological loop.
+    if (not text.strip()) or _CRASH_SIG.search(text):
+        wait = _CRASH_BACKOFF[min(attempt, len(_CRASH_BACKOFF) - 1)]
+        return ("backoff", wait, "crash signature — escalating backoff")
+    return ("relaunch", _UNKNOWN_PAUSE,
+            "unrecognised but clean exit — relaunching without escalation")
 
 
 def main(argv):
