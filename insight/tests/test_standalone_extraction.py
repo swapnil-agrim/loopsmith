@@ -21,10 +21,17 @@ it DOES install, for real, but only when `CI` is set (see that test's own docstr
 RECURSION GUARD: this file itself lives under insight/tests/, so the copy contains a copy of THIS
 file too, and the child's own pytest run would otherwise collect it and spawn a grandchild,
 forever. `_CHILD_SENTINEL`, an env var this test sets before spawning its child and checks at
-import time, breaks the cycle: if already set, this whole module skips itself (one skip,
-`allow_module_level=True`) instead of recursing. An `--ignore` of this file's own path was
-considered and rejected: renaming this file would silently stop excluding it with no failure
-anywhere, whereas the sentinel travels with the file under any name.
+import time, breaks the cycle. An `--ignore` of this file's own path was considered and rejected:
+renaming this file would silently stop excluding it with no failure anywhere, whereas the
+sentinel travels with the file under any name.
+
+CORRECTION TO AN EARLIER DRAFT OF THIS GUARD (issue #297 review, F2): skipping whenever the
+sentinel was merely PRESENT -- with no second check -- meant a stale `_INSIGHT_STANDALONE_PROOF_
+CHILD=1` left exported in a developer's shell silently disabled every assertion below in the
+OUTER, real run, reading as just one more ordinary skip in a full suite. The guard now also
+requires this module to be structurally inside a copy (see the comment on the guard's `if` just
+below `INSIGHT`'s definition for the full four-case reasoning) before it will skip -- the
+sentinel alone is no longer sufficient.
 
 CORRECTION TO AN EARLIER DRAFT OF THIS PLAN (issue #297 plan review, A2): `python3 -I` /
 `PYTHONNOUSERSITE=1` were considered for the child, to stop this machine's stale ambient
@@ -51,6 +58,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -59,14 +67,37 @@ import pytest
 
 _CHILD_SENTINEL = "_INSIGHT_STANDALONE_PROOF_CHILD"
 
-if os.environ.get(_CHILD_SENTINEL):
+INSIGHT = pathlib.Path(__file__).resolve().parents[1]   # insight/ itself
+
+# RECURSION GUARD, corrected (issue #297 review, F2): the original guard skipped on the
+# sentinel's mere PRESENCE. Verified failure: a stale `_INSIGHT_STANDALONE_PROOF_CHILD=1` left
+# exported in a developer's shell (e.g. from a killed earlier run, or copy-pasted from this file)
+# silently disables all seven proof assertions below in the OUTER, REAL run -- and it reads as
+# just one more ordinary skip in a full suite, not a red flag. That is the exact "a guard that
+# silently skips is worse than none" failure this story is about, reproduced in the guard meant
+# to prevent it. Fix: skip only when the sentinel is set AND this module is structurally inside a
+# copy, never on the sentinel alone -- the structural tell is that the real repo has a `skills/`
+# sibling next to `insight/` and a copy (made by `shutil.copytree` of insight/ ALONE, see the
+# `extracted` fixture below) never does. All four cases, reasoned through:
+#   (a) real repo, no sentinel      -> neither condition holds                 -> proof runs
+#   (b) real repo, stale sentinel   -> sentinel set, but skills/ IS present    -> proof STILL
+#                                       runs (this is the hole this fix closes)
+#   (c) the child copy              -> sentinel set AND skills/ is absent      -> skips once,
+#                                       recursion broken
+#   (d) a genuinely extracted insight/ repo -> its OUTER run has no sentinel (nobody set it) ->
+#       proof runs; ITS OWN child copy has both conditions set -> skips -- still exactly one
+#       level deep, same shape as (c).
+# The structural check ALONE (drop the sentinel, skip whenever skills/ is absent) would also
+# break the recursion, but it would then skip the proof in a genuinely extracted repo's OUTER
+# run too (case (d)'s outer run has no skills/ sibling either, extraction being the point) --
+# precisely the run where extraction correctness matters most. Hence both conditions are
+# required together, not either alone.
+if os.environ.get(_CHILD_SENTINEL) and not (INSIGHT.parent / "skills").is_dir():
     pytest.skip(
         "already inside the child copy's own pytest run (recursion guard) -- the outer run "
         "already performed this proof",
         allow_module_level=True,
     )
-
-INSIGHT = pathlib.Path(__file__).resolve().parents[1]   # insight/ itself
 
 # ponytail: a MINIMUM, not the exact count. insight/'s suite grows on every unrelated goal that
 # adds a metric/gap/dash test, so pinning the exact number here would make this file a merge
@@ -121,7 +152,37 @@ def extracted(tmp_path_factory):
     shadowing bug this proof exists to catch, silently, from outside this file entirely. Dropping
     both removes the two most likely ways that could happen without a code change here -- on top
     of, not instead of, `test_child_planted_self_check_ran_and_passed`'s own direct check of the
-    outcome."""
+    outcome.
+
+    PROCESS-GROUP TIMEOUT KILL (issue #297 review, F3): a plain `subprocess.run(..., timeout=...)`
+    only ever reaches the ONE process it started. If the F2 recursion guard above were ever wrong
+    -- or a future edit reopens the hole it closes -- the child pytest spawns a grandchild pytest
+    of its own, and on timeout `run()`'s internal kill reaches only the child, leaving the
+    grandchild (and whatever IT has already spawned) running, orphaned, each still free to keep
+    spawning further descendants. Reproduced for real, in a scratch copy, sentinel deliberately
+    removed, never in this repo: the triggering command returned on its own timeout but orphaned
+    `pytest` processes kept multiplying after it did, and 26+ had to be killed by hand. Fix:
+    `start_new_session=True` puts the child in a NEW process group (it becomes that group's
+    leader), so on timeout this code kills the WHOLE group (`os.killpg` + `SIGKILL`) -- child,
+    grandchild, and anything the grandchild already spawned -- not just the one handle `run()`
+    would have reached. `Popen` + `communicate(timeout=...)` replaces `subprocess.run` specifically
+    because `run()` raises `TimeoutExpired` and gives back no handle to kill anything with; by the
+    time that exception is caught there, the process is already unreachable through the object
+    `run()` returned. The result is repackaged as a `CompletedProcess` so every assertion below
+    keeps using `proc.returncode` / `proc.stdout` / `proc.stderr` exactly as before.
+
+    On an actual timeout, the failure names the likely cause instead of surfacing as a bare
+    `TimeoutExpired` traceback on every fixture-dependent test below with no hint why -- pointing
+    at the sentinel and the recursion guard is the whole reason someone reading a red CI run here
+    would know where to look first.
+
+    TIMEOUT VALUE: 600s, raised from the original 180s. The real run on this machine takes ~44s;
+    180s already looked generous next to that, and yet plan review's own estimate for this same
+    run elsewhere is ~90s, i.e. this machine's timing does not bound what the CI matrix's (slower)
+    runners will see. 600s keeps roughly a 6-7x margin over the slower of those two real numbers,
+    which is the point: a timeout sized to what was observed only on the fastest box in the
+    fleet is exactly the kind of guard that quietly stops meaning what it says, the same way F2's
+    presence-only sentinel check did."""
     dest_root = tmp_path_factory.mktemp("standalone")
     dest = dest_root / "insight"
     shutil.copytree(INSIGHT, dest)
@@ -129,10 +190,28 @@ def extracted(tmp_path_factory):
     env.pop("PYTHONPATH", None)
     env.pop("PYTEST_ADDOPTS", None)
     env[_CHILD_SENTINEL] = "1"
-    proc = subprocess.run(
-        [sys.executable, "-m", "pytest", str(dest / "tests"), "-v", "-rs"],
-        cwd=str(dest_root), env=env, capture_output=True, text=True, timeout=180,
+    args = [sys.executable, "-m", "pytest", str(dest / "tests"), "-v", "-rs"]
+    child = subprocess.Popen(
+        args, cwd=str(dest_root), env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        start_new_session=True,   # own process group -- see docstring, "PROCESS-GROUP TIMEOUT KILL"
     )
+    try:
+        stdout, stderr = child.communicate(timeout=600)
+    except subprocess.TimeoutExpired:
+        # Kill the ENTIRE group start_new_session=True created, not just `child` itself --
+        # a lone os.kill(child.pid, ...) here would repeat exactly the bug this fix closes.
+        os.killpg(os.getpgid(child.pid), signal.SIGKILL)
+        child.wait()
+        pytest.fail(
+            "child pytest run exceeded its 600s timeout without finishing. The likely cause is "
+            "runaway recursion -- the child spawning a grandchild pytest run of its own -- see "
+            "this module's RECURSION GUARD docstring section and the `_CHILD_SENTINEL` check "
+            "near the top of this file. The child's whole process group has already been killed "
+            "(os.killpg + SIGKILL), so this failure should not leave orphaned pytest processes "
+            "behind."
+        )
+    proc = subprocess.CompletedProcess(args, child.returncode, stdout, stderr)
     return proc, dest_root, dest
 
 
