@@ -31,7 +31,18 @@ import datetime
 import html
 import pathlib
 
-from insight.dash.colors import PANEL_MIX, panel_css_vars
+from insight.dash.colors import PANEL_MIX
+from insight.dash.instrument import (
+    alert,
+    board,
+    card,
+    footer,
+    masthead,
+    page_close,
+    page_open,
+    readout as _readout,
+    section_rule,
+)
 
 # The 42-metric catalog, id -> short name. Sourced from the data-platform spec's section 6 table.
 # Held here as data rather than re-read from the spec markdown at build time: the spec is prose and
@@ -168,28 +179,12 @@ def collect(conn, metrics_dir=None, now=None):
 # load-bearing ones -- note they carry NO hue at all, which is what stops a dark cell from reading
 # as a status colour on a colour-blind or greyscale display.
 # --------------------------------------------------------------------------------------------
+# Panel's own instrument furniture -- everything else moved to instrument.FRAME_CSS byte-for-byte
+# (issue #264, plan .sdlc/plans/264.md Sec 1.2). This block still uses panel's local `--s:8px`
+# unit (declared in FRAME_CSS) and its own literal px sizes deliberately -- see FRAME_CSS's own
+# module docstring in instrument.py for why extending test_dash_no_bare_spacing_or_font_size.py to
+# this text is explicitly out of scope for this goal.
 CSS = """
-:root{ --s:8px }   /* spacing unit only -- every colour lives in colors.PANEL */
-*{box-sizing:border-box}
-body{
-  margin:0; background:var(--panel-ground); color:var(--panel-bone);
-  font-family:'Atkinson',ui-sans-serif,sans-serif; font-size:13px; line-height:1.5;
-  -webkit-font-smoothing:antialiased;
-  background-image:
-    radial-gradient(ellipse 90% 60% at 50% -10%, var(--panel-glow), transparent 70%),
-    repeating-linear-gradient(0deg, var(--panel-grain) 0 1px, transparent 1px 4px);
-}
-.mono{font-family:'PlexMono',ui-monospace,monospace; font-variant-numeric:tabular-nums}
-.wrap{max-width:1500px; margin:0 auto; padding:calc(var(--s)*3) calc(var(--s)*4) calc(var(--s)*10)}
-
-/* ---- masthead ------------------------------------------------------------------ */
-.mast{display:flex; align-items:baseline; gap:calc(var(--s)*2); flex-wrap:wrap;
-  padding-bottom:calc(var(--s)*2); border-bottom:1px solid var(--panel-rule-hard)}
-.mark{font-family:'PlexMono',monospace; font-size:11px; letter-spacing:.34em;
-  text-transform:uppercase; color:var(--panel-amber)}
-.mast h1{font-size:26px; font-weight:400; margin:0; letter-spacing:-.015em}
-.mast .meta{margin-left:auto; font-size:11px; color:var(--panel-faint); letter-spacing:.05em}
-
 /* ---- instrumentation ribbon: the page's thesis, stated first -------------------- */
 .instr{margin-top:calc(var(--s)*3); padding:calc(var(--s)*2.5) calc(var(--s)*3);
   background:var(--panel-panel); border:1px solid var(--panel-rule); border-radius:3px;
@@ -208,53 +203,6 @@ body{
 .legend i{display:inline-block; width:9px; height:9px; margin-right:5px; vertical-align:-1px;
   border-radius:1px}
 
-/* ---- section rule -------------------------------------------------------------- */
-.rule{display:flex; align-items:center; gap:calc(var(--s)*1.5); margin:calc(var(--s)*4) 0 calc(var(--s)*1.5)}
-.rule h2{font-size:11px; font-weight:400; letter-spacing:.28em; text-transform:uppercase;
-  color:var(--panel-dim); margin:0; white-space:nowrap}
-.rule:after{content:''; flex:1; height:1px; background:var(--panel-rule)}
-
-/* ---- readouts ------------------------------------------------------------------ */
-.readouts{display:grid; grid-template-columns:repeat(4,1fr); gap:1px; background:var(--panel-rule);
-  border:1px solid var(--panel-rule)}
-.ro{background:var(--panel-panel); padding:calc(var(--s)*2.5) calc(var(--s)*2.5) calc(var(--s)*2)}
-.ro .lab{font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--panel-dim)}
-.ro .val{font-family:'PlexMono',monospace; font-size:44px; line-height:1.05; letter-spacing:-.035em;
-  margin-top:calc(var(--s)*1.5)}
-.ro .unit{font-size:15px; color:var(--panel-faint); margin-left:4px}
-.ro .cov{margin-top:var(--s); font-size:10.5px; color:var(--panel-faint);
-  font-family:'PlexMono',monospace; border-top:1px solid var(--panel-rule); padding-top:6px}
-.ro.absent .val{font-family:'PlexMono',monospace; font-size:19px; color:var(--panel-void-ink);
-  letter-spacing:.08em}
-.ro.absent{background:
-  repeating-linear-gradient(45deg,var(--panel-hatch-soft) 0 3px,transparent 3px 7px), var(--panel-panel)}
-.cls{float:right; font-family:'PlexMono',monospace; font-size:9.5px; letter-spacing:.1em;
-  color:var(--panel-faint); border:1px solid var(--panel-rule-hard); border-radius:2px; padding:1px 5px}
-
-/* ---- two-column body ----------------------------------------------------------- */
-/* `stretch`, not `start`: the rail runs taller than the chart column, and with `start` the
-   difference renders as a ragged void under the last chart. Stretching lets the two chart cards
-   divide the full height evenly (`grid-auto-rows:1fr`) and the charts centre in the space they
-   gain, so the section bottoms out on one flat line. */
-.cols{display:grid; grid-template-columns:1fr 320px; gap:calc(var(--s)*3); align-items:stretch}
-.colmain{display:grid; gap:calc(var(--s)*3); grid-auto-rows:1fr}
-.colmain .card{display:flex; flex-direction:column}
-.colmain .card svg{margin-top:auto; margin-bottom:auto}
-.colrail{display:grid; gap:calc(var(--s)*3); align-content:start}
-.card{background:var(--panel-panel); border:1px solid var(--panel-rule); border-radius:3px;
-  padding:calc(var(--s)*2.5)}
-.card h3{margin:0 0 calc(var(--s)*.5); font-size:12.5px; font-weight:400; letter-spacing:.02em}
-.card .sub{font-size:10.5px; color:var(--panel-faint); margin-bottom:calc(var(--s)*2);
-  font-family:'PlexMono',monospace}
-
-/* ---- right rail ---------------------------------------------------------------- */
-.alert{border-left:2px solid var(--panel-amber); padding:calc(var(--s)*1.25) 0 calc(var(--s)*1.25) calc(var(--s)*1.5);
-  margin-bottom:calc(var(--s)*2)}
-.alert.crit{border-left-color:var(--panel-red)}
-.alert.void{border-left-color:var(--panel-void-ink); border-left-style:dashed}
-.alert .t{font-size:12px}
-.alert .d{font-size:10.5px; color:var(--panel-faint); margin-top:3px; font-family:'PlexMono',monospace}
-
 /* ---- event mix: one stacked proportion bar, not a seven-row list ---------------- */
 .stack{display:flex; height:22px; border-radius:2px; overflow:hidden; margin-bottom:calc(var(--s)*1.5)}
 .stack span{display:block}
@@ -263,39 +211,7 @@ body{
   border-radius:1px; margin-right:6px}
 .mixkey .v{font-family:'PlexMono',monospace; font-size:10.5px; color:var(--panel-dim)}
 
-/* ---- the board: all 42, lit or dark -------------------------------------------- */
-.band{margin-bottom:calc(var(--s)*2.5)}
-.band .bl{font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--panel-faint);
-  margin-bottom:var(--s)}
-/* Hairlines come from each cell's own 1px ring, NOT from a gap-coloured container background.
-   With a container background, the unfilled tail of the last row renders as a phantom empty cell
-   -- an artifact that reads, on a board whose entire job is showing what is and isn't measured, as
-   an extra unlabelled dark metric. Adjacent rings overlap inside the 1px gap and resolve to a
-   single hairline, so the grid still reads as ruled while staying responsive at any column count. */
-.grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(148px,1fr)); gap:1px;
-  background:transparent}
-.cell{background:var(--panel-raised); padding:calc(var(--s)*1.25) calc(var(--s)*1.5); min-height:62px;
-  display:flex; flex-direction:column; justify-content:space-between;
-  box-shadow:0 0 0 1px var(--panel-rule)}
-.cell .id{font-family:'PlexMono',monospace; font-size:9.5px; color:var(--panel-faint)}
-.cell .nm{font-size:11.5px; line-height:1.3; margin-top:2px}
-.cell .n{font-family:'PlexMono',monospace; font-size:10px; color:var(--panel-cyan); margin-top:5px}
-.cell.dark, .cell.unbuilt{
-  background:repeating-linear-gradient(45deg,var(--panel-hatch) 0 3px,transparent 3px 7px), var(--panel-void);
-  color:var(--panel-void-ink)}
-.cell.dark .nm, .cell.unbuilt .nm{color:var(--panel-void-ink)}
-.cell.dark .n, .cell.unbuilt .n{color:var(--panel-void-ink); letter-spacing:.09em}
-.cell.unbuilt{opacity:.72}
-
-footer{margin-top:calc(var(--s)*5); padding-top:calc(var(--s)*2); border-top:1px solid var(--panel-rule);
-  font-size:10.5px; color:var(--panel-faint); font-family:'PlexMono',monospace}
-
-@media (max-width:1080px){
-  .cols{grid-template-columns:1fr}
-  .readouts{grid-template-columns:repeat(2,1fr)}
-  .instr{grid-template-columns:1fr}
-}
-@media (max-width:620px){ .readouts{grid-template-columns:1fr} .wrap{padding:calc(var(--s)*2)} }
+@media (max-width:1080px){ .instr{grid-template-columns:1fr} }
 """
 
 
@@ -316,21 +232,6 @@ def _dur(sec):
     if sec < 172800:
         return f"{sec / 3600:.1f}h"
     return f"{sec / 86400:.1f}d"
-
-
-def _readout(label, value, unit=None, coverage=None, cls=None, absent_reason=None):
-    """One primary readout. `absent_reason` and `value` are mutually exclusive by construction --
-    an absent readout renders the reason where the numeral would go, so there is no numeral to
-    misread. This is the single most important function in the module."""
-    badge = f'<span class="cls">{_e(cls)}</span>' if cls else ""
-    if absent_reason is not None:
-        return (f'<div class="ro absent"><div class="lab">{badge}{_e(label)}</div>'
-                f'<div class="val">NO SENSOR</div>'
-                f'<div class="cov">{_e(absent_reason)}</div></div>')
-    u = f'<span class="unit">{_e(unit)}</span>' if unit else ""
-    cov = f'<div class="cov">{_e(coverage)}</div>' if coverage else ""
-    return (f'<div class="ro"><div class="lab">{badge}{_e(label)}</div>'
-            f'<div class="val">{_e(value)}{u}</div>{cov}</div>')
 
 
 def _bars(daily, w=620, h=150):
@@ -433,11 +334,14 @@ def _strip(spread, p50, p85, w=620, h=132):
     return "".join(out)
 
 
-def _board(d):
-    """All 42 metrics, banded by subject. The page's closing argument: a reader who scrolls here
-    sees the entire instrumentation surface at once, and the hatched cells outnumber the lit ones
-    -- which is the true state of the product and should not require reading a table to discover."""
-    out = []
+def _board_bands(d):
+    """Bands/cells for `instrument.board()`, escaped at this call site per its no-new-escaping
+    contract (issue #264) -- panel.py keeps owning the 42-metric catalog and band membership
+    (`CATALOG`, `BANDS`); `board()` only lays out the markup. The page's closing argument: a
+    reader who scrolls to the board sees the entire instrumentation surface at once, and the
+    hatched cells outnumber the lit ones -- which is the true state of the product and should not
+    require reading a table to discover."""
+    bands = []
     for name, ids in BANDS:
         cells = []
         for m in ids:
@@ -446,13 +350,9 @@ def _board(d):
             state, n = d["states"][m]
             note = {"live": f"{n} row{'s' if n != 1 else ''}",
                     "dark": "NO DATA", "unbuilt": "UNBUILT"}[state]
-            cells.append(
-                f'<div class="cell {state}"><div><div class="id">{m:02d}</div>'
-                f'<div class="nm">{_e(CATALOG[m])}</div></div>'
-                f'<div class="n">{_e(note)}</div></div>')
-        out.append(f'<div class="band"><div class="bl">{_e(name)}</div>'
-                   f'<div class="grid">{"".join(cells)}</div></div>')
-    return "".join(out)
+            cells.append((m, _e(CATALOG[m]), state, _e(note)))
+        bands.append((_e(name), cells))
+    return bands
 
 
 def render_panel(conn, metrics_dir=None, now=None, db_label=".sdlc/insight.duckdb"):
@@ -502,23 +402,23 @@ def render_panel(conn, metrics_dir=None, now=None, db_label=".sdlc/insight.duckd
     med, has, all_ = d["lead"]
     alerts = []
     alerts.append(
-        f'<div class="alert crit"><div class="t">Lead time is {has}/{all_} covered</div>'
-        f'<div class="d">median {_e(_dur(med))} over {has} merges &mdash; the other '
-        f'{(all_ or 0) - (has or 0)} carry no duration. Do not read this as a trend.</div></div>'
+        alert(f'Lead time is {has}/{all_} covered',
+              f'median {_e(_dur(med))} over {has} merges &mdash; the other '
+              f'{(all_ or 0) - (has or 0)} carry no duration. Do not read this as a trend.',
+              "crit")
         if med is not None else
-        f'<div class="alert void"><div class="t">Lead time &mdash; NO SENSOR</div>'
-        f'<div class="d">0/{all_ or 0} merges carry a duration</div></div>')
+        alert('Lead time &mdash; NO SENSOR', f'0/{all_ or 0} merges carry a duration', "void"))
     alerts.append(
-        f'<div class="alert void"><div class="t">{n_dark + n_unbuilt} of {total_m} metrics dark</div>'
-        f'<div class="d">{n_dark} awaiting data &middot; {n_unbuilt} never built. '
-        f'None of these is a zero.</div></div>')
+        alert(f'{n_dark + n_unbuilt} of {total_m} metrics dark',
+              f'{n_dark} awaiting data &middot; {n_unbuilt} never built. None of these is a zero.',
+              "void"))
     checks = dict(d["checks"])
     if checks:
         tot = sum(checks.values())
         fails = tot - checks.get("SUCCESS", 0)
         alerts.append(
-            f'<div class="alert"><div class="t">CI {checks.get("SUCCESS", 0)}/{tot} green</div>'
-            f'<div class="d">{fails} non-success across ingested check runs</div></div>')
+            alert(f'CI {checks.get("SUCCESS", 0)}/{tot} green',
+                  f'{fails} non-success across ingested check runs'))
 
     # Event mix as one stacked proportion bar. A seven-row list was the tallest element on the
     # page and said the least: the reader wants the SHAPE of the loop's activity (how much claiming
@@ -536,20 +436,20 @@ def render_panel(conn, metrics_dir=None, now=None, db_label=".sdlc/insight.duckd
         for i, (k, n) in enumerate(d["kinds"])) + '</div>')
 
     built = d["now"].strftime("%Y-%m-%d %H:%M")
-    css = panel_css_vars() + CSS
+    # Built outside the f-string below: pre-3.12 f-strings cannot contain a backslash (here, the
+    # footer body's own embedded "\n" line-continuation) inside a replacement field.
+    footer_html = footer(
+        "Self-contained page &mdash; fonts embedded, no network request, no third-party asset.\n"
+        "  Hatched cells are <strong>absent, not zero</strong>: a metric with no data and a "
+        "metric reading\n  zero are different facts and are never drawn the same way."
+    )
+    # The page's own <title> text is preserved exactly (issue #264 Step 5) -- only the head/nav
+    # around it now come from the shared instrument.page_open()/page_close() shell.
+    head = page_open("LoopSmith Insight — Delivery", current="panel", extra_css=CSS)
 
-    return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>LoopSmith Insight — Delivery</title>
-<style>{css}</style></head>
-<body><div class="wrap">
-
-<div class="mast">
-  <span class="mark">LoopSmith Insight</span>
-  <h1>Delivery</h1>
-  <span class="meta mono">{_e(db_label)} &middot; built {_e(built)} &middot; {d["events"] or 0} events</span>
-</div>
+    return f"""{head}
+{masthead("LoopSmith Insight", "Delivery",
+          f'{_e(db_label)} &middot; built {_e(built)} &middot; {d["events"] or 0} events')}
 
 <div class="instr">
   <div>
@@ -567,44 +467,30 @@ def render_panel(conn, metrics_dir=None, now=None, db_label=".sdlc/insight.duckd
   </div>
 </div>
 
-<div class="rule"><h2>Primary readouts</h2></div>
+{section_rule("Primary readouts")}
 <div class="readouts">{"".join(ro)}</div>
 
-<div class="rule"><h2>Flow</h2></div>
+{section_rule("Flow")}
 <div class="cols">
   <div class="colmain">
-    <div class="card">
-      <h3>Goals landed per day</h3>
-      <div class="sub">fact_event &middot; kind=merged &middot; class 1, deterministic</div>
-      {_bars(d["daily"])}
-    </div>
-    <div class="card">
-      <h3>Cycle time distribution</h3>
-      <div class="sub">{d["cyc_n"]} goals &middot; markers are this project's own trailing percentiles</div>
-      {_strip(d["spread"], d["p50"], d["p85"])}
-    </div>
+    {card("Goals landed per day",
+          "fact_event &middot; kind=merged &middot; class 1, deterministic",
+          _bars(d["daily"]))}
+    {card("Cycle time distribution",
+          str(d["cyc_n"]) + " goals &middot; markers are this project's own trailing percentiles",
+          _strip(d["spread"], d["p50"], d["p85"]))}
   </div>
   <div class="colrail">
-    <div class="card">
-      <h3>Attention</h3>
-      <div class="sub">ordered by what should change next</div>
-      {"".join(alerts)}
-    </div>
-    <div class="card">
-      <h3>Event mix</h3>
-      <div class="sub">{d["events"] or 0} ledger events &middot; {d["reviews"] or 0} reviews</div>
-      {kinds}
-    </div>
+    {card("Attention", "ordered by what should change next", "".join(alerts))}
+    {card("Event mix",
+          f'{d["events"] or 0} ledger events &middot; {d["reviews"] or 0} reviews',
+          kinds)}
   </div>
 </div>
 
-<div class="rule"><h2>Instrumentation board &mdash; all {total_m} metrics</h2></div>
-{_board(d)}
+{section_rule(f"Instrumentation board &mdash; all {total_m} metrics")}
+{board(_board_bands(d))}
 
-<footer>
-  Self-contained page &mdash; fonts embedded, no network request, no third-party asset.
-  Hatched cells are <strong>absent, not zero</strong>: a metric with no data and a metric reading
-  zero are different facts and are never drawn the same way.
-</footer>
+{footer_html}
 
-</div></body></html>"""
+{page_close()}"""

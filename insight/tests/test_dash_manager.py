@@ -9,6 +9,7 @@ The individual-grain GUARDRAIL itself (the panel-scoped leak check + its negativ
 NOT here -- see insight/tests/test_dash_manager_guardrail.py, this story's Task 7 and its own
 proving test."""
 import datetime
+import json
 import re
 
 import pytest
@@ -51,6 +52,42 @@ def test_render_manager_view_has_exactly_the_five_expected_sections(conn):
         "panel-burndown", "panel-wip-aging", "panel-handoff-graph",
         "panel-park-taxonomy", "panel-review-cycles",
     }
+
+    # ------------------------------------------------------------------------------------- #264
+    # Content-identical pin (plan .sdlc/plans/264.md Sec 1.6): frozen against the CURRENT,
+    # unmodified code on a fixed empty-store fixture + fixed NOW, so a later refactor of the page
+    # shell / instrument primitives (issue #264) cannot silently change manager.html's rendered
+    # content. Strict equality, so it is falsifiable by construction -- no separate negative
+    # control needed.
+    h2_texts = re.findall(r"<h2>(.*?)</h2>", html_text)
+    assert set(h2_texts) == {
+        "Burndown + Monte Carlo band", "WIP and aging", "Handoff graph (by area)",
+        "Park taxonomy", "Review-cycle distribution",
+    }
+
+    payload_text = re.search(
+        r'<script type="application/json" id="insight-manager-data">(.*?)</script>',
+        html_text, re.DOTALL,
+    ).group(1)
+    assert json.loads(payload_text) == {
+        "generated_at": "2026-08-01T00:00:00",
+        "burndown": {"weeks": 0, "p10_total": None, "p90_total": None},
+        "wip": None,
+        "aging_wip_count": 0,
+        "handoff_by_area": [],
+        "park_rate": {
+            "parked_terminal_count": 0, "terminal_count": 0, "park_rate": None,
+        },
+        "reason_class_measured_count": 0,
+    }
+
+    footer_text = re.search(r"<footer>(.*?)</footer>", html_text, re.DOTALL).group(1)
+    assert footer_text == (
+        "Self-contained: no network fetch, no external script/style/font reference. Data is\n"
+        "inlined above. No individual-grain metric appears on this page except aging WIP "
+        "(panel-wip-aging)\nand hand-off response (not rendered here) -- see this module's own "
+        "docstring."
+    )
 
 
 def test_render_manager_view_passes_assert_self_contained(conn):
