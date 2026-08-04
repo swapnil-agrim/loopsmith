@@ -1,8 +1,13 @@
 """Drives scripts/verify_web.py (evals/run.py's own module-load pattern, see tests/test_evals.py)
 against a stub `npm` on PATH -- never the real network -- proving: absent app -> SKIP + exit 0;
 present app + a failing check -> nonzero exit naming the check; every one of the four checks is
-actually invoked; and the can't-run case (install fails) fails rather than passing."""
+actually invoked; and the can't-run case (install fails) fails rather than passing.
+
+One further test, against the REAL tree rather than a stubbed one: issue #296's package.json
+invariant -- IF insight/web/package.json ever exists THEN it must carry a lockfile and declare
+every one of CHECKS as an npm script. See that test's own docstring for why."""
 import importlib.util
+import json
 import os
 import pathlib
 import stat
@@ -97,3 +102,44 @@ def test_cannot_install_fails_rather_than_passes(tmp_path, monkeypatch):
     _world(m, tmp_path, with_node_modules=False)  # forces the npm ci path
     assert m.main() != 0
     assert "run typecheck" not in log.read_text()  # never reached a check after the install failed
+
+
+def test_real_package_json_if_it_ever_lands_has_a_lockfile_and_every_check():
+    """A machine-checked invariant (issue #296 A2), not just insight/web/README.md's prose: IF the
+    REAL insight/web/package.json exists THEN (a) it has a sibling package-lock.json, and (b) its
+    "scripts" declares every name in this module's own CHECKS.
+
+    Why this matters: this module's line ~49 treats package.json's mere EXISTENCE as "the app
+    exists" and unconditionally proceeds. From there, `npm ci` hard-fails with EUSAGE the instant
+    there is no committed lockfile, and each name in CHECKS that isn't a declared npm script fails
+    on npm's own "Missing script" error -- both inside every future goal's fresh worktree
+    (work.py:18-20 installs nothing ahead of time), so a goal wholly unrelated to insight/web/ would
+    park on a failure it did not cause. Checking this directly turns that into a fast, legible
+    failure attributable to the actual cause, rather than an unrelated goal quietly discovering it.
+
+    CHECKS is read off `m` (loaded the same importlib.util.spec_from_file_location way
+    tests/test_evals.py loads evals/run.py, and this file already loads scripts/verify_web.py via
+    `_module()` above), never retyped, so this test and scripts/verify_web.py's own contract cannot
+    drift apart.
+
+    Vacuous TODAY: insight/web/package.json does not exist (E17.S1 lands it), so the `if` below
+    never runs its body and this test passes trivially -- mirroring the IF/THEN shape
+    test_marketplace_source_still_implies_the_readme_warning already uses in
+    tests/test_licence_boundary.py for the same reason (a real invariant, checked directly, that
+    happens to have no real-tree hits yet, rather than a one-shot tripwire someone would have to
+    remember to delete)."""
+    m = _module()
+    package_json = m.ROOT / "insight" / "web" / "package.json"
+    if package_json.is_file():
+        lockfile = package_json.parent / "package-lock.json"
+        assert lockfile.is_file(), (
+            f"{package_json} exists without a sibling {lockfile.name} -- `npm ci` hard-fails with "
+            "EUSAGE without a committed lockfile, inside every future goal's fresh worktree"
+        )
+        scripts = json.loads(package_json.read_text(encoding="utf-8")).get("scripts", {})
+        missing = [c for c in m.CHECKS if c not in scripts]
+        assert not missing, (
+            f'{package_json} "scripts" is missing {missing} -- scripts/verify_web.py\'s CHECKS '
+            "requires every one of these names to exist so each fails on npm's own error, not a "
+            "silent skip"
+        )
