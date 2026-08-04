@@ -231,6 +231,8 @@ def viz_css_vars(prefix="dash"):
 .not-measured-label {{ font: 400 var(--dash-text-subhead) var(--dash-font-sans); margin: 0 0 var(--dash-space-1); color: var(--dash-ink); }}
 .not-measured-provenance {{ font: var(--dash-text-caption) var(--dash-font-mono); margin: 0 0 var(--dash-space-1); color: var(--dash-ink2); }}
 .not-measured-explain {{ font: var(--dash-text-small) var(--dash-font-sans); margin: 0; color: var(--dash-ink2); }}
+.dash-number-label {{ font: var(--dash-text-small) var(--dash-font-sans); color: var(--dash-ink2); margin: 0 0 var(--dash-space-1); }}
+.dash-number-value {{ font: 400 var(--dash-text-display) var(--dash-font-mono); font-variant-numeric: tabular-nums; color: var(--dash-ink); }}
 """
 
 

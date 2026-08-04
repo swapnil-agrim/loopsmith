@@ -142,7 +142,13 @@ def render_stat_tile(label, value, delta=None, delta_is_good=None, trend=None, i
     though critical fails the 4.5:1 TEXT floor on dark, which is why the NUMBER itself never wears
     it). Glyph direction (▲/▼) follows the sign of `delta`; glyph colour follows `delta_is_good`
     (good -> the dedicated success-text token, bad -> reserved status FAIL) -- two independent
-    channels, so a good-but-negative delta (e.g. "-2 open claims") still reads correctly."""
+    channels, so a good-but-negative delta (e.g. "-2 open claims") still reads correctly.
+
+    New call sites: use `insight.dash.number.render_number()` instead (issue #263/D2) -- it
+    additionally derives measured/empty-result/not-measured state from
+    `reliability_class`/`coverage` and refuses to render a class-2 value with no coverage
+    denominator; `render_stat_tile` itself is unchanged here and stays wired to its existing 8
+    call sites until D5/D6/D8 migrate them (spec §6)."""
     parts = ['<div class="stat-tile">']
     parts.append(f'<div class="stat-tile-label">{html.escape(str(label))}</div>')
     parts.append(f'<div class="stat-tile-value">{html.escape(str(value))}</div>')

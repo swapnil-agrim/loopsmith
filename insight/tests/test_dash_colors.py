@@ -97,6 +97,18 @@ def test_viz_css_vars_gates_the_texture_overlay_off_by_default():
     assert m, "texture overlay must flip to opacity: 1 only under forced-colors/print"
 
 
+def test_viz_css_vars_declares_the_number_component_css():
+    """Issue #263 (D2), Decision 4: the .dash-number component's CSS is a global primitive
+    declared in viz_css_vars() (not a page-specific _STYLE block) -- .dash-number-value is the
+    ONLY place font-variant-numeric is set for this component, guaranteeing tabular-nums by
+    construction (Decision 4's own "guaranteed, not just applied once" argument)."""
+    css = viz_css_vars()
+    assert ".dash-number-label {" in css
+    assert ".dash-number-value {" in css
+    m = re.search(r"\.dash-number-value \{[^}]*\}", css)
+    assert m and "font-variant-numeric: tabular-nums" in m.group(0)
+
+
 def test_status_mark_absent_fill_is_a_css_var_and_texture_overlay_is_a_separate_element():
     out = status_mark("ABSENT", 10, 10)
     assert 'fill="var(--dash-status-absent)"' in out
