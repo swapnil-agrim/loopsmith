@@ -129,6 +129,72 @@ SPACE = {
 RADIUS_SM = "6px"        # the one border-radius value in use today, named not invented
 BORDER_HAIRLINE = "1px"  # the one border-width value in use today
 
+# ---------------------------------------------------------------- instrument panel (panel.py)
+# A dark-ground ramp for `insight.dash.panel`, which composes an instrument rather than a
+# document. Declared here, not in panel.py, because this module is the single source of colour
+# truth for insight/dash/ -- a rule `test_dash_no_hex_outside_tokens.py` enforces, and which this
+# palette was caught violating on its first run.
+#
+# Dark-only, deliberately, and NOT a second mode of the light chart palette above. Those tokens
+# are tuned for ink-on-paper charts and have no dark ramp; forking them would mean overriding
+# nearly every value. An instrument panel that flipped to a white ground would also lose the one
+# thing the design depends on -- a lit gauge against a dark bezel.
+#
+# The `void-*` tokens are the load-bearing ones and are deliberately ACHROMATIC: pure neutrals
+# with no hue at all. That is what stops an unmeasured cell from reading as a status colour on a
+# greyscale print or to a colour-blind reader. Absence must differ from a reading in LIGHTNESS and
+# TEXTURE, never in hue alone -- so never give these a tint, however subtle.
+PANEL = {
+    "ground": "#080b0c",   # page bezel
+    "panel": "#0e1315",    # card face
+    "raised": "#141a1c",   # board cell face
+    "bone": "#e9e3d6",     # primary type; warm, not pure white, to cut halation on dark
+    "dim": "#8b9599",      # secondary type
+    "faint": "#5a6467",    # tertiary type / axis labels
+    "amber": "#ffa629",    # the signal accent -- annunciator, p50 marker, bar fill
+    "amber-deep": "#a8641a",  # bar-gradient foot
+    "cyan": "#5ce0b0",     # a live reading
+    "cyan-deep": "#2e8f6d",  # live-tick gradient foot
+    "red": "#ff5f52",      # breach / p85 marker
+    "void": "#171d1f",     # ABSENT fill -- achromatic, see above
+    "void-ink": "#5a6467",  # ABSENT type -- achromatic, see above
+}
+
+# Event-mix stack colours, fixed order. Reuses the panel's own accents rather than importing the
+# light CATEGORICAL ramp, whose mid-tones vanish against a #080b0c ground.
+PANEL_MIX = ["#5ce0b0", "#ffa629", "#5aa9d6", "#ff5f52", "#b98ce0", "#d6b45a", "#7f8b8f"]
+
+# Hairlines and textures are expressed as alpha over the ground so they hold up on every card
+# elevation without a per-surface value.
+PANEL_ALPHA = {
+    "rule": "rgba(233,227,214,.10)",
+    "rule-hard": "rgba(233,227,214,.20)",
+    "void-edge": "rgba(233,227,214,.16)",
+    "grid": "rgba(233,227,214,.09)",
+    "hatch": "rgba(233,227,214,.03)",
+    "hatch-soft": "rgba(233,227,214,.028)",
+    "grain": "rgba(233,227,214,.014)",   # the body's fine scanline texture
+    "glow": "rgba(255,166,41,.07)",      # the masthead's warm bloom; the one tinted alpha
+}
+
+
+def panel_css_vars(prefix="panel"):
+    """Emit the instrument palette as CSS custom properties, plus the two embedded @font-face
+    rules. `insight.dash.panel` references `var(--panel-*)` for every colour it draws -- including
+    inline-SVG `fill`/`stroke`, which resolve custom properties exactly as CSS does -- so the
+    module itself contains no colour literal."""
+    parts = [f"--{prefix}-{k}: {v};" for k, v in PANEL.items()]
+    parts += [f"--{prefix}-{k}: {v};" for k, v in PANEL_ALPHA.items()]
+    parts += [f"--{prefix}-mix-{i}: {c};" for i, c in enumerate(PANEL_MIX)]
+    parts.append(f"--{prefix}-font-sans: {FONT_SANS_STACK};")
+    parts.append(f"--{prefix}-font-mono: {FONT_MONO_STACK};")
+    return f""":root {{ color-scheme: dark; {" ".join(parts)} }}
+@font-face {{ font-family: "Atkinson Hyperlegible"; font-style: normal; font-weight: 400;
+  font-display: swap; src: url(data:font/woff2;base64,{FONT_SANS_WOFF2_BASE64}) format("woff2"); }}
+@font-face {{ font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400;
+  font-display: swap; src: url(data:font/woff2;base64,{FONT_MONO_WOFF2_BASE64}) format("woff2"); }}
+"""
+
 # A distinctive humanist sans (Atkinson Hyperlegible) for prose/headings, a mono (IBM Plex Mono)
 # for every number/identifier/timestamp/provenance line (spec Sec.3) -- explicitly NOT
 # -apple-system as the final answer. Both embedded via @font-face in viz_css_vars() below,
