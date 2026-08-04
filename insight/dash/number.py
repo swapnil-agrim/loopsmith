@@ -254,7 +254,12 @@ def render_number(label, value, reliability_class, coverage=None, population=Non
             )
         return not_measured_block(explain_text, provenance)
 
-    if reliability_class not in _VALID_RELIABILITY_CLASSES:
+    # `isinstance(reliability_class, bool)` is checked SEPARATELY and first, because in Python
+    # `True == 1` and `False == 0`, so a bare `not in (1, 2)` membership test lets `True` through
+    # and silently renders it as reliability_class 1 -- the exact silent-wrong-path this check
+    # exists to close. Caught by the #263 delta re-review, which found `True` was both unguarded
+    # and unlisted in this check's own parametrized test.
+    if isinstance(reliability_class, bool) or reliability_class not in _VALID_RELIABILITY_CLASSES:
         raise ValueError(
             f"render_number(): reliability_class must be 1 or 2 (insight.metrics.header's own "
             f"reliability_class field), got {reliability_class!r} -- reliability_class is "

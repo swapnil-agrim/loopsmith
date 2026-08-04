@@ -144,7 +144,7 @@ def test_render_number_renders_a_present_but_none_coverage_pct_without_raising()
 # --------------------------------------------------------------------------- #263 PR-review
 # finding 3: reliability_class must be validated, not silently take the class-1-shaped path.
 
-@pytest.mark.parametrize("bad_class", [0, 3, -1, None, "2"])
+@pytest.mark.parametrize("bad_class", [0, 3, -1, None, "2", True, False])
 def test_render_number_rejects_an_invalid_reliability_class(bad_class):
     with pytest.raises(ValueError):
         render_number("x", 0, bad_class)
