@@ -184,7 +184,18 @@ def viz_css_vars(prefix="dash"):
     in light and dark), so declared once directly on `.viz-root`, outside `_vars(mode)` (Decision
     1). The two `@font-face` rules sit at the top level, outside the dark-mode media query
     entirely (fonts don't fork per mode -- duplicating ~25KB of base64 per mode would be pure
-    waste, guarded by test_font_face_rules_are_outside_the_dark_mode_media_query)."""
+    waste, guarded by test_font_face_rules_are_outside_the_dark_mode_media_query).
+
+    issue #263 (D2) adds `.coverage-denom` (the `<span class="coverage-denom">` shape
+    `insight.dash.render.coverage_denominator_html()` emits and every numeral-bearing caller --
+    `render.py`'s own metric table, `manager.py`, `leadership.py`, and now `insight.dash.number.
+    render_number` -- concatenates directly after its own numeral markup, never inside it): a
+    numeral-only `font-variant-numeric: tabular-nums` rule, matching `.dash-number-value`'s own,
+    fixing a real gap this codebase shipped with -- `.coverage-denom` carried NO CSS at all before
+    this (#263 PR-review finding 1), so the "62% (62 of 100 rows class-1, 38 class-2)" text it
+    renders was never guaranteed tabular. `render_number` is the ONE call site that returns this
+    span concatenated onto ITS OWN markup rather than a page hand-splicing it in, which is exactly
+    why the gap was invisible until #263 gave it a dedicated component to audit."""
     def _vars(mode):
         parts = [f"--{prefix}-status-{k.lower()}: {v[mode]};" for k, v in STATUS.items()]
         parts += [f"--{prefix}-cat-{i}: {c[mode]};" for i, c in enumerate(CATEGORICAL)]
@@ -231,6 +242,9 @@ def viz_css_vars(prefix="dash"):
 .not-measured-label {{ font: 400 var(--dash-text-subhead) var(--dash-font-sans); margin: 0 0 var(--dash-space-1); color: var(--dash-ink); }}
 .not-measured-provenance {{ font: var(--dash-text-caption) var(--dash-font-mono); margin: 0 0 var(--dash-space-1); color: var(--dash-ink2); }}
 .not-measured-explain {{ font: var(--dash-text-small) var(--dash-font-sans); margin: 0; color: var(--dash-ink2); }}
+.dash-number-label {{ font: var(--dash-text-small) var(--dash-font-sans); color: var(--dash-ink2); margin: 0 0 var(--dash-space-1); }}
+.dash-number-value {{ font: 400 var(--dash-text-display) var(--dash-font-mono); font-variant-numeric: tabular-nums; color: var(--dash-ink); }}
+.coverage-denom {{ font-variant-numeric: tabular-nums; }}
 """
 
 

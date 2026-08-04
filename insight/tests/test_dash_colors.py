@@ -97,6 +97,43 @@ def test_viz_css_vars_gates_the_texture_overlay_off_by_default():
     assert m, "texture overlay must flip to opacity: 1 only under forced-colors/print"
 
 
+def test_viz_css_vars_declares_the_number_component_css():
+    """Issue #263 (D2), Decision 4: the .dash-number component's CSS is a global primitive
+    declared in viz_css_vars() (not a page-specific _STYLE block) -- .dash-number-value is the
+    ONLY place font-variant-numeric is set for the tile's OWN `.dash-number-*` selectors,
+    guaranteeing tabular-nums by construction for the value INSIDE the tile (Decision 4's own
+    "guaranteed, not just applied once" argument). This is narrower than "the only numeral
+    render_number ever emits": render_number also appends coverage_denominator_html()'s own
+    `.coverage-denom` span AFTER the tile -- see
+    test_viz_css_vars_declares_the_coverage_denominator_css below for that second, separately
+    guaranteed rule (#263 PR-review finding 1 -- an earlier revision of this docstring implied
+    .dash-number-value was the only tabular-nums rule this component needed, which was false: the
+    coverage-denominator span render_number concatenates onto its own output carried NO CSS
+    at all until that fix)."""
+    css = viz_css_vars()
+    assert ".dash-number-label {" in css
+    assert ".dash-number-value {" in css
+    m = re.search(r"\.dash-number-value \{[^}]*\}", css)
+    assert m and "font-variant-numeric: tabular-nums" in m.group(0)
+
+
+def test_viz_css_vars_declares_the_coverage_denominator_css():
+    """#263 PR-review finding 1: coverage_denominator_html() (insight.dash.render) emits a
+    `<span class="coverage-denom">` carrying its own numerals (the "62% (62 of 100 rows class-1,
+    38 class-2)" shape) -- render_number (insight.dash.number) concatenates that span directly
+    after its own tile, OUTSIDE `.dash-number-value`. Before this fix `.coverage-denom` had ZERO
+    CSS anywhere in the codebase (repo-wide grep), so that numeral text was never guaranteed
+    tabular even though it sits right next to a tabular-nums tile value. This is the durable
+    regression guard: a rule for `.coverage-denom` itself, not routed through `.dash-number-value`
+    (deliberately -- `.coverage-denom` is also used by insight.dash.render's own metric table and
+    by manager.py/leadership.py's own call sites, none of which are inside a `.dash-number`
+    tile)."""
+    css = viz_css_vars()
+    assert ".coverage-denom {" in css
+    m = re.search(r"\.coverage-denom \{[^}]*\}", css)
+    assert m and "font-variant-numeric: tabular-nums" in m.group(0)
+
+
 def test_status_mark_absent_fill_is_a_css_var_and_texture_overlay_is_a_separate_element():
     out = status_mark("ABSENT", 10, 10)
     assert 'fill="var(--dash-status-absent)"' in out

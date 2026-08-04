@@ -6,10 +6,12 @@ adjacent to the class-2 value -- and that a class-2 value with none raises rathe
 bare number (spec lines 125-127: "A Class-2 metric with no coverage figure is a bug, not a
 number"; .sdlc/plans/129.md Decision D8: raise, not render).
 
-Like #114's guard, every check here runs against a SYNTHETIC fixture: zero real class-2 metrics
-exist in the shipped catalog today (verified: all 25 insight/metrics/*.sql declare
-`reliability_class: 1`), so without a synthetic negative control the "fails a test" half of #129's
-done_when would be unfalsifiable."""
+Like #114's guard, every check here runs against a SYNTHETIC fixture: 9 real class-2 metrics exist
+in the shipped catalog today (15/16/17/18/19/22/23/27/29, issue #263 Research), but none of them
+are wired into a persona view's own hardcoded stat-tile read yet (manager.py's
+metric_7/metric_14, leadership.py's metric_9 are all still class-1) -- so without a synthetic
+fixture the "fails a test" half of #129's done_when is still unfalsifiable against the real
+rendered dashboard."""
 import json
 import re
 import shutil

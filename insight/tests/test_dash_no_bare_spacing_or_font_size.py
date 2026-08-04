@@ -12,7 +12,7 @@ test_dash_shell.py imports `_ALLOWLISTED_BARE_LITERALS`/`_BARE_SIZE_LITERAL`/
 maintained copy lived in test_dash_shell.py)."""
 import re
 
-from insight.dash import ic, leadership, manager, render
+from insight.dash import ic, leadership, manager, number, render
 from insight.dash.colors import viz_css_vars
 
 #: Design decision 5's named exceptions, kept as literals on purpose (not a forced fit):
@@ -74,6 +74,18 @@ def test_charts_module_declares_no_bare_svg_font_size_attribute():
     assert not literal_font_size, (
         f"charts.py has a bare, un-tokenized SVG font-size attribute: {literal_font_size}"
     )
+
+
+def test_number_module_declares_no_bare_font_size_or_spacing_literal():
+    """number.py has no _STYLE string at all (Decision 7) -- its "page-specific text" is its
+    whole module source, scanned the same way charts.py's own SVG-attribute text is
+    (test_charts_module_declares_no_bare_svg_font_size_attribute above). No allowlist: unlike
+    the four _STYLE-based tests, number.py does no chart-geometry pixel math and has no reason
+    to ever contain a bare px/rem/em literal."""
+    import insight.dash.number as number_mod
+    text = open(number_mod.__file__, encoding="utf-8").read()
+    matches = _BARE_SIZE_LITERAL.findall(text)
+    assert not matches, f"number.py hardcodes a font-size/spacing literal: {matches}"
 
 
 def test_a_literal_containing_an_allowlisted_substring_is_still_caught():
