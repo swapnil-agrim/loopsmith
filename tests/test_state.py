@@ -80,3 +80,91 @@ def test_state_and_queue_scaffold_themselves_on_a_fresh_clone(tmp_path):
     queue = (d / "state" / "review-queue.md").read_text()
     assert "# Morning Review Queue" in queue and "- needs: human review" in queue
 
+
+# --- F11/#341: the whole-second staleness hole in done_refusal ---------------------------------
+# `run_started_at` and evidence `at` used to both be `int(time.time())` -- a verify from a PRIOR
+# run at T-0.4s and a run starting at T+0.3s both floor to the same integer second, so the stale
+# evidence's `at` tied with `run_started_at` and slipped past the `<` check as if it were fresh.
+# The fix keeps sub-second float precision on both sides instead of narrowing the comparison itself
+# (a naive `<=` was tried and rejected -- it deterministically refuses the normal verify-then-record
+# sequence, since two fast subprocess calls routinely land in the same wall-clock second).
+
+
+def _write_evidence(sdlc_dir, goal, at, exit_code=0):
+    st = _state()
+    ev = st.evidence_path(sdlc_dir, goal)
+    ev.parent.mkdir(parents=True, exist_ok=True)
+    ev.write_text(json.dumps({"command": "true", "exit": exit_code, "at": at, "tail": []}))
+
+
+def _write_run_started_at(sdlc_dir, value):
+    (pathlib.Path(sdlc_dir) / "state" / "STATE.md").write_text(
+        f"iteration: 0\nrun_iteration: 0\nrun_started_at: {value}\nrun_tokens: 0\nlast_run: none\n")
+
+
+def test_read_float_preserves_the_fractional_part():
+    """`_read_int`'s `\\d+` regex would silently truncate `run_started_at`'s fractional part on
+    read; `_read_float` is the dedicated reader that keeps it."""
+    st = _state()
+    assert st._read_float("run_started_at: 1700000000.375\n", "run_started_at") == 1700000000.375
+
+
+def test_read_float_defaults_to_zero_when_absent():
+    st = _state()
+    assert st._read_float("iteration: 0\n", "run_started_at") == 0.0
+
+
+def test_start_run_writes_the_raw_time_time_value_not_a_floored_int(monkeypatch):
+    """Root cause of F11: `int(time.time())` floored `run_started_at` to a whole second. Confirm
+    `start_run` now stamps the raw float `time.time()` returns."""
+    st = _state()
+    with tempfile.TemporaryDirectory() as d:
+        base, _ = _sdlc(d)
+        monkeypatch.setattr(st.time, "time", lambda: 1700000000.75)
+        st.start_run(base)
+        assert st.load_cursor(base)["run_started_at"] == 1700000000.75
+
+
+def test_done_refusal_rejects_sub_second_stale_evidence_that_would_have_tied_under_whole_second_flooring():
+    """The issue's repro, reproduced with concrete numbers: a verify lands 0.1s into second T, a
+    PRIOR-run evidence write; this run starts 0.3s into that SAME second T. `int()` floors both to
+    T (proven inline below) -- precisely how the pre-fix `<` comparison let unambiguously-stale
+    evidence (the verify genuinely precedes this run's start by 0.2s) pass as fresh. With
+    sub-second precision the real ordering survives and the stale evidence is refused."""
+    st = _state()
+    with tempfile.TemporaryDirectory() as d:
+        base, g = _sdlc(d)
+        t = 1_700_000_000.0
+        _write_run_started_at(base, t + 0.3)
+        _write_evidence(base, g, at=t + 0.1)
+        assert int(t + 0.1) == int(t + 0.3) == int(t)      # the whole-second collision, confirmed
+        assert st.done_refusal(base, g) == "verify evidence predates this run"
+
+
+def test_done_refusal_accepts_evidence_a_fraction_of_a_second_after_run_start():
+    """The other half of F11: a verify completing milliseconds after this run started -- the normal
+    verify-then-record sequence -- must still be accepted. Also lands in the same floored second as
+    `run_started_at`, so this pins that the fix did not overcorrect into refusing same-second-but-
+    genuinely-later evidence (a stricter `<=` comparison would wrongly refuse this case)."""
+    st = _state()
+    with tempfile.TemporaryDirectory() as d:
+        base, g = _sdlc(d)
+        t = 1_700_000_000.0
+        _write_run_started_at(base, t)
+        _write_evidence(base, g, at=t + 0.05)
+        assert int(t + 0.05) == int(t)                     # same floored second as run_started_at
+        assert st.done_refusal(base, g) is None
+
+
+def test_done_refusal_boundary_at_exact_equality_is_still_accepted():
+    """`at == run_started_at` exactly (e.g. a verify and a run start stamped in the same instant)
+    is not proof of staleness -- done_refusal's contract is "fresh = at/after this run's start",
+    and only a real (now sub-second-precise) `<` predates it."""
+    st = _state()
+    with tempfile.TemporaryDirectory() as d:
+        base, g = _sdlc(d)
+        t = 1_700_000_000.123456
+        _write_run_started_at(base, t)
+        _write_evidence(base, g, at=t)
+        assert st.done_refusal(base, g) is None
+

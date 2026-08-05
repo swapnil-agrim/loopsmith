@@ -65,6 +65,26 @@ refuses every `done` for `enforce: 1`, while doctor stayed silent and its status
 imported — doctor.py has no cross-skill dependency on anything else, by design), with a parity test
 pinning both copies to the same truth table so they can't silently drift apart again.
 
+### fix(loop): close the whole-second staleness hole in the verify done-gate (F11)
+`done_refusal` (state.py) and its textual duplicate `_done_refusal` (loop.py) compare the verify
+evidence's `at` timestamp against `run_started_at` — both used to be stamped via `int(time.time())`,
+floored to a whole second. A verify from a PRIOR run landing a fraction of a second before this run
+started could floor to the SAME integer second as `run_started_at`, so `at < run_started_at` read
+false and a stale green cleared `record done` under `verify.enforce` as if it were fresh — a narrow
+but real sub-second acceptance window that only ever accepted stale evidence, never over-rejected.
+A naive `at <= run_started_at` refusal was tried first and rejected: it deterministically broke the
+feature's own happy path (verify immediately followed by record-done — two fast subprocess calls
+that routinely land in the same wall-clock second) across 19 tests, since same-second-but-
+genuinely-later evidence would then read as stale too. The actual fix keeps sub-second precision
+instead of narrowing the comparison: `state.start_run` and `loop.py verify_goal` now stamp the raw
+`time.time()` float, and `state.load_cursor` gained a dedicated `_read_float` reader (`_read_int`'s
+`\d+` regex would otherwise silently truncate the fractional part back off on read). `done_refusal`'s
+`<` and its "fresh = at/after this run's start" contract are unchanged; the real sub-second ordering
+just survives the round trip now. New boundary tests in `tests/test_state.py` and
+`tests/test_pipeline.py` reproduce the issue's repro scenario with concrete numbers and prove both
+directions: genuinely-earlier evidence in the same floored second is now refused, and
+genuinely-later (or exactly-simultaneous) evidence in the same floored second still accepted.
+
 ## 1.0.0 — the zero-touch release
 
 The theme: one person on one machine can now point LoopSmith at a stack of their own assigned issues

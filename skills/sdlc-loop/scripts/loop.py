@@ -546,8 +546,11 @@ def verify_goal(sdlc_dir, goal):
     ev = _evidence_path(sdlc_dir, goal)
     ev.parent.mkdir(parents=True, exist_ok=True)
     tail = (proc.stdout + proc.stderr).strip().splitlines()[-5:]
+    # `at` keeps sub-second precision (F11/#341) — see state.start_run's comment; flooring both
+    # this stamp and the run's start to whole seconds is what let a stale green tie with a run
+    # that started a fraction of a second later and get accepted as fresh.
     ev.write_text(_json.dumps({"command": cmd, "exit": proc.returncode,
-                               "at": int(time.time()), "tail": tail}, indent=2))
+                               "at": time.time(), "tail": tail}, indent=2))
     # `cmd` is externally-derived (goal frontmatter or config) and `.encode()`/`hashlib.sha256`
     # are evaluated as call ARGUMENTS in THIS frame, not inside `safe_append`'s own try/except — a
     # raise there would take down verify_goal itself unless guarded here too, not just at the
@@ -575,6 +578,9 @@ def _done_refusal(sdlc_dir, goal):
         return "verify evidence is unreadable"
     if data.get("exit") != 0:
         return f"last verify FAILED (exit {data.get('exit')})"
+    # Sub-second float compare (F11/#341, kept in sync with state.done_refusal — see its comment
+    # for the full boundary walkthrough): whole-second flooring used to let a stale green from a
+    # PRIOR run collide with this run's start and pass as fresh.
     if data.get("at", 0) < state.load_cursor(sdlc_dir)["run_started_at"]:
         return "verify evidence predates this run"
     return None

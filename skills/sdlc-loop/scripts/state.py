@@ -48,10 +48,18 @@ def _read_int(text, key):
     return int(m.group(1)) if m else 0
 
 
+def _read_float(text, key):
+    # `run_started_at` alone needs sub-second precision (F11/#341, see done_refusal below) — a
+    # separate reader from `_read_int` because its `\d+` regex would silently truncate the
+    # fractional part on read, throwing away the exact precision `start_run` just wrote.
+    m = re.search(rf"^{key}:\s*(\d+(?:\.\d+)?)", text, re.MULTILINE)
+    return float(m.group(1)) if m else 0.0
+
+
 def load_cursor(sdlc_dir):
     text = _state_file(sdlc_dir).read_text()
     return {"iteration": _read_int(text, "iteration"), "run_iteration": _read_int(text, "run_iteration"),
-            "run_started_at": _read_int(text, "run_started_at"),   # epoch secs; 0 on pre-0.6 STATE files
+            "run_started_at": _read_float(text, "run_started_at"),  # epoch secs; 0.0 on pre-0.6 STATE files
             "run_tokens": _read_int(text, "run_tokens")}           # host-reported spend (loop.py `spend`)
 
 
@@ -73,10 +81,14 @@ def save_cursor(sdlc_dir, iteration, run_iteration, summary):
 
 def start_run(sdlc_dir):
     """Reset the per-run budget counters at the start of a /sdlc-loop invocation.
-    `_set_line` appends missing lines, so pre-0.6 STATE.md files upgrade in place."""
+    `_set_line` appends missing lines, so pre-0.6 STATE.md files upgrade in place.
+    `run_started_at` keeps the raw `time.time()` float (F11/#341) — flooring it to a whole second
+    (as before) let a verify's own `at` stamp land in the SAME second as a run that started just
+    after it, so a stale green from the previous run could tie with (and pass as fresh for) this
+    one; sub-second precision closes that window without touching the done_refusal comparison."""
     f = _state_file(sdlc_dir)
     text = _set_line(f.read_text(), "run_iteration", 0)
-    text = _set_line(text, "run_started_at", int(time.time()))
+    text = _set_line(text, "run_started_at", time.time())
     text = _set_line(text, "run_tokens", 0)
     f.write_text(text)
 
@@ -143,6 +155,13 @@ def done_refusal(sdlc_dir, goal):
         return "verify evidence is unreadable"
     if data.get("exit") != 0:
         return f"last verify FAILED (exit {data.get('exit')})"
+    # Sub-second float compare (F11/#341): `at` and `run_started_at` used to be floored to whole
+    # seconds by `int(time.time())` on both sides, so a verify at T-0.4s from a PRIOR run and a run
+    # starting at T+0.3s both rounded to the same integer second — the floor made a stale green
+    # indistinguishable from a fresh one (`at == run_started_at` -> `<` false -> wrongly accepted).
+    # `load_cursor`/`start_run`/`verify_goal` now keep the raw float, so this comparison closes that
+    # window on its own; a verify milliseconds after start (the normal verify-then-record sequence)
+    # still compares strictly greater and stays accepted.
     if data.get("at", 0) < load_cursor(sdlc_dir)["run_started_at"]:
         return "verify evidence predates this run"
     return None
