@@ -12,7 +12,7 @@ This view is functionally SHALLOW-dark against any real, currently-ingested stor
 (`ledger_writer.py`'s `_write_event` never populates `gate`/`verdict`/`cycle` -- #243): every
 fixture here bypasses the ledger/ingest pipeline entirely and inserts directly into
 `fact_event`, exactly like every other metric test in this directory."""
-import ast
+import json
 import pathlib
 
 import pytest
@@ -26,9 +26,20 @@ from insight.metrics.testing import load_fixture_jsonl, rows_as_dicts  # noqa: E
 
 FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "23.jsonl"
 METRIC_PATH = pathlib.Path(__file__).resolve().parents[1] / "metrics" / "23.sql"
-LEDGER_PATH = (
-    pathlib.Path(__file__).resolve().parents[2] / "skills" / "sdlc-loop" / "scripts" / "ledger.py"
+
+# Issue #298 ([E15.S4]): this used to AST-parse skills/sdlc-loop/scripts/ledger.py's GATE_KINDS
+# tuple off disk as TEXT, module-skipping both tests below whenever skills/ was absent (e.g. a
+# standalone extraction of insight/ alone). Read from the frozen, versioned contract fixture
+# instead -- GATE_KINDS is already pinned engine-side at tests/test_ledger.py:411-413, so this
+# conversion needs no new engine work.
+VOCAB = json.loads(
+    (pathlib.Path(__file__).resolve().parents[1] / "contract" / "vocabulary.json")
+    .read_text(encoding="utf-8")
 )
+
+
+def _gate_kinds():
+    return tuple(VOCAB["gate_kinds"])
 
 
 @pytest.fixture
@@ -39,57 +50,27 @@ def conn(tmp_path):
     c.close()
 
 
-def _gate_kinds_off_disk():
-    """AST-parse ledger.py's GATE_KINDS tuple assignment off disk as TEXT/AST -- mirrors
-    test_metric_severity_rank.py's own _pipeline_order() helper for the identical reason: read
-    the real source, not a second hardcoded copy that could silently drift from it. insight/
-    must never `import skills` as a Python package (test_import_boundary.py) -- reading a path
-    is the allowed coupling, importing the package is not."""
-    source = LEDGER_PATH.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(LEDGER_PATH))
-    for node in tree.body:
-        if (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id == "GATE_KINDS"
-            and isinstance(node.value, ast.Tuple)
-        ):
-            values = [elt.value for elt in node.value.elts if isinstance(elt, ast.Constant)]
-            assert len(values) == len(node.value.elts), (
-                "ledger.py's GATE_KINDS tuple has a non-Constant element -- this parser's "
-                "assumptions about its shape are stale"
-            )
-            return tuple(values)
-    raise AssertionError(
-        f"ledger.py's GATE_KINDS assignment was not found by AST-walking {LEDGER_PATH} -- "
-        "either the file moved or the assignment shape changed; this parser needs updating"
-    )
-
-
-@pytest.mark.skipif(not LEDGER_PATH.is_file(), reason="skills/ not present in this checkout")
-def test_gate_kinds_parsed_off_disk_matches_the_known_vocabulary():
-    """Sanity-checks the parser itself against the exact values read directly from ledger.py --
-    if this fails, the parser above is broken, not 23.sql."""
-    assert _gate_kinds_off_disk() == (
+def test_gate_kinds_matches_the_contract():
+    """Direct list-equality assertion against insight/contract/vocabulary.json's "gate_kinds" --
+    no parser left to sanity-check (issue #298 removed it)."""
+    assert _gate_kinds() == (
         "plan_review", "code_review", "post_review", "merge", "decision", "alignment",
         "verify", "risk_security", "risk_contract", "risk_migration", "risk_release",
         "risk_debug",
     )
 
 
-@pytest.mark.skipif(not LEDGER_PATH.is_file(), reason="skills/ not present in this checkout")
 def test_metric_23_case_enumerates_every_ledger_gate_kind():
     """Independent plan-review nit, closed mechanically: nothing pins the 12-way CASE in
-    23.sql against ledger.GATE_KINDS itself beyond manual inspection -- a hypothetical future
-    13th GATE_KINDS value would otherwise fall silently into the unreachable ELSE NULL branch
+    23.sql against the contract's gate_kinds itself beyond manual inspection -- a hypothetical
+    future 13th gate kind would otherwise fall silently into the unreachable ELSE NULL branch
     with no signal a classification decision is newly owed for it. A plain substring/regex
     check against the file's raw text, not a SQL parser -- the CASE branches are already simple
     quoted-string literals, so no more machinery is warranted."""
     text = METRIC_PATH.read_text(encoding="utf-8")
-    for gate_kind in _gate_kinds_off_disk():
+    for gate_kind in _gate_kinds():
         assert f"'{gate_kind}'" in text, (
-            f"23.sql's 12-way CASE does not mention GATE_KINDS value {gate_kind!r} as a quoted "
+            f"23.sql's 12-way CASE does not mention gate kind {gate_kind!r} as a quoted "
             "literal -- a classification decision is owed for it"
         )
 

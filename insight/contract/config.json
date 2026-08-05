@@ -1,0 +1,5 @@
+{
+  "discovery": {"source": "local-goals", "github": {"repo": "swapnil-agrim/loopsmith"}},
+  "telemetry": {"share": true},
+  "ledger": {"enabled": true, "actor": "dana"}
+}

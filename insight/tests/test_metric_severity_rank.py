@@ -43,7 +43,7 @@ not claimed as impossible in general (a future edit to a status CASE that drops 
 reach it), just never reachable by the SQL that exists in this repo right now. Not independently
 pinned by a fixture (there is no way to fixture a status value the view's own CASE cannot produce);
 stated as defensive-only, same posture as the NULL/COALESCE guards elsewhere in these three files."""
-import ast
+import json
 import pathlib
 import pytest
 
@@ -54,56 +54,25 @@ from insight.metrics.loader import load_metrics  # noqa: E402
 from insight.metrics.testing import load_fixture_jsonl, rows_as_dicts  # noqa: E402
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
-PIPELINE_PATH = (
-    pathlib.Path(__file__).resolve().parents[2] / "skills" / "sdlc-loop" / "scripts" / "pipeline.py"
+
+# Issue #298 ([E15.S4]): this used to AST-parse skills/sdlc-loop/scripts/pipeline.py off disk as
+# TEXT (never `import`ed -- insight/ must never import skills, tests/test_import_boundary.py),
+# module-skipping whenever skills/ was not present in the checkout (e.g. a standalone-extraction
+# copy of insight/ alone). Read from the frozen, versioned contract fixture instead -- same
+# module-scope shape (`ORDER = ...`) so the parametrized test below needs no other change, and no
+# skip guard is needed at all: insight/contract/ ships with insight/ itself.
+VOCAB = json.loads(
+    (pathlib.Path(__file__).resolve().parents[1] / "contract" / "vocabulary.json")
+    .read_text(encoding="utf-8")
 )
-
-if not PIPELINE_PATH.is_file():
-    pytest.skip("skills/ not present in this checkout", allow_module_level=True)
+ORDER = VOCAB["severity_order"]
 
 
-def _pipeline_order():
-    """Read pipeline.py's PASS/WARN/FAIL/ABSENT + _ORDER off disk as TEXT/AST -- see this file's
-    own module docstring for why this is never a Python `import`."""
-    source = PIPELINE_PATH.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(PIPELINE_PATH))
-    names = {}
-    order = None
-    for node in tree.body:
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if (
-            isinstance(target, ast.Tuple)
-            and isinstance(node.value, ast.Tuple)
-            and len(target.elts) == len(node.value.elts)
-        ):
-            for name_node, value_node in zip(target.elts, node.value.elts):
-                if isinstance(name_node, ast.Name) and isinstance(value_node, ast.Constant):
-                    names[name_node.id] = value_node.value
-        elif isinstance(target, ast.Name) and target.id == "_ORDER" and isinstance(node.value, ast.Dict):
-            order = {}
-            for key_node, value_node in zip(node.value.keys, node.value.values):
-                assert isinstance(key_node, ast.Name) and isinstance(value_node, ast.Constant), (
-                    "pipeline.py's _ORDER dict no longer uses bare Name keys / int Constant "
-                    "values -- this parser's assumptions about its shape are stale"
-                )
-                order[names[key_node.id]] = value_node.value
-    assert order is not None, (
-        f"pipeline.py's _ORDER assignment was not found by AST-walking {PIPELINE_PATH} -- "
-        "either the file moved or the assignment shape changed; this parser needs updating, "
-        "not the hardcoded fallback this test deliberately does not have"
-    )
-    return order
-
-
-ORDER = _pipeline_order()
-
-
-def test_pipeline_order_parsed_off_disk_matches_the_known_vocabulary():
-    """Sanity-checks the parser itself against the exact values re-read directly from
-    pipeline.py this session (plan's own Verification method section) -- if this fails, the
-    parser above is broken, not the three metric views."""
+def test_severity_order_matches_the_contract():
+    """Pins ORDER (read from insight/contract/vocabulary.json) against the exact values -- the
+    insight-side sibling of tests/test_pipeline.py::test_severity_order_matches_the_contract on
+    the engine side. No parser left to sanity-check (issue #298 removed it); this is a direct
+    literal pin."""
     assert ORDER == {"PASS": 0, "ABSENT": 1, "WARN": 2, "FAIL": 3}
 
 

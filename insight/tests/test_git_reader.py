@@ -2,9 +2,18 @@
 """Tests for insight.ingest.git_reader (issue #103). Module-level importorskip("duckdb") like
 test_packs.py/test_artifact_reader.py: most tests need a real conn fixture (write layer), and
 this file's pure-read tests are cheap enough that gating the whole file matches the established
-#100/#102 precedent for a read+write module. Cross-check parity against velocity.py lives
-SEPARATELY, in tests/test_git_reader_velocity_parity.py (repo root, no duckdb needed) -- see
-.sdlc/plans/103.md §I."""
+#100/#102 precedent for a read+write module.
+
+Cross-check parity against velocity.py used to live SEPARATELY, in
+tests/test_git_reader_velocity_parity.py (repo root, no duckdb needed) -- see .sdlc/plans/103.md
+§I. Issue #298 ([E15.S4], Decision 4) deleted that file: it structurally imported
+insight.ingest.git_reader from tests/, which would break silently at collection the day insight/
+is actually extracted. The four test_measure_window_* scenario tests below (zero_commits,
+commits_only_no_merges, counts_commits_and_merges, excludes_commits_outside_the_window) are now
+this contract's insight-side half instead, each pinning a LITERAL expected count against its own
+real disposable git repo -- see tests/test_velocity_contract.py for the engine-side half, which
+pins the identical scenarios independently, never comparing live output between the two
+implementations again."""
 import datetime
 import subprocess
 
@@ -123,6 +132,22 @@ def test_measure_window_zero_commits(tmp_path):
     _repo(tmp_path)
     result = measure_window(tmp_path, days=14)
     assert result["commits"] == 0 and result["merges"] == 0 and result["degraded"] == []
+
+
+def test_measure_window_commits_only_no_merges(tmp_path):
+    """Insight-side half of the velocity/git-log counting contract (issue #298, [E15.S4],
+    Decision 4) -- these four scenario tests (this one plus zero_commits,
+    counts_commits_and_merges, excludes_commits_outside_the_window) collectively pin the SAME
+    counting algorithm tests/test_velocity_contract.py pins on the engine side, each against its
+    own real disposable git repo, never against the other's live output (the deleted
+    tests/test_git_reader_velocity_parity.py used to do that cross-check; it is gone). This is
+    the one scenario the deleted parity file covered that no test here already had: commits with
+    zero merge commits."""
+    _repo(tmp_path)
+    for i in range(4):
+        _commit(tmp_path, f"f{i}.txt", f"commit {i}")
+    result = measure_window(tmp_path, days=365)
+    assert (result["commits"], result["merges"]) == (4, 0)
 
 
 def test_measure_window_counts_commits_and_merges(tmp_path):

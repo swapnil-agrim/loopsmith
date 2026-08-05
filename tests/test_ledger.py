@@ -401,11 +401,18 @@ def test_summary_line_calls_out_unanswered_handoffs(tmp_path, capsys):
 
 
 def test_vocabulary_constants_match_spec_table():
-    """Pins the literal CONTENT (order + case) of all five vocabulary constants against spec
+    """Pins the literal CONTENT (order + case) of all SIX vocabulary constants against spec
     §A.3, verbatim. EVENT_KINDS is enforced by append() and so is indirectly covered elsewhere,
-    but PHASE_KINDS/GATE_KINDS/REASON_CLASSES are deliberately NOT enforced at write time (see
-    plan Step 3) — without this test a typo, a dropped member, or a case flip drifts silently
-    from the spec with nothing to catch it."""
+    but KINDS/PHASE_KINDS/GATE_KINDS/REASON_CLASSES are deliberately NOT enforced at write time
+    (see plan Step 3) — without this test a typo, a dropped member, or a case flip drifts
+    silently from the spec with nothing to catch it.
+
+    KINDS added (issue #298, [E15.S4]): the entries-stream vocabulary had NO dedicated pin here
+    before this goal — a `KINDS[0]` rename only incidentally failed five behavioral tests that
+    happen to call `ledger.append(..., "claimed", ...)` literally, never asserted the spelling
+    itself the way EVENT_KINDS/PHASE_KINDS/etc. already did. This is also the engine half of the
+    sibling pin `insight/contract/vocabulary.json`'s `"entries_kinds"` key names by hand."""
+    assert ledger.KINDS == ("claimed", "done", "parked", "failed", "handoff", "ack", "release", "note", "merged")
     assert ledger.EVENT_KINDS == ("phase", "gate", "verify", "slice", "spend", "retro", "park", "scan")
     assert ledger.PHASE_KINDS == ("goal", "research", "plan", "plan_review", "implement", "review", "retro")
     assert ledger.GATE_KINDS == (
