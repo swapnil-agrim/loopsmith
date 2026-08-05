@@ -1,0 +1,13 @@
+{
+  "contract_version": 1,
+  "entries_kinds": ["claimed", "done", "parked", "failed", "handoff", "ack", "release", "note", "merged"],
+  "event_kinds": ["phase", "gate", "verify", "slice", "spend", "retro", "park", "scan"],
+  "phase_kinds": ["goal", "research", "plan", "plan_review", "implement", "review", "retro"],
+  "gate_kinds": ["plan_review", "code_review", "post_review", "merge", "decision", "alignment",
+                 "verify", "risk_security", "risk_contract", "risk_migration", "risk_release", "risk_debug"],
+  "verdicts": ["pass", "block", "warn", "absent"],
+  "reason_classes": ["irreversible", "needs_decision", "merge_conflict", "failing_check",
+                      "no_evidence", "dependency", "review_cap", "budget", "unknown"],
+  "retro_grades": ["achieved", "partial", "diverged"],
+  "severity_order": {"PASS": 0, "ABSENT": 1, "WARN": 2, "FAIL": 3}
+}

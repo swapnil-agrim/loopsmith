@@ -80,6 +80,28 @@ def test_compare_finds_recurrence_and_improvement():
         delta_fixed = pl.compare_cards(prior, pl.build_card(base))
         assert delta_fixed["improved"] and delta_fixed["recurrence_count"] == 0
 
+        # The third branch (issue #298, [E15.S4]): compare_cards' compare_finds_recurrence test
+        # above only ever exercised still_failing/improved -- "regressed" (now worse than before)
+        # was never triggered on the engine side. base is currently PASS (the write just above);
+        # flip it to FAIL and diff against that PASS epoch.
+        prior_pass = pl.build_card(base)
+        (pathlib.Path(base) / "pipeline.json").write_text(json.dumps(
+            {"name": "demo", "stages": [
+                {"name": "s", "checks": {"forward": [{"name": "gate", "run": "false"}]}}]}))
+        delta_regressed = pl.compare_cards(prior_pass, pl.build_card(base))
+        assert delta_regressed["regressed"] and not delta_regressed["improved"]
+        assert delta_regressed["regressed"][0]["before"] == pl.PASS
+        assert delta_regressed["regressed"][0]["now"] == pl.FAIL
+
+
+def test_severity_order_matches_the_contract():
+    """Engine-side pin of the severity order (issue #298, [E15.S4]) -- the sibling of
+    insight/contract/vocabulary.json's "severity_order" key, hand-typed independently on both
+    sides (Decision 3: no shared module across the plugin/product boundary)."""
+    pl = _mod("pipeline")
+    assert (pl.PASS, pl.WARN, pl.FAIL, pl.ABSENT) == ("PASS", "WARN", "FAIL", "ABSENT")
+    assert pl._ORDER == {pl.PASS: 0, pl.ABSENT: 1, pl.WARN: 2, pl.FAIL: 3}
+
 
 def test_no_pipeline_json_exits_3():
     with tempfile.TemporaryDirectory() as d:

@@ -32,6 +32,8 @@ import time
 
 #: Every kind a ledger line may carry. Small on purpose — an open vocabulary would make the
 #: team view unreadable within a week. `merged` records a PR the loop actually landed.
+#: Sibling pin: tests/test_ledger.py::test_vocabulary_constants_match_spec_table (this file) and
+#: insight/contract/vocabulary.json's "entries_kinds" -- issue #298. Update both by hand.
 KINDS = ("claimed", "done", "parked", "failed", "handoff", "ack", "release", "note", "merged")
 
 #: Lifecycle of a hand-off, from the point of view of the person it is addressed TO.
@@ -52,6 +54,8 @@ STREAMS = (ENTRIES, EVENTS)
 #: The event-stream analogue of KINDS. Deliberately separate from KINDS/SHARED_KINDS
 #: (untouched, per spec A.1) so the entries vocabulary a lead reads in TEAM.md can never
 #: be diluted by adding a telemetry kind here.
+#: Sibling pin: tests/test_ledger.py::test_vocabulary_constants_match_spec_table (this file) and
+#: insight/contract/vocabulary.json's "event_kinds" -- issue #298. Update both by hand.
 EVENT_KINDS = ("phase", "gate", "verify", "slice", "spend", "retro", "park", "scan")
 
 #: Per-kind field whitelist for the events stream — the events-stream equivalent of
@@ -280,6 +284,9 @@ NUMERIC_DIGIT_CAP = 20
 #: downstream consumers (ingest, docs, future validation) but are NOT enforced by append() in
 #: #136 — see the "unknown phase/gate/reason_class" decision in the append() docstring.
 #: VERDICTS IS enforced (issue requires it).
+#: Sibling pin (all four below): tests/test_ledger.py::test_vocabulary_constants_match_spec_table
+#: (this file) and insight/contract/vocabulary.json's "phase_kinds"/"gate_kinds"/"verdicts"/
+#: "reason_classes" -- issue #298. Update both sides by hand.
 PHASE_KINDS = ("goal", "research", "plan", "plan_review", "implement", "review", "retro")
 GATE_KINDS = ("plan_review", "code_review", "post_review", "merge", "decision", "alignment",
               "verify", "risk_security", "risk_contract", "risk_migration", "risk_release",
@@ -292,6 +299,8 @@ REASON_CLASSES = ("irreversible", "needs_decision", "merge_conflict", "failing_c
 #: achieved/partial/diverged bullets — it had no Python home before this. Like
 #: PHASE_KINDS/GATE_KINDS above, documented but deliberately NOT enforced by append() itself;
 #: `loop.py emit` is what validates a `retro` event's `--grade` value against it.
+#: Sibling pin: tests/test_ledger.py::test_retro_grades_matches_sdlc_retro_skill_prose (this
+#: file) and insight/contract/vocabulary.json's "retro_grades" -- issue #298. Update both by hand.
 RETRO_GRADES = ("achieved", "partial", "diverged")
 
 _ACTOR_CACHE = {}

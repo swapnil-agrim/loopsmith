@@ -32,7 +32,8 @@ insight = "insight.__main__:main"
 # there is no separate src/ or nested insight/insight/. package-dir reroutes the
 # "insight" package (and everything under it) to ".", i.e. this directory, so
 # insight/ingest/ resolves as insight.ingest instead of a stray top-level "ingest".
-packages = ["insight", "insight.ingest", "insight.metrics", "insight.gaps", "insight.dash"]
+packages = ["insight", "insight.ingest", "insight.metrics", "insight.gaps", "insight.dash",
+            "insight.contract"]
 package-dir = { "insight" = "." }
 
 [tool.setuptools.dynamic]
@@ -59,3 +60,9 @@ version = { file = "VERSION" }
 # real (non-editable) wheel silently drops both licence files, same gap class as the two
 # entries above.
 "insight.dash" = ["fonts/*.txt"]
+# contract/*.jsonl,*.json,*.md (issue #298) is insight.contract's own first non-.py asset -- the
+# golden engine<->product data-contract fixtures -- same gap class as the three entries above:
+# packages=[...] alone ships only .py files, so a real (non-editable) wheel build would silently
+# drop every fixture without this. Added together with the packages=[...] entry above so the two
+# never land in separate steps with a window where one is missing.
+"insight.contract" = ["*.jsonl", "*.json", "*.md"]

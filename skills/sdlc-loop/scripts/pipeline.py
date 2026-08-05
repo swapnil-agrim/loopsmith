@@ -42,6 +42,8 @@ def _load(name):
 ledger = _load("ledger")            # team record (config-gated, default OFF; every call is fail-open)
 
 PASS, WARN, FAIL, ABSENT = "PASS", "WARN", "FAIL", "ABSENT"
+#: Sibling pin: tests/test_pipeline.py::test_severity_order_matches_the_contract and
+#: insight/contract/vocabulary.json's "severity_order" -- issue #298. Update both by hand.
 _ORDER = {PASS: 0, ABSENT: 1, WARN: 2, FAIL: 3}
 _CHECK_TIMEOUT_SECS = 300           # one hung check must not hang the card
 
