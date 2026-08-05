@@ -1,7 +1,7 @@
 """Per-goal worktree + the clean-AND-safe merge gate. Every git/gh call is injected, so these are
 hermetic: no repo, no network, no `gh`. What they actually pin down is the gate's REFUSALS — the
 cheap way to get this wrong is to merge on a lazy UNKNOWN or on evidence from yesterday's run."""
-import importlib.util, json, pathlib, sys
+import importlib.util, json, os, pathlib, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "skills" / "sdlc-loop" / "scripts"
@@ -148,6 +148,81 @@ def test_start_reattaches_to_a_branch_that_outlived_its_record(tmp_path):
     run = _runner([("rev-parse", "main"), ("worktree add -b", RuntimeError("already exists"))])
     work.start(d, ON, "0001-x.md", run=run)
     assert any(c.startswith("git worktree add ") and "-b" not in c for c in run.calls)
+
+
+# --- start's resume guard: a local worktree existing is not proof it's safe to reuse (F10.5/#374) -
+
+LEDGER_ON = {"work": {"enabled": True},
+             "ledger": {"enabled": True, "actor": "rae", "lease": {"ttl_hours": 0}}}
+
+
+def _claim(sdlc_dir, actor, goal, pid, seq=1):
+    ent = pathlib.Path(sdlc_dir) / "ledger" / "entries"
+    ent.mkdir(parents=True, exist_ok=True)
+    (ent / f"{actor}-{pid}.jsonl").write_text(json.dumps(
+        {"id": f"{actor}:{pid}:{seq}", "ts": "2026-08-05T09:00:00Z", "actor": actor,
+         "kind": "claimed", "goal": goal}) + "\n")
+
+
+def test_start_refuses_to_resume_when_a_live_sibling_process_holds_the_claim(tmp_path, monkeypatch):
+    """A local worktree existing on disk only proves THIS MACHINE started it once — not that the
+    process which claimed it is gone. Resuming it when a DIFFERENT, still-live process of the same
+    actor holds the ledger claim would silently corrupt that session's in-flight work — exactly the
+    race a routine firing without an explicit target hit live."""
+    d = _sdlc(tmp_path, LEDGER_ON)
+    goal = _started(d)
+    real_pid = os.getpid()                             # this test process — verifiably alive
+    _claim(d, "rae", goal, real_pid)
+    monkeypatch.setattr(os, "getpid", lambda: real_pid + 1)   # simulate a DIFFERENT process of "rae"
+    run = _runner([])
+    out = work.start(d, LEDGER_ON, goal, run=run)
+    assert out.startswith("REFUSED")
+    assert run.calls == []                             # never touched git — the worktree stays as-is
+
+
+def test_start_still_resumes_when_the_claim_is_my_own_current_process(tmp_path, monkeypatch):
+    d = _sdlc(tmp_path, LEDGER_ON)
+    goal = _started(d)
+    my_pid = os.getpid()
+    _claim(d, "rae", goal, my_pid)
+    run = _runner([])
+    assert "already started" in work.start(d, LEDGER_ON, goal, run=run)
+
+
+def test_start_still_resumes_a_dead_siblings_claim(tmp_path, monkeypatch):
+    d = _sdlc(tmp_path, LEDGER_ON)
+    goal = _started(d)
+    dead_pid = 2**30                                    # not a real pid on any sane system
+    _claim(d, "rae", goal, dead_pid)
+    monkeypatch.setattr(os, "getpid", lambda: dead_pid + 1)
+    run = _runner([])
+    assert "already started" in work.start(d, LEDGER_ON, goal, run=run)
+
+
+def test_start_still_resumes_a_legacy_no_pid_claim_no_regression(tmp_path):
+    """Pre-#337 claims have no pid to check — degenerately always mine, matching pre-#374 behavior
+    for the transitional legacy case exactly (see ledger.claim_belongs_to_me)."""
+    d = _sdlc(tmp_path, LEDGER_ON)
+    goal = _started(d)
+    ent = pathlib.Path(d) / "ledger" / "entries"; ent.mkdir(parents=True, exist_ok=True)
+    (ent / "rae.jsonl").write_text(json.dumps(
+        {"id": "rae:1", "ts": "2026-08-05T09:00:00Z", "actor": "rae",
+         "kind": "claimed", "goal": goal}) + "\n")
+    run = _runner([])
+    assert "already started" in work.start(d, LEDGER_ON, goal, run=run)
+
+
+def test_start_resume_guard_survives_a_raising_ledger_read(tmp_path, monkeypatch):
+    """Fail-open: this guard NARROWS an already-idempotent resume, it must never become a NEW way
+    for start() to break when the ledger is on but something about reading it hiccups."""
+    d = _sdlc(tmp_path, LEDGER_ON)
+    goal = _started(d)
+
+    def raiser(*a, **k):
+        raise RuntimeError("ledger read broke")
+    monkeypatch.setattr(work.ledger, "read_all", raiser)
+    run = _runner([])
+    assert "already started" in work.start(d, LEDGER_ON, goal, run=run)
 
 
 # --- commit: the loop's only write path into git -------------------------------------------------

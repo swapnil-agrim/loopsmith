@@ -328,6 +328,21 @@ def enabled(config):
     return settings(config).get("enabled") is True
 
 
+#: a crashed claimer's lock auto-expires; goals live hours, not days. Was loop.py-local
+#: (`_DEFAULT_LEASE_TTL_HOURS`) until `work.py start()` (F10.5/#374) also needed it — moved here,
+#: the shared home for lease/claim logic, rather than duplicated a second time.
+DEFAULT_LEASE_TTL_HOURS = 12
+
+
+def lease_ttl_seconds(config):
+    """`ledger.lease.ttl_hours` (default `DEFAULT_LEASE_TTL_HOURS`) as seconds for
+    `open_claims`/`open_claims_detailed`'s `ttl_seconds`, or None for "never expire" (config
+    `0`/`false`). One place to read this setting so `loop.py`'s `_lease()` and `work.py`'s
+    resume-safety guard can never drift on what "expired" means."""
+    hours = (settings(config).get("lease") or {}).get("ttl_hours", DEFAULT_LEASE_TTL_HOURS)
+    return float(hours) * 3600 if hours else None
+
+
 def telemetry_settings(config):
     return (config or {}).get("telemetry") or {}
 
@@ -853,29 +868,150 @@ def _epoch(ts):
         return -1
 
 
-def open_claims(entries, now=None, ttl_seconds=None):
-    """{goal: actor} for goals someone has `claimed` and not yet released with a terminal outcome
-    (done/parked/failed). This is the light lease the loop reads so two people running against one
-    board don't start the same goal — the ledger's answer to "who has this right now?".
+def pid_alive(pid):
+    """True iff `pid` names a live process on THIS machine, RIGHT NOW. Used to tell a live
+    sibling process's claim (do not touch — see `open_claims_detailed()`) apart from a dead one
+    safe to reclaim, without waiting the full `ledger.lease.ttl_hours` (default 12h) for a crash
+    the machine itself could already confirm.
+
+    `os.kill(pid, 0)` sends no signal, only probes: `ProcessLookupError` means genuinely gone (the
+    kernel has no such pid) -> False. `PermissionError` means the kernel found a live process at
+    that pid owned by someone else -> still True, existence is what this asks, not ownership (in
+    practice this process's own prior pids are always the same OS user, so this branch is a
+    defensive fallback, not the expected path). Any OTHER exception (a platform where signal 0
+    behaves differently, e.g. some Windows paths) fails toward True — "maybe still alive, don't
+    reclaim yet" — because the existing TTL fallback is the real backstop for anything this check
+    cannot resolve; the risk of guessing False and reclaiming a still-live sibling's goal (Girijesh's
+    exact bug) is far worse than the risk of guessing True and waiting out the TTL like today.
+
+    SINGLE-MACHINE ONLY, BY DESIGN — stated scope for this feature (one person, one machine, many
+    of their own issues; see #374/loopsmith-parallel-autoupdate-plan.md). A pid recorded by a
+    DIFFERENT machine under the same actor is meaningless to probe here (pids are a per-machine
+    namespace: `ProcessLookupError` would wrongly read as "dead" for a claim that is very much
+    alive on its own machine). Extending this cross-machine would need a machine-identity
+    dimension in the writer string itself, not a change to this function — not attempted here."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:                # noqa: BLE001 - fail toward "assume alive", see docstring
+        return True
+
+
+def _writer(entry):
+    """The claim's writer identity: `who:pid` for a post-#337 3-part `id`, or bare `actor` for a
+    legacy 2-part id (no pid to distinguish — there was only ever one writer file per actor then).
+    Mirrors watch_classify.py's own `_writer()` exactly, kept as an independent copy rather than
+    imported — matching this module's existing per-module id-parsing precedent (`_seq()` below is
+    ALSO duplicated in watch_classify.py and insight/ingest/ledger_reader.py, on purpose, so each
+    stays free of a cross-module dependency for a five-line pure function)."""
+    parts = str(entry.get("id", "")).split(":")
+    if len(parts) >= 3:
+        return f"{parts[0]}:{parts[1]}"
+    return entry.get("actor", "")
+
+
+def my_writer(config):
+    """This process's own writer identity, in the exact `who:pid` shape `_writer()` parses out of
+    a live entry's `id` — what `open_claims_detailed()`'s per-claim writer is compared against to
+    tell "my own current process" apart from "a different process of mine" (F10/#337 already made
+    every entry this process writes carry this pid; this is the read-side counterpart). Computed
+    fresh every call, never cached — `os.getpid()` is the one thing riskier to cache than `actor`."""
+    return f"{actor(config)}:{os.getpid()}"
+
+
+def writer_pid(writer):
+    """The pid embedded in a `writer` string from `open_claims_detailed()` (`actor:pid`), or None
+    for a legacy bare-actor writer (pre-#337, no pid to extract) or anything else unparseable. A
+    `gh` login can never itself contain `:` (GitHub's own username rules), so a writer with exactly
+    one `:` is unambiguously `actor:pid`, never an actor name that happens to look like one."""
+    _, sep, tail = str(writer).rpartition(":")
+    return int(tail) if sep and tail.isdigit() else None
+
+
+def claim_belongs_to_me(holder_actor, holder_writer, me, my_writer):
+    """True iff an open claim (`holder_actor`, `holder_writer` — a value from
+    `open_claims_detailed()`) is safe for ME (`me`/`my_writer`, from `actor(config)`/
+    `my_writer(config)`) to treat as already mine: not another actor's work, and not a DIFFERENT,
+    still-live process of my OWN actor (the exact race that let a routine's fresh invocation
+    blindly re-attach to another session's in-flight worktree — #374). `_next()` (loop.py) and
+    `work.py start()` both call this, so the decision is made exactly once, never reimplemented
+    per call site.
+
+    Three cases:
+      - a different actor entirely -> False, always (unchanged from pre-#374 behavior).
+      - my own CURRENT process's writer -> True, trivially (resuming my own crash/restart).
+      - a DIFFERENT writer of the SAME actor: a legacy (pre-#337) claim has no pid to check
+        (`writer_pid` is None) and is, degenerately, always "mine" — there was only ever one writer
+        file per actor then, so no OTHER writer this claim could belong to -> True, matching
+        pre-#374 behavior for the transitional legacy case exactly, no regression. A post-#337,
+        pid-bearing writer is liveness-checked: a confirmed-dead pid is safe to reclaim (True); a
+        live OR unresolvable pid is NOT (False) — fail toward "not mine," since guessing wrong here
+        reintroduces the exact bug this exists to fix. The existing lease TTL (already applied
+        upstream, inside `open_claims_detailed`'s own `ttl_seconds` filtering) is the real backstop
+        for anything a liveness check alone can't resolve."""
+    if holder_actor != me:
+        return False
+    if holder_writer == my_writer:
+        return True
+    pid = writer_pid(holder_writer)
+    if pid is None:
+        return True                          # legacy 2-part claim: degenerately always "mine"
+    return not pid_alive(pid)                # dead sibling -> reclaim; live/unresolvable -> not mine
+
+
+def _held(entries, now=None, ttl_seconds=None):
+    """{goal: (actor, writer, ts)} for goals someone has `claimed` and not yet released with a
+    terminal outcome (done/parked/failed) — the shared computation behind `open_claims()` (actor
+    only, the original, still-used-elsewhere contract) and `open_claims_detailed()` (F10.5/#374,
+    adds writer so a caller can tell two of the SAME actor's own concurrent processes apart, not
+    just two different actors). One computation, two views — never duplicate the state machine
+    itself, or the two would silently drift the way F10's review found `insight/`'s independent
+    reimplementation already had.
 
     The latest lifecycle entry per goal wins, so a re-claim after a failure re-opens the lease under
     whoever took it last. With `ttl_seconds` set, a claim older than that is treated as EXPIRED — a
     crashed claimer must never lock a goal for the whole team forever; `now` defaults to wall-clock
     and is injectable for tests. `entries` must be oldest-first (read_all guarantees it)."""
-    held = {}                                    # goal -> (actor, ts)
+    held = {}                                    # goal -> (actor, writer, ts)
     for entry in entries:
         goal = entry.get("goal")
         if not goal:
             continue
         kind = entry.get("kind")
         if kind == "claimed":
-            held[goal] = (entry.get("actor"), entry.get("ts", ""))
+            held[goal] = (entry.get("actor"), _writer(entry), entry.get("ts", ""))
         elif kind in ("done", "parked", "failed"):
             held.pop(goal, None)                 # the claimer finished (or gave up) — lease released
     if ttl_seconds:
         cutoff = (now if now is not None else time.time()) - ttl_seconds
-        held = {g: v for g, v in held.items() if _epoch(v[1]) >= cutoff}
-    return {goal: actor for goal, (actor, _ts) in held.items()}
+        held = {g: v for g, v in held.items() if _epoch(v[2]) >= cutoff}
+    return held
+
+
+def open_claims(entries, now=None, ttl_seconds=None):
+    """{goal: actor} for goals someone has `claimed` and not yet released with a terminal outcome
+    (done/parked/failed). This is the light lease the loop reads so two people running against one
+    board don't start the same goal — the ledger's answer to "who has this right now?". See
+    `_held()` for the shared state machine; see `open_claims_detailed()` for the writer-aware
+    sibling a caller needs to tell two of ONE actor's own concurrent processes apart."""
+    return {goal: actor for goal, (actor, _writer, _ts) in _held(entries, now, ttl_seconds).items()}
+
+
+def open_claims_detailed(entries, now=None, ttl_seconds=None):
+    """{goal: (actor, writer)} — `open_claims()`'s sibling, writer-aware (F10.5/#374). `writer` is
+    `actor:pid` for a claim written post-#337, or bare `actor` for a legacy claim — see `_writer()`.
+    Exists because a claim held by "my own actor" is not always safe to treat as "mine to resume":
+    a DIFFERENT, still-live process of that same actor (two concurrent loops sharing one gh login)
+    holding the SAME goal is exactly the race that made a routine blindly resume another session's
+    in-flight worktree. `_next()`/`work.py start()` compare against `my_writer(config)`, not just
+    `actor(config)`, to tell the three cases apart: my own current process (resume), a different
+    but still-alive writer of mine (skip, treat like another actor), or a dead/unreachable one
+    (reclaim — the existing TTL fallback above already covers the case liveness can't resolve)."""
+    return {goal: (actor, writer) for goal, (actor, writer, _ts) in _held(entries, now, ttl_seconds).items()}
 
 
 # --------------------------------------------------------------------------- render

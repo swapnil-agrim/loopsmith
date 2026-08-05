@@ -65,43 +65,49 @@ def _budget_spent(cursor, budget):
     return False
 
 
-_DEFAULT_LEASE_TTL_HOURS = 12       # a crashed claimer's lock auto-expires; goals live hours, not days
-
-
 def _lease(sdlc_dir, config):
-    """(me, {goal: holder}) — who I am, and the claim lease read once per selection. A goal another
-    actor holds an OPEN claim on (claimed, not yet done/parked/failed) belongs to their loop, so this
-    loop skips it instead of starting the same work twice. A goal I hold is still mine to resume.
+    """(me, my_writer, {goal: (actor, writer)}) — who I am (as both a bare actor and this
+    process's own writer identity), and the claim lease read once per selection, writer-detailed
+    (F10.5/#374) so `_next()` can tell a DIFFERENT, still-live process of MY OWN actor apart from a
+    genuinely resumable claim — not just tell my actor apart from someone else's (see
+    `ledger.claim_belongs_to_me`). A goal another actor holds an OPEN claim on (claimed, not yet
+    done/parked/failed) belongs to their loop, so this loop skips it instead of starting the same
+    work twice. A goal I hold — my own CURRENT process, or a legacy/dead writer of mine — is still
+    mine to resume; a goal held by a DIFFERENT, still-live writer of mine is not.
 
-    (None, {}) when the ledger is off or unreadable — selection is then byte-identical to a repo that
-    never enabled the ledger. Fail-open by design: a lease we cannot read must never stop the loop.
-    A claim older than the TTL (config `ledger.lease.ttl_hours`, default 12h; 0/false = never expire)
-    is treated as released, so one crashed run cannot block a teammate on that goal forever."""
+    (None, None, {}) when the ledger is off or unreadable — selection is then byte-identical to a
+    repo that never enabled the ledger. Fail-open by design: a lease we cannot read must never stop
+    the loop. A claim older than the TTL (config `ledger.lease.ttl_hours`, default 12h; 0/false =
+    never expire) is treated as released, so one crashed run cannot block a teammate on that goal
+    forever."""
     try:
         if not ledger.enabled(config):
-            return (None, {})
-        hours = (ledger.settings(config).get("lease") or {}).get("ttl_hours", _DEFAULT_LEASE_TTL_HOURS)
-        ttl = float(hours) * 3600 if hours else None
-        return (ledger.actor(config), ledger.open_claims(ledger.read_all(sdlc_dir), ttl_seconds=ttl))
+            return (None, None, {})
+        ttl = ledger.lease_ttl_seconds(config)
+        me = ledger.actor(config)
+        lease = ledger.open_claims_detailed(ledger.read_all(sdlc_dir), ttl_seconds=ttl)
+        return (me, ledger.my_writer(config), lease)
     except Exception:               # noqa: BLE001 - fail-open; an unreadable lease leaves selection unlocked
-        return (None, {})
+        return (None, None, {})
 
 
 def _next(sdlc_dir, source, config, extra_skip=()):
     """(kind, goal): 'goal' (+marks in_progress, the commit point), 'DONE' (drained), 'BUDGET'.
     Drained backlog reports DONE even if budget is also spent (empty wins the tie). A goal another
-    loop already holds a ledger claim on is skipped (see _lease) so two people don't double-start it.
+    actor — or a DIFFERENT, still-live process of MY OWN actor — already holds a ledger claim on is
+    skipped (see `_lease`/`ledger.claim_belongs_to_me`, F10.5/#374) so two loops never double-start
+    it, whether they're two different people or two of one person's own concurrent sessions.
     `extra_skip` (F4) is run_loop's own poison set — a goal neither the primary nor the fallback
     park-record could be recorded for, this run — so a doubly-failing source doesn't spin forever."""
-    me, lease = _lease(sdlc_dir, config)
+    me, my_writer, lease = _lease(sdlc_dir, config)
     skip = set(extra_skip)
     while True:
         goal = source.next_pending(skip=skip)
         if goal is None:
             return ("DONE", None)               # nothing left that isn't someone else's in-flight work
-        holder = lease.get(str(goal))
-        if holder and holder != me:
-            skip.add(goal)                      # another loop owns this goal's lease — pass it over
+        holder_actor, holder_writer = lease.get(str(goal), (None, None))
+        if holder_actor and not ledger.claim_belongs_to_me(holder_actor, holder_writer, me, my_writer):
+            skip.add(goal)                      # another loop — or a live sibling of mine — owns this
             continue
         break
     if _budget_spent(state.load_cursor(sdlc_dir), config.get("budget", {})):
