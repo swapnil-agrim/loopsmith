@@ -151,6 +151,23 @@ messages were plain `echo`, never written to `watch.log` the way tick-loop messa
 "immediately visible" half of the residual's risk acceptance was actually silent in the one context
 this script really runs in. Both backoff messages are now `tee`'d to the log too.
 
+The race-safety design above was correct all along, but shipping it revealed a SEPARATE, genuine
+portability bug real Linux CI caught and pure local (macOS) testing never could: the reclaim path's
+staleness check used `stat -f %m "$MUTEX" 2>/dev/null || stat -c %Y "$MUTEX" 2>/dev/null || true`,
+assuming `-f %m` (BSD/macOS format-flag syntax) fails cleanly on GNU/Linux so the `||` falls through
+to `-c %Y`. It does not: GNU coreutils' `-f`/`--file-system` means something else entirely
+(filesystem status, not a format flag) and does not take a `FORMAT` argument, so the call instead
+prints GNU stat's own default filesystem-info block (starting `  File: ...`) to stdout while still
+exiting nonzero — and that stray text lands in `mtime` before the fallback ever runs. The word
+"File" inside `mtime`'s value then hits bash's own arithmetic-expansion quirk: `$((now - mtime))`
+recursively treats bareword tokens inside a variable's value as further variable names, so the
+literal text "File" is dereferenced as `$File` — unset, and under `set -u` that is an immediate,
+whole-script `unbound variable` crash. 100% reproducible on Linux, every time, never on macOS; not a
+race, not CI flakiness. Fixed by no longer asking the shell's `stat` to be portable at all: the mtime
+read now shells out to `python3 -c '...os.stat(...).st_mtime...'`, exactly like this same file
+already does a few lines down for the config-driven tick INTERVAL — one call, correct identically on
+every platform Python runs on.
+
 ## 1.0.0 — the zero-touch release
 
 The theme: one person on one machine can now point LoopSmith at a stack of their own assigned issues

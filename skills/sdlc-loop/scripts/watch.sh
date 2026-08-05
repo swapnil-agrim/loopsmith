@@ -76,14 +76,39 @@ elif mkdir "$MUTEX.reclaim" 2>/dev/null; then
   # an acceptable residual once it is actually discoverable via the log; two watchers quietly
   # contending on the ledger's git index lock is not.
   #
-  # `mtime` empty (stat failed on BOTH the BSD and GNU forms) must mean "can't tell" -- almost always
-  # because the mutex has ALREADY been removed by its rightful, fast-finishing owner, not because it
-  # is ancient. A `|| echo 0` fallback here was tried and is a REAL bug, proven empirically: it makes
-  # "gone" look infinitely stale (`now - 0` is always huge), so on a fast, all-but-instant race EVERY
-  # loser's `stat` can lose this exact way and ALL of them "reclaim" an already-legitimately-freed
-  # mutex at once -- reintroducing the identical class of bug this mutex exists to close, just one
-  # level up. Empty must fall through to "not acquired" below, never to "definitely stale, take it".
-  mtime="$(stat -f %m "$MUTEX" 2>/dev/null || stat -c %Y "$MUTEX" 2>/dev/null || true)"
+  # `stat`'s mtime FLAG is not portable, and the failure mode of getting it wrong is worse than a
+  # missing feature -- confirmed live on CI (GitHub Actions ubuntu-latest), not assumed. `-f FORMAT`
+  # is BSD/macOS syntax; on GNU coreutils (Linux) `-f`/`--file-system` means something else entirely
+  # (filesystem status, not a format flag, and takes no FORMAT argument), so `stat -f %m "$MUTEX"`
+  # does not just fail cleanly there -- it prints GNU stat's own default filesystem-info block
+  # (starting "  File: ...") to stdout and still exits nonzero, so `||` moves on to `stat -c %Y` but
+  # the FIRST call's stray stdout has already been captured into `mtime` alongside it. The word
+  # "File" ending up inside `mtime`'s value then hits bash's own well-known arithmetic-expansion
+  # quirk: `$((now - mtime))` recursively treats bareword tokens INSIDE a variable's value as
+  # further variable names to dereference, so the literal text "File" gets treated as `$File` --
+  # unset, and under `set -u` that is an immediate, whole-script-ending `unbound variable` crash.
+  # This is not a race, not a timing issue, and not CI-environment flakiness (it does not reproduce
+  # on macOS at all, only ever on Linux, deterministically, every time this branch runs) -- it is a
+  # genuine, 100%-reproducible portability bug that plain local testing on a BSD/macOS host can
+  # never catch, only real Linux execution can.
+  #
+  # The fix: stop asking the SHELL's `stat` binary to be portable at all -- shell out to `python3`
+  # instead, exactly like this file already does a few lines down for the config-driven INTERVAL
+  # read (`os.stat().st_mtime` is one call, correct and identical on every platform Python runs on).
+  # Empty output (stat failed -- typically because the mutex was ALREADY removed by its rightful,
+  # fast-finishing owner, not because it is ancient) must mean "can't tell". A `|| echo 0` fallback
+  # here was tried and is a REAL bug, proven empirically: it makes "gone" look infinitely stale
+  # (`now - 0` is always huge), so on a fast, all-but-instant race EVERY loser can lose this exact
+  # way and ALL of them "reclaim" an already-legitimately-freed mutex at once -- reintroducing the
+  # identical class of bug this mutex exists to close, just one level up. Empty must fall through to
+  # "not acquired" below, never to "definitely stale, take it".
+  mtime="$(python3 -c '
+import os, sys
+try:
+    print(int(os.stat(sys.argv[1]).st_mtime))
+except OSError:
+    pass
+' "$MUTEX" 2>/dev/null || true)"
   now="$(date +%s)"
   if [ -n "$mtime" ] && [ "$((now - mtime))" -gt 30 ]; then
     rmdir "$MUTEX" 2>/dev/null   # best-effort; a failure here just means someone else already cleared it
