@@ -49,6 +49,25 @@ def _chk(name, ok, fix):
     return {"name": name, "ok": bool(ok), "fix": "" if ok else fix}
 
 
+def _enforce_enabled(verify):
+    """`verify.enforce` as a bool, read generously — intentionally duplicated from loop.py's own
+    `_enforce_enabled` (F17/#342) rather than imported: doctor.py is a standalone diagnostic script
+    with no cross-skill import (every other helper here is self-contained too), and this check has
+    to keep working even if something ELSE in the loop is broken. A strict `is True` let `enforce: 1`
+    or `enforce: "true"` (easy JSON typos, both plainly meant as true) read as off HERE too — doctor
+    would then correctly stay silent on a gate that isn't really enforcing... except once loop.py
+    reads the SAME value generously (as it now does), the two sides go from "consistently wrong
+    together" to doctor actively lying that the gate is off while it is genuinely on and refusing
+    every `done`. Keep this in lockstep with loop.py's copy — a parity test in test_doctor.py pins
+    them to the same truth table so a future edit to one alone fails loudly, not silently."""
+    value = verify.get("enforce")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "false", "0", "no", "off")
+    return bool(value)
+
+
 def _board_dup_risk(gh_cfg, run):
     """Board mirroring on, but NO `project.number` pinned, and the owner already has board(s): loopsmith
     resolves the board by TITLE, and if none matches its auto-title it CREATES a new one on first use -
@@ -204,7 +223,7 @@ def check(sdlc_dir=".sdlc", run=None):
     # The permanent-refusal trap: verify.enforce on with no command refuses EVERY `done` forever, and
     # it looks like a working gate, not a misconfig. Flag it (a per-goal `verify_command` also satisfies).
     verify = _block(cfg, "verify")
-    if verify.get("enforce") is True:
+    if _enforce_enabled(verify):
         out.append(_chk("verify command present (enforce is on)",
                         bool(verify.get("command")) or _any_goal_verify_command(base),
                         "verify.enforce is on but no verify.command (and no goal sets verify_command) — "
@@ -522,7 +541,7 @@ def features(sdlc_dir=".sdlc"):
          'config: "model_selection": "auto"'),
         ("machine-checked done (verify.enforce)",
          "ON — `record done` refused without fresh `loop.py verify` evidence"
-         if verify.get("enforce") is True else "off (prose gate only)",
+         if _enforce_enabled(verify) else "off (prose gate only)",
          'config: "verify": {"enforce": true}'),
         ("hard plan-gate (deny source edits w/o fresh plan)",
          f"ON ({gate.get('plan_freshness_hours', 24)}h window)" if gate.get("enabled") is True else "off (prompt-gate reminder only)",

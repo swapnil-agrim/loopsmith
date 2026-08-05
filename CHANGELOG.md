@@ -55,6 +55,16 @@ false/no/off/empty, and anything else falls back to plain truthiness — so a co
 either enables the gate outright or (with an empty `verify.command`) still surfaces the existing
 "EVERY `done` will be refused" warning, never both silently off and silent about it (F17/#342).
 
+Independent review found `skills/sdlc-doctor/scripts/doctor.py` reads the SAME `verify.enforce`
+value, via the same fragile `is True`, at its own "permanent-refusal trap" check and its
+feature-dashboard status row — built together with loop.py's gate as a matched pair, not an
+unrelated check. Left alone, this PR would have turned a latent inconsistency (both sides silently
+NOT enforcing a non-bool truthy value) into an actively misleading one: loop.py now genuinely
+refuses every `done` for `enforce: 1`, while doctor stayed silent and its status row claimed "off".
+`doctor.py` gets its own copy of the same `_enforce_enabled` logic (intentionally duplicated, not
+imported — doctor.py has no cross-skill dependency on anything else, by design), with a parity test
+pinning both copies to the same truth table so they can't silently drift apart again.
+
 ## 1.0.0 — the zero-touch release
 
 The theme: one person on one machine can now point LoopSmith at a stack of their own assigned issues

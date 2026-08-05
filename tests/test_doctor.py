@@ -424,6 +424,48 @@ def test_no_verify_check_when_enforce_is_off():
         assert "verify command present (enforce is on)" not in _by_name(d.check(base, run=_runner()))
 
 
+# --- F17/#342 review: doctor.py reads the SAME verify.enforce as loop.py's own done-gate --------
+# Independent review of the original F17 fix found the two were built together as a matched pair
+# (loop.py's `record done` gate + doctor's own "permanent-refusal trap" check) and both used the
+# same fragile `is True`. Fixing only loop.py would have turned a latent inconsistency (both sides
+# silently NOT enforcing a non-bool truthy value) into an actively misleading one: loop.py now
+# genuinely refuses every `done` for `enforce: 1`, while doctor stayed silent and its status row
+# claimed "off". These pin doctor's own generous read AND keep it in lockstep with loop.py's.
+
+def test_flags_verify_enforce_with_empty_command_for_non_bool_truthy_values():
+    d = _doc()
+    for enforce_value in (1, "true", "yes"):
+        with tempfile.TemporaryDirectory() as t:
+            base = _sdlc(t, {"verify": {"enforce": enforce_value, "command": ""}})
+            c = _by_name(d.check(base, run=_runner()))["verify command present (enforce is on)"]
+            assert c["ok"] is False and "every `done` is refused" in c["fix"], enforce_value
+
+
+def test_features_dashboard_reports_enforce_on_for_non_bool_truthy_values():
+    d = _doc()
+    for enforce_value in (1, "true", "yes"):
+        with tempfile.TemporaryDirectory() as t:
+            base = _sdlc(t, {"verify": {"enforce": enforce_value}})
+            rows = {name: state for name, state, _ in d.features(base)}
+            assert rows["machine-checked done (verify.enforce)"].startswith("ON"), enforce_value
+
+
+def test_doctor_and_loop_enforce_reads_agree_on_the_same_truth_table():
+    """The parity check the duplication comment promises: doctor.py's _enforce_enabled and loop.py's
+    own copy must never silently drift apart. Runs the SAME representative inputs (the full set from
+    F17's own investigation, including the ones that only matter for a safety-gate's fail-direction)
+    through both and asserts identical results."""
+    d = _doc()
+    L = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts" / "loop.py"
+    spec = importlib.util.spec_from_file_location("loop", L)
+    loop = importlib.util.module_from_spec(spec); spec.loader.exec_module(loop)
+
+    for value in (True, False, 1, 0, -1, "true", "True", "FALSE", "false", "yes", "no", "off", "on",
+                  "", None, [], {}, ["true"], 1.0, "disabled", "null", "  false  "):
+        verify = {"enforce": value} if value is not None else {}
+        assert d._enforce_enabled(verify) == loop._enforce_enabled(verify), value
+
+
 # --- worktree footgun: a relative interpreter path fails exit=127 once work.enabled -------------
 
 def test_flags_a_relative_venv_in_verify_command_when_work_on():
