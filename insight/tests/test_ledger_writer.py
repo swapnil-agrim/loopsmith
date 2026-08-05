@@ -288,6 +288,61 @@ def test_cursor_is_scoped_per_project_two_projects_do_not_interfere(tmp_path, co
     assert conn.execute("SELECT count(*) FROM fact_event").fetchone()[0] == 2
 
 
+# --------------------------------------------------------------------------- same-actor, multiple writers
+# (loopsmith#337/F10 gives each writing PROCESS of one actor its own file + its own independent seq
+# space embedded in `id` -- <actor>:<pid>:<seq>. See ledger_writer.py's "KNOWN LIMITATION, TRACKED"
+# docstring section for exactly what the fix below closes and what loopsmith#380 still needs to.)
+
+
+def test_a_lower_seq_from_a_different_writer_no_longer_regresses_the_shared_cursor(tmp_path, conn):
+    """A plain cursor overwrite let a lower-seq record from one writer, processed after a
+    higher-seq record from a DIFFERENT writer of the same actor, regress the shared per-actor
+    cursor backward -- causing the higher-seq record to be silently RE-INGESTED as a duplicate
+    fact_event row on the very next run (fact_event has no dedup constraint, store.py). The
+    GREATEST-based upsert closes this: the cursor can only ever advance, never regress."""
+    sdlc = tmp_path / ".sdlc"
+    _write_records(sdlc, "dana", [
+        _rec("dana", 1, "2026-01-01T00:00:00Z", "claimed", id="dana:111:1"),
+        _rec("dana", 5, "2026-01-01T00:05:00Z", "note", id="dana:111:5"),
+        _rec("dana", 1, "2026-01-01T00:10:00Z", "claimed", id="dana:222:1"),
+    ])
+    first = ingest_ledger(conn, tmp_path)
+    assert first == {"events": 3, "handoffs": 0, "skipped": 0}
+    cursor = conn.execute(
+        "SELECT last_seq FROM ingest_ledger_cursor WHERE actor_id = 'dana'").fetchone()[0]
+    assert cursor == 5   # the true max across both writers, not just the last-processed writer's seq
+
+    second = ingest_ledger(conn, tmp_path)          # a resume run, no new records at all
+    assert second == {"events": 0, "handoffs": 0, "skipped": 0}   # nothing re-ingested as a duplicate
+    assert len(_rows(conn, "fact_event")) == 3       # still exactly 3 rows, not 3 + a duplicate
+
+
+def test_a_still_open_gap_tracked_in_loopsmith_380_a_slower_writers_new_entry_can_be_swallowed(tmp_path, conn):
+    """KNOWN LIMITATION, TRACKED (loopsmith#380) -- documents current behavior, does not endorse
+    it. The GREATEST mitigation stops the cursor regressing backward, but a per-ACTOR cursor still
+    cannot represent two writers' independent seq spaces at once: once writer 111 has pushed the
+    cursor to a high seq, a genuinely NEW record from writer 222 whose own counter has not caught
+    up is silently skipped as 'already seen' on the run after. This test exists so a fix for #380
+    has an obvious, explicit place to flip red->green -- if this test ever starts FAILING (the
+    record stops being swallowed) unexpectedly, #380 was fixed; rewrite this test to assert the
+    correct behavior instead of treating the failure as a regression to work around."""
+    sdlc = tmp_path / ".sdlc"
+    _write_records(sdlc, "dana", [
+        _rec("dana", 1, "2026-01-01T00:00:00Z", "claimed", id="dana:111:1"),
+        _rec("dana", 5, "2026-01-01T00:05:00Z", "note", id="dana:111:5"),
+    ])
+    ingest_ledger(conn, tmp_path)                    # cursor now at 5 (writer 111's peak)
+
+    # writer 222 (a different, still-active process of the SAME actor) writes its OWN first entry
+    # -- genuinely new, never ingested, but its seq (1) is behind writer 111's already-seen peak.
+    _write_records(sdlc, "dana", [
+        _rec("dana", 1, "2026-01-01T00:10:00Z", "claimed", id="dana:222:1", goal="g-new"),
+    ])
+    second = ingest_ledger(conn, tmp_path)
+    assert second == {"events": 0, "handoffs": 0, "skipped": 0}   # the gap: this "should" be 1 event
+    assert len(_rows(conn, "fact_event")) == 2       # dana:222:1's real, new work never lands
+
+
 # --------------------------------------------------------------------------- interrupt / resume (required)
 
 
