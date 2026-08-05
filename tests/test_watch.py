@@ -739,20 +739,35 @@ N_RACERS = 15
 
 
 def _watch_env(**extra):
-    return {**os.environ, "LOOPSMITH_WATCH_SLEEP_SCALE": "1", "LOOPSMITH_WATCH_INTERVAL": "3",
+    return {**os.environ, "LOOPSMITH_WATCH_SLEEP_SCALE": "1", "LOOPSMITH_WATCH_INTERVAL": "10",
             "LOOPSMITH_WATCH_MAX_TICKS": "1", **extra}
 
 
 def _race(d, n=N_RACERS):
-    """Launch `n` genuinely concurrent watch.sh racers; return (still_alive_after_settling, outs)."""
+    """Launch `n` genuinely concurrent watch.sh racers; return (still_alive_after_settling, outs).
+
+    Settling is POLLED, not a single fixed sleep -- found the hard way when this suite's own CI run
+    (GitHub's shared, 2-vCPU `ubuntu-latest` runners, meaningfully more contended than a local
+    dev machine) failed with 0 processes alive at the old fixed 1.5s check, despite every local run
+    (including 300-racer bursts) passing cleanly. A fixed absolute sleep bakes in an assumption about
+    how fast the OS schedules N freshly-forked bash+python trees, AND how fast the losers among them
+    can complete their (near-instant, but not zero-time) decision and exit; that assumption held
+    locally and did not hold on a noisy shared runner. Right after spawn EVERY process is alive by
+    construction (poll() is None for all of them, win or lose, until each has actually run its guard
+    logic) -- so the loop below waits for the race to SETTLE (the alive count drops to at most one,
+    the winner) rather than merely waiting for "someone is alive" (true almost immediately, before
+    anyone has decided anything) or a fixed sleep (wrong length for both a fast and a slow host).
+    `LOOPSMITH_WATCH_INTERVAL` is also widened (3s -> 10s) so the winner's alive-and-sleeping window
+    stays wide relative to however long settling actually took, on any host."""
     procs = [subprocess.Popen(["bash", str(S / "watch.sh"), str(d)],
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                               env=_watch_env())
              for _ in range(n)]
-    time.sleep(1.5)   # well past when every mutex attempt has settled, well before the winner's own
-                       # ~3s sleep-then-exit -- the window this whole design exists to observe cleanly
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline and sum(1 for p in procs if p.poll() is None) > 1:
+        time.sleep(0.1)
     alive = [p for p in procs if p.poll() is None]
-    outs = [p.communicate(timeout=15)[0] for p in procs]
+    outs = [p.communicate(timeout=20)[0] for p in procs]
     return alive, outs
 
 
