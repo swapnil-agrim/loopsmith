@@ -73,16 +73,27 @@ def summary(sdlc_dir, run=None):
         counts.update(_github_counts(disc.get("github") or {}, run or _real_run))
     else:
         for p in sorted((base / "goals").glob("*.md")):
-            s = _status_of(p.read_text())
+            try:
+                s = _status_of(p.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
             if s in counts:
                 counts[s] += 1
     cur = base / "state" / "STATE.md"
     it = 0
     if cur.exists():
-        m = re.search(r"^iteration:\s*(\d+)", cur.read_text(), re.MULTILINE)
+        try:
+            text = cur.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        m = re.search(r"^iteration:\s*(\d+)", text, re.MULTILINE)
         it = int(m.group(1)) if m else 0
     q = base / "state" / "review-queue.md"
-    queue_nonempty = bool(q.exists() and re.search(r"^## ", q.read_text(), re.MULTILINE))
+    try:
+        q_text = q.read_text(encoding="utf-8", errors="replace") if q.exists() else ""
+    except OSError:
+        q_text = ""
+    queue_nonempty = bool(q_text and re.search(r"^## ", q_text, re.MULTILINE))
     return {**counts, "iteration": it, "queue_nonempty": queue_nonempty,
             "ledger_entries": _ledger_entries(base),
             "goals_since_align": _goals_since_align(base, counts["done"], it)}
@@ -115,7 +126,8 @@ def _goals_since_align(base, done, iteration):
     reviewed = 0
     if reports:
         try:                                   # ISO-dated names sort newest-last; unreadable = never ran
-            m = re.search(r"^goals_reviewed:\s*(\d+)", reports[-1].read_text(), re.MULTILINE)
+            text = reports[-1].read_text(encoding="utf-8", errors="replace")
+            m = re.search(r"^goals_reviewed:\s*(\d+)", text, re.MULTILINE)
             reviewed = int(m.group(1)) if m else 0
         except OSError:
             pass
@@ -124,16 +136,21 @@ def _goals_since_align(base, done, iteration):
 
 def _ledger_entries(base):
     """Ledger lines across every author's file. Zero when the ledger is off or absent, which
-    keeps the status line byte-identical for a repo that has not opted in."""
+    keeps the status line byte-identical for a repo that has not opted in. `errors="replace"` is
+    load-bearing, not defensive dressing (mirrors doctor.py's `_count_jsonl_lines`): a process
+    killed mid-append truncates a multi-byte UTF-8 sequence, and the resulting UnicodeDecodeError
+    is a ValueError, NOT an OSError, so it would sail past the catch below and take the whole
+    dashboard down. A half-written file is exactly what this is here to survive."""
     total = 0
     entries = base / "ledger" / "entries"
     if not entries.exists():
         return 0
     for path in sorted(entries.glob("*.jsonl")):
         try:
-            total += sum(1 for line in path.read_text().splitlines() if line.strip())
+            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        total += sum(1 for line in text.splitlines() if line.strip())
     return total
 
 
