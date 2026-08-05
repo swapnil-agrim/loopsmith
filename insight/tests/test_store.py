@@ -17,7 +17,9 @@ from insight.ingest.store import (  # noqa: E402
     DEFAULT_DB_PATH,
     TABLES,
     ensure_schema,
+    has_any_rows,
     open_store,
+    open_store_read_only,
     resolve_db_path,
 )
 
@@ -656,3 +658,60 @@ def test_open_store_creates_missing_parent_directory(tmp_path):
     assert target.exists()
     assert target.parent.exists()
     conn.close()
+
+
+#: issue #299 [E16.S1]: a read-only open path for the FastAPI service, plus a structural
+#: data-presence check. See .sdlc/plans/299.md Task 1.
+
+
+def test_open_store_read_only_raises_file_not_found_when_store_missing(tmp_path):
+    """No side effects on a missing path -- unlike open_store, this must never create a
+    parent directory or a file (BR-2/Decision 1's explicit non-goal list)."""
+    target = tmp_path / "nope.duckdb"
+    with pytest.raises(FileNotFoundError):
+        open_store_read_only(target)
+    assert not target.exists()
+
+
+def test_open_store_read_only_opens_an_existing_store_for_reading(tmp_path):
+    path = tmp_path / "s.duckdb"
+    open_store(path).close()
+    conn = open_store_read_only(path)
+    assert conn.execute("select 1").fetchone() == (1,)
+    conn.close()
+
+
+def test_open_store_read_only_write_attempt_raises_invalid_input_exception(tmp_path):
+    """Load-bearing exception-type assertion (BR-16, verified directly in a scratch transcript
+    during planning, see .sdlc/plans/299.md Task 1.3): DuckDB itself enforces read-only, this
+    test pins the exact exception type as a regression guard."""
+    path = tmp_path / "s.duckdb"
+    open_store(path).close()
+    conn = open_store_read_only(path)
+    try:
+        with pytest.raises(duckdb.InvalidInputException):
+            conn.execute("INSERT INTO dim_project (project_id) VALUES ('p')")
+    finally:
+        conn.close()
+
+
+def test_has_any_rows_returns_false_for_empty_but_schema_ensured_store(tmp_path):
+    path = tmp_path / "s.duckdb"
+    open_store(path).close()
+    conn = open_store_read_only(path)
+    try:
+        assert has_any_rows(conn) is False
+    finally:
+        conn.close()
+
+
+def test_has_any_rows_returns_true_once_a_row_exists(tmp_path):
+    path = tmp_path / "s.duckdb"
+    writer = open_store(path)
+    writer.execute("insert into dim_project (project_id) values ('p')")
+    writer.close()
+    conn = open_store_read_only(path)
+    try:
+        assert has_any_rows(conn) is True
+    finally:
+        conn.close()

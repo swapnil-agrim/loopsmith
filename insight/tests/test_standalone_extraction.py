@@ -130,6 +130,14 @@ ALLOWED_SKIP_REASONS = (
     "got empty parameter set for (command, issue)",
     "could not import 'tomllib'",
     "already inside the child copy's own pytest run (recursion guard)",
+    # issue #299 [E16.S1]: insight/api/'s first fastapi-touching test file, same position
+    # test_store.py's duckdb gate was in at #99 -- these two reasons are added defensively for a
+    # contributor machine without fastapi/httpx ambient; on this dev machine and in CI both
+    # packages are present (fastapi declared in pyproject.toml, httpx installed via ci.yml's
+    # insight-job line, Task 2), so this file actually runs rather than skips here -- see
+    # .sdlc/plans/299.md Decision 3 for the scratch demonstration that these strings are correct.
+    "could not import 'fastapi'",
+    "could not import 'httpx'",
 )
 
 #: The exact node id the child must report PASSED for `test_child_planted_self_check_ran_and_passed`
