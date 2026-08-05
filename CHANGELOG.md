@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### feat(doctor): flag an out-of-date loopsmith install, since auto-update is off by default
+Investigated what's actually possible before building anything (F10.5-5/#378): auto-update for a
+non-Anthropic marketplace like this one is OFF by default (a user has to explicitly opt in via
+`/plugin` → Marketplaces, or a team admin via managed settings), and the `version` field in
+`plugin.json`/`marketplace.json` is the cache key that gates it even when it IS on — pushing commits
+alone never updates anyone. So the real gap is awareness, not a missing update mechanism, exactly as
+the plan doc's own hedge anticipated: a stale install can otherwise persist silently indefinitely,
+with no signal to the user that anything shipped since they installed.
+
+`/sdlc-doctor` gains a check comparing the installed version against the marketplace's current one.
+The installed side reads `claude plugin list --json` (the CLI's own record of what's actually on
+disk); the latest side reads the marketplace repo's OWN current `marketplace.json` on its default
+branch — a plain, unauthenticated, read-only fetch of a public repo, since no documented Claude Code
+API exposes "the latest available version" any other way (confirmed against the plugin-dependencies
+and plugins-reference docs). Versions compare as numeric tuples, not strings — "0.9.23" needs to sort
+after "0.9.7" numerically, which a lexicographic compare gets backwards. The check adds NO entry at
+all — not a pass, not a fail — unless BOTH sides actually resolve, so an offline machine or a
+`claude`/`curl` that isn't there degrades to silence, never a false alarm or a false all-clear.
+
+A stronger, platform-native auto-update trigger isn't attempted: it isn't accessible from a plugin's
+own code today (no environment variable, no hook input, no CLI subcommand exposes it), and forcing
+one open (e.g. shelling out to toggle the user's own marketplace auto-update setting) would be a
+correctness/consent question well beyond "ship what's feasible" — noted as a stretch item for later,
+not a blocker for this issue or the 1.0.0 release.
+
 ### feat(loop): dispatch multiple backlog goals concurrently in one session, not just one goal's slices
 The existing `parallel.*` block runs ONE goal's independent implementation slices concurrently — this
 is a sibling capability one level up: running MULTIPLE BACKLOG GOALS concurrently in a single session,

@@ -110,6 +110,52 @@ def _unmapped_board_fields(gh_cfg, run):
             and f.get("name") not in mapped]
 
 
+def _version_tuple(v):
+    """Parse a plain dotted-integer version ("0.9.23") into a comparable tuple, or None for
+    anything that doesn't parse cleanly — never raises."""
+    try:
+        return tuple(int(p) for p in str(v).strip().split("."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _plugin_versions(run):
+    """(installed, latest) version tuples for the loopsmith plugin itself, or None for either side
+    that could not be determined — never raises; a can't-tell must never read as a false alarm (nor
+    a false all-clear — see `check()`, which adds no entry at all unless BOTH sides resolve).
+
+    `installed` comes from `claude plugin list --json` (the CLI's own record of what's actually on
+    disk right now), matched by the id's plugin-name prefix (e.g. "loopsmith@loopsmith" -> the part
+    before "@"). `latest` comes from the marketplace repo's OWN current marketplace.json on its
+    default branch — a plain, unauthenticated, read-only fetch of a public repo (F10.5-5/#378): no
+    Claude Code API exposes "the latest available version" any other way — the CLI can report what a
+    plugin's version field resolved to at install/update time, never what the marketplace currently
+    offers without installing it. Auto-update itself is OFF by default for a non-Anthropic
+    marketplace like this one, and even ON, it only fires on its own schedule at the next session
+    launch — so a stale install can otherwise persist silently indefinitely; this is the awareness
+    nudge that doesn't need auto-update to be on at all."""
+    installed = None
+    try:
+        for entry in json.loads(run(["claude", "plugin", "list", "--json"]) or "[]"):
+            if isinstance(entry, dict) and str(entry.get("id", "")).split("@")[0] == "loopsmith":
+                installed = _version_tuple(entry.get("version"))
+                break
+    except Exception:
+        pass
+    latest = None
+    try:
+        raw = run(["curl", "-fsSL", "--max-time", "5",
+                   "https://raw.githubusercontent.com/swapnil-agrim/loopsmith/main/"
+                   ".claude-plugin/marketplace.json"])
+        for entry in (json.loads(raw or "{}").get("plugins") or []):
+            if isinstance(entry, dict) and entry.get("name") == "loopsmith":
+                latest = _version_tuple(entry.get("version"))
+                break
+    except Exception:
+        pass
+    return installed, latest
+
+
 def check(sdlc_dir=".sdlc", run=None):
     """Return the setup checks relevant to this project's config; each is {name, ok, fix}."""
     run = run or _real_run
@@ -204,6 +250,17 @@ def check(sdlc_dir=".sdlc", run=None):
         for comp in ("superpowers", "code-review"):
             here = comp in plugins
             out.append(_chk(f"{comp}: {'present' if here else 'absent — portable executor used'}", True, ""))
+
+    # Awareness nudge (F10.5-5/#378): auto-update is off by default for a non-Anthropic marketplace
+    # like this one, so a stale install can otherwise persist silently forever. Only reported when
+    # BOTH versions actually resolve — an unreachable network or an unrecognized CLI output must
+    # never show as either a false alarm or a false all-clear.
+    installed, latest = _plugin_versions(run)
+    if installed is not None and latest is not None:
+        inst_s, latest_s = ".".join(map(str, installed)), ".".join(map(str, latest))
+        out.append(_chk(f"loopsmith up to date (installed {inst_s})",
+                        installed >= latest,
+                        f"{latest_s} is available (you're on {inst_s}) — run: claude plugin update loopsmith"))
     return out
 
 

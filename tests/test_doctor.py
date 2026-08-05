@@ -90,6 +90,113 @@ def test_detects_companions_never_failing_on_absence():
         assert all(c["ok"] for c in checks if "superpowers" in c["name"] or "code-review" in c["name"])
 
 
+# --------------------------------------------------------------- plugin update awareness (#378)
+# Auto-update is off by default for a non-Anthropic marketplace, so a stale install can otherwise
+# persist silently forever. Only reported when BOTH the installed and latest versions actually
+# resolve -- an unreachable network or unrecognized output must never read as a false alarm OR a
+# false all-clear.
+
+_PLUGIN_LIST_JSON = json.dumps([{"id": "loopsmith@loopsmith", "version": "0.9.7"},
+                                 {"id": "other-plugin@some-marketplace", "version": "1.2.3"}])
+_MARKETPLACE_JSON = json.dumps({"plugins": [{"name": "loopsmith", "version": "0.9.23"},
+                                             {"name": "other-plugin", "version": "1.2.3"}]})
+
+
+def _version_runner(plugin_list=_PLUGIN_LIST_JSON, marketplace=_MARKETPLACE_JSON):
+    def run(args):
+        if args[:3] == ["claude", "plugin", "list"] and "--json" in args:
+            return plugin_list
+        if args[:1] == ["curl"]:
+            return marketplace
+        return _runner()(args)
+    return run
+
+
+def test_version_tuple_parses_plain_dotted_integers():
+    d = _doc()
+    assert d._version_tuple("0.9.23") == (0, 9, 23)
+    assert d._version_tuple("1.0.0") == (1, 0, 0)
+
+
+def test_version_tuple_is_none_for_anything_unparseable():
+    d = _doc()
+    assert d._version_tuple("not-a-version") is None
+    assert d._version_tuple(None) is None
+    assert d._version_tuple("") is None
+
+
+def test_version_tuple_compares_numerically_not_lexicographically():
+    """0.9.23 > 0.9.7 numerically, even though '2' < '7' as characters -- a naive string compare
+    would get this exactly backwards."""
+    d = _doc()
+    assert d._version_tuple("0.9.23") > d._version_tuple("0.9.7")
+
+
+def test_plugin_versions_resolves_both_sides():
+    d = _doc()
+    installed, latest = d._plugin_versions(_version_runner())
+    assert installed == (0, 9, 7)
+    assert latest == (0, 9, 23)
+
+
+def test_plugin_versions_ignores_other_plugins_in_the_list():
+    d = _doc()
+    installed, _ = d._plugin_versions(_version_runner(
+        plugin_list=json.dumps([{"id": "other-plugin@some-marketplace", "version": "9.9.9"}])))
+    assert installed is None
+
+
+def test_plugin_versions_is_none_when_claude_cli_is_unavailable():
+    d = _doc()
+    installed, latest = d._plugin_versions(_version_runner(plugin_list=""))
+    assert installed is None
+    assert latest == (0, 9, 23)          # the OTHER side still resolves independently
+
+
+def test_plugin_versions_is_none_when_the_network_fetch_fails():
+    d = _doc()
+    installed, latest = d._plugin_versions(_version_runner(marketplace=""))
+    assert installed == (0, 9, 7)
+    assert latest is None
+
+
+def test_plugin_versions_is_none_on_malformed_json_never_raises():
+    d = _doc()
+    installed, latest = d._plugin_versions(_version_runner(
+        plugin_list="not json", marketplace="also not json"))
+    assert (installed, latest) == (None, None)
+
+
+def test_check_flags_an_out_of_date_install():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"discovery": {"source": "local-goals"}})
+        c = _by_name(d.check(base, run=_version_runner()))
+        entry = c["loopsmith up to date (installed 0.9.7)"]
+        assert entry["ok"] is False
+        assert "0.9.23 is available" in entry["fix"]
+        assert "claude plugin update loopsmith" in entry["fix"]
+
+
+def test_check_passes_when_already_current():
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"discovery": {"source": "local-goals"}})
+        same = json.dumps([{"id": "loopsmith@loopsmith", "version": "0.9.23"}])
+        c = _by_name(d.check(base, run=_version_runner(plugin_list=same)))
+        assert c["loopsmith up to date (installed 0.9.23)"]["ok"] is True
+
+
+def test_check_adds_no_entry_at_all_when_either_side_is_undeterminable():
+    """A can't-tell (offline, claude CLI missing, whatever) must never show as a false alarm --
+    the default fake runner returns "" for everything, so both sides fail to resolve."""
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"discovery": {"source": "local-goals"}})
+        names = [c["name"] for c in d.check(base, run=_runner())]
+        assert not any("loopsmith up to date" in n for n in names)
+
+
 def test_features_dashboard_reports_states(tmp_path):
     import json, importlib.util, pathlib as _pl
     spec = importlib.util.spec_from_file_location(
