@@ -6,7 +6,10 @@
 import type { Metric } from "@/lib/api/metric";
 
 function renderLabel(metric: Metric): string {
-  return metric.label;
+  // TEMPORARY (issue #302, demo 1 of 4): a deliberate type error, to watch the `web` required
+  // check go red at `npm run typecheck`. Reverted in the next commit.
+  const n: number = metric.label;
+  return String(n);
 }
 
 // A real fetch from insight/api/ lands in a later story (E17.S3+); this placeholder only proves
