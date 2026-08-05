@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### fix(handoff): a blocked issue's dependency marker is now machine-readable, not comment-only
+`hand_off()`'s "link it from the blocked issue" step posted its dependency marker as a GitHub
+**comment** — invisible to `backlog_check.py`'s `_explicit_blockers()`, since `mirror.py`'s corpus
+fetch is title+body ONLY (comments are never fetched, by design). A goal a hand-off had already,
+correctly parked would never auto-skip on a later pick, because the one place that could have told
+it "this is blocked" never saw the marker at all. A second, independent bug compounded it: the
+comment's own wording said "Blocked **on**", which doesn't match `_BLOCK_RE` either way (it requires
+"blocked **by**", among a few other phrasings) — so even reading comments wouldn't have helped
+without also fixing the text.
+
+`GitHubSource` gains `append_to_body()` (read-then-append, never overwrite, since `gh issue edit
+--body` replaces the whole body) alongside the existing `note()` (comment). `hand_off()` now uses
+both: `note()` for the human-visible narrative (now correctly worded "Blocked by"), `append_to_body()`
+for a `**Blocked by:** #N` marker in the body — the machine-readable channel `_explicit_blockers()`
+actually reads. Each channel is independent and fails open on its own; neither failing blocks the
+park. A source without `append_to_body` (predates this fix, or a future non-GitHub source) degrades
+to the comment-only behavior, unchanged.
+
+Scope note: this closes the PREVENTION half (every dependency LoopSmith itself records now lands in
+the body). It does not add a fallback for a human commenting a dependency directly via the GitHub UI
+(bypassing `hand_off()` entirely) — tracked separately, not shipped here.
+
 ### fix(loop): two concurrent processes of the SAME actor no longer read each other's claim as "mine to resume"
 Reproduces and fixes a real bug hit live: a routine firing a fresh session without an explicit
 target resumed a goal a DIFFERENT, still-running session of the same `gh` login had already claimed

@@ -230,6 +230,21 @@ class GitHubSource:
         # record on the issue timeline (the audit trail): a journey-log / critical-insight comment
         self._run(["issue", "comment", goal, *self._repo_args(), "--body", text])
 
+    def append_to_body(self, goal, marker):
+        """Append `marker` to the issue's CURRENT body — never overwrite it — read then write, not
+        atomic (acceptable: a goal a loop just parked is not being concurrently edited by anyone
+        else in that same instant). This is the MACHINE-readable channel: `backlog_check.py`'s
+        `_explicit_blockers()` regexes the goal's own text for `blocked by ... #N`, and
+        `mirror.py`'s corpus fetch is title+body ONLY — comments (see `note()` above) are never
+        fetched, by design — so a dependency marker posted only as a comment is silently invisible
+        to auto-skip, however clearly a human would read it on the issue page. Callers wanting
+        BOTH the human-visible narrative and the machine-actionable marker call `note()` for the
+        former and this for the latter — two different audiences, two different channels."""
+        body = self._run(["issue", "view", goal, *self._repo_args(), "--json", "body",
+                          "--jq", ".body"])
+        new_body = (body or "").rstrip() + "\n\n" + marker + "\n"
+        self._run(["issue", "edit", goal, *self._repo_args(), "--body", new_body])
+
     def issue_url(self, goal):
         return self._issue_url(goal)
 
