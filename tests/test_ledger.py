@@ -623,14 +623,32 @@ def test_append_flattens_a_raw_newline_in_park_why(tmp_path):
     assert "\n" not in e["why"]
 
 
-def test_entries_stream_why_is_untouched(tmp_path):
-    """The treatment is scoped to stream == EVENTS only — the ENTRIES stream's own `why` (hand-
-    offs/notes a lead reads in TEAM.md) is out of this story's scope and must be written verbatim,
-    uncapped and un-flattened."""
+def test_entries_stream_why_is_scrubbed_flattened_and_capped(tmp_path):
+    """F3: #141 originally scoped cap+scrub to stream == EVENTS only, leaving the ENTRIES stream's
+    own `why` (hand-offs/notes a lead reads in TEAM.md) written byte-for-byte — but ENTRIES is
+    committed + pushed to the shared `sdlc-ledger` branch and rendered into TEAM.md just the same,
+    so a sanctioned `handoff.py open ... --why "<secret>"` landed a secret in version control. Same
+    flatten->scrub->cap treatment as EVENTS' free-text fields now applies here too."""
     d = _sdlc(tmp_path, ON)
-    why = "a\nb" + "x" * 300
+    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    why = f"blocked: {SECRET} for the deploy\nsee the log" + "x" * 300
     e = ledger.append(d, ON, "handoff", "g.md", why=why)
-    assert e["why"] == why
+    assert SECRET not in e["why"]
+    assert "[REDACTED:aws-key]" in e["why"]
+    assert "\n" not in e["why"]                      # flattened
+    assert len(e["why"]) <= 200                       # capped
+
+
+def test_entries_stream_why_scrub_survives_the_committed_jsonl_and_rendered_team_md(tmp_path):
+    """F3's stated verification: redaction holds in BOTH the persisted entry and render() output —
+    the two places a secret in `why` was reaching (the committed per-actor jsonl, and TEAM.md)."""
+    d = _sdlc(tmp_path, ON)
+    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    ledger.append(d, ON, "handoff", "g.md", to="rae", issue=61, why=f"blocked by {SECRET}")
+    persisted = ledger.entry_file(d, "dana").read_text(encoding="utf-8")
+    assert SECRET not in persisted and "[REDACTED:aws-key]" in persisted
+    rendered = ledger.render(ledger.read_all(d))
+    assert SECRET not in rendered and "[REDACTED:aws-key]" in rendered
 
 
 def test_scan_file_and_slice_slice_are_not_in_the_declared_set():

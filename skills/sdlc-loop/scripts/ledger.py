@@ -593,10 +593,18 @@ def append(sdlc_dir, config, kind, goal, run=None, now=None, stream=ENTRIES, **f
     for name in field_whitelist:
         value = fields.get(name)
         if value not in (None, ""):
-            # #141: cap+scrub lives HERE, once, for every caller — never at a call site. Scoped to
-            # stream == EVENTS only (the ENTRIES stream's own `why` — hand-offs/notes a lead reads
-            # in TEAM.md — is unaffected, out of this story's scope).
-            if stream == EVENTS:
+            # #141: cap+scrub lives HERE, once, for every caller — never at a call site. #141
+            # scoped it to stream == EVENTS only, on the theory the ENTRIES stream's own `why`
+            # (hand-offs/notes a lead reads in TEAM.md) was out of that story's scope. It wasn't
+            # safe to leave unscrubbed: `why` is committed byte-for-byte to the shared `sdlc-ledger`
+            # branch AND rendered into TEAM.md, so a `handoff.py open ... --why "<secret>"` (a
+            # sanctioned command) lands a secret/client string in version control. Same
+            # flatten->scrub->cap treatment as EVENTS' free-text fields, gated on the one ENTRIES
+            # field that is actually prose — see OPTIONAL_FIELDS: `area`/`to`/`issue`/`priority`/
+            # `state`/`ref`/`pr` are all short enums/ids, never free text.
+            if stream == ENTRIES and name == "why":
+                value = _sanitize_free_text(value)
+            elif stream == EVENTS:
                 if name in EVENT_FREE_TEXT_FIELDS.get(kind, ()):
                     value = _sanitize_free_text(value)
                 elif name in EVENT_BOUNDED_ID_FIELDS.get(kind, ()):
