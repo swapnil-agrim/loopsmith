@@ -107,6 +107,28 @@ dropped from the inbox — a missed escalation, which is worse than a duplicate.
 folds `priority` into the tuple, so an escalating re-raise reads as news while a re-raise that
 repeats the same priority (truly nothing new) stays suppressed exactly as before.
 
+### fix(watch): the ledger watcher's pid guard is now race-safe under a genuine concurrent start
+`watch.sh`'s idempotency guard was a `kill -0` check followed by a SEPARATE pidfile write — a TOCTOU
+gap letting two truly simultaneous starts both pass the check before either writes, both enter the
+tick loop, and both contend on the ledger worktree's git index lock (F21/#339). More likely now that
+a single session can dispatch several `loop.py` calls close together (F10.5-3/#375, already shipped
+in 1.0.0), each of which triggers its own watcher launch attempt.
+
+Two schemes were tried and independently broken during this fix's own development before landing on
+the shipped design, proven each time with real concurrent `bash` processes, not mocks: an `mv`-based
+stale-pidfile eviction (mirroring the shape loop.py's flock-based claim lock, F10.5-2/#387, needed in
+Python) let a delayed racer's `mv` clobber an already-fresh winner's pidfile; a follow-up mutex-based
+redesign's `stat`-failure fallback made "the mutex was already legitimately released" indistinguishable
+from "infinitely stale", letting multiple losers reclaim an already-free mutex at once. Both were
+real, reproduced double-wins, not theoretical concerns.
+
+The shipped fix serializes the whole check-evict-create decision behind a short-lived `mkdir`-based
+mutex (POSIX-atomic, held only for a handful of near-instant local filesystem calls, not the
+watcher's lifetime) instead of trying to make a multi-step sequence itself safe to interleave — once
+serialized, there is no window left for a second racer's actions to land inside the decision at all.
+The exit trap only removes the pidfile if it still names the process removing it, defense in depth
+against the exact symptom F21 named (a fast-exiting winner's cleanup orphaning a slower survivor).
+
 ## 1.0.0 — the zero-touch release
 
 The theme: one person on one machine can now point LoopSmith at a stack of their own assigned issues
