@@ -228,6 +228,35 @@ def test_a_star_glob_conflicts_with_everything():
     assert slices.conflicts(_slice("a", files=["*"]), _slice("b", files=["engine/graph.py"])) is True
 
 
+# --- F5: the same file spelled two ways must still conflict — a purely lexical comparison sees
+# `engine/graph.py` and `./engine/graph.py` (or a `\` separator) as disjoint, and two slices declaring
+# the same file under different spellings would then run concurrently — the exact silent-lost-edit the
+# manifest exists to prevent.
+
+
+def test_a_dot_slash_prefixed_spelling_of_the_same_file_conflicts():
+    assert slices.conflicts(_slice("a", files=["engine/graph.py"]),
+                            _slice("b", files=["./engine/graph.py"])) is True
+    assert slices.conflicts(_slice("a", files=["./engine/graph.py"]),
+                            _slice("b", files=["engine/graph.py"])) is True          # symmetric
+
+
+def test_a_backslash_separated_spelling_of_the_same_file_conflicts():
+    assert slices.conflicts(_slice("a", files=["engine/graph.py"]),
+                            _slice("b", files=["engine\\graph.py"])) is True
+
+
+def test_a_redundant_double_slash_spelling_of_the_same_file_conflicts():
+    assert slices.conflicts(_slice("a", files=["engine/graph.py"]),
+                            _slice("b", files=["engine//graph.py"])) is True
+
+
+def test_normalization_does_not_make_genuinely_different_files_conflict():
+    # the fix must not overreach: two real, distinct files stay disjoint after normalization
+    assert slices.conflicts(_slice("a", files=["./engine/graph.py"]),
+                            _slice("b", files=["./engine/loader.py"])) is False
+
+
 # --------------------------------------------------------------------------- fan-out
 
 
