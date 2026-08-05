@@ -104,12 +104,23 @@ LoopSmith's own; no companion ships it.
 
 ## Quickstart
 
+Inside a Claude Code / Claude Desktop session:
+
 ```
 /plugin marketplace add <git-url-or-local-path>
 /plugin install loopsmith
 /sdlc-init --demo     # scaffolds a small, safe, runnable demo goal
 /sdlc-loop            # watch it run Goal → Research → … → Review end-to-end
 ```
+
+Or from a terminal (same result — `claude plugin` is the CLI form of the same commands, useful for a
+setup script or a non-interactive install):
+
+```
+claude plugin marketplace add <git-url-or-local-path>
+claude plugin install loopsmith
+```
+then run `/sdlc-init --demo` and `/sdlc-loop` inside a session as above.
 
 ### Adopting into an existing repo? One command.
 
@@ -231,6 +242,7 @@ Everything optional ships OFF — `/sdlc-doctor` prints this dashboard live (`do
 | `ledger: {"enabled": true}` | off | the committed team ledger — claims and outcomes recorded per author, plus cross-area hand-off |
 | `ledger.watch.interval_seconds` | 900 | how often `watch.sh` pulls the ledger ops branch and refreshes the inbox |
 | `parallel: {"enabled": true}` | off | a goal's independent slices run concurrently in waves (`max_concurrent`, default 3) from `.sdlc/plans/<goal>.slices.json` |
+| `parallel: {"goals": {"enabled": true}}` | off | `next-batch` returns up to `max_concurrent` (default 3) BACKLOG GOALS at once for one person's own concurrent subagents, one worktree+PR each |
 | `backlog_check: {"enabled": true}` | off | pre-work cross-check: parks a picked goal that duplicates / is obsoleted-by / is blocked-by other backlog items, before any token spend |
 | `work: {"enabled": true}` | off | one worktree + branch + PR per goal; your checkout never moves, and `verify_command` runs in the goal's own tree |
 | `work.auto_merge` | `"off"` | `"protected"` merges only where the base *requires* checks/reviews; `"always"` merges any clean+safe PR. A fork or read-only repo never merges — it opens the PR and records `done` |
@@ -637,6 +649,36 @@ claude --worktree 0007-cache-s3
 The loop never runs it for you. It also never shells out to an unattended `claude -p`: that's uncapped
 spend, and it would put a second worker on one `.sdlc`, which every state file in the kit assumes never
 happens. Leave `parallel` off, or ship no manifest, and every goal runs as one unit exactly as before.
+
+---
+
+## Goal-level parallelism (optional, off by default)
+
+Slice parallelism above runs ONE goal's implementation concurrently. This is a sibling capability one
+level up: running MULTIPLE BACKLOG GOALS concurrently in a single session, each all the way through
+its own research-through-PR lifecycle in its own worktree+branch. The target scenario is ONE person on
+ONE machine working through a stack of their own assigned issues — not a team coordination mechanism
+(the [team ledger](#the-team-ledger-optional-off-by-default) already owns that).
+
+Turn it on:
+
+```json
+"parallel": { "goals": { "enabled": false, "max_concurrent": 3 } }
+```
+
+`loop.py next-batch` returns up to `max_concurrent` goals in one call instead of `next`'s one — with
+it off, or only one goal available, it's byte-identical to `next`. Each returned goal is dispatched as
+its own subagent running the full loop for that one goal; as each finishes, refill the freed slot with
+`loop.py next --skip <the other still-live goals>`. **`--skip` is not optional on a refill** — the
+existing writer-identity claim check can only tell whether the specific short-lived `loop.py` process
+that wrote a claim is still literally running, and that process exits within moments of writing it,
+regardless of whether a subagent is still actively working the goal minutes later. Omitting it risks
+two subagents picking up the same goal — worse than not parallelising at all. Unlike slices, goals
+carry no file-conflict graph: each gets its own worktree and PR, so overlap surfaces later as an
+ordinary PR-rebase, not a silently lost edit.
+
+See [Zero-touch routines](#zero-touch-routines-optional-off-by-default) below for how a routine/cron
+trigger uses this together with the session-active marker to drain a backlog unattended.
 
 ---
 

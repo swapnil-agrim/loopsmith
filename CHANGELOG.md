@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 1.0.0 — the zero-touch release
+
+The theme: one person on one machine can now point LoopSmith at a stack of their own assigned issues
+and walk away — multiple goals drain concurrently in a single session (`parallel.goals`, off by
+default), a routine or cron trigger can be configured once without ever double-launching a redundant
+session, and `/sdlc-doctor` tells you when a newer LoopSmith has shipped instead of leaving you on a
+silently stale install. Underneath, the local coordination primitives this all depends on went through
+real adversarial review: two independent review cycles broke two successive hand-rolled file-locking
+schemes before landing on a kernel-mediated one with no equivalent race window, and the same
+writer-identity fix that makes a routine's fresh invocation stop blindly resuming another session's
+in-flight worktree is what makes safe multi-goal dispatch possible at all one layer up.
+
+This release also folds in everything merged from an earlier whole-repo adversarial code review pass
+(5 independent author-blind reviewers, 33 findings) that hadn't yet been bundled into a dated release:
+secret/client-string egress closed in the risk-detect and alignment-collect collectors and in the
+ledger's own entries stream and PR-review comments, and a run of fail-open hardening across
+`/sdlc-status`, `/sdlc-doctor`, `loop.py spend`, `pipeline.py`, and the auto-merge gate, so a
+malformed config or a transient `gh` failure degrades honestly instead of crashing or reporting a
+false pass. As before, everything new here ships opt-in and default-OFF — with no `parallel.goals`
+block, no `--session-pid`, and doctor's version check the only always-on addition (a bounded,
+read-only check that adds no output at all unless it can actually compare two real version strings) —
+so an existing `config.json` behaves exactly as it did on 0.9.23.
+
 ### feat(loop): a liveness-safe marker so a routine/cron firing never double-launches a session
 LoopSmith doesn't drive scheduling itself (F10.5-4/#377) — that's the host's recurring-trigger feature
 (Claude Desktop's "Routines," a cron job calling `claude -p`, whatever fires an agent unattended). It
