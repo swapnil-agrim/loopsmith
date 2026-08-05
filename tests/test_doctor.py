@@ -721,6 +721,19 @@ def test_malformed_nested_gates_block_does_not_crash(tmp_path):
     d.features(base)
 
 
+def test_malformed_decision_gate_block_does_not_crash_with_a_registry_present(tmp_path):
+    # `_decision_gate_state` short-circuits BEFORE reaching the malformed-block read when
+    # decisions.json is absent (`if not reg.exists(): return "off..."`) — so a malformed
+    # gates.decision_gate only actually reaches the vulnerable line when a registry exists (the
+    # realistic state for any adopter who has run /sdlc-decide). Without the registry present,
+    # this case would pass even on the unfixed code — reaching the line is the whole test.
+    d = _doc()
+    base = _sdlc(tmp_path, {"gates": {"decision_gate": "oops"}})
+    (pathlib.Path(base) / "decisions.json").write_text(json.dumps({"decisions": []}))
+    d.check(base, run=_runner())
+    d.features(base)
+
+
 def test_malformed_nested_github_project_block_does_not_crash(tmp_path):
     d = _doc()
     base = _sdlc(tmp_path, {"discovery": {"source": "github", "github": {"project": "oops"}}})
