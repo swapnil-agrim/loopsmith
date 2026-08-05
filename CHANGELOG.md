@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### fix(slices): the same file spelled two ways now correctly conflicts
+`slices.conflicts` compared declared file paths purely lexically (`fnmatch` + a literal-prefix
+check), so `engine/graph.py` and `./engine/graph.py` (or a `\`-separated spelling, or a redundant
+`//`) read as disjoint. Two slices declaring the same file under different spellings then land in
+the same wave and get dispatched as concurrent worktree subagents editing the same real file — a
+merge conflict at best, a silently dropped edit at worst, exactly what the declared-files manifest
+exists to prevent. Normalizes every path (`posixpath.normpath` after unifying separators) before the
+overlap/prefix comparison in `_overlap`, the one function both directions of `conflicts()` already
+funnel through.
+
 ### fix(loop): the overnight drain no longer aborts (and re-picks the goal) on a transient `gh` error
 `sources.py`'s `GitHubSource` had four unguarded `gh` calls on the source-op path — `next_pending`'s
 `issue list` (called FIRST, every iteration), `mark_in_progress`'s `--add-label`, `complete`'s

@@ -28,6 +28,7 @@ import fnmatch
 import importlib.util
 import json
 import pathlib
+import posixpath
 import sys
 
 _HERE = pathlib.Path(__file__).resolve().parent
@@ -263,7 +264,20 @@ def _literal_prefix(pattern):
     return "/".join(head) + "/"
 
 
+def _normpath(p):
+    """The same file, spelled two ways (`engine/graph.py` vs `./engine/graph.py` vs
+    `engine\\graph.py`), must compare equal — a purely lexical comparison sees them as disjoint,
+    and two slices declaring the same file under different spellings would then be dispatched as
+    concurrent worktree subagents editing the same real file: a merge conflict at best, a silently
+    dropped edit at worst — exactly what the declared-files manifest exists to prevent. Unify
+    separators BEFORE normpath: posixpath only recognizes `/` — a `\\` would pass through untouched
+    otherwise, on any platform (this collapses `.`/`..`/redundant slashes purely lexically, same as
+    every other path in a manifest; it never touches the filesystem)."""
+    return posixpath.normpath(str(p).replace("\\", "/"))
+
+
 def _overlap(a, b):
+    a, b = _normpath(a), _normpath(b)
     return (fnmatch.fnmatch(a, b) or fnmatch.fnmatch(b, a)
             or _literal_prefix(a).startswith(_literal_prefix(b))
             or _literal_prefix(b).startswith(_literal_prefix(a)))
