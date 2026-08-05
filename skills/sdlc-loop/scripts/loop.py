@@ -474,13 +474,23 @@ def main(argv):
         _record(argv[2], sources.get_source(argv[2], config), argv[3], argv[4],
                 argv[5] if len(argv) > 5 else ""); return 0
     if len(argv) >= 4 and argv[1] == "spend":       # host-reported token spend → budget.max_tokens
+        # A non-integer token count (a float, empty, comma-grouped, garbage) must REFUSE loudly —
+        # exit 2, a usable message — rather than a raw traceback. "Fail-open" (the docstring's
+        # promise that budget accounting is unconditional) means the RUN never crashes over this;
+        # it does not mean silently mis-adding a value that isn't a count. Validate BEFORE calling
+        # `state.add_tokens`, the same refuse-with-a-message shape `_validate_event` uses below.
+        try:
+            tokens = int(argv[3])
+        except ValueError:
+            print(f"loop.py spend: token count {argv[3]!r} is not an integer", file=sys.stderr)
+            return 2
         # `state.add_tokens` runs FIRST and unconditionally — `budget.max_tokens` enforcement
         # depends on it, so an invalid event flag below must never skip the budget accounting.
         # On a validation failure, the tokens above are still counted; we just refuse to write
         # the (invalid) event, print the same usable message `emit` would, and exit 2 — matching
         # the story's own done-when ("an invalid flag is refused with a usable message") without
         # ever making budget tracking conditional on the event succeeding.
-        state.add_tokens(argv[2], argv[3])
+        state.add_tokens(argv[2], tokens)
         # Optional trailing goal + flags (spec §A.5 item 12: "extends the existing spend verb").
         # amendment C: argv[4] is a GOAL only when it does not itself look like a flag — a bare
         # `spend <dir> <tokens> --tokens_in 10 --tokens_out 20` (flags, no goal) must never let

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### fix(loop): `spend` refuses a non-integer token count with a message, not a traceback
+`loop.py spend <dir> <n>` — the CLI verb hosts report token usage through — did `int(n)` unguarded
+inside `state.add_tokens`. A float, empty, comma-grouped, or garbage `n` raised `ValueError`, exiting
+with a raw traceback (exit 1) instead of the usable, exit-2 refusal every other invalid-input path in
+this command already gives (the sibling `--flag` validation a few lines below it, for one). Validates
+`argv[3]` as an integer at the CLI dispatch site — the one and only caller of `add_tokens` — before
+ever touching state, so a rejected call never partially mutates `run_tokens` either.
+
 ### fix(pipeline): a malformed `pipeline.json` is treated as absent, never a traceback
 `load_pipeline()` did `json.loads(...)` unguarded and then `spec.get("stages")` with no dict check —
 an invalid-JSON `pipeline.json` raised `JSONDecodeError`, and a top-level array/scalar raised
