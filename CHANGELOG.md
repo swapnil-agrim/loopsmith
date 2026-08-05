@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### fix(doctor): a shared `_block()` helper so a malformed config block never crashes check/features
+A config with a shape typo — e.g. `{"verify": "pytest"}` where a `{"command": ..., "enforce": ...}`
+block was meant — made both `doctor.check()` and `doctor.features()` raise `AttributeError` on the
+next `.get()` call, aborting the ENTIRE run. Only `telemetry` and `backlog_check` had the
+`isinstance(..., dict)` guard; every other block reader (`verify`/`work`/`ledger`/`discovery`/`gates`
+and its nested `hard_plan_gate`/`stop_gate`/`decision_gate`/`review`/`budget`/`parallel`/
+`session_start`/`knowledge_graph`, plus the github/project board helpers) used the bare
+`(cfg.get("x") or {}).get(...)` idiom a non-empty non-dict value slips past. Adds a shared `_block(cfg,
+name)` helper — degrades a non-dict block (or a non-dict `cfg` itself, so it composes safely at any
+nesting depth) to `{}`, used by every reader in the file — plus guards `_cfg()` against a non-dict
+top-level `config.json` (a bare JSON array/string/number). This is the one tool an adopter runs
+*because* their config is wrong, so it has to survive exactly the malformed input that brought them
+there. Parametrized regression tests cover every declared block × 4 malformed shapes (string, list,
+int, bool), plus the issue's exact repro and two nested-block cases.
+
 ### fix(status): survive a truncated / invalid-UTF-8 goal, state, or ledger file
 `/sdlc-status`'s readers called `read_text()` without `errors=`, and the two that had a `try/except`
 caught only `OSError` — but a process killed mid-append truncates a multi-byte UTF-8 sequence, and the

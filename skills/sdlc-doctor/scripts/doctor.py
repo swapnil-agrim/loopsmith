@@ -23,9 +23,26 @@ def _real_run(args):
 
 def _cfg(sdlc_dir):
     try:
-        return json.loads((pathlib.Path(sdlc_dir) / "config.json").read_text())
+        data = json.loads((pathlib.Path(sdlc_dir) / "config.json").read_text())
     except Exception:
         return {}
+    return data if isinstance(data, dict) else {}   # a non-dict config.json reads as empty, never crashes
+
+
+def _block(cfg, name):
+    """A config BLOCK read that can't crash on a shape typo. `cfg.get(name)` alone is not enough: a
+    truthy NON-dict value (e.g. `{"verify": "pytest"}`) sails past `or {}` unchanged, and every
+    `.get()` a caller then does on it raises `AttributeError` — in the one tool an adopter runs
+    *because* their config is wrong. Every block reader in this file goes through this (including
+    nested ones — pass the parent's OWN `_block()` result back in), so a malformed block anywhere
+    degrades to reading as off/absent instead of aborting the whole check/features/dashboard run.
+    Guards `cfg` itself too (not just the extracted value) — a caller holding a non-dict `cfg` (e.g.
+    a board-helper's `gh_cfg` reached some other way) gets `{}` instead of an AttributeError on the
+    `.get(name)` call, so this composes safely with itself at any nesting depth."""
+    if not isinstance(cfg, dict):
+        return {}
+    value = cfg.get(name)
+    return value if isinstance(value, dict) else {}
 
 
 def _chk(name, ok, fix):
@@ -38,7 +55,7 @@ def _board_dup_risk(gh_cfg, run):
     silently duplicating a board the loop then manages instead of the adopter's. Returns a one-line fix
     when that risk is present, else None. NOT gated on `number` (it fires precisely when number is
     unset); read-only; a can't-read returns None (no false alarm). Catches #9 at setup."""
-    proj = gh_cfg.get("project") or {}
+    proj = _block(gh_cfg, "project")
     if proj.get("number"):                     # a pinned number resolves directly - no create path
         return None
     repo = gh_cfg.get("repo") or ""
@@ -70,7 +87,7 @@ def _unmapped_board_fields(gh_cfg, run):
     field is covered, or None when the board can't be read (no number yet, no `project` scope, an API
     error) — so a can't-tell never reports a false all-clear. The one silent-data-loss trap doctor
     can catch before it fires."""
-    proj = gh_cfg.get("project") or {}
+    proj = _block(gh_cfg, "project")
     repo = gh_cfg.get("repo") or ""
     owner = proj.get("owner") or (repo.split("/")[0] if "/" in repo else "")
     number = proj.get("number")
@@ -98,20 +115,21 @@ def check(sdlc_dir=".sdlc", run=None):
     run = run or _real_run
     base = pathlib.Path(sdlc_dir)
     cfg = _cfg(sdlc_dir)
-    disc = cfg.get("discovery") or {}
-    kg = cfg.get("knowledge_graph") or {}
+    disc = _block(cfg, "discovery")
+    kg = _block(cfg, "knowledge_graph")
     out = [_chk("project layer", (base / "config.json").exists(), "run /sdlc-init to scaffold .sdlc/")]
 
     if disc.get("source") == "github":
         auth = run(["gh", "auth", "status"])
         out.append(_chk("gh auth", bool(auth), "run: gh auth login"))
-        if ((disc.get("github") or {}).get("project") or {}).get("enabled"):
+        gh_disc = _block(disc, "github")
+        if _block(gh_disc, "project").get("enabled"):
             out.append(_chk("gh project scope", bool(auth) and "project" in auth,
                             "run: gh auth refresh -s project"))
-            dup = _board_dup_risk(disc.get("github") or {}, run)
+            dup = _board_dup_risk(gh_disc, run)
             if dup:
                 out.append(_chk("project.number pinned (no duplicate-board risk)", False, dup))
-            unmapped = _unmapped_board_fields(disc.get("github") or {}, run)
+            unmapped = _unmapped_board_fields(gh_disc, run)
             if unmapped is not None:
                 out.append(_chk("board custom fields mapped", not unmapped,
                                 "the board has single-select field(s) loopsmith won't set on issues it "
@@ -133,13 +151,13 @@ def check(sdlc_dir=".sdlc", run=None):
     # The ledger is switched on in config but the ops branch has to be created + pushed once per
     # clone; before that a teammate's `init` finds nothing to fetch. Flag it as a real setup gap with
     # the one command that fixes it — `/sdlc-ledger` runs `sync.py bootstrap` (create + seed + push).
-    if (cfg.get("ledger") or {}).get("enabled") is True:
+    if _block(cfg, "ledger").get("enabled") is True:
         out.append(_chk("team ledger initialized", (base / "ledger" / ".git").exists(),
                         "run /sdlc-ledger — one command creates the ops branch, seeds your file + TEAM.md, and pushes"))
 
     # The permanent-refusal trap: verify.enforce on with no command refuses EVERY `done` forever, and
     # it looks like a working gate, not a misconfig. Flag it (a per-goal `verify_command` also satisfies).
-    verify = cfg.get("verify") or {}
+    verify = _block(cfg, "verify")
     if verify.get("enforce") is True:
         out.append(_chk("verify command present (enforce is on)",
                         bool(verify.get("command")) or _any_goal_verify_command(base),
@@ -148,8 +166,7 @@ def check(sdlc_dir=".sdlc", run=None):
 
     # A backlog cross-check whose park_threshold sits BELOW its candidate threshold parks EVERYTHING it
     # finds — the opposite of "confident hits only". Flag it (only when the feature is actually on).
-    bchk = cfg.get("backlog_check")
-    bchk = bchk if isinstance(bchk, dict) else {}       # a non-dict block reads as off, never crashes
+    bchk = _block(cfg, "backlog_check")
     if bchk.get("enabled") is True:
         dup, park = bchk.get("dup_threshold", 0.72), bchk.get("park_threshold", 0.80)
         try:
@@ -161,8 +178,7 @@ def check(sdlc_dir=".sdlc", run=None):
                         "backlog_check.park_threshold (%r) < dup_threshold (%r): every candidate becomes "
                         "a confident PARK. Set park_threshold >= dup_threshold." % (park, dup)))
         # The dense/embedding layer switched on but with no embedder command silently runs lexical-only.
-        embed = bchk.get("embed")
-        embed = embed if isinstance(embed, dict) else {}
+        embed = _block(bchk, "embed")
         if embed.get("enabled") is True:
             out.append(_chk("backlog cross-check embedder configured",
                             bool((embed.get("command") or "").strip()),
@@ -174,7 +190,7 @@ def check(sdlc_dir=".sdlc", run=None):
     # relative interpreter path (.venv/bin/python3, node_modules/.bin) fails exit=127 on the first
     # real per-goal run. Flag it before it bites.
     vcmd = verify.get("command") or ""
-    if (cfg.get("work") or {}).get("enabled") is True and vcmd:
+    if _block(cfg, "work").get("enabled") is True and vcmd:
         out.append(_chk("verify.command resolves in the goal worktree",
                         not _WORKTREE_DEP.search(vcmd),
                         "verify.command has a RELATIVE .venv/venv/node_modules path — but work.enabled "
@@ -333,7 +349,7 @@ def _ledger_feature_state(base, cfg):
     created + pushed once, so an enabled ledger with NOTHING yet (no worktree and no entries) reports
     the gap and its one-command fix instead of a count that would imply it's live. Once it has a
     worktree or any entries, it's in use — show the count."""
-    if (cfg.get("ledger") or {}).get("enabled") is not True:
+    if _block(cfg, "ledger").get("enabled") is not True:
         return "off (nothing is recorded)"
     base = pathlib.Path(base)
     n = _ledger_entries(base)
@@ -352,8 +368,7 @@ def _telemetry_feature_state(base, cfg):
     """'is on' alone doesn't say where events land or whether share is actually honored yet — see
     plan .sdlc/plans/138.md Decision 3/4. A non-dict telemetry value degrades to off (fail-open),
     same convention as every other block reader in this file."""
-    t = cfg.get("telemetry")
-    t = t if isinstance(t, dict) else {}
+    t = _block(cfg, "telemetry")
     if t.get("enabled") is not True:
         return "off (nothing is recorded)"
     n = _telemetry_events_count(base)
@@ -367,8 +382,7 @@ def _telemetry_feature_state(base, cfg):
 def _backlog_check_state(cfg):
     """OFF unless backlog_check.enabled is strictly True (a truthy string must not switch a pick-path
     behavior on). A non-dict block degrades to off — same convention as every other reader here."""
-    b = cfg.get("backlog_check")
-    b = b if isinstance(b, dict) else {}
+    b = _block(cfg, "backlog_check")
     if b.get("enabled") is not True:
         return "off (a picked goal is worked without a backlog cross-check)"
     how = ("parks a confident duplicate/obsolete/blocked goal (with proof), else annotates"
@@ -383,7 +397,7 @@ def _decision_gate_state(base, cfg):
     reg = pathlib.Path(base) / "decisions.json"
     if not reg.exists():
         return "off (no registry — nothing is enforced)"
-    if ((cfg.get("gates") or {}).get("decision_gate") or {}).get("enabled") is False:
+    if _block(_block(cfg, "gates"), "decision_gate").get("enabled") is False:
         return "DISABLED by config (registry present but not enforced)"
     try:
         decisions = json.loads(reg.read_text(encoding="utf-8")).get("decisions") or []
@@ -426,7 +440,7 @@ def _review_gate_state(wk):
 def _review_independence_state(cfg):
     """Is the maker kept out of its own review? Worth showing because the failure is silent: a maker
     that reviews its own plan/diff reads as "reviewed", and on a lower tier it rubber-stamps."""
-    if (cfg.get("review") or {}).get("independent") is False:
+    if _block(cfg, "review").get("independent") is False:
         return "off (INLINE — the maker reviews its own work; a fresh reviewer is not spawned)"
     return "ON — a fresh, author-blind reviewer per gate, grounded in the north-star + whole repo"
 
@@ -437,12 +451,13 @@ def features(sdlc_dir=".sdlc"):
     import os
     cfg = _cfg(sdlc_dir)
     base = pathlib.Path(sdlc_dir)
-    budget = cfg.get("budget") or {}
-    verify = cfg.get("verify") or {}
-    gate = (cfg.get("gates") or {}).get("hard_plan_gate") or {}
-    sg = (cfg.get("gates") or {}).get("stop_gate") or {}
-    par = cfg.get("parallel") or {}
-    wk = cfg.get("work") or {}
+    budget = _block(cfg, "budget")
+    verify = _block(cfg, "verify")
+    gates = _block(cfg, "gates")
+    gate = _block(gates, "hard_plan_gate")
+    sg = _block(gates, "stop_gate")
+    par = _block(cfg, "parallel")
+    wk = _block(cfg, "work")
     rows = [
         ("model+effort auto-selection",
          "AUTO (per-goal `resolve` + per-step `resolve-step`)"
@@ -476,13 +491,13 @@ def features(sdlc_dir=".sdlc"):
          "env LOOPSMITH_GATE_GLOBAL=1 restores always-on"),
         ("SessionStart policy brief",
          "ON — injects the SDLC brief + install self-check at session start"
-         if (cfg.get("session_start") or {}).get("enabled") is True else "off",
+         if _block(cfg, "session_start").get("enabled") is True else "off",
          'config: "session_start": {"enabled": true}'),
         ("knowledge graph",
-         "enabled" if (cfg.get("knowledge_graph") or {}).get("enabled") is True else "off",
+         "enabled" if _block(cfg, "knowledge_graph").get("enabled") is True else "off",
          'config: "knowledge_graph": {"enabled": true}'),
         ("backlog source",
-         (cfg.get("discovery") or {}).get("source") or "local-goals",
+         _block(cfg, "discovery").get("source") or "local-goals",
          'config: "discovery": {"source": "github"}'),
         ("team ledger",
          _ledger_feature_state(base, cfg),
