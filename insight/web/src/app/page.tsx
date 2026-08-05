@@ -20,8 +20,14 @@ const placeholder: Metric = {
 };
 
 export default function Home() {
+  // TEMPORARY (issue #302, demo 4 of 4): a deliberate BUILD-time failure, to watch the `web`
+  // required check go red at `npm run build` specifically. `document` is legal browser-side JS and
+  // `dom` is in tsconfig's `lib`, so tsc cannot catch it and ESLint has no rule for it -- it
+  // survives typecheck, lint AND test, and dies only in next build's server-side prerender with
+  // "ReferenceError: document is not defined". Reverted in the next commit.
+  const title = document.title;
   return (
-    <main>
+    <main data-demo={title}>
       <h1>{renderLabel(placeholder)}</h1>
     </main>
   );

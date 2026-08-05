@@ -169,10 +169,6 @@ function main() {
   control();
   criterionThreeUnnarrowedValueFails();
   criterionTwoRenameBreaksMetricLabel();
-  // TEMPORARY (issue #302, demo 3 of 4): a deliberately failing assertion, to watch the `web`
-  // required check go red at `npm run test`. It survives typecheck and lint, so it proves the
-  // `test` script specifically. Reverted in the next commit.
-  assert.strictEqual(1, 2, "deliberate failure for issue #302's CI-red demonstration");
 }
 
 main();
