@@ -25,6 +25,82 @@ def test_summary_counts_quoted_status():   # parity with frontmatter.parse (stri
         assert _status().summary(str(base))["done"] == 1
 
 
+# --- F7: a truncated/invalid-UTF-8 goal, state, or ledger file must not crash summary() -------
+
+#: A multi-byte UTF-8 char ("é" = b"\xc3\xa9") chopped mid-sequence — exactly what a process killed
+#: mid-append leaves behind. This is a genuine encoding error, not a crafted edge case.
+_TRUNCATED_UTF8 = "café".encode("utf-8")[:-1]
+
+
+def test_summary_survives_a_truncated_goal_file():
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True); (base / "state").mkdir()
+        (base / "goals" / "0001.md").write_bytes(b"---\nid: 0001\nstatus: done\n---\n" + _TRUNCATED_UTF8)
+        (base / "goals" / "0002.md").write_text("---\nid: 0002\nstatus: pending\n---\nx\n")
+        out = _status().summary(str(base))         # must not raise
+        assert out["pending"] == 1                  # the good file is still counted correctly
+
+
+def test_summary_survives_a_truncated_state_md():
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True); (base / "state").mkdir()
+        (base / "state" / "STATE.md").write_bytes(b"iteration: 4\n" + _TRUNCATED_UTF8)
+        out = _status().summary(str(base))          # must not raise
+        assert "iteration" in out
+
+
+def test_summary_survives_a_truncated_review_queue():
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True); (base / "state").mkdir()
+        (base / "state" / "review-queue.md").write_bytes(b"## something\n" + _TRUNCATED_UTF8)
+        out = _status().summary(str(base))          # must not raise
+        assert out["queue_nonempty"] is True          # the readable "## " heading still counts
+
+
+def test_goals_since_align_survives_a_truncated_report():
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"
+        (base / "context").mkdir(parents=True)
+        (base / "context" / "north-star.md").write_text("x\n")
+        (base / "knowledge" / "align").mkdir(parents=True)
+        (base / "knowledge" / "align" / "2026-01-01.md").write_bytes(
+            b"goals_reviewed: 3\n" + _TRUNCATED_UTF8)
+        result = _status()._goals_since_align(base, done=5, iteration=5)   # must not raise
+        assert result == 2   # max(5,5) - 3
+
+
+def test_ledger_entries_survives_a_truncated_jsonl():
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"
+        entries = base / "ledger" / "entries"; entries.mkdir(parents=True)
+        (entries / "dana.jsonl").write_bytes(b'{"id":"dana:1"}\n' + _TRUNCATED_UTF8)
+        # must not raise; the whole good line is still counted (the truncated remnant decodes to a
+        # replacement char and may or may not count as a trailing "line" of its own — not the point)
+        assert _status()._ledger_entries(base) >= 1
+
+
+def test_summary_survives_invalid_utf8_everywhere_at_once():
+    """The end-to-end acceptance case: every reader summary() touches is fed a truncated file at
+    once, and the dashboard still returns a complete result instead of crashing."""
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"
+        (base / "goals").mkdir(parents=True)
+        (base / "state").mkdir()
+        (base / "context").mkdir()
+        (base / "knowledge" / "align").mkdir(parents=True)
+        (base / "ledger" / "entries").mkdir(parents=True)
+        (base / "goals" / "0001.md").write_bytes(b"---\nid: 0001\nstatus: done\n---\n" + _TRUNCATED_UTF8)
+        (base / "state" / "STATE.md").write_bytes(b"iteration: 2\n" + _TRUNCATED_UTF8)
+        (base / "state" / "review-queue.md").write_bytes(_TRUNCATED_UTF8)
+        (base / "context" / "north-star.md").write_text("x\n")
+        (base / "knowledge" / "align" / "2026-01-01.md").write_bytes(
+            b"goals_reviewed: 1\n" + _TRUNCATED_UTF8)
+        (base / "ledger" / "entries" / "dana.jsonl").write_bytes(b'{"id":"dana:1"}\n' + _TRUNCATED_UTF8)
+        out = _status().summary(str(base))          # must not raise, from any of the five readers
+        assert set(out) >= {"pending", "in_progress", "done", "parked", "failed", "proposed",
+                            "iteration", "queue_nonempty", "ledger_entries", "goals_since_align"}
+
+
 def _gh_sdlc(d, **gh):
     import json
     base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True); (base / "state").mkdir()

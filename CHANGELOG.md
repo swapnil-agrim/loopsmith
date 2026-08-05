@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### fix(status): survive a truncated / invalid-UTF-8 goal, state, or ledger file
+`/sdlc-status`'s readers called `read_text()` without `errors=`, and the two that had a `try/except`
+caught only `OSError` — but a process killed mid-append truncates a multi-byte UTF-8 sequence, and the
+resulting `UnicodeDecodeError` is a `ValueError`, not an `OSError`, so it sailed past the catch and took
+the whole dashboard down. `doctor.py`'s `_count_jsonl_lines` already documents + defends this with
+`errors="replace"`; status's five readers (goal frontmatter, `STATE.md`, `review-queue.md`, the last
+alignment report, and ledger entries) hadn't been hardened the same way. Mirrors that fix across all
+five, so `summary()` now produces counts instead of crashing on a truncated file anywhere in its
+sources — proven with a case that plants invalid UTF-8 in all five sources at once.
+
 ### fix(collectors): unify the two bash collectors' secret-pattern sets (F29)
 `risk-detect.sh` and `alignment-collect.sh` each hard-stop on a secret-shaped line, but the two pattern
 sets had drifted apart: `alignment-collect.sh` alone caught Slack tokens (`xox…`) and `AWS_SECRET_ACCESS_KEY`
