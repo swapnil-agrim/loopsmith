@@ -139,14 +139,52 @@ def root(sdlc_dir, goal):
     return str(project_root(sdlc_dir))
 
 
+def _resume_blocked_by_a_live_sibling(sdlc_dir, config, goal):
+    """None if resuming this goal's existing local worktree is safe; else a REFUSAL string
+    explaining why not (F10.5/#374). A local worktree existing on disk only proves THIS MACHINE
+    started it once — not that the process which claimed it is gone. If the ledger's claim for this
+    goal belongs to a DIFFERENT, still-live process of my own actor, that worktree is someone
+    else's in-flight work (two loops sharing one gh login, or a routine firing again before the
+    first run finished) — reusing it would silently corrupt it, exactly the race a routine firing
+    without an explicit target hit live. `ledger.claim_belongs_to_me` makes the same "mine to
+    resume?" call `loop.py`'s `_next()` makes before ever picking a goal; this is the second gate,
+    for when `start()` is reached directly (an explicit target, bypassing `next`) or a stale local
+    record outlives the claim that created it.
+
+    Fail-open on anything unreadable (ledger off, unparseable state, etc.) — this guard NARROWS an
+    already-idempotent resume, it must never become a new way for `start()` to break when the
+    ledger itself is fine but reading it hiccups."""
+    try:
+        if not ledger.enabled(config):
+            return None
+        me = ledger.actor(config)
+        my_writer = ledger.my_writer(config)
+        ttl = ledger.lease_ttl_seconds(config)
+        lease = ledger.open_claims_detailed(ledger.read_all(sdlc_dir), ttl_seconds=ttl)
+        holder_actor, holder_writer = lease.get(str(goal), (None, None))
+        if holder_actor and not ledger.claim_belongs_to_me(holder_actor, holder_writer, me, my_writer):
+            return (f"REFUSED — {goal}'s local worktree already exists, but its ledger claim belongs "
+                    f"to a different, still-live process of {holder_actor} ({holder_writer}), not this "
+                    f"one ({my_writer}). Not resuming it — that worktree is likely another session's "
+                    f"in-flight work.")
+        return None
+    except Exception:                # noqa: BLE001 - fail-open; an unreadable lease must never block a resume
+        return None
+
+
 def start(sdlc_dir, config, goal, run=None):
     """Cut a fresh worktree + branch from the tip of the integration branch. Idempotent, and
     resumable: the record lives in gitignored state, so a supervisor relaunch re-attaches instead of
-    starting a second worktree for the same goal."""
+    starting a second worktree for the same goal — but ONLY once `_resume_blocked_by_a_live_sibling`
+    confirms that goal's ledger claim (if the ledger is on) is genuinely safe to treat as mine to
+    resume, not another still-live process of my own actor's in-flight work (F10.5/#374)."""
     run = run or _run
     s, base_root = settings(config), project_root(sdlc_dir)
     rec = _record(sdlc_dir, goal)
     if rec and pathlib.Path(rec["worktree"]).is_dir():
+        blocker = _resume_blocked_by_a_live_sibling(sdlc_dir, config, goal)
+        if blocker:
+            return blocker
         return f"already started: {rec['worktree']} on {rec['branch']}"
 
     base = s["base"] or run(base_root, ["git", "rev-parse", "--abbrev-ref", "HEAD"])

@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### fix(loop): two concurrent processes of the SAME actor no longer read each other's claim as "mine to resume"
+Reproduces and fixes a real bug hit live: a routine firing a fresh session without an explicit
+target resumed a goal a DIFFERENT, still-running session of the same `gh` login had already claimed
+and was mid-way through — 18 modified files, silently at risk of corruption from a second, context-less
+session touching the same worktree. Traced to a three-part gap: `sources.py`'s `next_pending()` doesn't
+filter on the in-progress label; `ledger.py`'s `open_claims()` returned `{goal: actor}` with no
+per-process granularity, even though every entry's `id` already carries a pid (`entries/<actor>-<pid>.jsonl`,
+`<actor>:<pid>:<seq>`, since the concurrent-writer fix above); and `loop.py`'s `_next()` treated ANY
+same-actor claim as automatically "mine, resume it" — two of one person's own concurrent sessions were
+structurally indistinguishable.
+
+`ledger.py` gains `open_claims_detailed()` (writer-aware: `{goal: (actor, writer)}`), `my_writer()`
+(this process's own `actor:pid` identity), `writer_pid()`, `pid_alive()` (a same-machine liveness
+probe, `os.kill(pid, 0)`), and `claim_belongs_to_me()` — the one function both `loop.py`'s `_next()`
+and `work.py`'s `start()` now call to decide whether an open claim is safe to treat as mine: my own
+current process (resume, unchanged), a legacy pre-fix claim with no pid to check (resume, degenerately
+always mine — no regression for the transitional case), a DIFFERENT but still-live writer of mine
+(skip — not mine to touch), or a confirmed-dead one (reclaim, faster than waiting out the lease TTL).
+Liveness-checking fails toward "assume alive, defer to the existing TTL" on anything it cannot resolve
+(a different machine, a platform where signal-0 behaves oddly) — guessing wrong the other way
+reintroduces the exact bug this closes. `work.py start()`'s own idempotent resume (correct for a
+single crashed session relaunching) now refuses instead of silently reusing a live sibling's worktree.
+
 ### fix(ledger): concurrent same-actor loops no longer collide on `id` or lose a hand-off
 Several parallel loops resolving to the SAME actor (a shared `gh` login) used to write the same
 `entries/<actor>.jsonl` file — two concurrent appends both read `_line_count` as 0 and both minted

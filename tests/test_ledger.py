@@ -332,8 +332,8 @@ def test_loop_maps_any_non_terminal_result_onto_parked(tmp_path):
 # --------------------------------------------------------------------- claim lease
 
 
-def _e(actor, seq, kind, goal, ts="2026-07-27T09:00:00Z"):
-    return {"id": f"{actor}:{seq}", "ts": ts, "actor": actor, "kind": kind, "goal": str(goal)}
+def _e(actor, seq, kind, goal, ts="2026-07-27T09:00:00Z", id=None):
+    return {"id": id or f"{actor}:{seq}", "ts": ts, "actor": actor, "kind": kind, "goal": str(goal)}
 
 
 def test_open_claims_holds_a_claimed_goal_and_names_the_holder():
@@ -364,6 +364,80 @@ def test_a_claim_past_its_ttl_is_treated_as_released():
     assert ledger.open_claims(entries, now=now, ttl_seconds=12 * 3600) == {}       # expired
     assert ledger.open_claims(entries, now=now, ttl_seconds=24 * 3600) == {"42": "amy"}   # still fresh
     assert ledger.open_claims(entries, now=now, ttl_seconds=None) == {"42": "amy"}         # no expiry
+
+
+# --------------------------------------------------------------------- writer identity (#374)
+# Two of ONE actor's own concurrent processes are no longer indistinguishable to the claim lease
+# -- the exact gap that let a routine's fresh invocation blindly resume another still-running
+# session's in-flight worktree (see loopsmith-parallel-autoupdate-plan.md #374).
+
+
+def test_writer_is_actor_pid_for_a_3_part_id_but_falls_back_to_bare_actor_for_legacy():
+    assert ledger._writer(_e("dana", 1, "claimed", "42", id="dana:111:1")) == "dana:111"
+    assert ledger._writer(_e("dana", 1, "claimed", "42")) == "dana"          # legacy 2-part id
+    assert ledger._writer({"actor": "dana"}) == "dana"                      # id missing entirely
+
+
+def test_my_writer_is_actor_colon_this_processs_own_pid():
+    assert ledger.my_writer({"ledger": {"actor": "dana"}}) == f"dana:{os.getpid()}"
+
+
+def test_writer_pid_extracts_the_pid_or_none_for_a_legacy_writer():
+    assert ledger.writer_pid("dana:12345") == 12345
+    assert ledger.writer_pid("dana") is None
+    assert ledger.writer_pid("") is None
+
+
+def test_pid_alive_is_true_for_this_process_and_false_for_an_unlikely_pid():
+    assert ledger.pid_alive(os.getpid()) is True
+    assert ledger.pid_alive(2**30) is False          # not a real pid on any sane system
+
+
+def test_open_claims_detailed_exposes_the_writer_alongside_the_actor():
+    entries = [_e("dana", 1, "claimed", "42", id="dana:111:1")]
+    assert ledger.open_claims_detailed(entries) == {"42": ("dana", "dana:111")}
+    assert ledger.open_claims(entries) == {"42": "dana"}                    # sibling view unaffected
+
+
+def test_open_claims_detailed_ttl_and_release_semantics_match_open_claims_exactly():
+    """The writer-detailed view must not silently diverge from the actor-only one on anything
+    OTHER than the writer field itself -- same TTL expiry, same terminal-outcome release."""
+    entries = [_e("dana", 1, "claimed", "42", id="dana:111:1", ts="2026-07-27T00:00:00Z")]
+    now = ledger._epoch("2026-07-27T13:00:00Z")
+    assert ledger.open_claims_detailed(entries, now=now, ttl_seconds=12 * 3600) == {}
+    assert ledger.open_claims_detailed(entries, now=now, ttl_seconds=24 * 3600) == {
+        "42": ("dana", "dana:111")}
+    released = entries + [_e("dana", 2, "done", "42", id="dana:111:2")]
+    assert ledger.open_claims_detailed(released) == {}
+
+
+def test_claim_belongs_to_me_is_false_for_a_different_actor_regardless_of_writer():
+    assert ledger.claim_belongs_to_me("amy", "amy:111", "dana", "dana:222") is False
+
+
+def test_claim_belongs_to_me_is_true_for_my_own_current_writer():
+    assert ledger.claim_belongs_to_me("dana", "dana:222", "dana", "dana:222") is True
+
+
+def test_claim_belongs_to_me_is_true_for_a_legacy_same_actor_claim_no_regression():
+    """A pre-#337 2-part-id claim has no pid to distinguish -- there was only ever one writer file
+    per actor then, so a same-actor legacy claim stays resumable exactly like before this fix."""
+    assert ledger.claim_belongs_to_me("dana", "dana", "dana", "dana:222") is True
+
+
+def test_claim_belongs_to_me_is_false_for_a_live_sibling_process_of_my_own_actor():
+    """THE regression this issue exists to close: a different, still-running process of MY OWN
+    actor holding the claim must not read as 'mine to resume' just because the actor matches."""
+    live_sibling_writer = f"dana:{os.getpid()}"          # this test process is, definitionally, alive
+    assert ledger.claim_belongs_to_me("dana", live_sibling_writer, "dana", "dana:999999") is False
+
+
+def test_claim_belongs_to_me_is_true_for_a_dead_sibling_process_of_my_own_actor():
+    """A crashed sibling's claim is still safely reclaimable -- liveness-checking must not turn
+    into a NEW way to wedge a goal forever; that is what the existing TTL fallback already covers,
+    and this must not regress it for the common single-loop-crashed case."""
+    assert ledger.claim_belongs_to_me("dana", "dana:2147483647", "dana", "dana:999999") is True
+
 
 def test_handoff_states_and_unanswered_separate_stuck_from_in_progress():
     """`outstanding` alone cannot tell a hand-off nobody has looked at from one someone has taken —

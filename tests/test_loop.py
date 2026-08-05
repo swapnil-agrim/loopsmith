@@ -1,4 +1,4 @@
-import hashlib, json, pathlib, importlib.util, tempfile, subprocess, sys
+import hashlib, json, os, pathlib, importlib.util, tempfile, subprocess, sys
 
 S = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts"
 
@@ -367,6 +367,10 @@ class _Queue:
 
 
 def _lease_base(d, actor="me", claims=(), enabled=True, ttl_hours=0):
+    """`claims` entries are `(who, goal, kind)` for a legacy, pre-#337 claim (one writer file per
+    actor, 2-part id) or `(who, goal, kind, pid)` for a specific WRITER's claim (F10/#337 shape:
+    its own `<who>-<pid>.jsonl` file, 3-part id) — used by #374's own tests below to simulate a
+    second, distinct process of the same actor."""
     base = pathlib.Path(d) / ".sdlc"; (base / "state").mkdir(parents=True)
     (base / "config.json").write_text(json.dumps(
         {"ledger": {"enabled": enabled, "actor": actor, "lease": {"ttl_hours": ttl_hours}},
@@ -374,10 +378,15 @@ def _lease_base(d, actor="me", claims=(), enabled=True, ttl_hours=0):
     (base / "state" / "STATE.md").write_text("iteration: 0\nrun_iteration: 0\nlast_run: none\n")
     ent = base / "ledger" / "entries"; ent.mkdir(parents=True)
     seqs = {}
-    for who, goal, kind in claims:
-        seqs[who] = seqs.get(who, 0) + 1
-        with (ent / f"{who}.jsonl").open("a") as f:
-            f.write(json.dumps({"id": f"{who}:{seqs[who]}", "ts": "2026-07-27T09:00:00Z",
+    for claim in claims:
+        who, goal, kind = claim[0], claim[1], claim[2]
+        pid = claim[3] if len(claim) > 3 else None
+        key = (who, pid)
+        seqs[key] = seqs.get(key, 0) + 1
+        fname = f"{who}-{pid}.jsonl" if pid is not None else f"{who}.jsonl"
+        ident = f"{who}:{pid}:{seqs[key]}" if pid is not None else f"{who}:{seqs[key]}"
+        with (ent / fname).open("a") as f:
+            f.write(json.dumps({"id": ident, "ts": "2026-07-27T09:00:00Z",
                                 "actor": who, "kind": kind, "goal": str(goal)}) + "\n")
     return str(base)
 
@@ -413,6 +422,53 @@ def test_next_reports_done_when_every_goal_is_held_elsewhere():
         lp = _loop(); src = _Queue(["a", "b"])
         kind, goal = lp._next(base, src, lp.state.load_config(base))
         assert (kind, goal) == ("DONE", None) and src.marked == []       # nothing free for me
+
+
+# --------------------------------------------------------------------- writer-aware lease (#374)
+# A claim held by MY OWN actor is not always mine to resume: two concurrent processes sharing one
+# gh login (a routine firing again before an earlier run finished) must not read each other's
+# claims as "mine" just because the actor matches. See ledger.claim_belongs_to_me.
+
+
+def test_next_skips_a_goal_a_live_sibling_process_of_my_own_actor_holds(monkeypatch):
+    """THE regression this issue exists to close: reproduces exactly what a stakeholder hit live
+    -- a routine's fresh invocation must not resume a goal a DIFFERENT, still-running process of
+    the SAME actor already claimed. It must skip to the next eligible goal instead, exactly like
+    it already does for a genuinely different actor."""
+    real_pid = os.getpid()                            # this test process's REAL pid -- verifiably
+    with tempfile.TemporaryDirectory() as d:           # alive right now, a true positive for pid_alive
+        base = _lease_base(d, actor="me", claims=[("me", "a", "claimed", real_pid)])
+        monkeypatch.setattr(os, "getpid", lambda: real_pid + 1)  # simulate a DIFFERENT process of "me"
+        lp = _loop(); src = _Queue(["a", "b"])
+        kind, goal = lp._next(base, src, lp.state.load_config(base))
+        assert (kind, goal) == ("goal", "b")           # "a" belongs to a live sibling -- passed over
+        assert lp.ledger.open_claims(lp.ledger.read_all(base))["a"] == "me"   # still "me" -- untouched
+
+
+def test_next_reclaims_a_goal_a_dead_sibling_process_of_my_own_actor_held(monkeypatch):
+    """A crashed sibling's claim is still safely reclaimable -- liveness-checking must not become
+    a NEW way to wedge a goal forever (the existing TTL already covers this case too; this proves
+    the FASTER, liveness-based path also works, not just the slow TTL fallback)."""
+    with tempfile.TemporaryDirectory() as d:
+        dead_pid = 2**30                               # not a real pid on any sane system
+        base = _lease_base(d, actor="me", claims=[("me", "a", "claimed", dead_pid)])
+        monkeypatch.setattr(os, "getpid", lambda: dead_pid + 1)
+        lp = _loop(); src = _Queue(["a"])
+        kind, goal = lp._next(base, src, lp.state.load_config(base))
+        assert (kind, goal) == ("goal", "a")           # dead sibling's claim -- safe to reclaim
+
+
+def test_next_resumes_a_goal_my_own_current_process_already_holds(monkeypatch):
+    """Not just the legacy (no-pid) resume case above (test_next_resumes_a_goal_this_actor_
+    already_holds) -- my own CURRENT pid's post-#337 claim must resume too, matching pre-#374
+    single-process behavior exactly."""
+    with tempfile.TemporaryDirectory() as d:
+        my_pid = 424242
+        base = _lease_base(d, actor="me", claims=[("me", "a", "claimed", my_pid)])
+        monkeypatch.setattr(os, "getpid", lambda: my_pid)   # the SAME pid as the claim -- my own
+        lp = _loop(); src = _Queue(["a", "b"])
+        kind, goal = lp._next(base, src, lp.state.load_config(base))
+        assert (kind, goal) == ("goal", "a")
 
 
 def test_next_ignores_the_lease_when_the_ledger_is_off():
