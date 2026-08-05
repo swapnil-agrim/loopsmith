@@ -16,5 +16,6 @@ worked, end-to-end proof. The other 24 NOW metrics are #109-113's job; #114 owns
 reliability-class enforcement (checking what a metric's SQL actually reads against what it
 declares) -- this module only checks that the five header fields are present and well-formed.
 """
+from insight.metrics.catalog import CATALOG  # noqa: F401
 from insight.metrics.header import HeaderError, parse_header  # noqa: F401
 from insight.metrics.loader import DEFAULT_METRICS_DIR, MetricLoadError, load_metrics  # noqa: F401

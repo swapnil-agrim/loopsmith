@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
-"""The FastAPI skeleton (issue #299, E16.S1): create_app() and the /health route.
+"""The FastAPI skeleton (issue #299, E16.S1) plus GET /metrics (issue #300, E16.S2).
 
 Reads the DuckDB store read-only through insight.ingest.store -- no new query layer, no
-duplicated SQL (Decision 3, .sdlc/plans/299.md). No metric endpoints (E16.S2) and no auth
-(spec §5.1.1 -- the API is never given a published port; E22.S1's job) belong here.
+duplicated SQL (Decision 3, .sdlc/plans/299.md). No auth (spec §5.1.1 -- the API is never given
+a published port; E22.S1's job) belongs here.
 """
+from typing import List
+
 from fastapi import FastAPI
 
+from insight.api.metrics import collect_metrics
+from insight.api.models import Metric
 from insight.ingest.store import has_any_rows, open_store_read_only
 
 
@@ -51,6 +55,25 @@ def create_app(db_path=None):
         finally:
             conn.close()
         return {"store": "populated" if populated else "empty"}
+
+    @app.get("/metrics", response_model=List[Metric])
+    def metrics():
+        """Every catalog entry, resolved (spec §3's Metric union, issue #300 [E16.S2]): a cold or
+        missing store degrades every metric to an absent state, never a crash and never a
+        fabricated value -- the same read-connection, same try/except FileNotFoundError shape
+        as /health above, reused rather than duplicated. `response_model=list[Metric]` is what
+        makes FastAPI enforce the union's `extra="forbid"` on the way OUT, not merely in Python:
+        a `MeasuredMetric`/absent-model mismatch here would fail serialization, not silently
+        leak an extra field onto the wire.
+        """
+        try:
+            conn = get_connection(db_path)
+        except FileNotFoundError:
+            return collect_metrics(None)
+        try:
+            return collect_metrics(conn)
+        finally:
+            conn.close()
 
     return app
 

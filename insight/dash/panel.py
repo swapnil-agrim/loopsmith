@@ -43,25 +43,11 @@ from insight.dash.instrument import (
     readout as _readout,
     section_rule,
 )
-
-# The 42-metric catalog, id -> short name. Sourced from the data-platform spec's section 6 table.
-# Held here as data rather than re-read from the spec markdown at build time: the spec is prose and
-# its table formatting is not a stable interface, whereas this mapping is small and rarely changes.
-CATALOG = {
-    1: "Throughput", 2: "Cycle time", 3: "Lead time for change", 4: "Merge frequency",
-    5: "Change failure rate", 6: "MTTR proxy", 7: "Flow load (WIP)", 8: "Flow efficiency",
-    9: "Flow distribution", 10: "Aging WIP", 11: "Throughput forecast", 12: "Autonomy rate",
-    13: "Interventions per goal", 14: "Park rate", 15: "Park taxonomy",
-    16: "Review-cycle distribution", 17: "Cost per landed goal", 18: "Tokens per phase",
-    19: "Budget-exhaustion rate", 20: "Rework ratio", 21: "Model-tier effectiveness",
-    22: "Prevented rework", 23: "Gate catch rate", 24: "Gate coverage", 25: "Escape rate",
-    26: "Verify reliability", 27: "Decision-gate denials", 28: "Alignment drift",
-    29: "Retro grade mix", 30: "Debt inventory", 31: "Handoff graph",
-    32: "Handoff response time", 33: "Unanswered handoffs", 34: "Deferred-handoff age",
-    35: "Lease contention", 36: "Parallelism yield", 37: "Ownership concentration",
-    38: "Cross-area coupling", 39: "DX Core-4 rollup", 40: "Unit economics",
-    41: "Portfolio table", 42: "Adoption & flag correlation",
-}
+# CATALOG moved to insight.metrics.catalog (issue #300 [E16.S2], Decision (a)): insight.api's
+# /metrics route needs the same id -> label mapping, and insight/metrics/ is the shared home
+# for catalog data, not insight.dash. Re-imported here (not re-defined) so every existing
+# `from insight.dash.panel import CATALOG` keeps resolving to the exact same object.
+from insight.metrics.catalog import CATALOG
 
 # Which of the 42 belong to which band of the panel's bottom board. Grouping is by the question the
 # metric answers, matching the spec's own section-6 ordering, so the board reads as subject areas

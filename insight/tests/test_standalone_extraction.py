@@ -138,6 +138,11 @@ ALLOWED_SKIP_REASONS = (
     # .sdlc/plans/299.md Decision 3 for the scratch demonstration that these strings are correct.
     "could not import 'fastapi'",
     "could not import 'httpx'",
+    # issue #300 [E16.S2]: insight/api/models.py's first pydantic-touching test file, pre-added
+    # defensively the same way #299 pre-added the fastapi/httpx pair above before any file
+    # actually exercised the skip path -- pydantic is declared in pyproject.toml and present on
+    # this dev machine and in CI, so this file actually runs rather than skips here.
+    "could not import 'pydantic'",
 )
 
 #: The exact node id the child must report PASSED for `test_child_planted_self_check_ran_and_passed`

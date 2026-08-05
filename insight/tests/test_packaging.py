@@ -173,6 +173,23 @@ def test_pyproject_pins_fastapi_with_a_lower_and_an_upper_bound():
     )
 
 
+def test_pyproject_pins_pydantic_with_a_lower_and_an_upper_bound():
+    """Issue #300 [E16.S2]: insight/api/models.py imports pydantic directly (not merely
+    transitively through fastapi), so it needs its own explicit pin, mirroring
+    test_pyproject_pins_duckdb_with_a_lower_and_an_upper_bound exactly -- the repo's established
+    convention (duckdb, fastapi both carry an explicit bounded pin with a matching test) instead
+    of resting a direct import on an undeclared transitive dependency fastapi's own
+    pyproject.toml could loosen later without this repo noticing."""
+    text = _pyproject_text()
+    m = re.search(r'"pydantic\s*([^"]*)"', text)
+    assert m, "pydantic must be declared in [project.dependencies]"
+    spec = m.group(1).strip()
+    assert spec, "pydantic must carry a version specifier, not be unbounded"
+    has_lower = bool(re.search(r"(~=|>=|>)\s*\d", spec))
+    has_upper = "~=" in spec or bool(re.search(r"(<=|<)\s*\d", spec))
+    assert has_lower and has_upper, f"pydantic spec {spec!r} needs both a lower and an upper bound"
+
+
 def test_pyproject_declares_insight_api_in_the_packages_allowlist():
     """Issue #299 [E16.S1]: insight/api/'s own README.md (pre-written by E15.S2) already
     pre-flags this exact packaging trap -- packages=[...] is an explicit allowlist, not a glob,

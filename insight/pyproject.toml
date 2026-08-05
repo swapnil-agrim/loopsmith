@@ -30,6 +30,10 @@ dependencies = [
     # it is test-only, never imported by the shipped app, and lives on
     # .github/workflows/ci.yml's insight-job install line instead. See Decision 2.
     "fastapi~=0.116.1",
+    # insight/api/models.py imports pydantic directly, not merely transitively through fastapi
+    # (issue #300 [E16.S2]) -- declared explicitly rather than resting on fastapi's own
+    # transitive pin, which it could loosen later without this repo noticing.
+    "pydantic~=2.11",
 ]
 
 [project.scripts]
