@@ -235,9 +235,11 @@ scan_hardstops() {
       /^@@ / { inhunk=1; h=$0; sub(/^@@ -[0-9,]+ \+/,"",h); sub(/[, ].*$/,"",h); newln=h+0; next }
       inhunk && /^\+/ {
         line=$0; sub(/^\+/,"",line)
-        if (line ~ /(AWS_SECRET_ACCESS_KEY|aws_secret_access_key|api[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|password)[ \t]*[:=]/)
+        # Secret-shape patterns kept in lockstep with risk-detect.sh content-scan (F29 parity) —
+        # a parity test in tests/test_risk_detect.py enforces the two sets stay equal.
+        if (line ~ /(AWS_SECRET_ACCESS_KEY|aws_secret_access_key|api[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|access[_-]?token|password)[ \t]*[:=]/)
           emit("secret","secret_key")
-        else if (line ~ /(AKIA[0-9A-Z]{8}|ghp_[0-9A-Za-z]{8}|xox[baprs]-[0-9A-Za-z-]{8}|-----BEGIN[ A-Z]*PRIVATE KEY-----)/)
+        else if (line ~ /(AKIA[0-9A-Z]{8}|ghp_[0-9A-Za-z]{8}|xox[baprs]-[0-9A-Za-z-]{8}|glpat-[0-9A-Za-z_-]{8}|AIza[0-9A-Za-z_-]{8}|-----BEGIN[ A-Z]*PRIVATE KEY-----)/)
           emit("secret","generic_token")
         if (file ~ /\.env($|\.)/) emit("env_file","env_file")
         if (line ~ /(DROP[ \t]+(TABLE|DATABASE|SCHEMA)|TRUNCATE[ \t]+TABLE|DELETE[ \t]+FROM)/)
