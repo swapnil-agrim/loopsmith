@@ -124,10 +124,24 @@ real, reproduced double-wins, not theoretical concerns.
 
 The shipped fix serializes the whole check-evict-create decision behind a short-lived `mkdir`-based
 mutex (POSIX-atomic, held only for a handful of near-instant local filesystem calls, not the
-watcher's lifetime) instead of trying to make a multi-step sequence itself safe to interleave — once
-serialized, there is no window left for a second racer's actions to land inside the decision at all.
-The exit trap only removes the pidfile if it still names the process removing it, defense in depth
+watcher's lifetime) instead of trying to make a multi-step sequence itself safe to interleave. The
+exit trap only removes the pidfile if it still names the process removing it, defense in depth
 against the exact symptom F21 named (a fast-exiting winner's cleanup orphaning a slower survivor).
+
+Independent review found the mutex's own staleness-recovery path had the identical shape one level
+up: a plain, unguarded `stat` + age-check + `rmdir` + `mkdir` reclaim sequence let several racers who
+all read the SAME stale mtime race that four-step sequence against each other — reproduced
+empirically (70-90% double-win rate at 15/40/80 racers against a deliberately orphaned mutex, up to 7
+processes simultaneously alive). Unlike the two bugs above, this one reproduces reliably through this
+file's own `pytest`/`Popen`-launched suite (0/10 anomalies after the fix, same harness both
+directions) because its trigger window is a deliberately wide one (tens of seconds), not a razor-thin
+natural race. Fixed with the same discipline applied one level deeper: the reclaim decision is now
+gated behind its own atomic `mkdir` (`watch.decide.lock.reclaim`), so at most one racer can ever be
+inside the stat-evict-create sequence at a time. That inner gate deliberately gets no staleness
+recovery of its own — its critical section is shorter still, and an orphaned gate fails SAFE (every
+future racer backs off and prints "a sibling is deciding" forever, an inert and immediately visible
+watcher) rather than unsafe (silent double-execution), so a human clearing a stuck `.reclaim`
+directory by hand is an acceptable, self-announcing residual.
 
 ## 1.0.0 — the zero-touch release
 

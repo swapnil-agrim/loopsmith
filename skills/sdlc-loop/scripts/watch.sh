@@ -44,21 +44,33 @@ mkdir -p "$STATE"
 # genuinely atomic POSIX operation (no partial states, no "verify identity" complexity a directory's
 # mere existence can't already answer) used here purely as a short-lived MUTEX around the whole
 # check+evict+create decision, held for a handful of near-instant local filesystem calls (no network,
-# no sleep) and released immediately after -- not for the watcher's lifetime. With the ENTIRE decision
-# serialized behind it, there is no window left for a second racer's actions to interleave with the
-# first's at all, which closes the class of bug above rather than adding another layer to patch.
+# no sleep) and released immediately after -- not for the watcher's lifetime.
 MUTEX="$STATE/watch.decide.lock"
 mutex_acquired=0
 if mkdir "$MUTEX" 2>/dev/null; then
   mutex_acquired=1
-else
-  # Someone else is mid-decision -- almost always a live racer a few filesystem calls from finishing
-  # (back off, they'll settle it, most commonly by the time this stat even runs, in which case the
-  # decision is ALREADY made and we must not try to become a new decider at all). The mutex can only
-  # be orphaned by a crash landing in that same tiny window, so a modest staleness timeout recovers
-  # it without needing this recovery step to be perfectly race-proof too -- a second, doubly-rare
-  # race to reclaim an orphaned mutex is an acceptable residual, the same kind of judgment call
-  # #387's own final design documents.
+elif mkdir "$MUTEX.reclaim" 2>/dev/null; then
+  # $MUTEX itself is held (live or stale). Independent review of an earlier version of THIS fix
+  # found and empirically reproduced (60-67% double-win at a 10-40 racer burst against a
+  # deliberately orphaned mutex, up to 7 processes alive at once) a second-order version of the
+  # exact bug this file exists to close: a plain, unguarded `stat` + age-check + `rmdir` + `mkdir`
+  # reclaim sequence has its OWN TOCTOU window, because nothing stops several racers who all read
+  # the SAME stale mtime from racing that four-step sequence against each other -- the identical
+  # shape as the original pidfile bug, one level down. Patching that sequence again would be the
+  # same mistake repeated; the fix is the SAME discipline applied one level deeper: gate the
+  # RECLAIM decision itself behind its own atomic `mkdir`, so at most one racer can ever be inside
+  # the stat-evict-create sequence at a time. A racer that loses THIS gate falls through with
+  # mutex_acquired still 0 and backs off exactly like a racer that lost the outer one -- correct,
+  # since a sibling really is deciding, just one door in.
+  #
+  # `$MUTEX.reclaim` gets no staleness recovery of its own -- the regress has to stop somewhere,
+  # and here is the right place: its critical section is even shorter than $MUTEX's own (one stat,
+  # one arithmetic comparison, at most one rmdir+mkdir pair), so a crash landing inside IT is rarer
+  # still, and unlike the bug being fixed, an orphaned reclaim gate fails SAFE -- every future
+  # racer just prints "a sibling is already deciding" and exits 0, an inert, immediately visible
+  # watcher (the ledger stops updating) rather than silent double-execution. A human clearing a
+  # stuck `.reclaim` directory by hand is an acceptable, self-announcing residual; two watchers
+  # quietly contending on the ledger's git index lock is not.
   #
   # `mtime` empty (stat failed on BOTH the BSD and GNU forms) must mean "can't tell" -- almost always
   # because the mutex has ALREADY been removed by its rightful, fast-finishing owner, not because it
@@ -73,6 +85,7 @@ else
     rmdir "$MUTEX" 2>/dev/null   # best-effort; a failure here just means someone else already cleared it
     mkdir "$MUTEX" 2>/dev/null && mutex_acquired=1
   fi
+  rmdir "$MUTEX.reclaim" 2>/dev/null
 fi
 if [ "$mutex_acquired" != "1" ]; then
   echo "watch: a sibling is already deciding — nothing to do"
