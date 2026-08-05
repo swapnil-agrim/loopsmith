@@ -221,6 +221,44 @@ def test_render_escapes_a_pipe_so_the_table_survives():
     assert "one \\| two" in out
 
 
+def test_render_escapes_a_pipe_in_to_priority_and_issue_so_the_row_stays_well_formed():
+    """F19: only `why`/`goal` used to go through `_cell()` -- a `|` in `to`/`priority`/`issue`
+    (all free CLI text, no enum) split the row into extra columns instead of landing inside one
+    cell. Repro is the issue's own: `handoff.py open ... --to "rae | INJECT ## header"`."""
+    out = ledger.render([{"ts": "t", "actor": "amy", "kind": "handoff", "goal": "g",
+                          "to": "rae | INJECT ## header", "priority": "P1 | X",
+                          "issue": "61 | Y", "why": "w"}])
+    section = out.split("## Recent activity")[0]          # the "Waiting on someone" table only
+    row = next(line for line in section.splitlines() if line.startswith("| t |"))
+    # An escaped `\|` still contains the character "|", so count DELIMITERS -- pipes not
+    # preceded by the escaping backslash -- not raw occurrences of "|".
+    assert row.replace("\\|", "").count("|") == 8         # 7 columns -> 8 delimiters, none smuggled in
+    assert "rae \\| INJECT ## header" in row
+    assert "P1 \\| X" in row
+    assert "61 \\| Y" in row
+
+
+def test_render_neutralizes_a_newline_in_to_so_it_cannot_inject_a_markdown_line():
+    """The other half of F19: an unescaped newline in a free-text field lands in TEAM.md
+    verbatim, letting a hand-off value inject its own markdown line (e.g. a fake heading) into a
+    file the whole team reads and nobody hand-edits -- `_cell()` flattens it into the one cell
+    instead."""
+    out = ledger.render([{"ts": "t", "actor": "amy", "kind": "handoff", "goal": "g",
+                          "to": "rae\n## INJECTED HEADER", "why": "w"}])
+    assert not any(line.startswith("## INJECTED") for line in out.splitlines())  # no line of its own
+    assert "rae ## INJECTED HEADER" in out                 # flattened into the one cell instead
+
+
+def test_render_escapes_a_pipe_in_actor_and_kind_in_the_activity_table():
+    """Same F19 gap in the second table -- `actor`/`kind` reached the row unescaped."""
+    out = ledger.render([{"ts": "t", "actor": "amy | INJECT", "kind": "note | X", "goal": "g",
+                          "to": "someone", "why": "w"}])
+    row = next(line for line in out.splitlines() if line.startswith("| t |"))
+    assert row.replace("\\|", "").count("|") == 6          # 5 columns -> 6 delimiters, none smuggled in
+    assert "amy \\| INJECT" in row
+    assert "note \\| X" in row
+
+
 # --------------------------------------------------------------------- CLI
 
 

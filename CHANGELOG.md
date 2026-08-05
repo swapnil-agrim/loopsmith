@@ -208,6 +208,23 @@ on the literal `merged` string. The two sides are documented as kept in sync "by
 (`insight/contract/README.md`), and no engine write site has ever produced a `merged` entry insight
 could safely have counted as an actual landing, so this is not a regression of a working count.
 
+### fix(ledger): `render()` now escapes every table cell, not just `why`/`goal` (F19/#346)
+`_cell()` (pipe- and newline-escaping for the markdown tables in TEAM.md) was applied to `why` and
+`goal` only — `to`/`priority`/`issue`/`actor`/`kind`/`ts`/an ack's `state` were interpolated raw.
+`to`/`priority`/`issue` in particular reach `render()` as free text from a sanctioned CLI call
+(`handoff.py open ... --to "rae | INJECT ## header"`) with no enum to constrain them the way
+`kind`/an ack's `state` do: an embedded `|` split a row into extra columns instead of staying
+inside one cell, and an embedded newline landed as a literal line break, letting a hand-off value
+inject its own markdown line (e.g. a fake `##` heading) into a file the whole team reads and nobody
+hand-edits. Both table-row `.format()` calls in `render()` now wrap every interpolated field in
+`_cell()` — including fields that are construction-safe today (`actor` via `_safe_name`, `ts` via
+`_stamp`, enum-checked `kind`/`state`) — because `render()` reads entries straight off disk and is
+the last line of defense before a value lands in committed TEAM.md; it must not depend on every
+upstream caller staying disciplined forever. New tests in `tests/test_ledger.py` cover the issue's
+own repro (a `|` in `to`/`priority`/`issue`), the second table's `actor`/`kind`, and a newline-based
+line-injection case — all confirmed to fail against the pre-fix code with the exact malformed-row /
+injected-line symptom the issue described.
+
 ## 1.0.0 — the zero-touch release
 
 The theme: one person on one machine can now point LoopSmith at a stack of their own assigned issues

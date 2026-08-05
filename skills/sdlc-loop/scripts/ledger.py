@@ -1040,16 +1040,26 @@ def render(entries, recent=25):
         lines += ["| when | from | to | priority | issue | state | what |",
                   "|---|---|---|---|---|---|---|"]
         for entry in open_ones:
+            # F19: EVERY interpolated field goes through `_cell()`, not just `why`. `to`/
+            # `priority`/`issue` arrive as free text from a sanctioned CLI call
+            # (`handoff.py open ... --to "rae | INJECT ## header"`) with no enum to constrain
+            # them the way `kind`/an ack's `state` have -- a stray `|` splits the row into extra
+            # columns and a stray newline opens a new markdown line inside a file the whole team
+            # reads and nobody hand-edits. `actor`/`ts` are construction-safe today (`_safe_name`,
+            # `_stamp`) and `state` here is always a validated STATES value, but render() reads
+            # entries straight off disk and is the last line of defense before this lands in
+            # committed TEAM.md -- it must not depend on every upstream caller staying
+            # disciplined forever, so escape uniformly rather than case-by-case.
             lines.append(
                 "| {ts} | {actor} | {to} | {priority} | {issue} | {state} | {why} |".format(
-                    ts=entry.get("ts", ""),
-                    actor=entry.get("actor", ""),
-                    to=entry.get("to", ""),
-                    priority=entry.get("priority", "-"),
-                    issue=entry.get("issue", "-"),
+                    ts=_cell(entry.get("ts", "")),
+                    actor=_cell(entry.get("actor", "")),
+                    to=_cell(entry.get("to", "")),
+                    priority=_cell(entry.get("priority", "-")),
+                    issue=_cell(entry.get("issue", "-")),
                     # `open` = nobody has replied. Shown per row because a count of "outstanding"
                     # cannot distinguish a stuck hand-off from one someone is already working.
-                    state=states.get(handoff_key(entry), "**open — no reply**"),
+                    state=_cell(states.get(handoff_key(entry), "**open — no reply**")),
                     why=_cell(entry.get("why") or entry.get("goal", "")),
                 )
             )
@@ -1060,11 +1070,13 @@ def render(entries, recent=25):
     if shared:
         lines += ["| when | who | did | goal | detail |", "|---|---|---|---|---|"]
         for entry in shared[-recent:][::-1]:
+            # F19: same reasoning as the table above -- every field through `_cell()`, not just
+            # `goal`/`why`.
             lines.append(
                 "| {ts} | {actor} | {kind} | {goal} | {detail} |".format(
-                    ts=entry.get("ts", ""),
-                    actor=entry.get("actor", ""),
-                    kind=entry.get("kind", ""),
+                    ts=_cell(entry.get("ts", "")),
+                    actor=_cell(entry.get("actor", "")),
+                    kind=_cell(entry.get("kind", "")),
                     goal=_cell(entry.get("goal", "")),
                     detail=_cell(entry.get("why") or entry.get("state") or ""),
                 )
