@@ -3,6 +3,8 @@
 the exact one-line fix. The command runner is injectable so these are hermetic (no real gh/graphify)."""
 import json, pathlib, importlib.util, tempfile
 
+import pytest
+
 D = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-doctor" / "scripts" / "doctor.py"
 
 
@@ -655,3 +657,84 @@ def test_features_reports_independent_review_states(tmp_path):
     base = _sdlc(tmp_path, {"review": {"independent": True}})
     rows = {name: state for name, state, _ in d.features(base)}
     assert rows[row].startswith("ON")
+
+
+# --- F6: a truthy non-dict config block must never crash check()/features() -------------------
+
+
+def test_block_helper_degrades_a_non_dict_to_empty():
+    d = _doc()
+    assert d._block({"x": "oops"}, "x") == {}
+    assert d._block({"x": ["a", "list"]}, "x") == {}
+    assert d._block({"x": 42}, "x") == {}
+    assert d._block({"x": True}, "x") == {}
+    assert d._block({"x": None}, "x") == {}
+    assert d._block({}, "x") == {}
+    assert d._block({"x": {"y": 1}}, "x") == {"y": 1}          # a real dict passes through unchanged
+    assert d._block("not a dict", "x") == {}                   # a non-dict cfg itself is also guarded
+    assert d._block(["a", "list"], "x") == {}
+
+
+def test_non_dict_top_level_config_json_reads_as_empty(tmp_path):
+    # json.loads can succeed on a non-object top level ("[1,2]", "\"oops\"", "42") — _cfg must not
+    # hand a list/str/int to every downstream cfg.get() call.
+    d = _doc()
+    base = pathlib.Path(tmp_path) / ".sdlc"
+    base.mkdir(parents=True)
+    (base / "config.json").write_text(json.dumps([1, 2, 3]))
+    assert d._cfg(str(base)) == {}
+    d.check(str(base), run=_runner())      # must not raise
+    d.features(str(base))                  # must not raise
+
+
+def test_the_issues_exact_repro_does_not_crash(tmp_path):
+    # {"verify": "pytest"} — a common shape typo (config value where a block was meant), and the
+    # exact repro from the finding this test guards against regressing.
+    d = _doc()
+    base = _sdlc(tmp_path, {"verify": "pytest"})
+    d.features(base)                       # must not raise AttributeError
+    d.check(base, run=_runner())           # must not raise AttributeError
+
+
+_MALFORMED_BLOCKS = ["discovery", "knowledge_graph", "ledger", "verify", "work", "gates",
+                     "review", "budget", "parallel", "session_start", "backlog_check", "telemetry"]
+
+
+@pytest.mark.parametrize("bad_value", ["a string", ["a", "list"], 42, True], ids=["str", "list", "int", "bool"])
+@pytest.mark.parametrize("block", _MALFORMED_BLOCKS)
+def test_malformed_config_block_does_not_crash_check_or_features(tmp_path, block, bad_value):
+    """A truthy non-dict value for ANY declared config block must degrade to reading as off, never
+    raise — doctor is the one tool an adopter runs BECAUSE their config is wrong, so it must survive
+    exactly the malformed input that brought them here."""
+    d = _doc()
+    base = _sdlc(tmp_path, {block: bad_value})
+    checks = d.check(base, run=_runner())
+    assert isinstance(checks, list) and all("ok" in c for c in checks)
+    rows = d.features(base)
+    assert isinstance(rows, list) and all(len(r) == 3 for r in rows)
+
+
+def test_malformed_nested_gates_block_does_not_crash(tmp_path):
+    d = _doc()
+    base = _sdlc(tmp_path, {"gates": {"hard_plan_gate": "oops", "stop_gate": ["x"], "decision_gate": 1}})
+    d.check(base, run=_runner())
+    d.features(base)
+
+
+def test_malformed_decision_gate_block_does_not_crash_with_a_registry_present(tmp_path):
+    # `_decision_gate_state` short-circuits BEFORE reaching the malformed-block read when
+    # decisions.json is absent (`if not reg.exists(): return "off..."`) — so a malformed
+    # gates.decision_gate only actually reaches the vulnerable line when a registry exists (the
+    # realistic state for any adopter who has run /sdlc-decide). Without the registry present,
+    # this case would pass even on the unfixed code — reaching the line is the whole test.
+    d = _doc()
+    base = _sdlc(tmp_path, {"gates": {"decision_gate": "oops"}})
+    (pathlib.Path(base) / "decisions.json").write_text(json.dumps({"decisions": []}))
+    d.check(base, run=_runner())
+    d.features(base)
+
+
+def test_malformed_nested_github_project_block_does_not_crash(tmp_path):
+    d = _doc()
+    base = _sdlc(tmp_path, {"discovery": {"source": "github", "github": {"project": "oops"}}})
+    d.check(base, run=_runner(gh_auth="Logged in. Token scopes: 'repo', 'project'"))
