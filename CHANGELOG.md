@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### fix(work): `gate()` fails closed instead of crashing on a raising `gh pr view`
+Unlike `merge_rights` (fails closed) and `review_gate` (fails open), a transient `gh pr view` error —
+a 403, a rate-limit, a network blip — inside `gate()`'s mergeability read propagated straight out of
+`merge()` uncaught: exit 1, no gate ledger event, instead of parking with a reason like every other
+gate() verdict. Folds the read into the existing UNKNOWN-retry loop (a raising read gets the same
+retry budget a lazy-UNKNOWN read already gets — GitHub's own transient errors are exactly the kind of
+blip a second attempt often clears) and, only if every attempt still raises, returns a park verdict
+(`could not read PR state (…)`) instead of propagating.
+
 ### fix(doctor): a shared `_block()` helper so a malformed config block never crashes check/features
 A config with a shape typo — e.g. `{"verify": "pytest"}` where a `{"command": ..., "enforce": ...}`
 block was meant — made both `doctor.check()` and `doctor.features()` raise `AttributeError` on the
