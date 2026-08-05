@@ -1,9 +1,9 @@
 # insight/web/
 
-Next.js (App Router) + TypeScript application — the dashboard UI (design spec §4). No app lives
-here yet; **E17.S1** authors it. What DOES live here, as of **E16.S3** (#301): the generated API
-types (`src/lib/api/schema.d.ts`) and the npm scaffolding that regenerates and type-checks them,
-wired into `insight/verify_web.py`'s four checks. See "What's here" below.
+Next.js (App Router) + TypeScript application — the dashboard UI (design spec §4). Scaffold only
+(**E17.S1**, #302): App Router, Tailwind v4 wired in, real `typecheck`/`lint`/`test`/`build`, and a
+containerised build under `insight/Dockerfile.web` — no design tokens, no auth, no dashboards yet
+(those are later stories). See "What's here" below.
 
 ## The BUSL marker for `.ts`/`.tsx`
 
@@ -24,27 +24,44 @@ own directive-prologue detection, which only cares that `"use client"` is the fi
 a leading line comment before it does not disqualify it. E17.S1 is the first story that has to get
 this ordering right; there is no fixup once real `"use client"` files exist.
 
-## What's here (E16.S3, #301) and what E17.S1 still owns
+## What's here (E17.S1, #302)
 
-`package.json` + a committed `package-lock.json` arrived in this story, arming
-`insight/verify_web.py` for real: every future goal's verify gate now runs `npm ci` plus all four
-of `typecheck`/`lint`/`test`/`build`, in a fresh worktree, every time.
+`package.json` + a committed `package-lock.json` (E16.S3, #301) arm `insight/verify_web.py` for
+real: every future goal's verify gate runs `npm ci` plus all four of
+`typecheck`/`lint`/`test`/`build`, in a fresh worktree, every time. All four are now real —
+none is a stub.
 
 - **`typecheck`** is real: `tsc --noEmit` (strict), with a `pretypecheck` hook
   (`scripts/check-schema-fresh.mjs`) that regenerates `src/lib/api/schema.d.ts` from the committed
   `openapi.json` and diffs it byte-for-byte against what's on disk — the enforcement mechanism
   behind "generated, not hand-edited." Regenerate with `node scripts/generate-schema.mjs` (cwd
-  `insight/web/`) after re-running `python3 -m insight.api.export_openapi` from the repo root.
+  `insight/web/`) after re-running `python3 -m insight.api.export_openapi` from the repo root. A
+  bare `tsc --noEmit` passes on a fresh checkout with no prior `next build`/`next typegen` —
+  verified directly — so `pretypecheck` stays exactly the schema-freshness check E16.S3 built; no
+  `next typegen` step was needed.
+- **`lint`** is real: `eslint .` against `eslint.config.mjs` (flat config,
+  `eslint-config-next/core-web-vitals`). `next lint` no longer exists in Next 16 (removed
+  upstream), so this calls ESLint directly. `eslint` is pinned to `9.39.5`, not the registry's own
+  `latest` (`10.8.0`) — `eslint-config-next@16.3.0`'s toolchain is not yet compatible with ESLint
+  10's internal API (`TypeError: scopeManager.addGlobals is not a function`); re-verify before
+  bumping this pin.
 - **`test`** is real: `scripts/prove-metric-contract-safety.mjs` is the mechanical proof that
   renaming a Pydantic field and regenerating breaks the frontend type-check (see
   `src/lib/api/metric.consumer.ts`'s `metricLabel`), plus the discriminated-union narrowing proof
-  (`measuredValueOrNull`).
-- **`lint`** and **`build`** are declared stubs — each echoes that it is a stub and exits 0. No
-  ESLint config or Next.js app exists yet to lint or build.
+  (`measuredValueOrNull`). Unchanged by this story.
+- **`build`** is real: `next build`, with `next.config.mjs` setting `output: "standalone"` so
+  `insight/Dockerfile.web`'s runtime stage can copy a self-contained `.next/standalone/server.js`
+  without a second `npm ci`.
+
+The app itself (`src/app/`) is a minimal App Router scaffold: `layout.tsx` + `page.tsx`, Tailwind
+v4 wired in via `globals.css`'s `@import "tailwindcss"` (CSS-first config — no `tailwind.config.ts`
+for defaults; design tokens are E17.S2, out of scope here). `page.tsx` imports `Metric` from
+`@/lib/api/metric` and reads `.label`, so the one real page is already wired to the generated API
+contract rather than being inert boilerplate — no live data fetch yet (a later story).
+
+`insight/Dockerfile.web` (sibling to this directory, not at the repository root — spec §7) is a
+multi-stage build proven by a `docker build` step in CI's `web` job, not by the local gate:
+`insight/verify_web.py` is deliberately offline-safe, and pulling `node:22-slim` needs network.
 
 `insight/tests/test_verify_web.py`'s machine-checked invariant — `package.json` must have a
-sibling `package-lock.json` and declare every `CHECKS` name — now enforces for real rather than
-vacuously.
-
-**E17.S1** replaces the `lint`/`build` stubs with real ESLint/Next.js tooling, and authors the
-actual app, without changing the `typecheck`/`test` contract this story built.
+sibling `package-lock.json` and declare every `CHECKS` name — continues to enforce for real.

@@ -5,12 +5,25 @@
   "scripts": {
     "pretypecheck": "node scripts/check-schema-fresh.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "echo 'STUB (E17.S1 wires real ESLint, see insight/web/README.md) -- always exits 0' && exit 0",
+    "lint": "eslint .",
     "test": "node scripts/prove-metric-contract-safety.mjs",
-    "build": "echo 'STUB (E17.S1 wires the real Next.js build, see insight/web/README.md) -- always exits 0' && exit 0"
+    "build": "next build"
+  },
+  "dependencies": {
+    "next": "16.3.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
     "openapi-typescript": "7.13.0",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.0",
+    "tailwindcss": "4.3.3",
+    "@tailwindcss/postcss": "4.3.3",
+    "postcss": "8.5.25",
+    "@types/node": "26.1.2",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4"
   }
 }

@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
+# issue #302 [E17.S1], .sdlc/plans/302.md Decision (g). Lives directly under insight/, sibling to
+# web/, so `git mv insight/ ../` (spec §7's extraction story) carries it -- never at the
+# repository root (tests/test_licence_boundary.py::test_no_docker_or_compose_files_at_the_
+# repository_root enforces the negative).
+#
+# Build context is insight/ (`docker build -f insight/Dockerfile.web insight/`), matching the
+# sibling-file layout above and letting the COPY lines below reference web/... explicitly rather
+# than assuming a `web/`-rooted context.
+#
+# Proven by CI, not the local gate: `docker build`/`docker run` need network (pulling
+# node:22-slim), and insight/verify_web.py is deliberately offline-safe -- see .github/
+# workflows/ci.yml's `web` job, which runs `docker build` as a real step after the offline checks.
+
+# ---------------------------------------------------------------------------------------- builder
+FROM node:22-slim AS builder
+WORKDIR /app
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ .
+RUN npm run build
+
+# ---------------------------------------------------------------------------------------- runtime
+# next.config.mjs's output: "standalone" already traced the real dependency graph into
+# .next/standalone/node_modules -- a second `npm ci` in this stage would be redundant.
+FROM node:22-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+EXPOSE 3000
+CMD ["node", "server.js"]
