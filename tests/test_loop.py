@@ -149,6 +149,40 @@ def test_start_surfaces_the_work_off_and_verify_traps(capsys):
         assert "work.enabled is off" in err and "EVERY `done` will be refused" in err
 
 
+def test_start_surfaces_the_verify_trap_for_a_truthy_non_bool_enforce(capsys):
+    # F17/#342: `enforce: 1` is an easy JSON typo for `true` — the empty-command warning must still
+    # fire, not go silent just because 1 fails a strict `is True` check.
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 0); lp = _loop()
+        (pathlib.Path(base) / "config.json").write_text(json.dumps(
+            {"verify": {"enforce": 1, "command": ""}}))
+        lp.main(["loop.py", "start", base])
+        err = capsys.readouterr().err
+        assert "EVERY `done` will be refused" in err
+
+
+def test_enforce_enabled_reads_truthy_non_bool_values_generously():
+    """F17/#342: `enforce: 1` / `"true"` are easy JSON mistakes for the literal bool `true` — the
+    strict `is True` idiom this file uses for ledger.enabled et al is the WRONG failure direction
+    here, because `enforce` gates `record done` itself; failing to recognise these must not
+    silently leave the gate off (contrast ledger.enabled, where failing safe means off)."""
+    lp = _loop()
+    assert lp._enforce_enabled({"enforce": True}) is True
+    assert lp._enforce_enabled({"enforce": 1}) is True
+    assert lp._enforce_enabled({"enforce": "true"}) is True
+    assert lp._enforce_enabled({"enforce": "True"}) is True
+    assert lp._enforce_enabled({"enforce": "1"}) is True
+    assert lp._enforce_enabled({"enforce": "yes"}) is True
+    assert lp._enforce_enabled({"enforce": False}) is False
+    assert lp._enforce_enabled({"enforce": 0}) is False
+    assert lp._enforce_enabled({"enforce": "false"}) is False
+    assert lp._enforce_enabled({"enforce": "0"}) is False
+    assert lp._enforce_enabled({"enforce": "no"}) is False
+    assert lp._enforce_enabled({"enforce": "off"}) is False
+    assert lp._enforce_enabled({"enforce": ""}) is False
+    assert lp._enforce_enabled({}) is False                     # absent key: still off, same as before
+
+
 # --- real budgets (0.6): max_minutes / max_tokens enforce when configured ---
 
 def _write_cfg(base, budget):

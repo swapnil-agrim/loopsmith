@@ -236,6 +236,36 @@ def test_enforce_refuses_failed_verify_evidence():
         assert refused.returncode == 4 and "FAILED" in refused.stderr
 
 
+# F17/#342: `enforce: 1` / `enforce: "true"` are easy JSON mistakes for the literal bool `true` —
+# a strict `is True` check silently treats them as off and lets an unverified `done` through. Same
+# shape as test_enforce_refuses_done_without_fresh_evidence_then_accepts above, just spelled wrong.
+
+
+def test_enforce_accepts_truthy_int_spelling():
+    with tempfile.TemporaryDirectory() as d:
+        base, goal = _goal_backlog(d, verify_command="true", enforce=1)
+        _loop_cli("start", base)
+        refused = _loop_cli("record", base, goal, "done")
+        assert refused.returncode == 4 and "REFUSED" in refused.stderr   # gate is ACTIVE, not silently off
+        assert "status: pending" in pathlib.Path(goal).read_text()
+        assert _loop_cli("verify", base, goal).returncode == 0
+        accepted = _loop_cli("record", base, goal, "done")
+        assert accepted.returncode == 0
+        assert "status: done" in pathlib.Path(goal).read_text()
+
+
+def test_enforce_accepts_truthy_string_spelling():
+    with tempfile.TemporaryDirectory() as d:
+        base, goal = _goal_backlog(d, verify_command="true", enforce="true")
+        _loop_cli("start", base)
+        refused = _loop_cli("record", base, goal, "done")
+        assert refused.returncode == 4 and "REFUSED" in refused.stderr   # gate is ACTIVE, not silently off
+        assert _loop_cli("verify", base, goal).returncode == 0
+        accepted = _loop_cli("record", base, goal, "done")
+        assert accepted.returncode == 0
+        assert "status: done" in pathlib.Path(goal).read_text()
+
+
 def test_enforce_off_keeps_prior_behavior():
     with tempfile.TemporaryDirectory() as d:
         base, goal = _goal_backlog(d)                    # enforce=False default
