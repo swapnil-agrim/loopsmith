@@ -146,7 +146,14 @@ def hand_off(sdlc_dir, config, goal, area, why, priority=DEFAULT_PRIORITY,
 def acknowledge(sdlc_dir, config, issue, state, why="", goal=None):
     """The other half. Reading a hand-off obliges an answer: taking it, needing time, declining it,
     or closing it out. `deferred` deliberately does NOT settle the hand-off — a promise to look later
-    is not a resolution, and the team view keeps showing it."""
+    is not a resolution, and the team view keeps showing it.
+
+    F22/#347: `issue` cannot key a LOCAL hand-off — `hand_off()` writes `issue=None` for one (no
+    `gh`, or a local backlog), so `ledger.handoff_key()` falls back to `goal`. Settling that hand-off
+    means writing an `ack` whose own key falls back the same way, which is why `goal` is accepted
+    here: leaving `issue` falsy makes the line below store `issue=None` on the entry, so
+    `handoff_key()` reads `goal` on BOTH sides and the two halves meet. Passing an `issue` still wins
+    when present, matching `handoff_key`'s own precedence exactly."""
     return ledger.safe_append(sdlc_dir, "ack", goal or f"issue-{issue}", config=config,
                               issue=int(issue) if str(issue).isdigit() else None,
                               state=state, why=why)
@@ -173,16 +180,21 @@ def main(argv):
     if len(argv) >= 3 and argv[1] == "ack":
         sdlc_dir = argv[2]
         flags = ledger._flags(argv[3:])
-        issue, state = flags.get("issue"), flags.get("state")
-        if not issue or state not in ledger.STATES:
-            print(f"handoff.py ack needs --issue <n> --state {'|'.join(ledger.STATES)}",
-                  file=sys.stderr)
+        issue, goal, state = flags.get("issue"), flags.get("goal"), flags.get("state")
+        # F22/#347: a local/issue-less hand-off has no `<n>` to give — requiring --issue
+        # unconditionally made it unanswerable forever. --goal is the symmetric alternative
+        # (see acknowledge()); at least one of the two must identify which hand-off this answers.
+        if not (issue or goal) or state not in ledger.STATES:
+            print("handoff.py ack needs --issue <n> (or --goal <goal> for a local/issue-less "
+                  f"hand-off) --state {'|'.join(ledger.STATES)}", file=sys.stderr)
             return 2
-        entry = acknowledge(sdlc_dir, ledger._config(sdlc_dir), issue, state, flags.get("why", ""))
+        entry = acknowledge(sdlc_dir, ledger._config(sdlc_dir), issue, state, flags.get("why", ""),
+                            goal=goal)
         print(entry["id"] if entry else "OFF (config: \"ledger\": {\"enabled\": true})")
         return 0
     print("usage: handoff.py open <dir> <goal> --area A --why TEXT [--priority P --title T] | "
-          f"ack <dir> --issue N --state {'|'.join(ledger.STATES)} [--why TEXT]", file=sys.stderr)
+          f"ack <dir> --issue N | --goal G --state {'|'.join(ledger.STATES)} [--why TEXT]",
+          file=sys.stderr)
     return 2
 
 

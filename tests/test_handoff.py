@@ -310,6 +310,37 @@ def test_cli_ack_validates_the_state(tmp_path, capsys):
     assert capsys.readouterr().out.strip() == f"amy:{os.getpid()}:1"
 
 
+def test_cli_ack_requires_issue_or_goal(tmp_path, capsys):
+    """F22/#347: before the fix, `--issue` was unconditionally required, so a local/issue-less
+    hand-off had no valid invocation at all. Now either identifier is accepted, but at least one
+    still must be given -- the error message must say so, not just complain about --issue."""
+    sdlc = _project(tmp_path)
+    assert handoff.main(["handoff.py", "ack", str(sdlc), "--state", "accepted"]) == 2
+    err = capsys.readouterr().err
+    assert "--issue" in err and "--goal" in err
+
+
+def test_cli_ack_by_goal_settles_an_issueless_handoff(tmp_path, capsys):
+    """F22/#347: a source that cannot open issues (no `gh`, or a local backlog) leaves the
+    hand-off's `issue` field `None`, so `ledger.handoff_key()` keys it by `goal` instead. The loop
+    only ever calls through `handoff.py ack` as a subprocess, so the fix has to be reachable from
+    argv, not just from a direct Python call to acknowledge() -- this drives it exactly the way a
+    real caller would and asserts the hand-off actually settles."""
+    sdlc = _project(tmp_path)
+
+    class Local:
+        pass                                      # no create_dependency -- mirrors a local backlog
+
+    report = handoff.hand_off(sdlc, ON, "g.md", "engine", "needs a flag", source=Local())
+    assert report["issue"] is None                                  # confirms the issue-less setup
+    assert len(ledger.outstanding(ledger.read_all(sdlc))) == 1       # open, and nothing can key it yet
+
+    assert handoff.main(["handoff.py", "ack", str(sdlc), "--goal", "g.md",
+                         "--state", "resolved", "--why", "handled locally"]) == 0
+    assert capsys.readouterr().out.strip() == f"amy:{os.getpid()}:2"     # :2 -- the handoff was :1
+    assert ledger.outstanding(ledger.read_all(sdlc)) == []                # settled by goal alone
+
+
 def test_cli_usage(capsys):
     assert handoff.main(["handoff.py"]) == 2
     assert "usage: handoff.py" in capsys.readouterr().err
