@@ -58,6 +58,9 @@ PIPELINE_PATH = (
     pathlib.Path(__file__).resolve().parents[2] / "skills" / "sdlc-loop" / "scripts" / "pipeline.py"
 )
 
+if not PIPELINE_PATH.is_file():
+    pytest.skip("skills/ not present in this checkout", allow_module_level=True)
+
 
 def _pipeline_order():
     """Read pipeline.py's PASS/WARN/FAIL/ABSENT + _ORDER off disk as TEXT/AST -- see this file's

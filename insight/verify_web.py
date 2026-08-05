@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
 """The one definition of "the web checks" — type-check, lint, unit tests, production build — run by
 BOTH the CI `web` job and `.sdlc/config.json`'s `verify.command`, so the two can never drift (issue
 #295). insight/web/ does not exist yet (E17.S1); until it does, this SKIPs loudly and exits 0 rather
@@ -27,9 +27,12 @@ import pathlib
 import subprocess
 import sys
 
-HERE = pathlib.Path(__file__).resolve().parent
-ROOT = HERE.parent
-WEB = ROOT / "insight" / "web"
+HERE = pathlib.Path(__file__).resolve().parent   # insight/ itself — this file lives directly
+                                                  # under insight/ (issue #297), so WEB is
+                                                  # derived from HERE, never from a repo root
+                                                  # that would not exist once insight/ is
+                                                  # extracted into a repo of its own.
+WEB = HERE / "web"
 PACKAGE_JSON = WEB / "package.json"
 #: The npm-script contract E17.S1's package.json must satisfy — CI and verify.command both drive
 #: exactly these four names, nothing more, nothing product-specific.
@@ -47,7 +50,7 @@ def _report(label, proc):
 
 def main(argv=None):
     if not PACKAGE_JSON.is_file():
-        print(f"SKIP: {PACKAGE_JSON.relative_to(ROOT)} not found — web checks not run "
+        print(f"SKIP: {PACKAGE_JSON.relative_to(HERE.parent)} not found — web checks not run "
               "(expected pre-E17.S1: the web app does not exist yet)")
         return 0
 

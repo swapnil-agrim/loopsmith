@@ -18,6 +18,8 @@ dependency on anything metric-specific -- exactly the kind of "duplicate inline,
 import ast
 import pathlib
 
+import pytest
+
 from insight.gaps import header
 from insight.gaps.severity import SEVERITY_ORDER
 
@@ -66,6 +68,7 @@ def _pipeline_order():
     return order
 
 
+@pytest.mark.skipif(not PIPELINE_PATH.is_file(), reason="skills/ not present in this checkout")
 def test_pipeline_order_parsed_off_disk_matches_the_known_vocabulary():
     """Sanity-checks the parser itself against the exact values re-read directly from
     pipeline.py this session -- if this fails, the parser above is broken, not
@@ -73,6 +76,7 @@ def test_pipeline_order_parsed_off_disk_matches_the_known_vocabulary():
     assert _pipeline_order() == {"PASS": 0, "ABSENT": 1, "WARN": 2, "FAIL": 3}
 
 
+@pytest.mark.skipif(not PIPELINE_PATH.is_file(), reason="skills/ not present in this checkout")
 def test_gaps_severity_order_matches_pipelines_own_order():
     """The drift test itself: the actual shipped constant, compared against a live read of
     pipeline.py's real source, not a second hardcoded literal compared to a third."""

@@ -21,7 +21,7 @@ venv/
 *.egg-info/
 
 # node_modules (insight/web/, E17.S1) — unanchored like .venv/venv above: not a name any real module
-# would choose, and scripts/verify_web.py installs into it fresh in every worktree (issue #295).
+# would choose, and insight/verify_web.py installs into it fresh in every worktree (issue #295).
 node_modules/
 
 # insight/ is ALSO its own pip project root (package-dir = {"insight" = "."}), so a plain

@@ -1,4 +1,5 @@
-"""Drives scripts/verify_web.py (evals/run.py's own module-load pattern, see tests/test_evals.py)
+# SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
+"""Drives insight/verify_web.py (evals/run.py's own module-load pattern, see tests/test_evals.py)
 against a stub `npm` on PATH -- never the real network -- proving: absent app -> SKIP + exit 0;
 present app + a failing check -> nonzero exit naming the check; every one of the four checks is
 actually invoked; and the can't-run case (install fails) fails rather than passing.
@@ -12,8 +13,7 @@ import os
 import pathlib
 import stat
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
-R = ROOT / "scripts" / "verify_web.py"
+R = pathlib.Path(__file__).resolve().parents[1] / "verify_web.py"
 
 
 def _module():
@@ -50,7 +50,7 @@ def _world(m, tmp_path, **kw):
     """Point the module at a hermetic tmp world: ROOT is the SAME tmp_path PACKAGE_JSON's printed
     path is made relative to, so overriding WEB without also moving ROOT can never raise on a real
     (non-tmp) repo path leaking into the message."""
-    m.ROOT = tmp_path
+    m.HERE = tmp_path
     m.WEB = _web(tmp_path, **kw)
     m.PACKAGE_JSON = m.WEB / "package.json"
 
@@ -118,8 +118,8 @@ def test_real_package_json_if_it_ever_lands_has_a_lockfile_and_every_check():
     failure attributable to the actual cause, rather than an unrelated goal quietly discovering it.
 
     CHECKS is read off `m` (loaded the same importlib.util.spec_from_file_location way
-    tests/test_evals.py loads evals/run.py, and this file already loads scripts/verify_web.py via
-    `_module()` above), never retyped, so this test and scripts/verify_web.py's own contract cannot
+    tests/test_evals.py loads evals/run.py, and this file already loads insight/verify_web.py via
+    `_module()` above), never retyped, so this test and insight/verify_web.py's own contract cannot
     drift apart.
 
     Vacuous TODAY: insight/web/package.json does not exist (E17.S1 lands it), so the `if` below
@@ -127,9 +127,14 @@ def test_real_package_json_if_it_ever_lands_has_a_lockfile_and_every_check():
     test_marketplace_source_still_implies_the_readme_warning already uses in
     tests/test_licence_boundary.py for the same reason (a real invariant, checked directly, that
     happens to have no real-tree hits yet, rather than a one-shot tripwire someone would have to
-    remember to delete)."""
+    remember to delete).
+
+    package_json IS `m.PACKAGE_JSON` -- read off the real, unmocked module (this test never calls
+    `_world()`) -- rather than rebuilding the path from a since-removed `m.ROOT` (issue #297 dropped
+    ROOT; verify_web.py's own WEB is now derived from HERE, see that module's docstring), so this
+    test's path can never drift from the module's own."""
     m = _module()
-    package_json = m.ROOT / "insight" / "web" / "package.json"
+    package_json = m.PACKAGE_JSON
     if package_json.is_file():
         lockfile = package_json.parent / "package-lock.json"
         assert lockfile.is_file(), (
@@ -139,7 +144,7 @@ def test_real_package_json_if_it_ever_lands_has_a_lockfile_and_every_check():
         scripts = json.loads(package_json.read_text(encoding="utf-8")).get("scripts", {})
         missing = [c for c in m.CHECKS if c not in scripts]
         assert not missing, (
-            f'{package_json} "scripts" is missing {missing} -- scripts/verify_web.py\'s CHECKS '
+            f'{package_json} "scripts" is missing {missing} -- insight/verify_web.py\'s CHECKS '
             "requires every one of these names to exist so each fails on npm's own error, not a "
             "silent skip"
         )
