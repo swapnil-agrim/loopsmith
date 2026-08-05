@@ -1,0 +1,202 @@
+{
+  "components": {
+    "schemas": {
+      "AbsentNoDataMetric": {
+        "additionalProperties": false,
+        "description": "The metric's SQL exists (or ran) and returned nothing to measure -- a missing view, a\nview with zero rows, or a row whose value is NULL are all this same shape (see\ninsight/api/metrics.py's `resolve_metric`, and `insight.dash.panel`'s `_metric_state`/\n`_scalar`, whose absence conventions this ports). Time, not a code change, fixes this.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "reliabilityClass": {
+            "title": "Reliabilityclass",
+            "type": "integer"
+          },
+          "state": {
+            "const": "absent_no_data",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "reliabilityClass",
+          "state",
+          "reason"
+        ],
+        "title": "AbsentNoDataMetric",
+        "type": "object"
+      },
+      "AbsentUnbuiltMetric": {
+        "additionalProperties": false,
+        "description": "There is no way to produce this metric yet -- no `.sql` file, or (this story's own scope-\ndown, Decision (b)) a `.sql` file with no registered value/coverage extractor. Only a code\nchange fixes this, never the passage of time.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "reliabilityClass": {
+            "title": "Reliabilityclass",
+            "type": "integer"
+          },
+          "state": {
+            "const": "absent_unbuilt",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "reliabilityClass",
+          "state",
+          "reason"
+        ],
+        "title": "AbsentUnbuiltMetric",
+        "type": "object"
+      },
+      "Coverage": {
+        "additionalProperties": false,
+        "description": "The numerator/denominator a `measured` metric's value was computed over -- e.g. \"3/4\nlanded without intervention\" for autonomy rate. Never present on an absent metric: there is\nno coverage to report for a value that was never computed.",
+        "properties": {
+          "denominator": {
+            "title": "Denominator",
+            "type": "integer"
+          },
+          "numerator": {
+            "title": "Numerator",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "numerator",
+          "denominator"
+        ],
+        "title": "Coverage",
+        "type": "object"
+      },
+      "MeasuredMetric": {
+        "additionalProperties": false,
+        "properties": {
+          "coverage": {
+            "$ref": "#/components/schemas/Coverage"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "reliabilityClass": {
+            "title": "Reliabilityclass",
+            "type": "integer"
+          },
+          "state": {
+            "const": "measured",
+            "title": "State",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "reliabilityClass",
+          "state",
+          "value",
+          "coverage"
+        ],
+        "title": "MeasuredMetric",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "FastAPI",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health": {
+      "get": {
+        "description": "Cold-start-safe liveness probe (Decision 1, .sdlc/plans/299.md): HTTP 200 in all\nthree store states -- the API PROCESS is genuinely healthy in every one of them (it\nstarted, it can reach the filesystem, it can respond); a missing or empty store is an\nexpected pre-ingest state, not an outage.\n\nCONTRACT, binding on every caller (plan-review amendment 4 -- this is the ABSENT-is-\nnever-PASS doctrine, spec \u00a73, applied one HTTP layer up from where E16.S2's Metric union\nwill eventually enforce it in Pydantic): the body's `store` field\n(\"missing\" | \"empty\" | \"populated\") is what carries the real signal. A caller MUST branch\non `store` and MUST NEVER read HTTP 200 alone as \"healthy with data\" -- collapsing all\nthree into a single `{\"status\": \"ok\"}` (or reading 200 as implying data is present) is\nexactly the fake-healthy shape spec \u00a73 opens with (the literal `0` shipped for \"goals\nlanded\" against an empty store). See insight/api/README.md for the full contract.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "Every catalog entry, resolved (spec \u00a73's Metric union, issue #300 [E16.S2]): a cold or\nmissing store degrades every metric to an absent state, never a crash and never a\nfabricated value -- the same read-connection, same try/except FileNotFoundError shape\nas /health above, reused rather than duplicated. `response_model=list[Metric]` is what\nmakes FastAPI enforce the union's `extra=\"forbid\"` on the way OUT, not merely in Python:\na `MeasuredMetric`/absent-model mismatch here would fail serialization, not silently\nleak an extra field onto the wire.",
+        "operationId": "metrics_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "discriminator": {
+                      "mapping": {
+                        "absent_no_data": "#/components/schemas/AbsentNoDataMetric",
+                        "absent_unbuilt": "#/components/schemas/AbsentUnbuiltMetric",
+                        "measured": "#/components/schemas/MeasuredMetric"
+                      },
+                      "propertyName": "state"
+                    },
+                    "oneOf": [
+                      {
+                        "$ref": "#/components/schemas/MeasuredMetric"
+                      },
+                      {
+                        "$ref": "#/components/schemas/AbsentNoDataMetric"
+                      },
+                      {
+                        "$ref": "#/components/schemas/AbsentUnbuiltMetric"
+                      }
+                    ]
+                  },
+                  "title": "Response Metrics Metrics Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Metrics"
+      }
+    }
+  }
+}

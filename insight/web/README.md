@@ -1,8 +1,9 @@
 # insight/web/
 
-Next.js (App Router) + TypeScript application — the dashboard UI (design spec §4). Nothing lives
-here yet; **E17.S1** authors the app and wires `insight/verify_web.py`'s four checks
-(typecheck/lint/test/build).
+Next.js (App Router) + TypeScript application — the dashboard UI (design spec §4). No app lives
+here yet; **E17.S1** authors it. What DOES live here, as of **E16.S3** (#301): the generated API
+types (`src/lib/api/schema.d.ts`) and the npm scaffolding that regenerates and type-checks them,
+wired into `insight/verify_web.py`'s four checks. See "What's here" below.
 
 ## The BUSL marker for `.ts`/`.tsx`
 
@@ -23,16 +24,27 @@ own directive-prologue detection, which only cares that `"use client"` is the fi
 a leading line comment before it does not disqualify it. E17.S1 is the first story that has to get
 this ordering right; there is no fixup once real `"use client"` files exist.
 
-## `package.json` must NOT appear before E17.S1
+## What's here (E16.S3, #301) and what E17.S1 still owns
 
-Its mere existence arms `insight/verify_web.py`: it starts running `npm ci` (which hard-fails with
-`EUSAGE` without a committed `package-lock.json`) and then requires all four of
-`typecheck`/`lint`/`test`/`build` to exist as npm scripts and pass, inside every future goal's
-verify gate, in a fresh worktree. Landing `package.json` here without a committed lockfile and all
-four scripts would park every subsequent goal on an unrelated failure. E17.S1 lands both together.
+`package.json` + a committed `package-lock.json` arrived in this story, arming
+`insight/verify_web.py` for real: every future goal's verify gate now runs `npm ci` plus all four
+of `typecheck`/`lint`/`test`/`build`, in a fresh worktree, every time.
 
-This is not just prose: `insight/tests/test_verify_web.py` carries a machine-checked invariant — IF
-`insight/web/package.json` exists THEN it must have a sibling `package-lock.json` and its `scripts`
-must declare every name `insight/verify_web.py`'s `CHECKS` requires (read from that module, never
-retyped). Today the invariant is vacuously true (the file does not exist); the day E17.S1 commits
-it, the guard starts enforcing for real and nothing here has to change or be deleted.
+- **`typecheck`** is real: `tsc --noEmit` (strict), with a `pretypecheck` hook
+  (`scripts/check-schema-fresh.mjs`) that regenerates `src/lib/api/schema.d.ts` from the committed
+  `openapi.json` and diffs it byte-for-byte against what's on disk — the enforcement mechanism
+  behind "generated, not hand-edited." Regenerate with `node scripts/generate-schema.mjs` (cwd
+  `insight/web/`) after re-running `python3 -m insight.api.export_openapi` from the repo root.
+- **`test`** is real: `scripts/prove-metric-contract-safety.mjs` is the mechanical proof that
+  renaming a Pydantic field and regenerating breaks the frontend type-check (see
+  `src/lib/api/metric.consumer.ts`'s `metricLabel`), plus the discriminated-union narrowing proof
+  (`measuredValueOrNull`).
+- **`lint`** and **`build`** are declared stubs — each echoes that it is a stub and exits 0. No
+  ESLint config or Next.js app exists yet to lint or build.
+
+`insight/tests/test_verify_web.py`'s machine-checked invariant — `package.json` must have a
+sibling `package-lock.json` and declare every `CHECKS` name — now enforces for real rather than
+vacuously.
+
+**E17.S1** replaces the `lint`/`build` stubs with real ESLint/Next.js tooling, and authors the
+actual app, without changing the `typecheck`/`test` contract this story built.

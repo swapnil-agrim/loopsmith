@@ -104,6 +104,22 @@ def test_cannot_install_fails_rather_than_passes(tmp_path, monkeypatch):
     assert "run typecheck" not in log.read_text()  # never reached a check after the install failed
 
 
+def test_absent_npm_fails_with_a_message_rather_than_a_traceback(tmp_path, monkeypatch, capsys):
+    """A machine with no Node must get a sentence, not a FileNotFoundError traceback.
+
+    This line was unreachable until insight/web/package.json landed (main() always returned at the
+    SKIP branch first), and it is now on the path of EVERY goal's verify gate -- so an unattended
+    run that parks here should say why. Still fails closed: a gate that cannot run never passes."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("PATH", str(bin_dir))  # an npm-LESS PATH, not merely a failing npm
+
+    m = _module()
+    _world(m, tmp_path, with_node_modules=False)  # forces the npm ci path
+    assert m.main() != 0
+    assert "npm was not found on PATH" in capsys.readouterr().out
+
+
 def test_real_package_json_if_it_ever_lands_has_a_lockfile_and_every_check():
     """A machine-checked invariant (issue #296 A2), not just insight/web/README.md's prose: IF the
     REAL insight/web/package.json exists THEN (a) it has a sibling package-lock.json, and (b) its

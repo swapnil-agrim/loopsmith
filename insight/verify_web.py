@@ -40,7 +40,22 @@ CHECKS = ["typecheck", "lint", "test", "build"]
 
 
 def _npm(args):
-    return subprocess.run(["npm", *args], cwd=str(WEB), capture_output=True, text=True)
+    """Run one npm command, reporting a MISSING npm as a normal failure rather than a traceback.
+
+    Until this story landed insight/web/package.json, main() always returned at the SKIP branch and
+    this line was unreachable, so a machine with no Node never got here. Now every goal's verify
+    gate runs it, and `npm` simply not being installed is the most likely way that happens -- an
+    unattended run deserves a sentence naming the cause, not a FileNotFoundError traceback. It
+    still fails closed (returncode 1, never 0): a gate that cannot run must never report success.
+    """
+    try:
+        return subprocess.run(["npm", *args], cwd=str(WEB), capture_output=True, text=True)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(
+            ["npm", *args], 1, "",
+            "npm was not found on PATH. The web checks need Node (see insight/web/README.md); "
+            "install it, or this gate stays red -- it will not pass by skipping.",
+        )
 
 
 def _report(label, proc):
