@@ -6,7 +6,12 @@ spend itself; no reports == no enforcement). An absent/zero key enforces nothing
 it behaves exactly as before. The irreversible-action gate is enforced by /sdlc-loop SKILL.md prose.
 Claim and outcome are mirrored to the team ledger (ledger.py) when `ledger.enabled` is on — every
 such call is fail-open, so a ledger problem can never stop a run."""
-import os, sys, pathlib, importlib.util, time, subprocess, threading
+import os, sys, pathlib, importlib.util, time, subprocess
+
+try:
+    import fcntl                    # POSIX only — see _try_acquire_claim_lock's docstring
+except ImportError:
+    fcntl = None
 
 try:                    # portable output: force UTF-8 so the plugin's own non-ASCII (arrows, em-dashes)
     import sys as _sys  # doesn't garble to '?' or crash on a non-UTF-8 console (the Windows cp1252
@@ -91,11 +96,9 @@ def _lease(sdlc_dir, config):
         return (None, None, {})
 
 
-_CLAIM_LOCK_STALE_SECONDS = 120   # generous for a couple of gh API round-trips + retries. NOT the
-# same question ledger.lease.ttl_hours answers (hours-scale, "when is a whole GOAL abandoned"): this
-# lock only ever needs to survive the pick-to-commit window below, so a crash while holding it must
-# self-heal in seconds, not hours — a lock left behind by a mid-pick crash would otherwise block a
-# goal the ledger itself already shows as unclaimed (no "claimed" entry was ever durably written).
+_LOCK_UNAVAILABLE = -1   # fail-open sentinel from _try_acquire_claim_lock: no real fd was ever
+# opened (no fcntl, or an OS error), so proceed as if the lock was acquired — os.open() itself never
+# returns a negative fd on success, so this can never collide with a genuine, held lock's fd.
 
 
 def _claim_lock_path(sdlc_dir, goal):
@@ -103,96 +106,69 @@ def _claim_lock_path(sdlc_dir, goal):
 
 
 def _try_acquire_claim_lock(sdlc_dir, goal):
-    """True iff THIS process is the exclusive winner, right now, of the local race to claim `goal`
-    (F10.5-2/#387). Closes what the ledger-claim check (`_lease`/`ledger.claim_belongs_to_me`, #374)
-    structurally cannot: #374 is entirely about correctly INTERPRETING a claim that already exists —
-    it has no answer for "nothing exists yet and two readers look at the same instant." Two
-    processes sharing one `.sdlc` directory (two tabs on one machine) racing `_next()` close enough
-    together both read the same pre-claim ledger state and could otherwise both proceed.
+    """The open file descriptor THIS process holds an exclusive, kernel-mediated `flock` on, iff it
+    is the exclusive winner, right now, of the local race to claim `goal` (F10.5-2/#387) — `None` if
+    a live sibling already holds it (caller should skip this goal), or `_LOCK_UNAVAILABLE` if the
+    mechanism itself could not be used at all (fail-open; see below). Closes what the ledger-claim
+    check (`_lease`/`ledger.claim_belongs_to_me`, #374) structurally cannot: #374 is entirely about
+    correctly INTERPRETING a claim that already exists — it has no answer for "nothing exists yet and
+    two readers look at the same instant." Two processes sharing one `.sdlc` directory (two tabs on
+    one machine) racing `_next()` close enough together both read the same pre-claim ledger state and
+    could otherwise both proceed.
 
-    `os.open(path, O_CREAT | O_EXCL | O_WRONLY)` is POSIX-atomic — the kernel guarantees AT MOST ONE
-    caller succeeds when two processes race to create the same path, no read-then-write gap to lose
-    a race in (unlike a read-then-append to the ledger). Deliberately LOCAL-only (this file, this
-    machine) — cross-machine claims are the ledger's own, already-correct job; a lock file two
-    different machines don't share cannot and need not arbitrate between them.
+    `flock(fd, LOCK_EX | LOCK_NB)` is kernel-mediated, not built out of ordinary file operations — it
+    has NO read-then-act gap of its own for a second caller to land in. Two prior schemes here, each
+    built from ordinary create/rename/unlink calls plus a staleness timeout to recover a crashed
+    holder's lock, were independently broken across two review cycles: `unlink()`-then-recreate let a
+    second racer silently clobber the first's fresh lock; a rename-then-verify-then-restore
+    refinement closed that gap but opened a narrower one, where a THIRD caller could land in the
+    restore step's own window and also win. `flock` has no such window to begin with — the kernel
+    either grants exclusive access to this open file description or it doesn't, atomically — and,
+    the property that also retires the staleness-timeout idea those schemes needed entirely: it is
+    released the INSTANT the holding process ends for ANY reason, crash included, because the kernel
+    closes every fd a dying process held. A lock file surviving on disk after a crash is therefore
+    never ambiguous — nothing is still flocking it, so the very next attempt against it succeeds
+    immediately. No age to guess at, no eviction to arbitrate, no restore step to have its own gap.
 
-    A stale lock (crashed holder, older than `_CLAIM_LOCK_STALE_SECONDS`) is reclaimed by RENAMING it
-    aside and making ONE more create attempt. The rename alone makes "who gets to attempt eviction"
-    exclusive — POSIX serializes concurrent renames of the same source path, so at most one caller's
-    `rename` sees the path still there and moves it; every other caller's `rename` finds it already
-    gone and raises FileNotFoundError. But exclusivity of the MOVE isn't the whole guarantee: a caller
-    that read "stale" long enough ago can still win an uncontested rename against a file that, by the
-    time it actually moved, was no longer the stale one it inspected — a DIFFERENT, live process could
-    have legitimately (re)claimed `path` in between (this is not hypothetical: a caller can be
-    descheduled by the OS for an arbitrary stretch between reading staleness and acting on it, and two
-    independent processes racing `_next()` have no shared clock to bound that gap). So the mtime this
-    function observed is re-checked against what it ACTUALLY evicted, right after the rename: if they
-    still match, nothing touched this file between our read and our move, and reclaiming it is safe.
-    If they don't, we evicted somebody else's live claim purely because our own decision was stale —
-    we put it back (non-clobbering: `os.link`, which fails closed if a third party has since taken
-    `path`, rather than `rename`, which would silently clobber them) and concede. A plain `unlink()`
-    cannot do any of this — it has no "was it still the file I inspected" signal at all, so a second
-    racer's unlink silently removes whatever the first racer just created and both proceed.
+    Deliberately LOCAL-only (this file, this machine) — cross-machine claims are the ledger's own,
+    already-correct job; a lock file two different machines don't share cannot and need not arbitrate
+    between them. POSIX-only (`fcntl.flock`): on a platform without `fcntl` (Windows), this fails
+    open unconditionally, exactly as if this whole file didn't exist — no narrower than before #387,
+    just not ALSO narrowed by it there; a `msvcrt`-based Windows equivalent is not attempted here, it
+    would need its own from-scratch verification this change cannot give it.
 
-    Fail-open: any OS error this function cannot interpret (permissions, a read-only filesystem, a
-    directory it cannot create) returns True — a lock this call cannot manage must never be what
-    stops the loop; `_lease`/`claim_belongs_to_me` remains the primary, always-on defense regardless
-    of whether this local, best-effort narrowing is available on a given filesystem."""
+    Fail-open beyond that: any OS error this function cannot interpret (permissions, a read-only
+    filesystem, a directory it cannot create) returns `_LOCK_UNAVAILABLE` — a lock this call cannot
+    manage must never be what stops the loop; `_lease`/`claim_belongs_to_me` remains the primary,
+    always-on defense regardless of whether this local, best-effort narrowing is available at all."""
+    if fcntl is None:
+        return _LOCK_UNAVAILABLE
     path = _claim_lock_path(sdlc_dir, goal)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        os.close(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-        return True
-    except FileExistsError:
-        pass
+        fd = os.open(str(path), os.O_CREAT | os.O_RDWR)
     except OSError:
-        return True                          # can't manage the lock at all — fail open, see docstring
+        return _LOCK_UNAVAILABLE             # can't even open it — fail open, see docstring
     try:
-        observed_mtime = path.stat().st_mtime
-        if (time.time() - observed_mtime) < _CLAIM_LOCK_STALE_SECONDS:
-            return False                     # genuinely still fresh — someone else really holds it
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
     except OSError:
-        return True                          # can't even stat it — fail open
-    evicted = path.with_name(f"{path.name}.evicted.{os.getpid()}.{threading.get_ident()}")
-    try:
-        path.rename(evicted)                 # stale — evict it; exclusivity of THIS decides who even
-    except FileNotFoundError:                # gets to check further (see docstring) — not correctness
-        return False                         # on its own. Someone else already evicted/refreshed it.
-    except OSError:
-        return True                          # can't evict it at all — fail open, see docstring
-    try:
-        reclaim_is_safe = evicted.stat().st_mtime == observed_mtime
-    except OSError:
-        reclaim_is_safe = True               # can't re-verify — proceed, consistent with fail-open above
-    if not reclaim_is_safe:
-        try:
-            os.link(str(evicted), str(path))     # best-effort, non-clobbering restore — see docstring
-        except OSError:
-            pass                                 # someone already took `path`; nothing to restore into
-        try:
-            evicted.unlink()
-        except OSError:
-            pass
-        return False                         # we do not own this lock — our steal decision was stale
-    try:
-        evicted.unlink()
-    except OSError:
-        pass                                 # best-effort cleanup of the evicted husk; not correctness-critical
-    try:
-        os.close(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-        return True
-    except FileExistsError:
-        return False                         # someone recreated it between our rename and our create
-    except OSError:
-        return True
+        os.close(fd)
+        return None                          # a live sibling holds it right now
 
 
-def _release_claim_lock(sdlc_dir, goal):
-    """Best-effort: releasing must never raise into `_next()`'s caller. Safe to call even when the
-    lock was never actually acquired (fail-open path above) — `missing_ok` makes a no-op of that."""
+def _release_claim_lock(fd):
+    """Best-effort: releasing must never raise into `_next()`'s caller. `None` (denied, nothing was
+    ever acquired) and `_LOCK_UNAVAILABLE` (fail-open, no real fd) are both safe no-ops. Closing the
+    real fd is what releases the kernel-held `flock` — there is nothing else to clean up: the lock
+    FILE itself is deliberately left on disk, empty, ready for the next `flock` attempt whether that
+    is an ordinary release or a crash recovery; deleting it here would gain nothing `flock` doesn't
+    already give for free, and would only reopen a create/delete race for no benefit."""
+    if fd is None or fd == _LOCK_UNAVAILABLE:
+        return
     try:
-        _claim_lock_path(sdlc_dir, goal).unlink(missing_ok=True)
-    except Exception:                        # noqa: BLE001
+        os.close(fd)
+    except OSError:
         pass
 
 
@@ -218,7 +194,8 @@ def _next(sdlc_dir, source, config, extra_skip=()):
         if holder_actor and not ledger.claim_belongs_to_me(holder_actor, holder_writer, me, my_writer):
             skip.add(goal)                      # another loop — or a live sibling of mine — owns this
             continue
-        if not _try_acquire_claim_lock(sdlc_dir, goal):
+        lock_fd = _try_acquire_claim_lock(sdlc_dir, goal)
+        if lock_fd is None:
             skip.add(goal)                      # a sibling on this machine won this exact instant
             continue
         break
@@ -233,7 +210,7 @@ def _next(sdlc_dir, source, config, extra_skip=()):
         ledger.safe_append(sdlc_dir, "claimed", goal, config=config)
         return ("goal", goal)
     finally:
-        _release_claim_lock(sdlc_dir, goal)
+        _release_claim_lock(lock_fd)
 
 
 def _surface_inbox(sdlc_dir):
