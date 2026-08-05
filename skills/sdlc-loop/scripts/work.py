@@ -52,6 +52,7 @@ def _load(name):
 
 state = _load("state")
 ledger = _load("ledger")
+scrub = _load("scrub").scrub
 
 DEFAULTS = {"worktree_dir": ".sdlc/work", "branch_prefix": "sdlc/", "base": "",
             "remote": "origin", "auto_merge": "off", "merge_method": "squash",
@@ -532,6 +533,10 @@ def post_review(sdlc_dir, config, goal, run=None, verdict="", reason=""):
     v = (verdict or "").strip().lower()
     if v not in ("approve", "block"):
         return "verdict must be `approve` or `block`"
+    # A block reason is free text quoting the diff/issue — the SAME shared scrubber the ledger event
+    # below already runs it through, applied here too so the PUBLIC PR comment gets the same guarantee
+    # (previously only the ledger copy was scrubbed; the comment posted the raw reason verbatim).
+    reason = scrub(reason or "")
 
     cap = int(settings(config).get("max_review_cycles", 3) or 0)
     over_cap = False

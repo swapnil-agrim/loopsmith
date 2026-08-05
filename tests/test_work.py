@@ -653,6 +653,19 @@ def test_post_review_block_carries_the_reasons(tmp_path):
     assert "loopsmith:block" in posted and "missing null check" in posted
 
 
+def test_post_review_block_reason_is_scrubbed_before_the_public_pr_comment(tmp_path):
+    # F2: the SAME reason is scrubbed on the ledger-event path (test_ledger.py) but was posted RAW to
+    # the public PR comment — an oversight, not a decision. A secret/client string quoted from the diff
+    # in a review note must never reach the public comment body.
+    d = _sdlc(tmp_path); goal = _started(d)
+    run = _runner([])
+    work.post_review(d, ON, goal, run=run, verdict="block",
+                      reason="leaked AKIAIOSFODNN7EXAMPLE and acme.example.com KEY-123")
+    posted = next(c for c in run.calls if "pr comment" in c)
+    assert "AKIAIOSFODNN7EXAMPLE" not in posted
+    assert "[REDACTED:aws-key]" in posted
+
+
 def test_post_review_rejects_a_bad_verdict(tmp_path):
     d = _sdlc(tmp_path); goal = _started(d)
     run = _runner([])
