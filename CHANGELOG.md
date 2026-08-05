@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### feat(loop): a liveness-safe marker so a routine/cron firing never double-launches a session
+LoopSmith doesn't drive scheduling itself (F10.5-4/#377) — that's the host's recurring-trigger feature
+(Claude Desktop's "Routines," a cron job calling `claude -p`, whatever fires an agent unattended). It
+needs to be SAFE under repeated, possibly-overlapping firings, so a routine can be configured once and
+never double-launch a redundant managing session on top of one still running.
+
+`loop.py start` gains an opt-in `--session-pid <pid>` writing `.sdlc/state/session.active`; `next` and
+`session-end` are new verbs reading and clearing it. `session_pid` must be the CALLER's own long-lived
+process id — not any individual `loop.py` invocation's own, which exits within moments of returning
+(confirmed empirically: two separate shell-tool calls in one host session get a different `$$` each
+time but the same `$PPID` — the same reason `--skip` exists for multi-slot refills, F10.5-3/#375).
+Liveness combines the same two independent signals `ledger._held()` already combines for claim leases
+(F10.5/#374), not a new pattern: `ledger.pid_alive()` on the recorded pid (a definitively dead pid
+reads stale immediately, no timeout needed to detect a crash — the same reasoning the `flock`-based
+claim lock relies on, F10.5-2/#387) AND the marker's own age against `ledger.lease_ttl_seconds` (the
+same 12h-default knob the team ledger already exposes, applied unconditionally like `_held()`'s own
+TTL cutoff, guarding against pid reuse over long spans rather than a legitimately-long-running run).
+
+README documents the recommended routine/cron prompt template (Claude Desktop, local use): check
+`session-active` first and no-op if `ACTIVE`; otherwise `start --session-pid`, run `/sdlc-loop`
+exactly as documented (always calling `loop.py next`/`next-batch` for the next goal — the prompt must
+never say "continue where you left off," since ambient conversational continuity must never substitute
+for a real backlog pick, the exact failure mode this whole arc exists to close), then `session-end`
+before exiting.
+
 ### feat(doctor): flag an out-of-date loopsmith install, since auto-update is off by default
 Investigated what's actually possible before building anything (F10.5-5/#378): auto-update for a
 non-Anthropic marketplace like this one is OFF by default (a user has to explicitly opt in via

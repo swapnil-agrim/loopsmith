@@ -619,6 +619,118 @@ def test_cli_next_batch_skip_flag_is_wired_through(capsys):
         assert capsys.readouterr().out.strip() == goal_b
 
 
+# ------------------------------------------------------------------ session-active marker (#377)
+# A routine/cron firing needs to tell "a managing session is still genuinely running" from "safe to
+# start one" -- built on the SAME two independent signals ledger._held() already combines for claim
+# leases (F10.5/#374): ledger.pid_alive() as the primary, unconditional-TTL age as the fallback.
+
+
+def test_session_active_is_false_when_no_marker_exists():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        assert lp.session_active(d + "/.sdlc", {}) is False
+
+
+def test_session_start_then_session_active_reads_true_for_a_live_pid():
+    """The core guarantee, first half: a genuinely live session's marker blocks a second launch."""
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        lp.session_start(sdlc, os.getpid())            # this test process is unambiguously alive
+        assert lp.session_active(sdlc, {}) is True
+
+
+def test_session_active_is_false_for_a_definitively_dead_pid():
+    """The core guarantee, second half: a dead session's stale marker does NOT block a launch --
+    no timeout needed to detect a crash, the same reasoning _try_acquire_claim_lock's flock-based
+    lock relies on (F10.5-2/#387)."""
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        dead_pid = 2**30                                # not a real pid on any sane system
+        lp.session_start(sdlc, dead_pid)
+        assert lp.session_active(sdlc, {}) is False
+
+
+def test_session_end_clears_a_live_marker():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        lp.session_start(sdlc, os.getpid())
+        assert lp.session_active(sdlc, {}) is True
+        lp.session_end(sdlc)
+        assert lp.session_active(sdlc, {}) is False
+
+
+def test_session_end_is_a_safe_noop_when_nothing_was_ever_started():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        lp.session_end(d + "/.sdlc")                    # must not raise
+
+
+def test_session_start_is_a_safe_noop_on_an_unparseable_pid():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        lp.session_start(sdlc, "not-a-pid")             # must not raise
+        assert lp.session_active(sdlc, {}) is False
+
+
+def test_session_active_expires_a_stale_marker_past_the_ttl_even_for_a_resolvable_pid():
+    """Mirrors ledger._held()'s own TTL cutoff, applied UNCONDITIONALLY -- not only as a fallback
+    for when pid_alive can't resolve. The realistic risk this guards is pid REUSE over long spans
+    (a marker orphaned by a crash, later coinciding with an unrelated process getting that same pid
+    number), not a legitimately-still-running session outliving routine-firing frequency."""
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        lp.session_start(sdlc, os.getpid())             # alive pid throughout -- only age changes
+        path = lp._session_marker_path(sdlc)
+        stale = time.time() - (lp.ledger.DEFAULT_LEASE_TTL_HOURS * 3600 + 60)
+        os.utime(path, (stale, stale))
+        assert lp.session_active(sdlc, {}) is False
+
+
+def test_session_active_ttl_zero_never_expires():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        lp.session_start(sdlc, os.getpid())
+        path = lp._session_marker_path(sdlc)
+        ancient = time.time() - (1000 * 3600)
+        os.utime(path, (ancient, ancient))
+        assert lp.session_active(sdlc, {"ledger": {"lease": {"ttl_hours": 0}}}) is True
+
+
+def test_cli_start_with_session_pid_writes_a_marker_session_active_sees(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        lp = _loop()
+        assert lp.main(["loop.py", "start", base, "--session-pid", str(os.getpid())]) == 0
+        capsys.readouterr()
+        assert lp.main(["loop.py", "session-active", base]) == 0
+        assert capsys.readouterr().out.strip() == "ACTIVE"
+
+
+def test_cli_start_without_session_pid_writes_nothing():
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        lp = _loop()
+        assert lp.main(["loop.py", "start", base]) == 0    # unaffected -- the flag is opt-in
+        assert lp.session_active(base, {}) is False
+
+
+def test_cli_session_end_clears_what_cli_start_wrote(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        lp = _loop()
+        lp.main(["loop.py", "start", base, "--session-pid", str(os.getpid())])
+        assert lp.main(["loop.py", "session-end", base]) == 0
+        capsys.readouterr()
+        lp.main(["loop.py", "session-active", base])
+        assert capsys.readouterr().out.strip() == "FREE"
+
+
 # --------------------------------------------------------------------- writer-aware lease (#374)
 # A claim held by MY OWN actor is not always mine to resume: two concurrent processes sharing one
 # gh login (a routine firing again before an earlier run finished) must not read each other's
