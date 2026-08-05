@@ -149,3 +149,54 @@ def test_pyproject_declares_package_data_for_dash_font_licence_files():
         "(issue #262) -- packages=[...] alone silently drops them from a real wheel, dropping "
         "the OFL notice the embedded fonts' own licence requires ship alongside them"
     )
+
+
+def test_pyproject_pins_fastapi_with_a_lower_and_an_upper_bound():
+    """Issue #299 [E16.S1]: insight/api/'s FastAPI service is the first hard runtime dependency
+    beyond duckdb. Mirrors test_pyproject_pins_duckdb_with_a_lower_and_an_upper_bound exactly.
+    `httpx` (fastapi.testclient.TestClient-only) is deliberately NOT checked here -- it is not a
+    [project.dependencies] entry at all, see .sdlc/plans/299.md Decision 2 (plan-review
+    amendment 2) and tests/test_ci_workflow.py for where httpx's presence is actually verified."""
+    text = _pyproject_text()
+    m = re.search(r'"fastapi\s*([^"]*)"', text)
+    assert m, "fastapi must be declared in [project.dependencies]"
+    spec = m.group(1).strip()
+    assert spec, "fastapi must carry a version specifier, not be unbounded"
+    # A two-component ~=X.Y pin is WRONG for a pre-1.0 package (~=0.116 resolves to
+    # >=0.116,<1.0, admitting every future 0.x release) -- verified directly with
+    # packaging.specifiers during planning, see .sdlc/plans/299.md Decision 2. Require the
+    # three-component form specifically for fastapi, not just "some lower and upper bound".
+    assert re.fullmatch(r"~=\s*\d+\.\d+\.\d+", spec), (
+        f"fastapi spec {spec!r} must be a three-component ~=X.Y.Z pin -- a two-component "
+        f"~=X.Y pin on a pre-1.0 package like fastapi resolves to >=X.Y,<1.0, admitting every "
+        f"future 0.x release, which is not the lower-and-upper-bound intent this pin is for"
+    )
+
+
+def test_pyproject_declares_insight_api_in_the_packages_allowlist():
+    """Issue #299 [E16.S1]: insight/api/'s own README.md (pre-written by E15.S2) already
+    pre-flags this exact packaging trap -- packages=[...] is an explicit allowlist, not a glob,
+    and insight.api was never in it. Same bug class as #108/#116/#262/#298."""
+    text = _pyproject_text()
+    m = re.search(r"packages\s*=\s*\[([^\]]*)\]", text)
+    assert m, "packages = [...] must be present in [tool.setuptools]"
+    assert '"insight.api"' in m.group(1), (
+        "insight.api is missing from packages=[...] -- it will import fine under "
+        "pip install -e insight/ (which never consults packages=[...]) but silently vanish "
+        "from a real, non-editable wheel build (issue #299, same bug class as #108/#116/#262/#298)"
+    )
+
+
+def test_pyproject_declares_package_data_for_insight_api_readme():
+    """Issue #299 [E16.S1], plan-review amendment 3: insight/api/README.md already exists in
+    source (pre-written by E15.S2) -- packages=[...] alone ships only .py files under
+    insight.api, so this pre-existing README would be silently dropped from a real wheel without
+    this glob, the exact bug class already hit for insight.metrics (#108), insight.gaps (#116),
+    insight.dash (#262) and insight.contract (#298) -- insight.contract's own README.md already
+    ships via this identical pattern (see the *.md entry in its own package-data glob below)."""
+    text = _pyproject_text()
+    assert re.search(r'"insight\.api"\s*=\s*\[[^\]]*"\*\.md"', text), (
+        "pyproject.toml must declare package-data for insight.api's README.md (issue #299) -- "
+        "packages=[...] alone silently drops it from a real wheel, same gap class as #108/#116/"
+        "#262/#298"
+    )

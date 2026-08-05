@@ -47,8 +47,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install --upgrade pip pytest pytest-cov
-      - name: install insight/ and its own deps (duckdb) — the plugin job never runs this
+      # httpx (issue #299 [E16.S1], .sdlc/plans/299.md Decision 2): needed only by
+      # fastapi.testclient.TestClient (insight/tests/test_api_health.py), never by the shipped
+      # insight/api/ app — deliberately NOT in insight/pyproject.toml's [project.dependencies],
+      # so it rides this ad hoc line instead, the same way pytest/pytest-cov already do, rather
+      # than shipping a test-only package in the product wheel.
+      - run: python -m pip install --upgrade pip pytest pytest-cov httpx
+      - name: install insight/ and its own deps (duckdb, fastapi) — the plugin job never runs this
         run: python -m pip install -e insight/
       - name: pytest + coverage, scoped to insight/ only
         run: python -m pytest insight/tests/ -q --cov=insight --cov-report=term-missing --cov-fail-under=85

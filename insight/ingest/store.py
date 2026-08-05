@@ -275,3 +275,40 @@ def open_store(db_path=None):
     conn = duckdb.connect(str(path))
     ensure_schema(conn)
     return conn
+
+
+def open_store_read_only(db_path=None):
+    """issue #299 [E16.S1]: open an EXISTING store read-only, for a consumer (the FastAPI
+    service) that must never be able to write. Resolves `db_path` via `resolve_db_path`, same
+    as `open_store` -- reused, not re-derived (BR-3).
+
+    Deliberately NOT a read-only-flagged call to `open_store`'s own body: `open_store` always
+    calls `ensure_schema`, which runs `CREATE TABLE`/`ALTER TABLE` DDL -- both raise
+    `duckdb.InvalidInputException` against a read-only connection (verified directly, see
+    .sdlc/plans/299.md Task 1.3's scratch transcript), so schema-ensuring and read-only are
+    mutually exclusive on the same call. This function also never creates the parent directory
+    the way `open_store` does -- a read-only opener must have zero side effects on a path that
+    doesn't exist yet; it raises instead.
+
+    Raises `FileNotFoundError` if the resolved path is not an existing file (DuckDB's own
+    `read_only=True` open against a missing file raises `duckdb.IOException`, a less specific,
+    harder-to-catch-precisely signal for the caller -- `/health`'s cold-start "missing" state
+    needs a exact, catchable type, so this function normalizes to the stdlib exception before
+    ever calling into duckdb)."""
+    path = resolve_db_path(db_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"DuckDB store not found: {path}")
+    return duckdb.connect(str(path), read_only=True)
+
+
+def has_any_rows(conn):
+    """issue #299 [E16.S1]: a structural presence check, not a metric -- shares no SQL with
+    any of insight/metrics/*.sql's 34 files (Decision 3). Iterates the existing TABLES constant
+    (the schema's own source of truth, not re-listed here) and short-circuits on the first table
+    with at least one row. Table names come from the fixed, internal TABLES tuple, never from
+    user input -- no injection surface, the same trust `ensure_schema` already places in these
+    same names when interpolating them into DDL."""
+    for table in TABLES:
+        if conn.execute(f"SELECT EXISTS (SELECT 1 FROM {table})").fetchone()[0]:
+            return True
+    return False

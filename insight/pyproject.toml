@@ -22,6 +22,14 @@ dependencies = [
     # Compatible-release clause: a lower bound (1.4) and an upper bound at the next
     # major (<2.0) in one token, so a breaking major bump can't slip in silently.
     "duckdb~=1.4",
+    # THREE-component pin, not two (issue #299 [E16.S1], .sdlc/plans/299.md Decision 2): fastapi
+    # is pre-1.0, where a two-component ~=0.116 resolves to >=0.116,<1.0 -- admitting every
+    # future 0.x release, far too broad. ~=0.116.1 locks the 0.116.x line, verified directly with
+    # packaging.specifiers.SpecifierSet. Do not "simplify" this to ~=0.116.
+    # httpx (fastapi.testclient.TestClient's own dependency) is DELIBERATELY not listed here --
+    # it is test-only, never imported by the shipped app, and lives on
+    # .github/workflows/ci.yml's insight-job install line instead. See Decision 2.
+    "fastapi~=0.116.1",
 ]
 
 [project.scripts]
@@ -33,7 +41,7 @@ insight = "insight.__main__:main"
 # "insight" package (and everything under it) to ".", i.e. this directory, so
 # insight/ingest/ resolves as insight.ingest instead of a stray top-level "ingest".
 packages = ["insight", "insight.ingest", "insight.metrics", "insight.gaps", "insight.dash",
-            "insight.contract"]
+            "insight.contract", "insight.api"]
 package-dir = { "insight" = "." }
 
 [tool.setuptools.dynamic]
@@ -66,3 +74,10 @@ version = { file = "VERSION" }
 # drop every fixture without this. Added together with the packages=[...] entry above so the two
 # never land in separate steps with a window where one is missing.
 "insight.contract" = ["*.jsonl", "*.json", "*.md"]
+# api/README.md (issue #299 [E16.S1]) is insight.api's own first non-.py asset -- pre-written by
+# E15.S2, already in source before this story lands any .py file. Same gap class as the four
+# entries above: packages=[...] alone ships only .py files, so a real (non-editable) wheel build
+# would silently drop this README without this line. Added together with the packages=[...]
+# entry above (plan-review amendment 3) so the two never land in separate steps with a window
+# where one is missing -- exactly the discipline #108/#116/#262/#298 each show was missing.
+"insight.api" = ["*.md"]
