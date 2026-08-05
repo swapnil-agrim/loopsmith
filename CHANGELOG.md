@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### fix(work): `max_review_cycles: 0` (or negative) no longer silently disables the hard cap
+`post_review()`'s cap check computed `cap = int(... or 0)` then gated on `cap and cycles >= cap` —
+`cap and ...` short-circuits false the instant `cap` is exactly 0, so a configured
+`max_review_cycles: 0` read as "no cap": six-plus consecutive blocks all posted with nothing ever
+parking, the exact review→fix→re-review runaway this gate exists to prevent, and `0`-as-unlimited
+was undocumented anywhere — the docstring says "HARD CAP", full stop. A negative value failed the
+opposite way: `cap and cycles >= cap` goes true the moment `cycles` first reaches 1, parking on the
+very first block with zero fix attempts. Neither is a real "no cap" sentinel, just `int()` coercing
+a bad config value, so any cap below 1 now normalizes to the documented default (3) instead. Tests
+cover both `0` and a negative value, each confirmed to fail against the pre-fix code with the exact
+symptom the issue described (F20/#343).
+
 ### fix(handoff): a rejected assignee no longer takes the whole dependency issue down with it
 `create_dependency()` built its `gh issue create` call with `--assignee <owner>` whenever CODEOWNERS
 resolved one, and let a failing call raise straight out uncaught. GitHub issues can only be assigned

@@ -616,6 +616,15 @@ def post_review(sdlc_dir, config, goal, run=None, verdict="", reason=""):
     reason = scrub(reason or "")
 
     cap = int(settings(config).get("max_review_cycles", 3) or 0)
+    # F20/#343: `cap and cycles >= cap` below short-circuits false the instant `cap` is exactly 0, so a
+    # misconfigured `max_review_cycles: 0` silently read as "no cap" — six-plus blocks never parked, the
+    # exact runaway this gate exists to prevent, and `0`-as-unlimited was never documented anywhere (the
+    # docstring above says "HARD CAP", full stop). A negative value failed the opposite way: `cap and
+    # cycles >= cap` goes true the moment `cycles` first reaches 1, parking on the very first block with
+    # zero fix attempts. Neither is a real "no cap" sentinel, just `int()` coercing a bad config value —
+    # so anything below the smallest meaningful cap (1) falls back to the documented default instead.
+    if cap < 1:
+        cap = DEFAULTS["max_review_cycles"]
     over_cap = False
     if v == "block":
         cycles = int(rec.get("review_cycles", 0)) + 1

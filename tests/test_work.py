@@ -911,6 +911,32 @@ def test_post_review_default_cap_is_three(tmp_path):
     assert work.post_review(d, ON, goal, run=run, verdict="block", reason="3rd").startswith("PARK:")
 
 
+def test_post_review_zero_cap_normalizes_to_the_default_instead_of_disabling_it(tmp_path):
+    """F20/#343: `cap and cycles >= cap` short-circuits false the instant `cap` is exactly 0, so a
+    configured `max_review_cycles: 0` used to read as "no cap" — six-plus consecutive blocks all
+    "posted" with nothing ever parking, the exact runaway this gate exists to prevent. `0` now
+    normalizes to the documented default (3), same as an absent key."""
+    cfg = {"work": {"enabled": True, "max_review_cycles": 0}}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); run = _runner([])
+    for i in range(2):
+        assert work.post_review(d, cfg, goal, run=run, verdict="block", reason=str(i)).startswith("posted")
+    posted = [c for c in run.calls if "pr comment" in c][-1]
+    assert "cycle 2/3" in posted                        # the effective cap is the default 3, not 0
+    out = work.post_review(d, cfg, goal, run=run, verdict="block", reason="3rd")
+    assert out.startswith("PARK:") and "did not converge" in out
+
+
+def test_post_review_negative_cap_normalizes_to_the_default_instead_of_parking_on_the_first_block(tmp_path):
+    """F20/#343: a negative `max_review_cycles` failed the opposite way — `cap and cycles >= cap` goes
+    true the moment `cycles` first reaches 1, parking on the very first block with zero fix attempts.
+    A negative value normalizes to the same documented default (3) as zero and anything else < 1."""
+    cfg = {"work": {"enabled": True, "max_review_cycles": -1}}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); run = _runner([])
+    out = work.post_review(d, cfg, goal, run=run, verdict="block", reason="a")
+    assert out.startswith("posted")                     # NOT parked on the first block
+    assert work._record(d, goal)["review_cycles"] == 1
+
+
 # --------------------------------------------------------------------------- #141 amendment A
 # `post-review` is a synchronous, agent-typed CLI verb — the same shape as `loop.py emit`/`spend`
 # — so a newline in `--reason` is a HARD REJECT at the CLI (main()), before `post_review()` is
