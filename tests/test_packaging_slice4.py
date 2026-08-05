@@ -87,7 +87,9 @@ def test_portable_executors_defer_to_superpowers_and_have_parity():
 def test_versions_aligned():
     p = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
     mk = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
-    assert p["version"] == "0.9.23" and mk["plugins"][0]["version"] == "0.9.23"
+    # Equal to EACH OTHER, not a hardcoded literal -- what "aligned" actually means, and it never
+    # needs touching again on a future version bump the way asserting a specific string does.
+    assert p["version"] == mk["plugins"][0]["version"]
 
 
 def test_plan_review_dispositions_close_the_loop():
