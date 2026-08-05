@@ -52,8 +52,13 @@ def load_pipeline(sdlc_dir):
     p = pathlib.Path(sdlc_dir) / "pipeline.json"
     if not p.exists():
         return None
-    spec = json.loads(p.read_text())
-    return spec if isinstance(spec.get("stages"), list) else None
+    try:
+        spec = json.loads(p.read_text())
+    except ValueError:          # invalid JSON (json.JSONDecodeError is a ValueError) -> no pipeline
+        return None
+    # A top-level JSON array/scalar has no .get() at all; a dict missing/misshaping "stages" is the
+    # same "not really declared" case sibling readers already treat as absent (discover(), etc).
+    return spec if isinstance(spec, dict) and isinstance(spec.get("stages"), list) else None
 
 
 def _run_check(check, cwd):

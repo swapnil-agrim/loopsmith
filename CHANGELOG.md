@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### fix(pipeline): a malformed `pipeline.json` is treated as absent, never a traceback
+`load_pipeline()` did `json.loads(...)` unguarded and then `spec.get("stages")` with no dict check —
+an invalid-JSON `pipeline.json` raised `JSONDecodeError`, and a top-level array/scalar raised
+`AttributeError` on the `.get()`, both propagating out of the `card`/`propose` CLI verbs as a raw
+traceback. The sibling `discover` verb already catches broadly and `slices.load` raises a named
+error for the same class of input — `load_pipeline` was the one reader in this family that didn't
+degrade. Now wraps the parse in `try/except ValueError` (`JSONDecodeError` is a `ValueError`) and
+requires `isinstance(spec, dict)` before ever calling `.get()` on it, returning the same `None` "no
+pipeline" sentinel a missing file already uses — so `card`/`propose` fall into their existing
+`NO-PIPELINE` (exit 3) path instead of crashing.
+
 ### fix(work): `gate()` fails closed instead of crashing on a raising `gh pr view`
 Unlike `merge_rights` (fails closed) and `review_gate` (fails open), a transient `gh pr view` error —
 a 403, a rate-limit, a network blip — inside `gate()`'s mergeability read propagated straight out of
