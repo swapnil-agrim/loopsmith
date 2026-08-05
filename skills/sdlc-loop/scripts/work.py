@@ -580,9 +580,12 @@ def merge(sdlc_dir, config, goal, run=None, sleep=time.sleep):
         return (f"PR #{rec['pr']} clean and safe, but {detail} — merging it is yours to make "
                 f'(auto_merge: "protected")')
     run(rec["worktree"], ["gh", "pr", "merge", rec["pr"], "--auto", f"--{settings(config)['merge_method']}"])
-    # Record the merge action so the team ledger shows landed PRs, not only goal outcomes. Fail-open:
-    # a ledger problem must never turn a successful merge into a failure.
-    ledger.safe_append(sdlc_dir, "merged", goal, config=config, pr=rec["pr"],
+    # Record the ARM, not a landing (F26/#344): `--auto` only enables GitHub's auto-merge, it does not
+    # confirm the PR merged — a later-failing check or a cancelled auto-merge can still mean it never
+    # does. Logging this moment as `merged` was a false "landed" claim in TEAM.md's shared view; no
+    # code path here observes the real merge event, so `merge-armed` is the honest kind. Fail-open: a
+    # ledger problem must never turn a successful arm into a failure.
+    ledger.safe_append(sdlc_dir, "merge-armed", goal, config=config, pr=rec["pr"],
                        why=f"auto-merge ({settings(config)['merge_method']}) armed on PR #{rec['pr']}")
     return f"auto-merge armed on PR #{rec['pr']} — " + (
         detail if guarded else f"WARNING: {detail}; local verify was the only gate")

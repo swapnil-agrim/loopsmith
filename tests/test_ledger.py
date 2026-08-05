@@ -488,7 +488,8 @@ def test_vocabulary_constants_match_spec_table():
     happen to call `ledger.append(..., "claimed", ...)` literally, never asserted the spelling
     itself the way EVENT_KINDS/PHASE_KINDS/etc. already did. This is also the engine half of the
     sibling pin `insight/contract/vocabulary.json`'s `"entries_kinds"` key names by hand."""
-    assert ledger.KINDS == ("claimed", "done", "parked", "failed", "handoff", "ack", "release", "note", "merged")
+    assert ledger.KINDS == (
+        "claimed", "done", "parked", "failed", "handoff", "ack", "release", "note", "merged", "merge-armed")
     assert ledger.EVENT_KINDS == ("phase", "gate", "verify", "slice", "spend", "retro", "park", "scan")
     assert ledger.PHASE_KINDS == ("goal", "research", "plan", "plan_review", "implement", "review", "retro")
     assert ledger.GATE_KINDS == (
