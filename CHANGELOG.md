@@ -97,6 +97,16 @@ just survives the round trip now. New boundary tests in `tests/test_state.py` an
 directions: genuinely-earlier evidence in the same floored second is now refused, and
 genuinely-later (or exactly-simultaneous) evidence in the same floored second still accepted.
 
+### fix(watch): a priority-escalated re-raise of the same hand-off no longer vanishes (F13/#345)
+`watch_classify.signature()` keyed suppression on `kind:issue:state` alone, but `hand_off()` always
+writes `state="open"` (it never varies it — see handoff.py) — so a later re-raise of the same issue,
+say escalating P1 -> P0, or re-opening after a decline, kept the IDENTICAL signature as the first
+raise even though it carried a new id/seq and a strictly more urgent priority. Once that first raise
+had already been surfaced and its signature recorded, the escalation matched it and was silently
+dropped from the inbox — a missed escalation, which is worse than a duplicate. `signature()` now
+folds `priority` into the tuple, so an escalating re-raise reads as news while a re-raise that
+repeats the same priority (truly nothing new) stays suppressed exactly as before.
+
 ## 1.0.0 — the zero-touch release
 
 The theme: one person on one machine can now point LoopSmith at a stack of their own assigned issues

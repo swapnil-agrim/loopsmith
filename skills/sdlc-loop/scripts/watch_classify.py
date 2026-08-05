@@ -12,10 +12,15 @@ Two independent suppressions, because they catch different mistakes:
     two separate ledger files (see ledger.py's per-actor-per-process files) — `_writer()` keys
     those apart by pid so one writer's advancing seq can never suppress the other's not-yet-seen
     entries;
-  * the **signature** (`kind:issue:state`) stops the same mention firing again when a colleague's
-    file is rewritten, rebased, or replayed — the cursor alone would re-fire all of it.
+  * the **signature** (`kind:issue:state:priority`) stops the same mention firing again when a
+    colleague's file is rewritten, rebased, or replayed — the cursor alone would re-fire all of it.
 
 A *state change* is deliberately not suppressed: `open` -> `deferred` on the same issue is news.
+Neither is a *priority change*: a hand-off always writes `state="open"` (see handoff.py), so an
+escalating re-raise of the same issue (P1 -> P0, or a re-open after decline) would otherwise keep
+the exact `kind:issue:state` signature of the first raise and vanish into the suppression set even
+though it carries a new id/seq and is strictly more urgent — a missed escalation is worse than a
+duplicate. Priority is part of the signature precisely so that case still reads as news (F13/#345).
 
 DOWNGRADE IS UNSUPPORTED: the cursor is per-machine local state at `.sdlc/state/watch-cursor.json`
 (never on the shared ledger branch), so reverting to a pre-137 plugin that expects the old flat
@@ -89,7 +94,13 @@ def _writer(entry):
 
 
 def signature(entry):
-    return f"{entry.get('kind')}:{entry.get('issue') or entry.get('goal')}:{entry.get('state') or ''}"
+    """Content identity for suppression, deliberately excluding `id`/seq (a rewritten/rebased file
+    changes those without changing what happened). `priority` IS included: a hand-off always writes
+    `state="open"` (handoff.py never varies it), so without priority a re-raise that escalates P1 ->
+    P0 (or re-opens after a decline) would collide with the first raise's signature and be dropped —
+    exactly the escalation a suppressed duplicate must never hide (F13/#345)."""
+    return (f"{entry.get('kind')}:{entry.get('issue') or entry.get('goal')}:"
+            f"{entry.get('state') or ''}:{entry.get('priority') or ''}")
 
 
 def rank(entry):
