@@ -117,7 +117,9 @@ emit_combined_diff() {
   while IFS= read -r -d '' f; do
     [ -f "$PROJECT_DIR/$f" ] || continue
     LC_ALL=C grep -Iq . -- "$PROJECT_DIR/$f" 2>/dev/null || continue   # skip binary
-    printf '+++ b/%s\n@@ -0,0 +1 @@\n' "$f"
+    # Prefix a synthetic "diff --git" header so the awk's inhunk reset fires for this
+    # block too — an untracked file gets exactly one hunk, all-added.
+    printf 'diff --git a/%s b/%s\n+++ b/%s\n@@ -0,0 +1 @@\n' "$f" "$f" "$f"
     awk '{ print "+" $0 }' "$PROJECT_DIR/$f" 2>/dev/null
   done < <(git -C "$PROJECT_DIR" ls-files --others --exclude-standard -z "${EXCL[@]}" 2>/dev/null)
 }
@@ -129,9 +131,16 @@ while IFS= read -r hline; do
 done < <(
   emit_combined_diff | awk '
     function jesc(s){ gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); return s }
-    /^\+\+\+ / { f=$0; sub(/^\+\+\+ [ab]\//,"",f); sub(/\t.*$/,"",f); file=f; next }
-    /^@@ /     { h=$0; sub(/^@@ -[0-9,]+ \+/,"",h); sub(/[, ].*$/,"",h); newln=h+0; next }
-    /^\+/ && $0 !~ /^\+\+\+/ {
+    # A real "+++ " file header only appears OUTSIDE a hunk (before the first @@). Once inside a hunk, a
+    # line rendered "+++ ..." is added CONTENT whose source began "++ " — treating it as a header would
+    # capture the line (secret and all) into `file` and emit it. Track hunk state (parity with
+    # alignment-collect.sh scan_hardstops, slice #89) so an in-hunk "+++ " line is scanned as content
+    # and never becomes the `file` value.
+    /^diff --git / { inhunk=0; file=""; next }
+    !inhunk && /^--- / { next }
+    !inhunk && /^\+\+\+ / { f=$0; sub(/^\+\+\+ [ab]\//,"",f); sub(/\t.*$/,"",f); file=f; next }
+    /^@@ /     { inhunk=1; h=$0; sub(/^@@ -[0-9,]+ \+/,"",h); sub(/[, ].*$/,"",h); newln=h+0; next }
+    inhunk && /^\+/ {
       line=$0; sub(/^\+/,"",line)
       if (line ~ /(ALTER[ \t]+TABLE|CREATE[ \t]+TABLE|DROP[ \t]+(TABLE|DATABASE|SCHEMA)|ADD[ \t]+COLUMN|DROP[ \t]+COLUMN|CREATE[ \t]+INDEX|RENAME[ \t]+(TABLE|COLUMN)|add_column|create_table|drop_column|createTable|dropTable|addColumn)/)
         emit("migration","ddl")
@@ -152,7 +161,7 @@ done < <(
         emit("sensitive","pii")
       newln++; next
     }
-    /^ / { newln++ }
+    inhunk && /^ / { newln++; next }
     function emit(cat,pid,  loc){
       loc=(newln>0?newln:0)
       printf "%s\t{\"category\":\"%s\",\"file\":\"%s\",\"line\":%d,\"pattern_id\":\"%s\"}\n",
