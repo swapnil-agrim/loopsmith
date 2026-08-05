@@ -110,10 +110,12 @@ if os.environ.get(_CHILD_SENTINEL) and not (INSIGHT.parent / "skills").is_dir():
 # Issue #298 ([E15.S4]): raised from 1090. Converting the four skip-guarded files
 # (test_metric_severity_rank.py, test_gaps_severity_vocabulary.py, test_metric_23_gate_catch_rate.py,
 # test_gaps_compare_mirrors_pipeline.py) off skills/-path reads onto insight/contract/'s fixtures,
-# plus the new contract test files (Steps 6-9), measured a real standalone-copy floor of 1137
-# passed / 12 skipped this session (re-measured via this exact fixture, not pasted from the plan --
-# see .sdlc/plans/298.md's own "never paste a number" convention). Raised to comfortably below
-# that, not to it exactly.
+# plus the new contract test files (Steps 6-9), measured a real standalone-copy count of 1131
+# passed / 12 skipped -- reproduced three times this session on CPython 3.9.6, twice by an
+# independent reviewer. An earlier report of 1137 in this PR's own implement note was WRONG and is
+# not what this floor was set from; the number here is the one that reproduces. Raised to
+# comfortably below the real count, not to it exactly, so an unrelated goal adding tests does not
+# have to touch this line.
 MIN_PASSED = 1125
 
 # The complete set of skip reasons the child run is allowed to report. An unlisted reason means

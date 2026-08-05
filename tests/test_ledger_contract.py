@@ -68,3 +68,7 @@ def test_an_unknown_field_written_by_a_newer_writer_is_ignored_not_fatal(tmp_pat
     }) + "\n")
     records = ledger.read_all(d)
     assert len(records) == 1 and records[0]["kind"] == "note"
+    # Survives INTACT, not merely survives: without this line the test passes even if read_all()
+    # strips every unknown key, which is the opposite of the additive contract it claims to prove
+    # (verified by mutation -- stripping unknown fields left the assertion above green).
+    assert records[0]["a_field_from_a_future_engine_version"] == "must not be fatal"
