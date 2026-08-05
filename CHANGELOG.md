@@ -20,6 +20,11 @@ was never dropped, so the NEXT run re-served the same goal. Fixes, in order of w
   unguarded at the source, since silently swallowing THIS one risks claiming "done" while the remote
   issue stays open and re-pickable), the goal is downgraded to a recorded PARK — never a silent "done"
   — and the drain continues to the next goal instead of aborting.
+- POST-REVIEW FIX: if BOTH the primary record AND the fallback park-record fail for the same goal,
+  `run_loop` didn't crash and didn't lose the goal — it spun on it forever (an independent review
+  reproduced this as an unbounded, ~100%-CPU hang), silently defeating `max_iterations`. Such a goal
+  is now poisoned for the rest of THIS run only (reusing `_next`'s existing lease-skip mechanism), so
+  the drain still makes bounded progress on the rest of the backlog; a fresh run may retry it.
 
 ### fix(loop): `spend` refuses a non-integer token count with a message, not a traceback
 `loop.py spend <dir> <n>` — the CLI verb hosts report token usage through — did `int(n)` unguarded
