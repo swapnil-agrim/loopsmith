@@ -340,16 +340,17 @@ def session_end(sdlc_dir):
 def session_active(sdlc_dir, config):
     """True iff a managing session is still active for `sdlc_dir`, per the marker `session_start`
     wrote — what a routine checks BEFORE deciding whether to launch one. Combines the same two
-    independent signals `ledger._held()` already combines for claim leases (F10.5/#374), not a new
-    pattern invented here: `ledger.pid_alive()` on the recorded pid (a DEFINITIVELY dead pid — the
-    kernel has no such process — means stale regardless of age, no timeout needed to detect a crash,
-    same reasoning as `_try_acquire_claim_lock`'s `flock`-based lock, F10.5-2/#387) AND the marker's
-    own age against `ledger.lease_ttl_seconds(config)` (the SAME 12h-default knob the team ledger
-    already exposes, not a second one to separately configure — applied unconditionally, exactly
-    like `_held()`'s own TTL cutoff, so an ancient marker eventually stops protecting even if its
-    pid happens to still resolve as alive — the realistic risk being pid REUSE over long spans, not
-    a legitimately-still-running session, since routine firings are expected to be far more frequent
-    than the TTL). No marker at all, or unparseable content, reads as not active — never raises."""
+    independent signals the ledger's OWN claim-lease machinery already combines (F10.5/#374) — not a
+    new pattern invented here: `_held()`'s unconditional TTL cutoff (`ledger.lease_ttl_seconds`, the
+    SAME 12h-default knob the team ledger already exposes, not a second one to separately configure
+    — applied here exactly like `_held()` applies it, so an ancient marker eventually stops
+    protecting even if its pid happens to still resolve as alive — the realistic risk being pid REUSE
+    over long spans, not a legitimately-still-running session, since routine firings are expected to
+    be far more frequent than the TTL) AND `ledger.pid_alive()` (the liveness check `_lease()`/
+    `claim_belongs_to_me()` layer on top of `_held()`'s own TTL — a DEFINITIVELY dead pid means
+    stale regardless of age, no timeout needed to detect a crash, same reasoning as
+    `_try_acquire_claim_lock`'s `flock`-based lock, F10.5-2/#387). No marker at all, or unparseable
+    content, reads as not active — never raises."""
     path = _session_marker_path(sdlc_dir)
     try:
         pid = int(path.read_text().strip())
