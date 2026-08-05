@@ -6,7 +6,7 @@ spend itself; no reports == no enforcement). An absent/zero key enforces nothing
 it behaves exactly as before. The irreversible-action gate is enforced by /sdlc-loop SKILL.md prose.
 Claim and outcome are mirrored to the team ledger (ledger.py) when `ledger.enabled` is on — every
 such call is fail-open, so a ledger problem can never stop a run."""
-import sys, pathlib, importlib.util, time, subprocess
+import os, sys, pathlib, importlib.util, time, subprocess
 
 try:                    # portable output: force UTF-8 so the plugin's own non-ASCII (arrows, em-dashes)
     import sys as _sys  # doesn't garble to '?' or crash on a non-UTF-8 console (the Windows cp1252
@@ -91,14 +91,85 @@ def _lease(sdlc_dir, config):
         return (None, None, {})
 
 
+_CLAIM_LOCK_STALE_SECONDS = 120   # generous for a couple of gh API round-trips + retries. NOT the
+# same question ledger.lease.ttl_hours answers (hours-scale, "when is a whole GOAL abandoned"): this
+# lock only ever needs to survive the pick-to-commit window below, so a crash while holding it must
+# self-heal in seconds, not hours — a lock left behind by a mid-pick crash would otherwise block a
+# goal the ledger itself already shows as unclaimed (no "claimed" entry was ever durably written).
+
+
+def _claim_lock_path(sdlc_dir, goal):
+    return pathlib.Path(sdlc_dir) / "state" / "claims" / f"{work.stem(goal)}.lock"
+
+
+def _try_acquire_claim_lock(sdlc_dir, goal):
+    """True iff THIS process is the exclusive winner, right now, of the local race to claim `goal`
+    (F10.5-2/#387). Closes what the ledger-claim check (`_lease`/`ledger.claim_belongs_to_me`, #374)
+    structurally cannot: #374 is entirely about correctly INTERPRETING a claim that already exists —
+    it has no answer for "nothing exists yet and two readers look at the same instant." Two
+    processes sharing one `.sdlc` directory (two tabs on one machine) racing `_next()` close enough
+    together both read the same pre-claim ledger state and could otherwise both proceed.
+
+    `os.open(path, O_CREAT | O_EXCL | O_WRONLY)` is POSIX-atomic — the kernel guarantees AT MOST ONE
+    caller succeeds when two processes race to create the same path, no read-then-write gap to lose
+    a race in (unlike a read-then-append to the ledger). Deliberately LOCAL-only (this file, this
+    machine) — cross-machine claims are the ledger's own, already-correct job; a lock file two
+    different machines don't share cannot and need not arbitrate between them.
+
+    A stale lock (crashed holder, older than `_CLAIM_LOCK_STALE_SECONDS`) is reclaimed by unlinking
+    it and making ONE more create attempt — THAT attempt is what decides the winner if two processes
+    race to steal the same stale lock at once, so staleness recovery is itself race-safe, not a
+    second TOCTOU gap bolted onto the first.
+
+    Fail-open: any OS error this function cannot interpret (permissions, a read-only filesystem, a
+    directory it cannot create) returns True — a lock this call cannot manage must never be what
+    stops the loop; `_lease`/`claim_belongs_to_me` remains the primary, always-on defense regardless
+    of whether this local, best-effort narrowing is available on a given filesystem."""
+    path = _claim_lock_path(sdlc_dir, goal)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.close(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        return True
+    except FileExistsError:
+        pass
+    except OSError:
+        return True                          # can't manage the lock at all — fail open, see docstring
+    try:
+        if (time.time() - path.stat().st_mtime) < _CLAIM_LOCK_STALE_SECONDS:
+            return False                     # genuinely still fresh — someone else really holds it
+    except OSError:
+        return True                          # can't even stat it — fail open
+    try:
+        path.unlink()                        # stale — steal it; this create is the atomic decider
+        os.close(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        return True
+    except FileExistsError:
+        return False                         # someone else won the steal race
+    except OSError:
+        return True
+
+
+def _release_claim_lock(sdlc_dir, goal):
+    """Best-effort: releasing must never raise into `_next()`'s caller. Safe to call even when the
+    lock was never actually acquired (fail-open path above) — `missing_ok` makes a no-op of that."""
+    try:
+        _claim_lock_path(sdlc_dir, goal).unlink(missing_ok=True)
+    except Exception:                        # noqa: BLE001
+        pass
+
+
 def _next(sdlc_dir, source, config, extra_skip=()):
     """(kind, goal): 'goal' (+marks in_progress, the commit point), 'DONE' (drained), 'BUDGET'.
     Drained backlog reports DONE even if budget is also spent (empty wins the tie). A goal another
     actor — or a DIFFERENT, still-live process of MY OWN actor — already holds a ledger claim on is
     skipped (see `_lease`/`ledger.claim_belongs_to_me`, F10.5/#374) so two loops never double-start
-    it, whether they're two different people or two of one person's own concurrent sessions.
-    `extra_skip` (F4) is run_loop's own poison set — a goal neither the primary nor the fallback
-    park-record could be recorded for, this run — so a doubly-failing source doesn't spin forever."""
+    it, whether they're two different people or two of one person's own concurrent sessions. A goal
+    genuinely uncommitted-to-either-way that a SIBLING process on this machine wins the exact-instant
+    race for is ALSO skipped (see `_try_acquire_claim_lock`, F10.5-2/#387) — #374 alone can only
+    arbitrate a claim that already exists; this closes the narrower, true-simultaneous case #374
+    structurally cannot. `extra_skip` (F4) is run_loop's own poison set — a goal neither the primary
+    nor the fallback park-record could be recorded for, this run — so a doubly-failing source doesn't
+    spin forever."""
     me, my_writer, lease = _lease(sdlc_dir, config)
     skip = set(extra_skip)
     while True:
@@ -109,12 +180,22 @@ def _next(sdlc_dir, source, config, extra_skip=()):
         if holder_actor and not ledger.claim_belongs_to_me(holder_actor, holder_writer, me, my_writer):
             skip.add(goal)                      # another loop — or a live sibling of mine — owns this
             continue
+        if not _try_acquire_claim_lock(sdlc_dir, goal):
+            skip.add(goal)                      # a sibling on this machine won this exact instant
+            continue
         break
-    if _budget_spent(state.load_cursor(sdlc_dir), config.get("budget", {})):
-        return ("BUDGET", None)
-    source.mark_in_progress(goal)
-    ledger.safe_append(sdlc_dir, "claimed", goal, config=config)
-    return ("goal", goal)
+    # The lock's whole job is bridging the gap until a DURABLE claim exists — once mark_in_progress/
+    # safe_append below have run (or budget halts before they do), #374's own claim-interpretation
+    # takes over correctly for every later _next() call, local or not. Release unconditionally, not
+    # just on success, so a budget halt or an unexpected exception can never leak the lock.
+    try:
+        if _budget_spent(state.load_cursor(sdlc_dir), config.get("budget", {})):
+            return ("BUDGET", None)
+        source.mark_in_progress(goal)
+        ledger.safe_append(sdlc_dir, "claimed", goal, config=config)
+        return ("goal", goal)
+    finally:
+        _release_claim_lock(sdlc_dir, goal)
 
 
 def _surface_inbox(sdlc_dir):

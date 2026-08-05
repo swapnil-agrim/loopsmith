@@ -1,4 +1,4 @@
-import hashlib, json, os, pathlib, importlib.util, tempfile, subprocess, sys
+import hashlib, json, os, pathlib, importlib.util, tempfile, subprocess, sys, time
 
 S = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts"
 
@@ -456,6 +456,113 @@ def test_next_reclaims_a_goal_a_dead_sibling_process_of_my_own_actor_held(monkey
         lp = _loop(); src = _Queue(["a"])
         kind, goal = lp._next(base, src, lp.state.load_config(base))
         assert (kind, goal) == ("goal", "a")           # dead sibling's claim -- safe to reclaim
+
+
+# --------------------------------------------------------------------- local claim lock (#387)
+# #374 (above) closes correctly INTERPRETING a claim that already exists. It has no answer for "two
+# readers look at the same instant, nothing claimed yet" -- that needs something atomic. See
+# loop.py's own _try_acquire_claim_lock docstring for the full design.
+
+
+def test_claim_lock_is_exclusive_under_genuine_thread_concurrency():
+    """The core guarantee: TWO callers racing to acquire the SAME goal's lock at the exact same
+    instant -- a real thread barrier forcing both os.open(..., O_EXCL) calls to genuinely overlap,
+    not sequential mock calls -- get exactly one winner, deterministically, every time. POSIX
+    guarantees this outcome; it is not a matter of luck or timing tolerance."""
+    import threading
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = str(pathlib.Path(d) / ".sdlc")
+        lp = _loop()
+        barrier = threading.Barrier(2)
+        results = []
+        results_lock = threading.Lock()
+
+        def attempt():
+            barrier.wait()                     # both threads unblock at the same instant
+            got = lp._try_acquire_claim_lock(sdlc, "g.md")
+            with results_lock:
+                results.append(got)
+
+        t1, t2 = threading.Thread(target=attempt), threading.Thread(target=attempt)
+        t1.start(); t2.start(); t1.join(); t2.join()
+        assert sorted(results) == [False, True]   # exactly one winner, never both, never neither
+
+
+def test_claim_lock_release_lets_a_later_caller_win():
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = str(pathlib.Path(d) / ".sdlc")
+        lp = _loop()
+        assert lp._try_acquire_claim_lock(sdlc, "g.md") is True
+        assert lp._try_acquire_claim_lock(sdlc, "g.md") is False   # still held
+        lp._release_claim_lock(sdlc, "g.md")
+        assert lp._try_acquire_claim_lock(sdlc, "g.md") is True    # released -- free again
+
+
+def test_claim_lock_release_is_a_safe_noop_when_never_acquired():
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = str(pathlib.Path(d) / ".sdlc")
+        _loop()._release_claim_lock(sdlc, "never-locked.md")   # must not raise
+
+
+def test_claim_lock_reclaims_a_stale_lock_past_the_staleness_window():
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = str(pathlib.Path(d) / ".sdlc")
+        lp = _loop()
+        path = lp._claim_lock_path(sdlc, "g.md")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        stale = time.time() - (lp._CLAIM_LOCK_STALE_SECONDS + 10)
+        os.utime(path, (stale, stale))
+        assert lp._try_acquire_claim_lock(sdlc, "g.md") is True   # reclaimed, not stuck forever
+
+
+def test_claim_lock_does_not_reclaim_a_lock_within_the_staleness_window():
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = str(pathlib.Path(d) / ".sdlc")
+        lp = _loop()
+        path = lp._claim_lock_path(sdlc, "g.md")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()                                              # fresh -- mtime is "now"
+        assert lp._try_acquire_claim_lock(sdlc, "g.md") is False  # still within the window
+
+
+def test_next_skips_a_goal_whose_claim_lock_is_already_held():
+    """Deterministic proof that _next() actually WIRES IN the lock (the lock's own exclusivity is
+    already proven in isolation above) -- pre-creates the lock file directly, simulating "a sibling
+    process on this machine won this exact instant" without needing a genuine race to reproduce."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[])
+        lp = _loop()
+        lock = lp._claim_lock_path(base, "a")
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.touch()                                    # simulate: someone else's lock, held right now
+        src = _Queue(["a", "b"])
+        kind, goal = lp._next(base, src, lp.state.load_config(base))
+        assert (kind, goal) == ("goal", "b")            # "a"'s lock is held -- skipped straight to "b"
+
+
+def test_next_releases_the_lock_after_a_successful_claim():
+    """The lock's whole job is bridging the gap until a durable ledger claim exists -- it must not
+    outlive that, or every later pick would pay its staleness window for no reason."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[])
+        lp = _loop()
+        src = _Queue(["a"])
+        lp._next(base, src, lp.state.load_config(base))
+        assert not lp._claim_lock_path(base, "a").exists()   # released, not leaked
+
+
+def test_next_releases_the_lock_even_when_budget_is_already_spent():
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[])
+        (pathlib.Path(base) / "config.json").write_text(json.dumps(
+            {"ledger": {"enabled": True, "actor": "me", "lease": {"ttl_hours": 0}},
+             "budget": {"max_iterations": 0}}))              # already spent
+        lp = _loop()
+        src = _Queue(["a"])
+        kind, goal = lp._next(base, src, lp.state.load_config(base))
+        assert kind == "BUDGET"
+        assert not lp._claim_lock_path(base, "a").exists()   # BUDGET halt still releases, never leaks
 
 
 def test_next_resumes_a_goal_my_own_current_process_already_holds(monkeypatch):

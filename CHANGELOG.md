@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### fix(loop): two genuinely simultaneous `_next()` calls can no longer pick the same goal
+The claim-identity fix above closes correctly INTERPRETING a claim that already exists — it has no
+answer for two readers looking at the same instant with nothing claimed yet. `_next()` is a
+read-then-decide-then-write sequence: read the ledger, decide a goal looks free, then write a claim.
+Two sessions sharing one `.sdlc` directory (two tabs on one machine) whose `_next()` calls land close
+enough together — roughly one `gh` API round-trip, not a full minute — can both read the same
+pre-claim state and both proceed to the same goal. Not a one-time startup risk: it recurs at every
+iteration boundary, any time two sessions ask "what's next" close to the same moment.
+
+`loop.py` gains a local, POSIX-atomic exclusive-create lock (`os.open(path, O_CREAT|O_EXCL|O_WRONLY)`
+at `.sdlc/state/claims/<goal-stem>.lock`, already covered by the existing wholesale `.sdlc/state/`
+gitignore) acquired in `_next()` immediately before committing to a goal and released immediately
+after the durable ledger claim lands — the lock's only job is bridging that narrow gap; once a
+durable claim exists, the existing writer-aware claim check takes over correctly for every later
+call, local or not. A stale lock (a crash mid-pick) self-heals within a short, fixed window — much
+shorter than the ledger's own hours-scale lease TTL, since this only ever needs to survive a couple
+of API round-trips, not a whole goal's lifetime. Deliberately LOCAL-only: cross-machine claims stay
+on the existing, already-correct ledger mechanism, which two different machines don't share a
+filesystem to race on anyway. Closes a second, downstream symptom for free: since the losing session
+never wins the lock, it never returns the contested goal from `_next()` at all, so it never reaches
+`work.py start()` for it either — no `git worktree add` collision on the same deterministic path.
+
 ### fix(handoff): a blocked issue's dependency marker is now machine-readable, not comment-only
 `hand_off()`'s "link it from the blocked issue" step posted its dependency marker as a GitHub
 **comment** — invisible to `backlog_check.py`'s `_explicit_blockers()`, since `mirror.py`'s corpus
