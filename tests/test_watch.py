@@ -75,6 +75,30 @@ def test_a_state_change_is_news():
     assert len(items) == 1 and items[0]["state"] == "deferred"
 
 
+def test_a_priority_escalation_re_raise_is_news():
+    """F13: `hand_off()` always writes `state="open"` (handoff.py never varies it), so a re-raise
+    that escalates priority (P1 -> P0) has an unchanged `kind:issue:state` signature — dropped by
+    the old signature unless priority is itself part of the signature. A missed escalation is worse
+    than a duplicate, so the second, more urgent raise must still surface even though its state
+    didn't change, only its priority did."""
+    cursor = classify.classify([_entry("amy", 1, to=ME, issue=5, state="open", priority="P1")],
+                               dict(classify.EMPTY_CURSOR), ME)[1]
+    items, _ = classify.classify(
+        [_entry("amy", 2, to=ME, issue=5, state="open", priority="P0")], cursor, ME)
+    assert len(items) == 1 and items[0]["priority"] == "P0"
+
+
+def test_a_same_priority_re_raise_of_an_already_surfaced_issue_is_still_suppressed():
+    """The complement of the escalation test above: including priority in the signature must not
+    turn off suppression altogether — a re-raise that repeats the same kind/issue/state/priority
+    is genuinely not news and stays suppressed, same as before F13."""
+    cursor = classify.classify([_entry("amy", 1, to=ME, issue=5, state="open", priority="P1")],
+                               dict(classify.EMPTY_CURSOR), ME)[1]
+    items, _ = classify.classify(
+        [_entry("amy", 2, to=ME, issue=5, state="open", priority="P1")], cursor, ME)
+    assert items == []
+
+
 def test_most_urgent_first_then_oldest():
     entries = [_entry("amy", 1, to=ME, priority="P2", issue=1),
                _entry("amy", 2, to=ME, priority="P0", issue=2),
