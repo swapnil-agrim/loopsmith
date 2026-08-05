@@ -30,6 +30,19 @@ assignment actually took, and `hand_off()`'s own narrative comment checks it bef
 happened. A genuine, non-assignee-specific failure on the issue-create call itself (auth broken,
 network down) still raises uncaught, exactly as before.
 
+### fix(work): comment-marker parsing is now line-anchored, not a bare substring test (F9/#340)
+`_comment_directive`'s `"loopsmith:approve" in body.lower()` matched ANYWHERE in a PR comment, so
+`"do NOT loopsmith:approve"` (a negation), `"loopsmith:approved"` (a different word — no `\b`), and a
+marker quoted back or shown as a code sample (inside a fenced ``` block or a `>` blockquote) all
+registered as a real directive; symmetrically, a comment merely DISCUSSING `loopsmith:block` could
+wrongly PARK a clean PR. This is the merge-approval signal `work.require_review` reads, so a false
+positive silently skips the review gate and a false negative silently blocks a good merge. New
+`_line_directive` scans a comment body line by line against an anchored
+`^\s*loopsmith:(approve|block|unblock)\b`, skipping fenced and `>`-quoted lines — a marker must be the
+leading token of its own line (optional indent) to count; trailing prose after it on the same line is
+still fine. `_comment_directive` now calls it per comment, keeping the same "latest marker wins" rule
+across comments.
+
 ## 1.0.0 — the zero-touch release
 
 The theme: one person on one machine can now point LoopSmith at a stack of their own assigned issues

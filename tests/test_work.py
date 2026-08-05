@@ -705,12 +705,14 @@ def test_merge_arms_when_the_pr_is_approved(tmp_path):
 
 # --- the self-authorship fallback: GitHub forbids approving/blocking your OWN PR, so a solo-account
 # loop uses plain-comment markers (loopsmith:approve / :block / :unblock), which have no such rule.
+# F9: the marker must LEAD its line (optional indent) — fixtures below put it first, with any human
+# rationale trailing, since that's the one order the line-anchored matcher accepts.
 
 
 def test_review_gate_parks_on_a_loopsmith_block_comment(tmp_path):
     cfg = {"work": {"enabled": True, "require_review": "changes"}}
     d = _sdlc(tmp_path, cfg); g = _started(d)
-    run = _runner(_review(decision=None, comments=["please fix the retry — loopsmith:block"]))
+    run = _runner(_review(decision=None, comments=["loopsmith:block — please fix the retry"]))
     ok, why = work.review_gate(d, cfg, g, run=run)
     assert ok is False and "loopsmith:block" in why
 
@@ -718,14 +720,14 @@ def test_review_gate_parks_on_a_loopsmith_block_comment(tmp_path):
 def test_a_loopsmith_unblock_clears_the_block(tmp_path):
     cfg = {"work": {"enabled": True, "require_review": "changes"}}
     d = _sdlc(tmp_path, cfg); g = _started(d)
-    run = _runner(_review(decision=None, comments=["loopsmith:block", "fixed now — loopsmith:unblock"]))
+    run = _runner(_review(decision=None, comments=["loopsmith:block", "loopsmith:unblock — fixed now"]))
     assert work.review_gate(d, cfg, g, run=run) == (True, "")     # latest marker wins
 
 
 def test_a_loopsmith_approve_comment_satisfies_approval_mode(tmp_path):
     cfg = {"work": {"enabled": True, "require_review": "approval"}}     # can't self-approve formally
     d = _sdlc(tmp_path, cfg); g = _started(d)
-    run = _runner(_review(decision=None, comments=["ship it — loopsmith:approve"]))
+    run = _runner(_review(decision=None, comments=["loopsmith:approve — ship it"]))
     assert work.review_gate(d, cfg, g, run=run) == (True, "")
 
 
@@ -739,9 +741,94 @@ def test_approval_mode_parks_and_points_at_the_marker_without_an_approval(tmp_pa
 def test_a_later_block_beats_an_earlier_approve_even_when_formally_approved(tmp_path):
     cfg = {"work": {"enabled": True, "require_review": "approval"}}
     d = _sdlc(tmp_path, cfg); g = _started(d)
-    run = _runner(_review(decision="APPROVED", comments=["loopsmith:approve", "wait, no — loopsmith:block"]))
+    run = _runner(_review(decision="APPROVED", comments=["loopsmith:approve", "loopsmith:block — wait, no"]))
     ok, why = work.review_gate(d, cfg, g, run=run)
     assert ok is False and "loopsmith:block" in why              # a block overrides even a formal approval
+
+
+# --- F9: comment-marker parsing is line-anchored — a negated ("do NOT loopsmith:approve"), quoted
+# (`>`), fenced (```), or substring ("loopsmith:approved") mention must never be mistaken for a real
+# directive; symmetrically, a mention of loopsmith:block must never wrongly PARK a clean PR. ---
+
+
+def test_line_directive_rejects_a_negated_approve():
+    assert work._line_directive("do NOT loopsmith:approve") is None
+
+
+def test_line_directive_rejects_a_negated_block():
+    assert work._line_directive("please do NOT loopsmith:block this one") is None
+
+
+def test_line_directive_rejects_a_substring_word():
+    assert work._line_directive("loopsmith:approved") is None      # "approved" is not the marker "approve"
+
+
+def test_line_directive_rejects_a_quoted_marker():
+    assert work._line_directive("> loopsmith:approve") is None
+
+
+def test_line_directive_rejects_a_fenced_marker():
+    assert work._line_directive("example syntax:\n```\nloopsmith:approve\n```") is None
+
+
+def test_line_directive_accepts_a_standalone_marker():
+    assert work._line_directive("loopsmith:approve") == "approve"
+
+
+def test_line_directive_accepts_an_indented_marker():
+    assert work._line_directive("    loopsmith:block") == "block"          # optional leading indent
+
+
+def test_line_directive_accepts_a_marker_with_trailing_prose():
+    assert work._line_directive("loopsmith:block — please fix the retry") == "block"    # only LEADING text disqualifies
+
+
+def test_line_directive_last_matching_line_in_a_comment_wins():
+    assert work._line_directive("loopsmith:block\nloopsmith:unblock") == "unblock"
+
+
+def test_review_gate_ignores_a_negated_approve_and_still_parks(tmp_path):
+    """The exact F9 repro: a comment MENTIONING the marker in a negative sentence must not satisfy
+    approval mode — the old substring-only test let this register as a real approve."""
+    cfg = {"work": {"enabled": True, "require_review": "approval"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    run = _runner(_review(decision=None, comments=["do NOT loopsmith:approve until CI is green"]))
+    ok, why = work.review_gate(d, cfg, g, run=run)
+    assert ok is False and "not approved yet" in why
+
+
+def test_review_gate_ignores_an_approved_substring(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "approval"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    run = _runner(_review(decision=None, comments=["loopsmith:approved of this approach fwiw"]))
+    ok, why = work.review_gate(d, cfg, g, run=run)
+    assert ok is False and "not approved yet" in why
+
+
+def test_review_gate_ignores_a_fenced_marker(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "approval"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    body = "here's the marker syntax:\n```\nloopsmith:approve\n```"
+    run = _runner(_review(decision=None, comments=[body]))
+    ok, why = work.review_gate(d, cfg, g, run=run)
+    assert ok is False and "not approved yet" in why
+
+
+def test_review_gate_ignores_a_quoted_marker(tmp_path):
+    cfg = {"work": {"enabled": True, "require_review": "approval"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    run = _runner(_review(decision=None, comments=["> loopsmith:approve\nnot really — quoting the bot"]))
+    ok, why = work.review_gate(d, cfg, g, run=run)
+    assert ok is False and "not approved yet" in why
+
+
+def test_review_gate_ignores_a_negated_block_and_does_not_wrongly_park(tmp_path):
+    """Symmetric case from the issue: a comment DISCUSSING loopsmith:block (not issuing it) must not
+    wrongly PARK an otherwise-clean PR."""
+    cfg = {"work": {"enabled": True, "require_review": "changes"}}
+    d = _sdlc(tmp_path, cfg); g = _started(d)
+    run = _runner(_review(decision=None, comments=["you should NOT need loopsmith:block for this"]))
+    assert work.review_gate(d, cfg, g, run=run) == (True, "")
 
 
 # --- post_review: the WRITE side — the loop reviews its OWN PR and posts the verdict (no human) ---

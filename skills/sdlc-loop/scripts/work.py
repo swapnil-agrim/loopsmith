@@ -29,6 +29,7 @@ Everything else parks with the reason. Zero deps.
 import importlib.util
 import json
 import pathlib
+import re
 import subprocess
 
 try:                    # portable output: force UTF-8 so the plugin's own non-ASCII (arrows, em-dashes)
@@ -65,6 +66,13 @@ _CAN_MERGE = ("ADMIN", "MAINTAIN", "WRITE")
 
 OFF, PROTECTED, ALWAYS = "off", "protected", "always"
 REVIEW_OFF, REVIEW_CHANGES, REVIEW_APPROVAL = "off", "changes", "approval"
+
+# F9: a directive must be the LEADING token of its own line (optional indent) — anchored so "do NOT
+# loopsmith:approve" (a negation), "loopsmith:approved" (a different word — \b stops the match short
+# of it), and a marker sitting mid-sentence in an aside never register as the real thing. `>`-quoted
+# and fenced (```) lines are excluded outright by _line_directive below, since a marker being shown or
+# quoted back is documentation, not a command.
+_DIRECTIVE_RE = re.compile(r"^\s*loopsmith:(approve|block|unblock)\b", re.IGNORECASE)
 
 
 def settings(config):
@@ -421,12 +429,37 @@ def _unresolved_threads(rec, run):
         return 0
 
 
+def _line_directive(body):
+    """The LAST standalone marker line in one comment body, or None (F9). Scanned line-by-line against
+    `_DIRECTIVE_RE` instead of a whole-body substring test, so position controls whether a mention
+    counts: fenced (```) and `>`-quoted lines are skipped outright (a marker shown as a code sample or
+    quoted back in a reply is documentation, not a command), and the line-start anchor means text
+    before the marker on the SAME line — a negation ("do NOT ...") or any other lead-in clause — stops
+    it from matching at all. Text AFTER the marker on its line is fine (a human's rationale following
+    the directive); only what precedes it on that line is disqualifying."""
+    found = None
+    fenced = False
+    for line in (body or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            fenced = not fenced             # toggle across the fence; the fence delimiter itself never matches
+            continue
+        if fenced or stripped.startswith(">"):
+            continue
+        match = _DIRECTIVE_RE.match(line)
+        if match:
+            found = match.group(1).lower()  # last matching line in the comment wins, same "latest" rule
+    return found
+
+
 def _comment_directive(rec, run):
     """The latest `loopsmith:` marker in the PR's PLAIN comments, or None. GitHub structurally forbids
     approving or requesting-changes on your OWN pull request, so a loop that opens every PR under its own
     account can never trip the formal review signal — permanently, not just in a test. A plain comment
     has no such restriction, so it's the self-usable channel: `loopsmith:approve` satisfies an approval,
-    `loopsmith:block` is a hard change-request, `loopsmith:unblock` clears a block. Latest marker wins.
+    `loopsmith:block` is a hard change-request, `loopsmith:unblock` clears a block. Latest marker wins:
+    per comment via `_line_directive` (line-anchored — a negated/quoted/fenced/substring mention is
+    never mistaken for the real thing, F9), then across comments in chronological order.
     Fail-open: unreadable comments -> None (the formal signals still apply)."""
     try:
         data = json.loads(run(rec["worktree"], ["gh", "pr", "view", str(rec["pr"]), "--json", "comments"]))
@@ -434,12 +467,12 @@ def _comment_directive(rec, run):
         return None
     directive = None
     for comment in data.get("comments") or []:  # chronological; the last marker is the current state
-        body = (comment.get("body") or "").lower()
-        if "loopsmith:block" in body:
+        marker = _line_directive(comment.get("body") or "")
+        if marker == "block":
             directive = "block"
-        elif "loopsmith:approve" in body:
+        elif marker == "approve":
             directive = "approve"
-        elif "loopsmith:unblock" in body:
+        elif marker == "unblock":
             directive = None
     return directive
 
