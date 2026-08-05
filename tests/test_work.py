@@ -264,6 +264,41 @@ def test_gate_parks_when_review_is_still_required(tmp_path):
     assert not ok and "BLOCKED" in verdict
 
 
+# --- F25: gate() must fail CLOSED, not crash, when `gh pr view` itself raises -------------------
+
+
+def test_gate_parks_with_a_usable_reason_when_pr_view_keeps_raising(tmp_path):
+    """A transient 403/rate-limit from `gh pr view` must never crash `merge()` — it must park with a
+    reason, logged, the same way every other gate() verdict does. Unlike merge_rights (fails closed)
+    and review_gate (fails open), this read had NO guard at all before F25."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([("pr view", RuntimeError("gh: HTTP 502 Bad Gateway"))])
+    ok, verdict, data = work.gate(d, ON, goal, run=run, sleep=NOSLEEP)
+    assert not ok
+    assert "could not read PR state" in verdict and "502" in verdict
+    assert data == {}
+    # exhausted every retry attempt before giving up, same budget as the UNKNOWN-persists case
+    assert sum("pr view" in c for c in run.calls) == work.UNKNOWN_ATTEMPTS
+
+
+def test_gate_retries_past_a_transient_pr_view_error_then_succeeds(tmp_path):
+    """A raising read is treated the same as a lazy UNKNOWN — worth a retry, not an instant park —
+    since GitHub's own transient errors are exactly the kind of blip a second attempt often clears."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    seen = []
+
+    def view(_line):
+        seen.append(1)
+        if len(seen) == 1:
+            raise RuntimeError("gh: HTTP 502 Bad Gateway")
+        return _view()
+
+    ok, verdict, _ = work.gate(d, ON, goal, run=_runner([("pr view", view)]), sleep=NOSLEEP)
+    assert ok and verdict == "clean and safe" and len(seen) == 2
+
+
 # --- merge rights: permission is never a preference ----------------------------------------------
 
 ALWAYS = {"work": {"enabled": True, "auto_merge": "always"}}

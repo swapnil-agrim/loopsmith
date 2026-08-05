@@ -230,9 +230,15 @@ def gate(sdlc_dir, config, goal, run=None, sleep=time.sleep):
         return False, "no PR for this goal — run `work.py pr` first", {}
     data = {}
     for attempt in range(UNKNOWN_ATTEMPTS):
-        data = json.loads(run(rec["worktree"], [
-            "gh", "pr", "view", rec["pr"],
-            "--json", "mergeable,mergeStateStatus,statusCheckRollup,headRefOid"]))
+        try:
+            data = json.loads(run(rec["worktree"], [
+                "gh", "pr", "view", rec["pr"],
+                "--json", "mergeable,mergeStateStatus,statusCheckRollup,headRefOid"]))
+        except Exception as exc:            # noqa: BLE001 - a raising read must fail closed, not crash
+            if attempt == UNKNOWN_ATTEMPTS - 1:
+                return False, f"could not read PR state ({exc})", {}
+            sleep(UNKNOWN_BACKOFF * (2 ** attempt))
+            continue
         if data.get("mergeable") != "UNKNOWN":
             break
         if attempt < UNKNOWN_ATTEMPTS - 1:
