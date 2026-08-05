@@ -151,9 +151,11 @@ done < <(
       # internal export and bury the signal in noise.
       if (line ~ /(@(Get|Post|Put|Patch|Delete)\(|(app|router|api)\.(get|post|put|patch|delete)\()/)
         emit("contract","route")
-      if (line ~ /(api[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|access[_-]?token|password)[ \t]*[:=]/)
+      # Secret-shape patterns kept in lockstep with alignment-collect.sh scan_hardstops (F29
+      # parity) — a parity test in tests/test_risk_detect.py enforces the two sets stay equal.
+      if (line ~ /(AWS_SECRET_ACCESS_KEY|aws_secret_access_key|api[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|access[_-]?token|password)[ \t]*[:=]/)
         emit("sensitive","secret")
-      else if (line ~ /(AKIA[0-9A-Z]{8}|ghp_[0-9A-Za-z]{8}|-----BEGIN[ A-Z]*PRIVATE KEY-----)/)
+      else if (line ~ /(AKIA[0-9A-Z]{8}|ghp_[0-9A-Za-z]{8}|xox[baprs]-[0-9A-Za-z-]{8}|glpat-[0-9A-Za-z_-]{8}|AIza[0-9A-Za-z_-]{8}|-----BEGIN[ A-Z]*PRIVATE KEY-----)/)
         emit("sensitive","token")
       else if (line ~ /(Authorization[ \t]*[:=]|[Bb]earer[ \t]+[A-Za-z0-9]|[ "_.]jwt|oauth)/)
         emit("sensitive","auth")

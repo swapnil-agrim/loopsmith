@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### fix(collectors): unify the two bash collectors' secret-pattern sets (F29)
+`risk-detect.sh` and `alignment-collect.sh` each hard-stop on a secret-shaped line, but the two pattern
+sets had drifted apart: `alignment-collect.sh` alone caught Slack tokens (`xox…`) and `AWS_SECRET_ACCESS_KEY`
+as a key:value trigger; `risk-detect.sh` alone caught `access_token` as a trigger; both missed GitLab
+(`glpat-…`) and Google (`AIza…`) token shapes. Both scripts scan diff bodies to CLASSIFY (emit a location,
+never the value), so the drift was a detection gap, not a leak — but the two location-only collectors
+should carry the same set. Unified both to the union of every shape either one had, plus the two missing
+ones, and added a parity test (`tests/test_risk_detect.py`) that extracts and compares the literal pattern
+alternation from both `.sh` files' source, so the two can't silently diverge again — the same pattern the
+repo already uses for `scrub.py` ↔ `research_capture.py`.
+
 ### fix(work): scrub the post-PR review reason before it reaches the public PR comment
 `work.py post_review`'s block/park comment embedded the free-text `--reason` verbatim into the `gh pr
 comment` body with no scrubbing, while the *same* reason IS scrubbed on the ledger-event path — an

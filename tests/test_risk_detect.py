@@ -2,7 +2,7 @@
 categories the current change touches, so the loop's Research/Review phases can surface the matching
 /sdlc-<risk>-check. Guards its three principles: correct detection, FAIL-OPEN, and SECRET-SAFETY (it
 scans diff bodies but must emit only {category,file,line,pattern_id} — never the matched value)."""
-import json, os, subprocess, pathlib
+import json, os, re, subprocess, pathlib
 
 SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts" / "risk-detect.sh"
 
@@ -118,6 +118,38 @@ def test_excludes_sdlc_and_docs(tmp_path):
     (repo / "docs" / "auth.md").write_text("Authorization: Bearer xyz\n")
     out = _run(repo)
     assert out["matched"] == []   # SDLC machinery + docs are not the engineer's source
+
+
+ALIGN_SCRIPT = SCRIPT.parent.parent.parent / "sdlc-align" / "scripts" / "alignment-collect.sh"
+
+
+def _secret_kv_pattern(text):
+    # the key:value trigger words (api_key=, password:, ...) — the alternation between the
+    # opening "line ~ /(" and the closing ")[ \t]*[:=]/" that both scripts share verbatim.
+    m = re.search(r"line ~ /\(([^)]+)\)\[ \\t\]\*\[:=\]/", text)
+    assert m, "could not locate the secret key:value pattern"
+    return m.group(1)
+
+
+def _secret_token_pattern(text):
+    # the token-SHAPE alternation (AKIA.../ghp_.../xox.../glpat-.../AIza.../-----BEGIN...KEY-----)
+    m = re.search(r"line ~ /\((AKIA[^)]+)\)/\)", text)
+    assert m, "could not locate the secret token-shape pattern"
+    return m.group(1)
+
+
+def test_secret_patterns_stay_in_sync_with_alignment_collect():
+    # F29: risk-detect.sh and alignment-collect.sh each hard-stop on a secret-shaped line, but the
+    # two pattern sets had drifted (alignment-collect alone caught Slack tokens; both missed GitLab
+    # and Google). Both scan diff bodies to CLASSIFY, never to redact, so drift here is a detection
+    # gap, not a leak — but the two location-only collectors should carry the same set.
+    risk_text = SCRIPT.read_text(encoding="utf-8")
+    align_text = ALIGN_SCRIPT.read_text(encoding="utf-8")
+    assert _secret_kv_pattern(risk_text) == _secret_kv_pattern(align_text)
+    assert _secret_token_pattern(risk_text) == _secret_token_pattern(align_text)
+    # and the union actually grew to include the previously-missing shapes, not just stayed equal
+    for shape in ("xox[baprs]-", "glpat-", "AIza", "AWS_SECRET_ACCESS_KEY"):
+        assert shape in risk_text and shape in align_text
 
 
 def test_review_and_research_skills_wire_the_detector():
