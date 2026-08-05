@@ -23,10 +23,6 @@ export default function Home() {
   return (
     <main>
       <h1>{renderLabel(placeholder)}</h1>
-      {/* TEMPORARY (issue #302, demo 2 of 4): a deliberate react/jsx-key violation, to watch the
-          `web` required check go red at `npm run lint` -- which type-checks clean, so it proves
-          lint specifically. Reverted in the next commit. */}
-      <ul>{["a", "b"].map((s) => <li>{s}</li>)}</ul>
     </main>
   );
 }
