@@ -259,7 +259,16 @@ class GitHubSource:
 
         It also stamps the adopter's configured custom board fields (project.custom_fields) on the new
         issue, so an issue the loop creates isn't blank on Priority/Section/… while every human-made
-        one carries them — the one board field-write beyond the built-in Status."""
+        one carries them — the one board field-write beyond the built-in Status.
+
+        GitHub issues can only be assigned to individual collaborators, never a team — a CODEOWNERS
+        `@org/team` owner is the common way to hit that, but any assignee `gh` rejects (typo, not a
+        collaborator, removed account) fails identically. That used to take the whole hand-off down
+        with it (F14/#338): the failure raised out of this method uncaught, so no issue was created at
+        all and the dependency simply vanished. Now a rejected assignee is retried once, unassigned,
+        and the new issue gets a comment saying so — the hand-off always lands somewhere a human can
+        find it. `last_assignee_applied` records which happened, so a caller's own narrative (see
+        handoff.hand_off) doesn't go on to claim an assignment that didn't take."""
         self._ensure_labels()
         for label in labels:
             try:
@@ -267,18 +276,41 @@ class GitHubSource:
                            "--color", "d4c5f9", "--force"])
             except Exception:
                 pass                       # a missing label must not stop the hand-off
-        args = ["issue", "create", *self._repo_args(), "--title", title, "--body", body,
-                "--label", self.goal_label]
-        if assignee:
-            args += ["--assignee", assignee]
+        base_args = ["issue", "create", *self._repo_args(), "--title", title, "--body", body,
+                     "--label", self.goal_label]
         for label in labels:
-            args += ["--label", label]
-        out = (self._run(args) or "").strip().splitlines()
-        number = out[-1].rstrip("/").rsplit("/", 1)[-1] if out else ""
-        if not number.isdigit():
+            base_args += ["--label", label]
+
+        self.last_assignee_applied = False
+        number, assignee_error = None, None
+        if assignee:
+            try:
+                candidate = self._create_issue(base_args + ["--assignee", assignee])
+            except Exception as exc:
+                assignee_error = str(exc)
+            else:
+                if candidate is not None:
+                    number, self.last_assignee_applied = candidate, True
+        if number is None:
+            number = self._create_issue(base_args)   # unassigned; a genuine failure here still raises
+            if assignee and number is not None:
+                note = (f"Could not assign @{assignee} to this hand-off "
+                        f"({assignee_error or 'gh rejected it'}) — opened unassigned instead. GitHub "
+                        "issues can't be assigned to a team; if that's not the cause here, the account "
+                        "may not be a repo collaborator. Needs manual routing to the right owner.")
+                try:
+                    self._run(["issue", "comment", number, *self._repo_args(), "--body", note])
+                except Exception:
+                    pass   # best-effort; the issue existing at all is what matters
+        if number is None:
             return None
         self._apply_custom_fields(number)      # stamp Priority/Section/… so the loop-made issue matches the board
         return number
+
+    def _create_issue(self, args):
+        out = (self._run(args) or "").strip().splitlines()
+        number = out[-1].rstrip("/").rsplit("/", 1)[-1] if out else ""
+        return number if number.isdigit() else None
 
     # ----- Projects-v2 board (best-effort mirror of issue status onto a kanban board) -----
     # SDLC status -> GitHub's built-in "Status" single-select. The whole layer is fail-open: a missing
