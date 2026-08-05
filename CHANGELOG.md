@@ -8,9 +8,10 @@ LoopSmith doesn't drive scheduling itself (F10.5-4/#377) — that's the host's r
 needs to be SAFE under repeated, possibly-overlapping firings, so a routine can be configured once and
 never double-launch a redundant managing session on top of one still running.
 
-`loop.py start` gains an opt-in `--session-pid <pid>` writing `.sdlc/state/session.active`; `next` and
-`session-end` are new verbs reading and clearing it. `session_pid` must be the CALLER's own long-lived
-process id — not any individual `loop.py` invocation's own, which exits within moments of returning
+`loop.py start` gains an opt-in `--session-pid <pid>` writing `.sdlc/state/session.active`;
+`session-active` and `session-end` are new verbs reading and clearing it. `session_pid` must be the
+CALLER's own long-lived process id — not any individual `loop.py` invocation's own, which exits within
+moments of returning
 (confirmed empirically: two separate shell-tool calls in one host session get a different `$$` each
 time but the same `$PPID` — the same reason `--skip` exists for multi-slot refills, F10.5-3/#375).
 Liveness combines the same two independent signals `ledger._held()` already combines for claim leases
