@@ -24,6 +24,14 @@ venv/
 # would choose, and insight/verify_web.py installs into it fresh in every worktree (issue #295).
 node_modules/
 
+# Next.js build/typegen output (insight/web/, issue #302 [E17.S1]) — unanchored for the same
+# reason as node_modules/ above: `.next/`, `next-env.d.ts`, and `*.tsbuildinfo` (tsc's
+# --incremental cache) are reserved/generated names, not real module names, written fresh by
+# `next build`/`next typegen`/`tsc --noEmit` on every local run. None are committed.
+.next/
+next-env.d.ts
+*.tsbuildinfo
+
 # insight/ is ALSO its own pip project root (package-dir = {"insight" = "."}), so a plain
 # `pip install insight/` — which verify.command (E0.S3, issue #96) now runs on every goal —
 # does setuptools' normal in-place `bdist_wheel`, scratch-building into insight/build/ exactly

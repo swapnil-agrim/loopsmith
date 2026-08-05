@@ -39,16 +39,27 @@ So the skip is now three narrow exclusions, and it is worth being exact about wh
     cannot be committed without `git add -f`. That pair of reasons is what makes the name match
     safe here and is exactly what `env`/`build`/`dist` lacked. Do not extend this list to a name
     that is merely conventional (`.tox`): check both halves first.
-  * `node_modules` — BY NAME, `.ts`/`.tsx` only (issue #301 [E16.S3]), and it clears the same bar
-    `__pycache__`/`*.egg-info` do, not the weaker one `env`/`build`/`dist` failed: `node_modules`
-    is RESERVED by npm/Node's own module resolution algorithm (a directory no sane package would
-    ever author sources into, the same way nothing sane claims `__pycache__`), and it is already
-    gitignored at the repo root (`insight/web/node_modules/` cannot be committed without
-    `git add -f`). `npm install`/`npm ci` populate it with ~1000+ `.ts`/`.d.ts` files the moment
-    `insight/web/package.json` gains any devDependency — none of them owned by this repo, none
-    ever meant to carry the BUSL marker, and (unlike `env`/`build`/`dist`) nobody would ever name a
-    real TypeScript module directory `node_modules` on purpose, since npm's own resolver would
-    stop treating it as ordinary source the instant they did.
+  * `node_modules` — BY NAME, now for BOTH `.py` and `.ts`/`.tsx` (originally `.ts`/`.tsx` only,
+    issue #301 [E16.S3]; extended to `.py` by issue #302 [E17.S1] C1, after a REAL npm dependency
+    tripped the `.py` checker for real — `flatted`, an install-time transitive dependency of this
+    story's Next.js toolchain, ships a Python port of itself at
+    `node_modules/flatted/python/flatted.py`). It clears the same bar `__pycache__`/`*.egg-info`
+    do, not the weaker one `env`/`build`/`dist` failed: `node_modules` is RESERVED by npm/Node's
+    own module resolution algorithm (a directory no sane package would ever author sources into,
+    the same way nothing sane claims `__pycache__`), and it is already gitignored at the repo root
+    (`insight/web/node_modules/` cannot be committed without `git add -f`). `npm install`/`npm ci`
+    populate it with hundreds of `.ts`/`.d.ts` files — and, per `flatted` above, at least one `.py`
+    file too — the moment `insight/web/package.json` gains any dependency; none of them owned by
+    this repo, none ever meant to carry the BUSL marker, and (unlike `env`/`build`/`dist`) nobody
+    would ever name a real Python or TypeScript module directory `node_modules` on purpose, since
+    npm's own resolver would stop treating it as ordinary source the instant they did.
+  * `.next` and `next-env.d.ts` — BY NAME, `.ts`/`.tsx` only, no `.py` analogue (issue #302
+    [E17.S1] C1): Next.js build/typegen output — `next build`/`next dev`/`next typegen` write
+    `.next/types/*.ts` and `next-env.d.ts` the moment a real Next.js app exists under
+    `insight/web/`. Both are gitignored at the repo root and clear the same bar as `node_modules`:
+    `.next` is RESERVED by Next's own tooling (nothing else writes there, nothing sane names a
+    real module directory after it), and `next-env.d.ts` is a single reserved generated filename
+    Next itself creates and expects untouched — its own first line says so.
 
 The distinction matters because an earlier docstring claimed all three were structural, which was
 false and would have told the next reader the wrong thing. What is true of all three: none depends
@@ -122,6 +133,14 @@ def _owned_py_files(root):
         rel = path.relative_to(root)
         if "__pycache__" in rel.parts or any(q.endswith(".egg-info") for q in rel.parts):
             continue
+        # node_modules (issue #302 [E17.S1] C1): the same BY-NAME skip `_owned_ts_files` already
+        # had for .ts/.tsx (issue #301 [E16.S3]), extended here after a REAL npm dependency
+        # tripped this checker -- `flatted` (an npm install transitive dep of this story's Next.js
+        # toolchain) ships a Python port of itself at node_modules/flatted/python/flatted.py. See
+        # the module docstring's node_modules bullet for the full "why the name match is safe"
+        # reasoning; it now covers both extensions.
+        if "node_modules" in rel.parts:
+            continue
         if any(_is_virtualenv(root.joinpath(*rel.parts[:i + 1])) for i in range(len(rel.parts) - 1)):
             continue
         out.append(path)
@@ -180,6 +199,16 @@ def _owned_ts_files(root):
             if "__pycache__" in rel.parts or any(q.endswith(".egg-info") for q in rel.parts):
                 continue
             if "node_modules" in rel.parts:
+                continue
+            # .next and next-env.d.ts (issue #302 [E17.S1] C1): Next.js build/typegen output --
+            # `next build`/`next dev`/`next typegen` write `.next/types/*.ts` and `next-env.d.ts`
+            # the moment insight/web/ gains a real Next.js app. Both are gitignored at the repo
+            # root and neither is a name a real module would choose (see the module docstring's
+            # new `.next`/`next-env.d.ts` bullet for the full reasoning) -- the same bar
+            # `node_modules` clears just above.
+            if ".next" in rel.parts:
+                continue
+            if rel.name == "next-env.d.ts":
                 continue
             if any(_is_virtualenv(root.joinpath(*rel.parts[:i + 1]))
                    for i in range(len(rel.parts) - 1)):
@@ -375,23 +404,45 @@ def test_ts_checker_flags_everything_when_the_marker_is_empty(tmp_path):
     assert _files_missing_ts_header(tmp_path, "") == ["good.tsx"]
 
 
-def test_node_modules_is_skipped_for_ts_but_not_py(tmp_path):
-    """Pins the one BY-NAME skip `_owned_ts_files` has that `_owned_py_files` does not (issue
-    #301 [E16.S3], .sdlc/plans/301.md Decision g1) -- a future refactor that lifts the skip out of
-    `_owned_ts_files` (or accidentally copies it into `_owned_py_files`, where nothing gitignores
-    a Python `node_modules/`) must fail here. A markerless .ts under node_modules/ is invisible to
-    the ts checker; a markerless .py at the identical relative path is still caught, matching
-    test_modules_named_like_build_trees_are_still_checked's "never skip a real module for its
-    NAME" contract for every name this checker does NOT structurally exempt."""
-    leak = tmp_path / "node_modules" / "some-pkg" / "index.ts"
-    leak.parent.mkdir(parents=True)
-    leak.write_text("export const x = 1\n", encoding="utf-8")
+def test_node_modules_is_skipped_for_both_ts_and_py(tmp_path):
+    """Pins the BY-NAME `node_modules` skip now shared by BOTH checkers (issue #302 [E17.S1] C1,
+    extending issue #301 [E16.S3]'s `.ts`/`.tsx`-only version after a real npm dependency --
+    `flatted` -- shipped a real `.py` file inside `node_modules/` and tripped
+    `test_every_insight_source_carries_the_marker` for real). Supersedes
+    test_node_modules_is_skipped_for_ts_but_not_py, whose name became false the day
+    `_owned_py_files` gained the identical skip: a markerless `.py` under `node_modules/` is no
+    longer caught either, matching the `.ts`/`.tsx` behaviour exactly rather than diverging from
+    it. A future refactor that drops the skip from either function must fail here."""
+    leak_ts = tmp_path / "node_modules" / "some-pkg" / "index.ts"
+    leak_ts.parent.mkdir(parents=True)
+    leak_ts.write_text("export const x = 1\n", encoding="utf-8")
     assert _files_missing_ts_header(tmp_path, _ts_marker(_marker())) == []
 
     leak_py = tmp_path / "node_modules" / "some-pkg" / "index.py"
     leak_py.write_text("x = 1\n", encoding="utf-8")
+    assert _files_missing_header(tmp_path, _marker()) == []
+
+
+def test_next_build_output_is_skipped_for_ts_only(tmp_path):
+    """Pins the second BY-NAME skip added alongside the one above (issue #302 [E17.S1] C1): a
+    markerless `.ts` under `.next/` or named `next-env.d.ts` is invisible to the `.ts` checker --
+    both are Next.js build/typegen output, never real source -- while an identically-shaped `.py`
+    at the same relative paths is still caught (no `.next`/`next-env.d.ts` skip exists for `.py`;
+    Next never writes `.py` there, so extending the skip would just widen the exemption for no
+    reason, the same "never skip a real module for its NAME" contract
+    test_modules_named_like_build_trees_are_still_checked pins for every name this checker does
+    NOT structurally exempt)."""
+    leak_next = tmp_path / ".next" / "types" / "routes.ts"
+    leak_next.parent.mkdir(parents=True)
+    leak_next.write_text("export type X = string\n", encoding="utf-8")
+    leak_env = tmp_path / "next-env.d.ts"
+    leak_env.write_text("/// <reference types=\"next\" />\n", encoding="utf-8")
+    assert _files_missing_ts_header(tmp_path, _ts_marker(_marker())) == []
+
+    leak_next_py = tmp_path / ".next" / "types" / "routes.py"
+    leak_next_py.write_text("x = 1\n", encoding="utf-8")
     assert _files_missing_header(tmp_path, _marker()) == [
-        os.path.join("node_modules", "some-pkg", "index.py")]
+        os.path.join(".next", "types", "routes.py")]
 
 
 def test_deriving_the_ts_marker_does_not_change_the_py_marker_or_checker(tmp_path):

@@ -84,3 +84,5 @@ jobs:
           node-version: "22"
       - name: web checks (type-check, lint, unit tests, build) via insight/verify_web.py
         run: python3 insight/verify_web.py
+      - name: docker build (Dockerfile.web) -- the Dockerfile is proven to build, not just present
+        run: docker build -f insight/Dockerfile.web -t insight-web-scaffold:ci insight/

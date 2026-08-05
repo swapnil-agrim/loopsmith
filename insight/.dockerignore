@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
+# issue #302 [E17.S1], .sdlc/plans/302.md Decision (g). Applies to the insight/ build context
+# (docker build -f insight/Dockerfile.web insight/). Without these two entries, `COPY web/ .` in
+# Dockerfile.web's builder stage would copy a contributor's locally-dirty node_modules/.next
+# (platform-specific native binaries, stale build state) straight over the freshly-`npm ci`'d
+# ones the builder stage itself produces, silently defeating the point of the multi-stage build.
+# Kept to exactly these two entries -- the concrete, verified problem, not a speculative broader
+# ignore list.
+web/node_modules
+web/.next

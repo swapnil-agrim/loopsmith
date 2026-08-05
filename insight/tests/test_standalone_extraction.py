@@ -216,7 +216,14 @@ def extracted(tmp_path_factory):
     # that the *sources* travel with the copy; `npm ci` is what repopulates node_modules/ in a real
     # extraction, exercised for real by insight/verify_web.py in CI's `web` job, never by this
     # file) -- and copying it wholesale here only slows every run down for no new coverage.
-    shutil.copytree(INSIGHT, dest, ignore=shutil.ignore_patterns("node_modules"))
+    # .next (issue #302 [E17.S1], .sdlc/plans/302.md Decision h): the same reasoning, extended to
+    # the one other large generated tree this story introduces -- a locally-warm
+    # insight/web/.next/ (gitignored, so never present in a fresh CI checkout, but routinely
+    # present on a dev machine that just ran `npm run build`) is 86MB / 1,360 files (48MB of it
+    # .next/standalone's own pruned node_modules copy, per this story's `output: "standalone"`
+    # config) that `shutil.copytree` would otherwise copy wholesale on every local run of this
+    # ~44-90s proof, for zero signal.
+    shutil.copytree(INSIGHT, dest, ignore=shutil.ignore_patterns("node_modules", ".next"))
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env.pop("PYTEST_ADDOPTS", None)
