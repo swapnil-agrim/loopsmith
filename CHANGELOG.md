@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### fix(ledger): scrub + flatten + cap the ENTRIES-stream `why`, not just EVENTS
+#141 scoped cap+scrub to the EVENTS stream only, on the theory the ENTRIES stream's own `why`
+(hand-offs/notes a lead reads in TEAM.md) was out of that story's scope. It wasn't safe to leave
+unscrubbed: `why` is committed byte-for-byte to the shared `sdlc-ledger` branch AND rendered into
+TEAM.md, so a sanctioned `handoff.py open ... --why "<secret>"` landed a secret/client string in
+version control. `append()` now runs the ENTRIES stream's `why` through the same `_sanitize_free_text`
+(flatten→scrub→cap) helper EVENTS' free-text fields already use — the one prose field in
+`OPTIONAL_FIELDS` (`area`/`to`/`issue`/`priority`/`state`/`ref`/`pr` are all short enums/ids). `render()`
+needed no change: it already displays whatever `why` was stored, so a scrubbed write is a scrubbed
+TEAM.md row for free.
+
 ### fix(risk-detect): close the secret-leak twin of the alignment-collect `+++`-misparse bug
 `risk-detect.sh`'s content-scan awk had no hunk-state (`inhunk`) tracking, so a committed/working-tree
 line whose source began `++ ` rendered `+++ ` in the diff and was misparsed as a file header — capturing
