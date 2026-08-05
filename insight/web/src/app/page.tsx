@@ -6,10 +6,7 @@
 import type { Metric } from "@/lib/api/metric";
 
 function renderLabel(metric: Metric): string {
-  // TEMPORARY (issue #302, demo 1 of 4): a deliberate type error, to watch the `web` required
-  // check go red at `npm run typecheck`. Reverted in the next commit.
-  const n: number = metric.label;
-  return String(n);
+  return metric.label;
 }
 
 // A real fetch from insight/api/ lands in a later story (E17.S3+); this placeholder only proves
@@ -26,6 +23,10 @@ export default function Home() {
   return (
     <main>
       <h1>{renderLabel(placeholder)}</h1>
+      {/* TEMPORARY (issue #302, demo 2 of 4): a deliberate react/jsx-key violation, to watch the
+          `web` required check go red at `npm run lint` -- which type-checks clean, so it proves
+          lint specifically. Reverted in the next commit. */}
+      <ul>{["a", "b"].map((s) => <li>{s}</li>)}</ul>
     </main>
   );
 }
