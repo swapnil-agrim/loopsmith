@@ -59,6 +59,46 @@ def test_planted_secret_value_never_in_output(tmp_path):
     assert SECRET not in blob and "hunter2plaintext" not in blob   # location only, never the value
 
 
+def test_content_line_that_renders_as_a_diff_header_never_leaks_tracked(tmp_path):
+    # a line beginning "++ " renders as "+++ " in the outer unified diff; the scanner must treat it as
+    # CONTENT (location-only), never misparse it as a "+++ b/path" header that captures the secret value
+    # into `file`. Mirrors alignment-collect.sh's already-fixed test_content_line_that_renders_as_a_diff_
+    # header_never_leaks (slice #89) — this was the unfixed twin (risk-detect.sh never got that fix).
+    # NOTE the second line must ALSO trip a hard-stop: on the buggy awk, the poisoned `file` is only ever
+    # EMITTED when a later line matches a pattern, so an assertion that only plants line 1 would pass
+    # vacuously even against the bug (nothing gets emitted at all). Line 2 forces the poisoned `file` to
+    # surface, so this test actually fails on the pre-fix code.
+    repo = _repo(tmp_path)
+    (repo / "notes.txt").write_text("placeholder\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q", "-m", "init")
+    (repo / "notes.txt").write_text(
+        '++ aws_key = "AKIALEAK0000000000FAKE"\napi_key = "TRIGGER9SECRETVALUE"\n'
+    )
+    out = _run(repo)
+    blob = json.dumps(out)
+    assert "AKIALEAK0000000000FAKE" not in blob             # value never in output (fails on buggy awk)
+    assert "sensitive" in out["matched"], "the second line must still hard-stop (guard must not be vacuous)"
+    for h in out["hits"]:
+        assert h["file"] == "notes.txt"                     # real filename, never the "+++ …" line text
+
+
+def test_content_line_that_renders_as_a_diff_header_never_leaks_untracked(tmp_path):
+    # same shape, but for an UNTRACKED file — risk-detect.sh synthesizes its own diff for these
+    # (emit_combined_diff), a code path alignment-collect.sh (committed-history only) doesn't have; the
+    # synthesized block must also carry a "diff --git" line so the same inhunk reset fires.
+    repo = _repo(tmp_path)
+    (repo / "notes.txt").write_text(
+        '++ aws_key = "AKIALEAK0000000000FAKE"\napi_key = "TRIGGER9SECRETVALUE"\n'
+    )
+    out = _run(repo)
+    blob = json.dumps(out)
+    assert "AKIALEAK0000000000FAKE" not in blob
+    assert "sensitive" in out["matched"], "the second line must still hard-stop (guard must not be vacuous)"
+    for h in out["hits"]:
+        assert h["file"] == "notes.txt"
+
+
 def test_fail_open_on_non_git_dir(tmp_path):
     out = _run(tmp_path)   # never ran git init
     assert out == {"schema": "risk-detect/v1", "matched": [], "hits": []}

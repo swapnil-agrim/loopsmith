@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### fix(risk-detect): close the secret-leak twin of the alignment-collect `+++`-misparse bug
+`risk-detect.sh`'s content-scan awk had no hunk-state (`inhunk`) tracking, so a committed/working-tree
+line whose source began `++ ` rendered `+++ ` in the diff and was misparsed as a file header — capturing
+the secret text itself into the emitted `file` field (also swallowing the line as a false negative, and
+poisoning `file`/line numbers for later hits in the same file). This is the exact bug already fixed in
+`alignment-collect.sh` (`scan_hardstops`, slice #89) but never back-ported to `risk-detect.sh`. Ports the
+same `inhunk` state machine (reset on `diff --git`, set on `@@`, header rule gated on `!inhunk`); the
+synthesized untracked-file diff block now also carries a `diff --git` line so the reset fires on that path
+too. New regression tests cover both the tracked-diff and untracked-file shapes, and are proven non-vacuous
+(fail against the pre-fix code, pass against the fix).
+
 ### backlog cross-check: an opt-in embedding layer for paraphrases (0.9.23)
 Fourth and final slice. The lexical TF-IDF pass (0.9.21) misses a duplicate that shares no *words* — a
 goal described in entirely different vocabulary. This adds an **opt-in dense/embedding channel** fused
