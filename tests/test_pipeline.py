@@ -21,6 +21,70 @@ def _project(d, stages):
     return str(base)
 
 
+# --- F15: a malformed pipeline.json must be treated as absent, never a traceback -----------
+
+
+def _sdlc_only(d):
+    base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True); (base / "state").mkdir()
+    return base
+
+
+def test_load_pipeline_treats_a_top_level_array_as_no_pipeline():
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc_only(d)
+        (base / "pipeline.json").write_text(json.dumps([1, 2]))
+        assert _mod("pipeline").load_pipeline(str(base)) is None
+
+
+def test_load_pipeline_treats_a_top_level_scalar_as_no_pipeline():
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc_only(d)
+        (base / "pipeline.json").write_text(json.dumps(42))
+        assert _mod("pipeline").load_pipeline(str(base)) is None
+
+
+def test_load_pipeline_treats_invalid_json_as_no_pipeline():
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc_only(d)
+        (base / "pipeline.json").write_text("not json")
+        assert _mod("pipeline").load_pipeline(str(base)) is None
+
+
+def test_load_pipeline_treats_a_dict_missing_stages_as_no_pipeline():
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc_only(d)
+        (base / "pipeline.json").write_text(json.dumps({"name": "demo"}))    # no "stages"
+        assert _mod("pipeline").load_pipeline(str(base)) is None
+
+
+def test_cli_card_on_a_malformed_pipeline_json_prints_no_pipeline_not_a_traceback():
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc_only(d)
+        (base / "config.json").write_text(json.dumps({"budget": {"max_iterations": 10}}))
+        (base / "state" / "STATE.md").write_text("iteration: 0\nrun_iteration: 0\nlast_run: none\n")
+        (base / "state" / "review-queue.md").write_text("# Q\n")
+        (base / "pipeline.json").write_text("[1, 2]")
+        proc = subprocess.run([sys.executable, str(S / "pipeline.py"), "card", str(base)],
+                              capture_output=True, text=True)
+        assert proc.returncode == 3
+        assert "Traceback" not in proc.stderr
+        assert "NO-PIPELINE" in proc.stderr
+
+
+def test_cli_propose_on_invalid_json_prints_no_pipeline_not_a_traceback():
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc_only(d)
+        (base / "config.json").write_text(json.dumps({"budget": {"max_iterations": 10}}))
+        (base / "state" / "STATE.md").write_text("iteration: 0\nrun_iteration: 0\nlast_run: none\n")
+        (base / "state" / "review-queue.md").write_text("# Q\n")
+        (base / "pipeline.json").write_text("not json")
+        proc = subprocess.run([sys.executable, str(S / "pipeline.py"), "propose", str(base)],
+                              capture_output=True, text=True)
+        assert proc.returncode == 3
+        assert "Traceback" not in proc.stderr
+        assert "NO-PIPELINE" in proc.stderr
+
+
 def test_card_reports_both_directions_with_honest_absence():
     with tempfile.TemporaryDirectory() as d:
         (pathlib.Path(d) / "raw.txt").write_text("x")
