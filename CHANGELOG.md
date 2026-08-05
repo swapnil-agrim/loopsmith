@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### fix(work): scrub the post-PR review reason before it reaches the public PR comment
+`work.py post_review`'s block/park comment embedded the free-text `--reason` verbatim into the `gh pr
+comment` body with no scrubbing, while the *same* reason IS scrubbed on the ledger-event path — an
+oversight, not a decision. A review note quoting a secret- or client-shaped string from the diff was
+published to a public PR comment. Now runs `reason` through the shared `scrub.py` (same module the board
+mirror and backlog cross-check already use) before building the comment body, for both the normal-block and
+over-cap-park messages.
+
 ### fix(ledger): scrub + flatten + cap the ENTRIES-stream `why`, not just EVENTS
 #141 scoped cap+scrub to the EVENTS stream only, on the theory the ENTRIES stream's own `why`
 (hand-offs/notes a lead reads in TEAM.md) was out of that story's scope. It wasn't safe to leave
