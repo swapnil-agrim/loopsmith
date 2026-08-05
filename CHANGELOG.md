@@ -168,6 +168,25 @@ read now shells out to `python3 -c '...os.stat(...).st_mtime...'`, exactly like 
 already does a few lines down for the config-driven tick INTERVAL — one call, correct identically on
 every platform Python runs on.
 
+### fix(loop): `next_pending` no longer starves the true-oldest goal past the 200-issue cap (F12/#348)
+`GitHubSource.next_pending()` fetched `gh issue list --limit 200` with no explicit sort, sorted the
+result ascending by issue number, and took `[0]` — reading that local ascending sort as "oldest
+first." But plain `gh issue list` defaults to created-DESC (newest first) with no ASC option of its
+own, so on a backlog of more than 200 open goals the `--limit 200` cap fetched the 200 NEWEST issues,
+not the 200 oldest; sorting THOSE ascending and taking the lowest returned the oldest-of-the-
+newest-200 (e.g. issue 51 out of 250) rather than the genuinely oldest (issue 1) — exactly the goals
+"oldest-first" priority is supposed to favor starved until enough newer issues drained the backlog
+back below 200 for them to even appear in the fetched page.
+
+Fixes by asking GitHub's search API for the order directly: the call now carries `--search
+"sort:created-asc"` alongside the existing `--label`/`--state`/`--assignee` filters, which combine
+with `--search` unchanged (confirmed against the real API) — so the fetched 200-issue page already IS
+the 200 oldest open goals, and the existing local `.sort()` + `[0]` then only breaks ties within that
+page instead of silently reading from the wrong end of the queue. New tests assert the `--search` flag
+is sent and, per the issue's own verification method, that a mocked 250-issue backlog (beyond the
+200 cap) picks the true oldest rather than the oldest-of-the-newest-200 — confirmed to fail against
+the pre-fix code with exactly that symptom (`'51'` picked instead of `'1'`).
+
 ## 1.0.0 — the zero-touch release
 
 The theme: one person on one machine can now point LoopSmith at a stack of their own assigned issues

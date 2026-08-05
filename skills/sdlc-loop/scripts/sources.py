@@ -166,8 +166,17 @@ class GitHubSource:
         self._labels_ready = True
 
     def next_pending(self, skip=()):
+        # F12: plain `gh issue list` defaults to created-DESC (newest first) with no way to ask it for
+        # ASC — so a bare `--limit 200` on a backlog > 200 fetched the 200 NEWEST, and sorting THOSE
+        # ascending + taking [0] gave the oldest-of-the-newest-200, not the true oldest: the genuinely
+        # old goals (highest priority under oldest-first) starved until newer ones drained the backlog
+        # below 200. `--search "sort:created-asc"` routes the call through GitHub's search API instead,
+        # which DOES support a sort qualifier, so the fetched page already IS the 200 oldest — the
+        # local .sort()+[0] below then just breaks ties within that page instead of silently picking
+        # from the wrong end of the queue. ponytail: 200-issue cap remains (now on the oldest end).
         args = ["issue", "list", *self._repo_args(), "--label", self.goal_label,
-                "--state", "open", "--json", "number,labels", "--limit", "200"]     # ponytail: 200-issue cap
+                "--state", "open", "--search", "sort:created-asc",
+                "--json", "number,labels", "--limit", "200"]
         if self.assignee:
             args += ["--assignee", self.assignee]     # scope the queue to one owner so parallel loops
                                                        # on a shared board don't pick the same issue
