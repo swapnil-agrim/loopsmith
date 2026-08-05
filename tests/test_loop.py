@@ -460,15 +460,33 @@ def test_next_reclaims_a_goal_a_dead_sibling_process_of_my_own_actor_held(monkey
 
 # --------------------------------------------------------------------- local claim lock (#387)
 # #374 (above) closes correctly INTERPRETING a claim that already exists. It has no answer for "two
-# readers look at the same instant, nothing claimed yet" -- that needs something atomic. See
-# loop.py's own _try_acquire_claim_lock docstring for the full design.
+# readers look at the same instant, nothing claimed yet" -- that needs something atomic. Built on
+# `fcntl.flock` (kernel-mediated, POSIX-only), not ordinary file operations -- two schemes built the
+# latter way (unlink-then-recreate, then a rename-then-verify-then-restore refinement) were each
+# independently broken across two review cycles of PR #392; see loop.py's own
+# `_try_acquire_claim_lock` docstring for why flock has no equivalent TOCTOU gap to begin with.
+
+
+def test_claim_lock_is_exclusive_when_a_second_open_file_description_races_the_first():
+    """The core guarantee, at the level flock actually enforces it: two INDEPENDENT open file
+    descriptions on the same path -- what two separate CLI invocations would each get -- the first
+    wins, the second is denied outright. Deterministic by construction, no timing tolerance needed:
+    unlike the file-rename schemes this replaced, flock's exclusivity does not depend on WHEN the
+    second caller shows up, only on whether the first still holds it."""
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = str(pathlib.Path(d) / ".sdlc")
+        lp = _loop()
+        fd1 = lp._try_acquire_claim_lock(sdlc, "g.md")
+        assert isinstance(fd1, int) and fd1 >= 0
+        assert lp._try_acquire_claim_lock(sdlc, "g.md") is None   # denied outright -- still held
+        lp._release_claim_lock(fd1)
 
 
 def test_claim_lock_is_exclusive_under_genuine_thread_concurrency():
-    """The core guarantee: TWO callers racing to acquire the SAME goal's lock at the exact same
-    instant -- a real thread barrier forcing both os.open(..., O_EXCL) calls to genuinely overlap,
-    not sequential mock calls -- get exactly one winner, deterministically, every time. POSIX
-    guarantees this outcome; it is not a matter of luck or timing tolerance."""
+    """The same guarantee under a REAL race, not two sequential calls: a thread barrier forces both
+    `_try_acquire_claim_lock` calls to genuinely overlap. Unlike the schemes this replaced, flock
+    needs no forced-ordering trick to prove this deterministically -- the kernel itself serializes
+    the two `flock()` calls, whichever order they land in, with no window for both to succeed."""
     import threading
     with tempfile.TemporaryDirectory() as d:
         sdlc = str(pathlib.Path(d) / ".sdlc")
@@ -485,188 +503,94 @@ def test_claim_lock_is_exclusive_under_genuine_thread_concurrency():
 
         t1, t2 = threading.Thread(target=attempt), threading.Thread(target=attempt)
         t1.start(); t2.start(); t1.join(); t2.join()
-        assert sorted(results) == [False, True]   # exactly one winner, never both, never neither
+        winners = [r for r in results if r is not None]
+        losers = [r for r in results if r is None]
+        assert len(winners) == 1 and len(losers) == 1   # exactly one winner, never both, never neither
+        lp._release_claim_lock(winners[0])
 
 
 def test_claim_lock_release_lets_a_later_caller_win():
     with tempfile.TemporaryDirectory() as d:
         sdlc = str(pathlib.Path(d) / ".sdlc")
         lp = _loop()
-        assert lp._try_acquire_claim_lock(sdlc, "g.md") is True
-        assert lp._try_acquire_claim_lock(sdlc, "g.md") is False   # still held
-        lp._release_claim_lock(sdlc, "g.md")
-        assert lp._try_acquire_claim_lock(sdlc, "g.md") is True    # released -- free again
+        fd1 = lp._try_acquire_claim_lock(sdlc, "g.md")
+        assert lp._try_acquire_claim_lock(sdlc, "g.md") is None   # still held
+        lp._release_claim_lock(fd1)
+        fd2 = lp._try_acquire_claim_lock(sdlc, "g.md")
+        assert isinstance(fd2, int) and fd2 >= 0                  # released -- free again
+        lp._release_claim_lock(fd2)
 
 
-def test_claim_lock_release_is_a_safe_noop_when_never_acquired():
-    with tempfile.TemporaryDirectory() as d:
-        sdlc = str(pathlib.Path(d) / ".sdlc")
-        _loop()._release_claim_lock(sdlc, "never-locked.md")   # must not raise
+def test_claim_lock_release_is_a_safe_noop_for_denied_or_unavailable():
+    lp = _loop()
+    lp._release_claim_lock(None)                  # denied -- nothing was ever acquired
+    lp._release_claim_lock(lp._LOCK_UNAVAILABLE)   # fail-open -- no real fd to close
 
 
-def test_claim_lock_reclaims_a_stale_lock_past_the_staleness_window():
-    with tempfile.TemporaryDirectory() as d:
-        sdlc = str(pathlib.Path(d) / ".sdlc")
-        lp = _loop()
-        path = lp._claim_lock_path(sdlc, "g.md")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
-        stale = time.time() - (lp._CLAIM_LOCK_STALE_SECONDS + 10)
-        os.utime(path, (stale, stale))
-        assert lp._try_acquire_claim_lock(sdlc, "g.md") is True   # reclaimed, not stuck forever
-
-
-def test_claim_lock_stale_steal_is_exclusive_under_genuine_thread_concurrency():
-    """The steal branch specifically -- not just the fresh-create branch above: TWO callers racing to
-    reclaim the SAME already-stale lock at the exact same instant get exactly one winner. A plain
-    unlink()-then-recreate is NOT enough here -- unlink has no "was this still the file I inspected"
-    signal, so a second racer's unlink can silently remove the first racer's freshly-created lock (or
-    raise FileNotFoundError straight into the fail-open OSError branch), letting both callers win.
-    Rename-based eviction -- POSIX serializes concurrent renames of the same source path, so exactly
-    one caller's rename sees the path still there -- closes the TIGHT race, where both callers reach
-    the eviction attempt while the file is still the original stale one. (The LOOSER case -- one
-    caller's decision going stale itself, acted on after the other has already finished -- needs a
-    second guarantee; see the adversarial-ordering test below.) Pins both threads at the boundary that
-    matters -- right after each has read the ORIGINAL stale mtime, before either has started evicting
-    -- via a barrier spliced into `pathlib.Path.stat`, since a bare barrier at the top of the call
-    routinely lets one thread finish its entire cycle before the other even reads staleness, which
-    then sees the winner's fresh mtime and bails out via the ordinary "still held" branch without ever
-    touching the code this test exists to exercise."""
-    import threading, unittest.mock
+def test_claim_lock_needs_no_staleness_window_to_recover_a_dead_holders_lock():
+    """The whole point of moving to flock: closing the fd -- exactly what the kernel does when a
+    holding process dies for ANY reason, crash included -- makes the lock available again
+    IMMEDIATELY. No age to wait out, unlike the file-mtime scheme this replaced, which needed a 120s
+    staleness window and an eviction dance just to recover a crashed holder's lock at all."""
     with tempfile.TemporaryDirectory() as d:
         sdlc = str(pathlib.Path(d) / ".sdlc")
         lp = _loop()
-        path = lp._claim_lock_path(sdlc, "g.md")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
-        stale = time.time() - (lp._CLAIM_LOCK_STALE_SECONDS + 10)
-        os.utime(path, (stale, stale))
-
-        real_stat = pathlib.Path.stat
-        barrier = threading.Barrier(2, timeout=5)
-
-        def patched_stat(self, *a, **kw):
-            result = real_stat(self, *a, **kw)
-            if self == path:
-                barrier.wait()          # hold BOTH threads here until both have read the stale mtime --
-            return result               # neither may proceed to evict until neither can see the other's
-
-        results = []
-        results_lock = threading.Lock()
-
-        def attempt():
-            got = lp._try_acquire_claim_lock(sdlc, "g.md")
-            with results_lock:
-                results.append(got)
-
-        with unittest.mock.patch.object(pathlib.Path, "stat", patched_stat):
-            t1, t2 = threading.Thread(target=attempt), threading.Thread(target=attempt)
-            t1.start(); t2.start(); t1.join(); t2.join()
-
-        assert sorted(results) == [False, True]   # exactly one winner steals the stale lock, never both
-        assert path.exists()                       # the winner's fresh lock is in place
-        leftovers = [p.name for p in path.parent.iterdir() if p.name != path.name]
-        assert leftovers == []                      # the loser's evicted husk was cleaned up, not leaked
+        fd1 = lp._try_acquire_claim_lock(sdlc, "g.md")
+        os.close(fd1)                              # simulates the holder dying, not a clean release call
+        fd2 = lp._try_acquire_claim_lock(sdlc, "g.md")
+        assert isinstance(fd2, int) and fd2 >= 0    # immediately available -- no wait, no mtime trick
+        lp._release_claim_lock(fd2)
 
 
-def test_claim_lock_stale_steal_concedes_and_restores_when_the_evicted_file_turns_out_to_be_fresh():
-    """The LOOSER case rename-exclusivity alone does not close: caller B reads the ORIGINAL stale
-    mtime, but is then descheduled by the OS long enough that caller A -- racing nobody -- runs its
-    entire steal-and-recreate to completion FIRST. When B finally resumes and acts on its now-stale
-    decision, a bare rename-is-exclusive guarantee is not enough: B's rename() doesn't know or care
-    that what's currently at `path` is A's brand-new, live lock rather than the stale file B actually
-    inspected -- rename() just moves whatever's there, so B would win a lock it has no business
-    winning. This is not contrived: two independent OS processes (not threads sharing one scheduler)
-    racing `_next()` have no shared clock bounding how long either can be descheduled between reading
-    staleness and acting on it -- see PR #392 review, which proved exactly this against a rename-only
-    fix with a real, unmodified module and a deterministic thread-pause construction (not a mock).
-
-    Forces this exact ordering: B's `stat()` captures the real stale mtime, then blocks (via the same
-    `pathlib.Path.stat` splice) until A has returned -- so A's entire cycle genuinely completes, with
-    no artificial pause of its own, before B's rename() ever runs. B must still lose, AND A's lock
-    must still be standing afterward (not just "B didn't also get True" -- a version of this fix that
-    left `path` deleted after conceding would reopen the original bug one level up, since a THIRD
-    caller would then see no lock at all and freely win A's goal instead)."""
-    import threading, unittest.mock
+def test_claim_lock_fails_open_without_fcntl(monkeypatch):
+    """Windows (no fcntl module): fails open unconditionally, exactly as if this whole file didn't
+    exist -- #374's ledger claim check remains the primary defense there."""
     with tempfile.TemporaryDirectory() as d:
         sdlc = str(pathlib.Path(d) / ".sdlc")
         lp = _loop()
-        path = lp._claim_lock_path(sdlc, "g.md")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()
-        stale = time.time() - (lp._CLAIM_LOCK_STALE_SECONDS + 10)
-        os.utime(path, (stale, stale))
-
-        real_stat = pathlib.Path.stat
-        b_read_stat = threading.Event()
-        a_done = threading.Event()
-
-        def patched_stat(self, *a, **kw):
-            name = threading.current_thread().name
-            result = real_stat(self, *a, **kw)   # real value captured BEFORE any wait, never fabricated
-            if self == path:
-                if name == "B":
-                    b_read_stat.set()             # B has now captured the original stale mtime
-                    assert a_done.wait(timeout=5), "A never finished -- harness deadlock, not a real result"
-                elif name == "A":
-                    assert b_read_stat.wait(timeout=5), "B never read -- harness deadlock, not a real result"
-            return result
-
-        results = {}
-
-        def attempt(label):
-            got = lp._try_acquire_claim_lock(sdlc, "g.md")
-            results[label] = got
-            if label == "A":
-                a_done.set()
-
-        with unittest.mock.patch.object(pathlib.Path, "stat", patched_stat):
-            ta = threading.Thread(target=attempt, args=("A",), name="A")
-            tb = threading.Thread(target=attempt, args=("B",), name="B")
-            ta.start(); tb.start()
-            ta.join(); tb.join()
-
-        assert results == {"A": True, "B": False}   # A's legitimate steal wins; B concedes, not wins too
-        assert path.exists()                          # A's lock is standing -- NOT left deleted by B
-        assert path.read_bytes() == b""                # it's genuinely A's restored lock, not a new husk
-        leftovers = [p.name for p in path.parent.iterdir() if p.name != path.name]
-        assert leftovers == []                         # B's own evicted copy was cleaned up, not leaked
+        monkeypatch.setattr(lp, "fcntl", None)
+        assert lp._try_acquire_claim_lock(sdlc, "g.md") == lp._LOCK_UNAVAILABLE
 
 
-def test_claim_lock_does_not_reclaim_a_lock_within_the_staleness_window():
+def test_claim_lock_fails_open_when_the_lock_directory_cannot_be_created():
+    lp = _loop()
     with tempfile.TemporaryDirectory() as d:
-        sdlc = str(pathlib.Path(d) / ".sdlc")
-        lp = _loop()
-        path = lp._claim_lock_path(sdlc, "g.md")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.touch()                                              # fresh -- mtime is "now"
-        assert lp._try_acquire_claim_lock(sdlc, "g.md") is False  # still within the window
+        blocker = pathlib.Path(d) / "blocker"
+        blocker.write_text("x")                    # a FILE, not a directory
+        sdlc = str(blocker / "nested" / ".sdlc")    # mkdir(parents=True) under a file always raises
+        assert lp._try_acquire_claim_lock(sdlc, "g.md") == lp._LOCK_UNAVAILABLE
 
 
 def test_next_skips_a_goal_whose_claim_lock_is_already_held():
     """Deterministic proof that _next() actually WIRES IN the lock (the lock's own exclusivity is
-    already proven in isolation above) -- pre-creates the lock file directly, simulating "a sibling
-    process on this machine won this exact instant" without needing a genuine race to reproduce."""
+    already proven in isolation above) -- holds a REAL flock directly, simulating "a sibling process
+    on this machine won this exact instant" without needing a genuine race to reproduce. A
+    touched-but-unlocked file is no longer meaningful under this scheme, unlike the old file-presence
+    check, so the setup must actually acquire the lock, not just create the file."""
     with tempfile.TemporaryDirectory() as d:
         base = _lease_base(d, actor="me", claims=[])
         lp = _loop()
-        lock = lp._claim_lock_path(base, "a")
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        lock.touch()                                    # simulate: someone else's lock, held right now
+        held_fd = lp._try_acquire_claim_lock(base, "a")   # simulate: someone else's lock, held now
+        assert isinstance(held_fd, int) and held_fd >= 0
         src = _Queue(["a", "b"])
         kind, goal = lp._next(base, src, lp.state.load_config(base))
         assert (kind, goal) == ("goal", "b")            # "a"'s lock is held -- skipped straight to "b"
+        lp._release_claim_lock(held_fd)
 
 
 def test_next_releases_the_lock_after_a_successful_claim():
     """The lock's whole job is bridging the gap until a durable ledger claim exists -- it must not
-    outlive that, or every later pick would pay its staleness window for no reason."""
+    outlive that. The lock FILE is deliberately left on disk under this scheme (see
+    `_release_claim_lock`'s docstring), so "released" now means the FLOCK is gone, not that the file
+    is -- proven here by successfully acquiring it again right after."""
     with tempfile.TemporaryDirectory() as d:
         base = _lease_base(d, actor="me", claims=[])
         lp = _loop()
         src = _Queue(["a"])
         lp._next(base, src, lp.state.load_config(base))
-        assert not lp._claim_lock_path(base, "a").exists()   # released, not leaked
+        fd = lp._try_acquire_claim_lock(base, "a")
+        assert isinstance(fd, int) and fd >= 0          # released, not leaked -- re-acquirable
+        lp._release_claim_lock(fd)
 
 
 def test_next_releases_the_lock_even_when_budget_is_already_spent():
@@ -679,7 +603,9 @@ def test_next_releases_the_lock_even_when_budget_is_already_spent():
         src = _Queue(["a"])
         kind, goal = lp._next(base, src, lp.state.load_config(base))
         assert kind == "BUDGET"
-        assert not lp._claim_lock_path(base, "a").exists()   # BUDGET halt still releases, never leaks
+        fd = lp._try_acquire_claim_lock(base, "a")
+        assert isinstance(fd, int) and fd >= 0        # BUDGET halt still released it, never leaked
+        lp._release_claim_lock(fd)
 
 
 def test_next_resumes_a_goal_my_own_current_process_already_holds(monkeypatch):

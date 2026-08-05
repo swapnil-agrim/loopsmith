@@ -11,18 +11,28 @@ enough together — roughly one `gh` API round-trip, not a full minute — can b
 pre-claim state and both proceed to the same goal. Not a one-time startup risk: it recurs at every
 iteration boundary, any time two sessions ask "what's next" close to the same moment.
 
-`loop.py` gains a local, POSIX-atomic exclusive-create lock (`os.open(path, O_CREAT|O_EXCL|O_WRONLY)`
-at `.sdlc/state/claims/<goal-stem>.lock`, already covered by the existing wholesale `.sdlc/state/`
+`loop.py` gains a local, kernel-mediated exclusive lock (`fcntl.flock(fd, LOCK_EX|LOCK_NB)` on
+`.sdlc/state/claims/<goal-stem>.lock`, already covered by the existing wholesale `.sdlc/state/`
 gitignore) acquired in `_next()` immediately before committing to a goal and released immediately
 after the durable ledger claim lands — the lock's only job is bridging that narrow gap; once a
 durable claim exists, the existing writer-aware claim check takes over correctly for every later
-call, local or not. A stale lock (a crash mid-pick) self-heals within a short, fixed window — much
-shorter than the ledger's own hours-scale lease TTL, since this only ever needs to survive a couple
-of API round-trips, not a whole goal's lifetime. Deliberately LOCAL-only: cross-machine claims stay
-on the existing, already-correct ledger mechanism, which two different machines don't share a
-filesystem to race on anyway. Closes a second, downstream symptom for free: since the losing session
-never wins the lock, it never returns the contested goal from `_next()` at all, so it never reaches
-`work.py start()` for it either — no `git worktree add` collision on the same deterministic path.
+call, local or not. Two ordinary-file-operation schemes were tried and each independently broken
+across review: a plain exclusive-create-and-recreate let a second racer silently clobber the first's
+freshly reclaimed lock; a rename-then-verify-then-restore refinement closed that gap but opened a
+narrower one where a third caller could land in the restore step's own window and also win — both
+findings came from deterministic, non-mocked reproductions, not reasoning. `flock` has no equivalent
+TOCTOU gap: the kernel either grants exclusive access to the open file description or it doesn't,
+atomically, with no create/rename/verify/restore sequence for a third party to land inside. It also
+retires the staleness-timeout idea those schemes needed: a `flock` is released the instant the
+holding process ends for any reason, crash included, so a lock orphaned by a mid-pick crash is never
+ambiguous — the very next attempt against it succeeds immediately, no age to guess at. POSIX-only
+(`fcntl`); a platform without it (Windows) fails open unconditionally, exactly as if this file didn't
+exist, leaving the ledger claim check as the sole (as before this change) defense there. Deliberately
+LOCAL-only otherwise: cross-machine claims stay on the existing, already-correct ledger mechanism,
+which two different machines don't share a filesystem to race on anyway. Closes a second, downstream
+symptom for free: since the losing session never wins the lock, it never returns the contested goal
+from `_next()` at all, so it never reaches `work.py start()` for it either — no `git worktree add`
+collision on the same deterministic path.
 
 ### fix(handoff): a blocked issue's dependency marker is now machine-readable, not comment-only
 `hand_off()`'s "link it from the blocked issue" step posted its dependency marker as a GitHub
