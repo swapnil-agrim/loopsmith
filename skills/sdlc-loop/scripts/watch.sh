@@ -67,10 +67,14 @@ elif mkdir "$MUTEX.reclaim" 2>/dev/null; then
   # and here is the right place: its critical section is even shorter than $MUTEX's own (one stat,
   # one arithmetic comparison, at most one rmdir+mkdir pair), so a crash landing inside IT is rarer
   # still, and unlike the bug being fixed, an orphaned reclaim gate fails SAFE -- every future
-  # racer just prints "a sibling is already deciding" and exits 0, an inert, immediately visible
-  # watcher (the ledger stops updating) rather than silent double-execution. A human clearing a
-  # stuck `.reclaim` directory by hand is an acceptable, self-announcing residual; two watchers
-  # quietly contending on the ledger's git index lock is not.
+  # racer just prints "a sibling is already deciding" and exits 0, an inert watcher (the ledger
+  # stops updating) rather than silent double-execution. Both backoff messages below are `tee`'d to
+  # $LOG, not just echoed -- a real invocation (loop.py's _ensure_watcher) redirects stdout/stderr
+  # to /dev/null, so without that the "self-announcing" half of this trade-off would be theoretical
+  # only, visible in an interactive shell but silent in the one context this actually runs in
+  # (independent review caught this gap). A human clearing a stuck `.reclaim` directory by hand is
+  # an acceptable residual once it is actually discoverable via the log; two watchers quietly
+  # contending on the ledger's git index lock is not.
   #
   # `mtime` empty (stat failed on BOTH the BSD and GNU forms) must mean "can't tell" -- almost always
   # because the mutex has ALREADY been removed by its rightful, fast-finishing owner, not because it
@@ -88,7 +92,7 @@ elif mkdir "$MUTEX.reclaim" 2>/dev/null; then
   rmdir "$MUTEX.reclaim" 2>/dev/null
 fi
 if [ "$mutex_acquired" != "1" ]; then
-  echo "watch: a sibling is already deciding — nothing to do"
+  echo "watch: a sibling is already deciding — nothing to do" | tee -a "$LOG"
   exit 0
 fi
 if [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null; then
@@ -100,7 +104,7 @@ else
 fi
 rmdir "$MUTEX" 2>/dev/null
 if [ "$already_running" = "1" ]; then
-  echo "watch: already running (pid $(cat "$PIDF" 2>/dev/null)) — nothing to do"
+  echo "watch: already running (pid $(cat "$PIDF" 2>/dev/null)) — nothing to do" | tee -a "$LOG"
   exit 0
 fi
 # Only remove the pidfile on exit if it still names US -- defense in depth against exactly the
