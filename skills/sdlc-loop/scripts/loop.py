@@ -213,6 +213,90 @@ def _next(sdlc_dir, source, config, extra_skip=()):
         _release_claim_lock(lock_fd)
 
 
+DEFAULT_GOALS_MAX_CONCURRENT = 3   # matches slices.py's own DEFAULT_MAX_CONCURRENT — same default,
+                                    # independent config block (F10.5-3/#375, see goals_parallel)
+
+
+def goals_parallel(config):
+    """-> (enabled, max_concurrent) for GOAL-level parallelism (F10.5-3/#375) — config
+    `parallel.goals.{enabled,max_concurrent}`, a SIBLING of the existing `parallel.{enabled,
+    max_concurrent}` block `slices.py` already reads for INTRA-goal slice dispatch (unchanged,
+    untouched by this). `is True` on purpose, matching that same convention: a truthy string or a
+    stray 1 must not silently start several concurrent worktree subagents against one repo. A
+    non-numeric cap falls back to the default rather than raising — a typo in config must not turn
+    an intended-sequential run into a crash."""
+    block = (config.get("parallel") or {}).get("goals") or {}
+    try:
+        cap = int(block.get("max_concurrent", DEFAULT_GOALS_MAX_CONCURRENT))
+    except (TypeError, ValueError):
+        cap = DEFAULT_GOALS_MAX_CONCURRENT
+    return (block.get("enabled") is True, max(1, cap))
+
+
+def next_batch(sdlc_dir, source, config, max_concurrent=None, extra_skip=()):
+    """Up to `max_concurrent` goals to dispatch AS CONCURRENT WORKTREE SUBAGENTS this pass
+    (F10.5-3/#375) — repeatedly calls `_next()`, accumulating each pick on top of `extra_skip` so
+    the SAME session's own multiple slots can never collide with each other, without even
+    touching the ledger a second time per pick (the exact `extra_skip` hook #335/F4 already added;
+    #387's local lock backs genuine CROSS-session races further, orthogonal to this).
+
+    `extra_skip` matters beyond this one call: #374's writer-liveness check can only ever answer
+    "is the process that WROTE this claim still literally running" — and the process that writes a
+    claim is a single short-lived `loop.py` invocation that has already exited by the time this
+    function returns, regardless of whether the GOAL itself is still being actively worked by a
+    long-running subagent. So a caller refilling a freed slot some time AFTER this call returned —
+    not within it — must pass the OTHER, still-active goals from prior calls back in as
+    `extra_skip` itself; nothing pid-based stands in for that once the picking call that wrote the
+    claim is gone. `next()`'s CLI verb takes the same thing as `--skip a,b,c` for exactly this.
+
+    `max_concurrent` defaults to `goals_parallel(config)`'s own setting when omitted — OFF (the
+    default; a repo that hasn't opted in) degrades to a single-item batch, byte-identical to
+    calling `_next()` once — so a caller can always call this the SAME way regardless of whether
+    goal-level parallelism is configured on, rather than needing two separate code paths.
+
+    Unlike `slices.py`'s `schedule()`/`conflicts()`, goals need NO file-level conflict detection:
+    each goal gets its OWN worktree+branch+PR (`work.py start()`), so two goals touching
+    overlapping files is, at worst, a routine PR-rebase later (the established CHANGELOG-cascade
+    pattern this whole plugin's own history already handles routinely) — not the
+    silently-lost-edit risk `conflicts()` exists to prevent for slices sharing ONE worktree.
+
+    Returns a list of `(kind, goal)` tuples: zero or more `("goal", <goal>)` entries, followed by
+    exactly one terminal `("DONE", None)` or `("BUDGET", None)` IFF the backlog/budget ran out
+    before filling every slot. A full batch of `max_concurrent` `"goal"` entries with no terminal
+    entry means every slot filled, with the backlog possibly not yet exhausted.
+
+    Also caps a single pass at the REMAINING iteration budget (`budget.max_iterations` minus what
+    this run has already recorded), even when `max_concurrent` alone would ask for more.
+    `_budget_spent`'s cursor only advances on `_record()` (a goal actually COMPLETING) — nothing
+    between two picks in the SAME batch changes it — so without this, a lone `_next()`-per-pick
+    check would see the identical "not yet spent" cursor on every pick and never trip mid-batch,
+    letting one pass dispatch more goals than `max_iterations` was ever meant to allow for the
+    WHOLE run. A malformed budget/cursor degrades to `max_concurrent` alone, never raises."""
+    if max_concurrent is None:
+        enabled, cap = goals_parallel(config)
+        max_concurrent = cap if enabled else 1
+    max_iterations = (config.get("budget") or {}).get("max_iterations")
+    if max_iterations:
+        try:
+            remaining = max(0, int(max_iterations) - state.load_cursor(sdlc_dir)["run_iteration"])
+            max_concurrent = min(int(max_concurrent or 1), remaining)
+        except (TypeError, ValueError, KeyError):
+            pass
+    picks = []
+    skip = set(extra_skip)
+    # max(1, ...): even when `remaining` computed to 0, still give _next() ONE chance to run --
+    # its OWN _budget_spent() check reads the identical cursor and correctly reports BUDGET itself,
+    # rather than this loop needing to special-case "zero slots" into a terminal tuple by hand.
+    for _ in range(max(1, max_concurrent)):
+        kind, goal = _next(sdlc_dir, source, config, extra_skip=skip)
+        if kind != "goal":
+            picks.append((kind, goal))
+            break
+        picks.append(("goal", goal))
+        skip.add(goal)
+    return picks
+
+
 def _surface_inbox(sdlc_dir):
     """Print anything a teammate needs from you BEFORE handing over the next goal.
 
@@ -469,6 +553,19 @@ def _flags(argv):
     return out
 
 
+def _cli_skip(argv_tail):
+    """Parse `--skip a,b,c` (comma-separated goal identifiers) off a CLI tail into a set, for `next`
+    /`next-batch`'s `extra_skip` (F10.5-3/#375) — empty when absent, so a caller that never passes
+    it behaves exactly as before this flag existed. Whitespace around each entry is stripped and
+    empty entries dropped, so a trailing comma or accidental space never turns into a phantom
+    goal id nothing will ever match. A bare `--skip` with no value (`_flags`'s "true" sentinel for
+    a flag nothing follows) is treated the same as absent, not as a literal goal named "true"."""
+    raw = _flags(argv_tail).get("skip", "")
+    if raw == "true":
+        return set()
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
 #: #140 (amendment A): the ONLY kinds `emit` will write — a POSITIVE allowlist, not merely
 #: "whatever ledger.EVENT_KINDS accepts". `verify`/`slice`/`park`/`scan` are Class-1 events
 #: written exclusively by deterministic code (verify_goal, slices.py, pipeline.py, `record`'s
@@ -569,8 +666,18 @@ def main(argv):
         config = state.load_config(argv[2])
         _ensure_watcher(argv[2], config)            # every loop trigger keeps the watcher (and the ledger) alive
         _surface_inbox(argv[2])                     # stderr; stdout stays exactly the goal/DONE/BUDGET
-        kind, goal = _next(argv[2], sources.get_source(argv[2], config), config)
+        skip = _cli_skip(argv[3:])                  # --skip a,b,c: goals a still-running sibling slot
+        kind, goal = _next(argv[2], sources.get_source(argv[2], config), config, extra_skip=skip)
         print(goal if kind == "goal" else kind); return 0
+    if len(argv) >= 3 and argv[1] == "next-batch":  # F10.5-3/#375: up to parallel.goals.max_concurrent
+        config = state.load_config(argv[2])         # goals to dispatch as concurrent worktree subagents
+        _ensure_watcher(argv[2], config)
+        _surface_inbox(argv[2])
+        source = sources.get_source(argv[2], config)
+        skip = _cli_skip(argv[3:])                  # --skip a,b,c: same, for a batch refill call
+        for kind, goal in next_batch(argv[2], source, config, extra_skip=skip):
+            print(goal if kind == "goal" else kind)
+        return 0
     if len(argv) >= 4 and argv[1] == "qc":          # board-only: move a goal to QC at the Review phase
         config = state.load_config(argv[2])
         sources.get_source(argv[2], config).mark_qc(argv[3]); return 0
@@ -668,7 +775,7 @@ def main(argv):
         return 0
     if len(argv) >= 4 and argv[1] == "verify":      # machine done_when: run + persist evidence
         return verify_goal(argv[2], argv[3])
-    print("usage: loop.py start <dir> | next <dir> | qc <dir> <goal> | "
+    print("usage: loop.py start <dir> | next <dir> | next-batch <dir> | qc <dir> <goal> | "
           "note <dir> <goal> <text> | record <dir> <goal> done|parked|failed [reason] | "
           "spend <dir> <tokens> [goal] [--k v ...] | emit <dir> <goal> <kind> [--k v ...] | "
           "verify <dir> <goal>", file=sys.stderr)

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### feat(loop): dispatch multiple backlog goals concurrently in one session, not just one goal's slices
+The existing `parallel.*` block runs ONE goal's independent implementation slices concurrently — this
+is a sibling capability one level up: running MULTIPLE BACKLOG GOALS concurrently in a single session,
+each all the way through its own research-through-PR lifecycle in its own worktree+branch. Off by
+default (`parallel.goals.enabled`), a stated-scope feature for one person on one machine running many
+of their own assigned issues in parallel — not a team coordination mechanism (the ledger + the
+writer-identity claim check below already own that).
+
+`loop.py` gains a `next-batch` verb alongside the existing `next`: with goal-level parallelism off, or
+only one goal available, it is byte-identical to `next` — exactly one line of output — so a caller can
+always use it the same way regardless of configuration. With it on, it returns up to
+`parallel.goals.max_concurrent` (default 3) goals in one call, internally accumulating each pick into
+its own skip set so a single session's own multiple slots can never collide with each other or the
+ledger a second time for the same pass. Also caps a single pass at whatever `budget.max_iterations`
+has left, even when `max_concurrent` alone would ask for more — `_budget_spent`'s cursor only advances
+when a goal actually COMPLETES, not on a mere pick, so without this a single `next-batch` call could
+dispatch more goals in one pass than the run's own budget was ever meant to allow.
+
+Refilling a slot as a subagent finishes needs more than the writer-identity claim check below can
+give it: that check can only ever tell whether the SHORT-LIVED `loop.py` process that wrote a claim is
+still literally running, and that process exits within moments of writing it, by construction —
+regardless of whether the goal itself is still being actively worked by a long-running subagent
+minutes later. A goal's `in_progress` status alone does not exclude it from being picked again either.
+So `next`/`next-batch` both gain a `--skip <comma-separated goal ids>` flag: the caller (the
+orchestrating session, which already knows exactly which goals are live in its other slots, since it
+dispatched them) passes the other still-active goals on every refill call. Proved the gap this closes
+is real, not hypothetical, before shipping the fix: without `--skip`, a `next` call reliably
+re-dispatches a goal a sibling slot already holds.
+
 ### fix(loop): two genuinely simultaneous `_next()` calls can no longer pick the same goal
 The claim-identity fix above closes correctly INTERPRETING a claim that already exists — it has no
 answer for two readers looking at the same instant with nothing claimed yet. `_next()` is a
