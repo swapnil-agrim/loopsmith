@@ -6,7 +6,7 @@ spend itself; no reports == no enforcement). An absent/zero key enforces nothing
 it behaves exactly as before. The irreversible-action gate is enforced by /sdlc-loop SKILL.md prose.
 Claim and outcome are mirrored to the team ledger (ledger.py) when `ledger.enabled` is on — every
 such call is fail-open, so a ledger problem can never stop a run."""
-import os, sys, pathlib, importlib.util, time, subprocess
+import os, sys, pathlib, importlib.util, time, subprocess, threading
 
 try:                    # portable output: force UTF-8 so the plugin's own non-ASCII (arrows, em-dashes)
     import sys as _sys  # doesn't garble to '?' or crash on a non-UTF-8 console (the Windows cp1252
@@ -116,10 +116,23 @@ def _try_acquire_claim_lock(sdlc_dir, goal):
     machine) — cross-machine claims are the ledger's own, already-correct job; a lock file two
     different machines don't share cannot and need not arbitrate between them.
 
-    A stale lock (crashed holder, older than `_CLAIM_LOCK_STALE_SECONDS`) is reclaimed by unlinking
-    it and making ONE more create attempt — THAT attempt is what decides the winner if two processes
-    race to steal the same stale lock at once, so staleness recovery is itself race-safe, not a
-    second TOCTOU gap bolted onto the first.
+    A stale lock (crashed holder, older than `_CLAIM_LOCK_STALE_SECONDS`) is reclaimed by RENAMING it
+    aside and making ONE more create attempt. The rename alone makes "who gets to attempt eviction"
+    exclusive — POSIX serializes concurrent renames of the same source path, so at most one caller's
+    `rename` sees the path still there and moves it; every other caller's `rename` finds it already
+    gone and raises FileNotFoundError. But exclusivity of the MOVE isn't the whole guarantee: a caller
+    that read "stale" long enough ago can still win an uncontested rename against a file that, by the
+    time it actually moved, was no longer the stale one it inspected — a DIFFERENT, live process could
+    have legitimately (re)claimed `path` in between (this is not hypothetical: a caller can be
+    descheduled by the OS for an arbitrary stretch between reading staleness and acting on it, and two
+    independent processes racing `_next()` have no shared clock to bound that gap). So the mtime this
+    function observed is re-checked against what it ACTUALLY evicted, right after the rename: if they
+    still match, nothing touched this file between our read and our move, and reclaiming it is safe.
+    If they don't, we evicted somebody else's live claim purely because our own decision was stale —
+    we put it back (non-clobbering: `os.link`, which fails closed if a third party has since taken
+    `path`, rather than `rename`, which would silently clobber them) and concede. A plain `unlink()`
+    cannot do any of this — it has no "was it still the file I inspected" signal at all, so a second
+    racer's unlink silently removes whatever the first racer just created and both proceed.
 
     Fail-open: any OS error this function cannot interpret (permissions, a read-only filesystem, a
     directory it cannot create) returns True — a lock this call cannot manage must never be what
@@ -135,16 +148,41 @@ def _try_acquire_claim_lock(sdlc_dir, goal):
     except OSError:
         return True                          # can't manage the lock at all — fail open, see docstring
     try:
-        if (time.time() - path.stat().st_mtime) < _CLAIM_LOCK_STALE_SECONDS:
+        observed_mtime = path.stat().st_mtime
+        if (time.time() - observed_mtime) < _CLAIM_LOCK_STALE_SECONDS:
             return False                     # genuinely still fresh — someone else really holds it
     except OSError:
         return True                          # can't even stat it — fail open
+    evicted = path.with_name(f"{path.name}.evicted.{os.getpid()}.{threading.get_ident()}")
     try:
-        path.unlink()                        # stale — steal it; this create is the atomic decider
+        path.rename(evicted)                 # stale — evict it; exclusivity of THIS decides who even
+    except FileNotFoundError:                # gets to check further (see docstring) — not correctness
+        return False                         # on its own. Someone else already evicted/refreshed it.
+    except OSError:
+        return True                          # can't evict it at all — fail open, see docstring
+    try:
+        reclaim_is_safe = evicted.stat().st_mtime == observed_mtime
+    except OSError:
+        reclaim_is_safe = True               # can't re-verify — proceed, consistent with fail-open above
+    if not reclaim_is_safe:
+        try:
+            os.link(str(evicted), str(path))     # best-effort, non-clobbering restore — see docstring
+        except OSError:
+            pass                                 # someone already took `path`; nothing to restore into
+        try:
+            evicted.unlink()
+        except OSError:
+            pass
+        return False                         # we do not own this lock — our steal decision was stale
+    try:
+        evicted.unlink()
+    except OSError:
+        pass                                 # best-effort cleanup of the evicted husk; not correctness-critical
+    try:
         os.close(os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
         return True
     except FileExistsError:
-        return False                         # someone else won the steal race
+        return False                         # someone recreated it between our rename and our create
     except OSError:
         return True
 
