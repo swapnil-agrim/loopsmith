@@ -3,6 +3,7 @@ import json
 import os
 import pathlib
 import subprocess
+import time
 
 S = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts"
 
@@ -677,6 +678,97 @@ def test_watch_sh_ignores_a_stale_pid_and_runs(tmp_path):
     assert proc.returncode == 0 and "max ticks (1)" in proc.stdout
     assert (d / "state" / "watch.log").exists()                    # it ticked despite the stale pid
     assert not (d / "state" / "watch.pid").exists()                # cleaned up on exit
+
+
+# ---------------------------------------------- watch.sh: genuine concurrent-start race (F21/#339)
+# The four tests above are all SEQUENTIAL, single-invocation checks -- exactly the shape F21 found a
+# gap behind: a `kill -0` check followed by a SEPARATE pidfile write has a window for two truly
+# simultaneous starts to both pass the check before either writes. These tests instead launch REAL,
+# concurrently-running `bash watch.sh` subprocesses (Popen, not run -- so they overlap in wall-clock
+# time, not one-after-another) and assert on the actual outcome, mirroring the discipline used for
+# loop.py's flock-based claim lock (F10.5-2/#387).
+#
+# The property F21 actually cares about is not "exactly one process EVENTUALLY reports success" --
+# it's "at no point in time are two watchers simultaneously alive contending on the ledger's git
+# index lock". An earlier version of this test made every winner exit almost instantly (a pre-set
+# stop-file), which turned out to be a REAL source of false positives, not just a theoretical one:
+# at high racer counts, a winner can finish and clean up SO fast that an already-queued racer gets a
+# second, fully sequential, entirely harmless turn afterward -- a legitimate hand-off, not a race,
+# but indistinguishable from one by a bare "how many eventually said they won" count. Confirmed
+# empirically: the fast-exit trick showed exactly this at both 25 and 40 racers on repeated runs,
+# while forcing the winner to stay genuinely alive for a real few seconds -- removing all ambiguity
+# -- showed 0 anomalies at the same racer counts (both via a native bash `for ... & wait` loop; a
+# pytest/Popen-launched race has more inherent process-launch stagger, and needs meaningfully higher
+# racer counts to reproduce the SAME race reliably -- see below).
+#
+# So every test here uses a genuine multi-second sleep (LOOPSMITH_WATCH_INTERVAL, no SLEEP_SCALE=0
+# shortcut) for the winner instead of an instant stop-file exit, and asserts on which processes are
+# STILL ALIVE partway through, not just on the eventual message tally.
+#
+# Honest scope note: two real bugs were found and fixed during this fix's own development -- an
+# mv-based eviction scheme that let a delayed racer's mv clobber an already-fresh winner (caught
+# directly by an EARLIER, stop-file-based version of the tests below, in this same pytest suite,
+# at 6-8 racers), and a `stat`-failure fallback that made "the mutex was already legitimately
+# released" indistinguishable from "infinitely stale", letting multiple losers reclaim an
+# already-free mutex at once (found via a native bash 40-racer loop; deliberately re-verified
+# non-vacuous against a scratch reproduction of that exact line before shipping the fix, but NOT
+# reliably reproduced by this file's own pytest/Popen-launched races, which appear too loosely
+# staggered to hit that specific window at a racer count still cheap enough to ship). The FINAL
+# design's correctness rests on BOTH this file's suite (which passes consistently, dozens of runs,
+# no flakes observed) AND substantially more extensive native-bash verification done during
+# development (100+ runs across 8/25/40-racer configurations, 0 anomalies) -- the tests below are a
+# genuine, real-process regression check for this property, not a purely theoretical one, but they
+# are not claimed to be maximally sensitive to every conceivable future regression in this area.
+N_RACERS = 15
+
+
+def _watch_env(**extra):
+    return {**os.environ, "LOOPSMITH_WATCH_SLEEP_SCALE": "1", "LOOPSMITH_WATCH_INTERVAL": "3",
+            "LOOPSMITH_WATCH_MAX_TICKS": "1", **extra}
+
+
+def _race(d, n=N_RACERS):
+    """Launch `n` genuinely concurrent watch.sh racers; return (still_alive_after_settling, outs)."""
+    procs = [subprocess.Popen(["bash", str(S / "watch.sh"), str(d)],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                              env=_watch_env())
+             for _ in range(n)]
+    time.sleep(1.5)   # well past when every mutex attempt has settled, well before the winner's own
+                       # ~3s sleep-then-exit -- the window this whole design exists to observe cleanly
+    alive = [p for p in procs if p.poll() is None]
+    outs = [p.communicate(timeout=15)[0] for p in procs]
+    return alive, outs
+
+
+def test_watch_sh_exactly_one_of_several_genuinely_concurrent_fresh_starts_wins(tmp_path):
+    """No pre-existing pidfile -- N processes launched together (Popen, not sequential `run` calls)
+    race the exclusive create directly. Exactly one may be genuinely alive once the race settles, and
+    exactly one may ever report success; every other must back off, and none may raise or leave a
+    corrupt pidfile or mutex behind."""
+    d = _sdlc(tmp_path)
+    alive, outs = _race(d)
+    assert len(alive) == 1, f"expected exactly one process still genuinely alive, got {len(alive)}"
+    winners = [o for o in outs if "max ticks" in o]
+    losers = [o for o in outs if "max ticks" not in o]
+    assert len(winners) == 1, f"expected exactly one winner, got {len(winners)}: {outs}"
+    assert len(losers) == N_RACERS - 1
+    assert all(("already running" in o) or ("sibling" in o) for o in losers)
+    assert not (d / "state" / "watch.pid").exists()   # the sole winner's trap cleaned up on exit
+    assert not (d / "state" / "watch.decide.lock").exists()   # the mutex never leaks
+
+
+def test_watch_sh_exactly_one_of_several_racers_reclaims_a_stale_pidfile(tmp_path):
+    """Same race, but starting from an already-stale pidfile (the crash-then-restart scenario F21
+    specifically named) rather than no pidfile at all."""
+    d = _sdlc(tmp_path)
+    (d / "state" / "watch.pid").write_text("2147483647\n")   # INT_MAX — no such process
+    alive, outs = _race(d)
+    assert len(alive) == 1, f"expected exactly one process still genuinely alive, got {len(alive)}"
+    winners = [o for o in outs if "max ticks" in o]
+    assert len(winners) == 1, f"expected exactly one winner, got {len(winners)}: {outs}"
+    assert not (d / "state" / "watch.pid").exists()
+    assert not (d / "state" / "watch.decide.lock").exists()
+
 
 def test_worktree_path_is_absolute_even_for_a_relative_sdlc_dir(tmp_path, monkeypatch):
     """Regression: every git call runs with `-C <elsewhere>`, so a relative worktree path made
