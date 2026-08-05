@@ -54,6 +54,8 @@ planted inside the copy that runs as part of the same single child invocation (s
 docstring, and the sibling file it inspects,
 insight/tests/test_insight_imports_from_the_tree_this_test_file_lives_in.py, for why the resolution
 check itself lives in a separate, unguarded file rather than in this one)."""
+import importlib.util
+import json
 import os
 import pathlib
 import re
@@ -208,7 +210,13 @@ def extracted(tmp_path_factory):
     presence-only sentinel check did."""
     dest_root = tmp_path_factory.mktemp("standalone")
     dest = dest_root / "insight"
-    shutil.copytree(INSIGHT, dest)
+    # ignore=... node_modules (issue #301 [E16.S3], .sdlc/plans/301.md Decision g2): a locally-warm
+    # insight/web/node_modules/ is thousands of files with zero signal for this proof -- it is
+    # gitignored, never part of what "insight/ is extractable" is actually claiming (the CLAIM is
+    # that the *sources* travel with the copy; `npm ci` is what repopulates node_modules/ in a real
+    # extraction, exercised for real by insight/verify_web.py in CI's `web` job, never by this
+    # file) -- and copying it wholesale here only slows every run down for no new coverage.
+    shutil.copytree(INSIGHT, dest, ignore=shutil.ignore_patterns("node_modules"))
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     env.pop("PYTEST_ADDOPTS", None)
@@ -270,18 +278,41 @@ def test_child_planted_self_check_ran_and_passed(extracted):
     )
 
 
-def test_child_web_check_runs_under_insight_and_reports_the_expected_skip(extracted):
-    """Clause 5: the standalone proof must exercise the web checks, not just the Python suite --
-    and clause 4: the entry point must live under insight/ itself, or it would not even be
-    present in this copy to run. Asserts the SPECIFIC skip text, not any exit 0 -- exit 0 is also
-    what you get from a script that isn't there at all if you assert it carelessly (see this
-    story's own PR body for the captured red when verify_web.py is moved back to the root)."""
+def test_child_web_gate_travelled_with_the_extracted_copy(extracted):
+    """Clause 5 and clause 4, RE-SCOPED (issue #301 [E16.S3], .sdlc/plans/301.md Decision g2) from
+    an earlier version of this test that ran `verify_web.py` inside the extracted copy and
+    asserted a SKIP -- true only while `insight/web/package.json` did not exist. This story lands
+    it, so the copy's `verify_web.py` no longer skips; it falls straight into `npm ci`, which the
+    `insight` CI job (no Node installed, by design -- see .sdlc/plans/301.md Decision a) cannot
+    run, and this fixture's own docstring (module docstring, "NO pip install... verify explicitly
+    must not require [network]") already forbids this proof from ever needing network or a second
+    toolchain.
+
+    What clause 5 actually needs, restated correctly: not that the web checks RUN a second time
+    here (insight/verify_web.py already runs them for real, in the `web` job, against the real
+    tree) -- only that the web gate's ENTRY POINT and its inputs travelled with the copy, proving
+    clause 4 (the entry point lives under insight/ itself, so extraction does not strand it at a
+    repo root that would not exist once insight/ is standalone). So this asserts PRESENCE and
+    SHAPE only: verify_web.py, web/package.json, and web/package-lock.json all exist in the copy,
+    and package.json's "scripts" declares every name verify_web.py's own CHECKS requires -- read
+    off the copy's own verify_web.py module (never retyped), so this test and that module's
+    contract cannot drift apart -- without ever invoking npm."""
     _, _, dest = extracted
     entry = dest / "verify_web.py"
-    proc = subprocess.run([sys.executable, str(entry)], cwd=str(dest),
-                           capture_output=True, text=True)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "SKIP" in proc.stdout and "insight/web/package.json" in proc.stdout, proc.stdout
+    assert entry.is_file(), f"{entry} did not travel with the extracted copy"
+
+    spec = importlib.util.spec_from_file_location("verify_web_extracted", entry)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+
+    package_json = dest / "web" / "package.json"
+    assert package_json.is_file(), f"{package_json} did not travel with the extracted copy"
+    lockfile = dest / "web" / "package-lock.json"
+    assert lockfile.is_file(), f"{lockfile} did not travel with the extracted copy"
+
+    scripts = json.loads(package_json.read_text(encoding="utf-8")).get("scripts", {})
+    missing = [c for c in m.CHECKS if c not in scripts]
+    assert not missing, f'{package_json} "scripts" is missing {missing}'
 
 
 def test_child_passed_at_least_the_known_floor(extracted):

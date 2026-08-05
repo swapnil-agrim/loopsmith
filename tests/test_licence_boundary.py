@@ -38,7 +38,17 @@ So the skip is now three narrow exclusions, and it is worth being exact about wh
     makes `*.egg-info` unimportable — and both are gitignored at the repo root, so their contents
     cannot be committed without `git add -f`. That pair of reasons is what makes the name match
     safe here and is exactly what `env`/`build`/`dist` lacked. Do not extend this list to a name
-    that is merely conventional (`node_modules`, `.tox`): check both halves first.
+    that is merely conventional (`.tox`): check both halves first.
+  * `node_modules` — BY NAME, `.ts`/`.tsx` only (issue #301 [E16.S3]), and it clears the same bar
+    `__pycache__`/`*.egg-info` do, not the weaker one `env`/`build`/`dist` failed: `node_modules`
+    is RESERVED by npm/Node's own module resolution algorithm (a directory no sane package would
+    ever author sources into, the same way nothing sane claims `__pycache__`), and it is already
+    gitignored at the repo root (`insight/web/node_modules/` cannot be committed without
+    `git add -f`). `npm install`/`npm ci` populate it with ~1000+ `.ts`/`.d.ts` files the moment
+    `insight/web/package.json` gains any devDependency — none of them owned by this repo, none
+    ever meant to carry the BUSL marker, and (unlike `env`/`build`/`dist`) nobody would ever name a
+    real TypeScript module directory `node_modules` on purpose, since npm's own resolver would
+    stop treating it as ordinary source the instant they did.
 
 The distinction matters because an earlier docstring claimed all three were structural, which was
 false and would have told the next reader the wrong thing. What is true of all three: none depends
@@ -159,14 +169,17 @@ def _marker():
 
 
 def _owned_ts_files(root):
-    """Every .ts/.tsx file under `root`, same structural skip as `_owned_py_files` (no name skip,
-    no git) -- see the module docstring. Two glob patterns because a module is either `.ts` or
-    `.tsx`, never both."""
+    """Every .ts/.tsx file under `root`, the same structural skip as `_owned_py_files` plus one
+    BY-NAME skip `_owned_py_files` has no analogue for -- see the module docstring's `node_modules`
+    entry for why that name match is safe here the way `env`/`build`/`dist` were not. Two glob
+    patterns because a module is either `.ts` or `.tsx`, never both."""
     out = []
     for pattern in ("*.[tT][sS]", "*.[tT][sS][xX]"):
         for path in root.rglob(pattern):
             rel = path.relative_to(root)
             if "__pycache__" in rel.parts or any(q.endswith(".egg-info") for q in rel.parts):
+                continue
+            if "node_modules" in rel.parts:
                 continue
             if any(_is_virtualenv(root.joinpath(*rel.parts[:i + 1]))
                    for i in range(len(rel.parts) - 1)):
@@ -360,6 +373,25 @@ def test_ts_checker_flags_everything_when_the_marker_is_empty(tmp_path):
     (tmp_path / "good.tsx").write_text(
         _ts_marker(_marker()) + "\nexport const x = 1\n", encoding="utf-8")
     assert _files_missing_ts_header(tmp_path, "") == ["good.tsx"]
+
+
+def test_node_modules_is_skipped_for_ts_but_not_py(tmp_path):
+    """Pins the one BY-NAME skip `_owned_ts_files` has that `_owned_py_files` does not (issue
+    #301 [E16.S3], .sdlc/plans/301.md Decision g1) -- a future refactor that lifts the skip out of
+    `_owned_ts_files` (or accidentally copies it into `_owned_py_files`, where nothing gitignores
+    a Python `node_modules/`) must fail here. A markerless .ts under node_modules/ is invisible to
+    the ts checker; a markerless .py at the identical relative path is still caught, matching
+    test_modules_named_like_build_trees_are_still_checked's "never skip a real module for its
+    NAME" contract for every name this checker does NOT structurally exempt."""
+    leak = tmp_path / "node_modules" / "some-pkg" / "index.ts"
+    leak.parent.mkdir(parents=True)
+    leak.write_text("export const x = 1\n", encoding="utf-8")
+    assert _files_missing_ts_header(tmp_path, _ts_marker(_marker())) == []
+
+    leak_py = tmp_path / "node_modules" / "some-pkg" / "index.py"
+    leak_py.write_text("x = 1\n", encoding="utf-8")
+    assert _files_missing_header(tmp_path, _marker()) == [
+        os.path.join("node_modules", "some-pkg", "index.py")]
 
 
 def test_deriving_the_ts_marker_does_not_change_the_py_marker_or_checker(tmp_path):

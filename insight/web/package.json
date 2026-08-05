@@ -1,0 +1,16 @@
+{
+  "name": "insight-web",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "pretypecheck": "node scripts/check-schema-fresh.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'STUB (E17.S1 wires real ESLint, see insight/web/README.md) -- always exits 0' && exit 0",
+    "test": "node scripts/prove-metric-contract-safety.mjs",
+    "build": "echo 'STUB (E17.S1 wires the real Next.js build, see insight/web/README.md) -- always exits 0' && exit 0"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

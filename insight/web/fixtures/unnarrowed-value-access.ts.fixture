@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
+// issue #301 [E16.S3], .sdlc/plans/301.md criterion 3's negative case.
+//
+// `.ts.fixture`, not `.ts`: kept outside tsconfig.json's `include` glob (so it never breaks the
+// real `npm run typecheck`) and outside the BUSL `.ts`/`.tsx` marker glob
+// (tests/test_licence_boundary.py::_owned_ts_files only matches `*.ts`/`*.tsx` basenames --
+// `unnarrowed-value-access.ts.fixture`'s basename ends in `.fixture`, not `.ts`). It still opens
+// with the marker anyway: it is a real, readable insight/ source file, even if the two guards
+// above don't require it to.
+//
+// scripts/prove-metric-contract-safety.mjs copies this into a scratch tsconfig'd directory
+// alongside a REAL metric.ts/schema.d.ts and compiles it: reading `metric.value` with no `state`
+// narrowing at all must fail `tsc --noEmit` with TS2339 ("Property 'value' does not exist on
+// type ..."), because two of the union's three members (AbsentNoDataMetric, AbsentUnbuiltMetric)
+// carry no `value` field. This is the negative half of criterion 3; metric.consumer.ts's
+// `measuredValueOrNull` (compiled by every real `npm run typecheck`) is the positive half.
+import type { Metric } from "./metric.ts";
+
+export function unnarrowedValueAccess(metric: Metric): number {
+  return metric.value;
+}
