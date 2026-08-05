@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### fix(loop): the overnight drain no longer aborts (and re-picks the goal) on a transient `gh` error
+`sources.py`'s `GitHubSource` had four unguarded `gh` calls on the source-op path — `next_pending`'s
+`issue list` (called FIRST, every iteration), `mark_in_progress`'s `--add-label`, `complete`'s
+`issue close`, and `_offboard`'s `issue comment` (posted BEFORE the goal-label removal that actually
+de-lists a parked/failed goal). A transient 502/rate-limit on any of these propagated uncaught through
+`_record`/`_next` and crashed `run_loop`'s whole `while` loop — `run_loop([a,b,c])` with `b` erroring
+processed only `a`, and since `_offboard` never reached the label-removal line, `b`'s `sdlc:goal` label
+was never dropped, so the NEXT run re-served the same goal. Fixes, in order of what they protect:
+- `_offboard` now removes the goal label FIRST, unconditionally attempted, before the (still
+  best-effort) parked-label add and comment — de-listing no longer depends on anything after it
+  succeeding.
+- `mark_in_progress` and `next_pending`'s `gh` calls are now individually guarded — a best-effort
+  visibility label failing doesn't stop a goal being picked, and an unreadable backlog degrades to
+  "nothing pending" (loud on stderr) instead of crashing before a single goal is even read.
+- `run_loop` wraps `_record` itself: if `complete()`'s `issue close` still raises (deliberately left
+  unguarded at the source, since silently swallowing THIS one risks claiming "done" while the remote
+  issue stays open and re-pickable), the goal is downgraded to a recorded PARK — never a silent "done"
+  — and the drain continues to the next goal instead of aborting.
+- POST-REVIEW FIX: if BOTH the primary record AND the fallback park-record fail for the same goal,
+  `run_loop` didn't crash and didn't lose the goal — it spun on it forever (an independent review
+  reproduced this as an unbounded, ~100%-CPU hang), silently defeating `max_iterations`. Such a goal
+  is now poisoned for the rest of THIS run only (reusing `_next`'s existing lease-skip mechanism), so
+  the drain still makes bounded progress on the rest of the backlog; a fresh run may retry it.
+
 ### fix(loop): `spend` refuses a non-integer token count with a message, not a traceback
 `loop.py spend <dir> <n>` — the CLI verb hosts report token usage through — did `int(n)` unguarded
 inside `state.add_tokens`. A float, empty, comma-grouped, or garbage `n` raised `ValueError`, exiting

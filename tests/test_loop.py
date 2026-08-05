@@ -606,6 +606,71 @@ def test_run_loop_survives_a_raising_ledger_append(monkeypatch):
         assert res["done"] == 3 and res["parked"] == 0 and res["stopped"] == "backlog-empty"
 
 
+def test_run_loop_survives_a_raising_source_op_on_the_middle_goal():
+    """F4: a transient gh error recording ONE goal (e.g. complete()'s `issue close` raising) must not
+    abort the whole drain — `run_loop([a,b,c])` with `b` raising must still process `a` and `c`. The
+    failed goal is downgraded to a recorded PARK, never silently counted as done."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 0, max_iter=10)
+        lp = _loop()
+
+        class Fake:
+            def __init__(s):
+                s.q = ["a", "b", "c"]; s.done = []; s.parked = []
+            def next_pending(s, skip=()): return next((g for g in s.q if g not in skip), None)
+            def mark_in_progress(s, g): pass
+            def complete(s, g):
+                if g == "b":
+                    raise RuntimeError("gh: HTTP 502 Bad Gateway")   # NOT removed from q yet
+                s.q.remove(g); s.done.append(g)
+            def park(s, g, r):
+                s.q.remove(g); s.parked.append(g)   # only the fallback park() call de-lists "b"
+
+        fake = Fake()
+        lp.sources.get_source = lambda sdlc_dir, config: fake
+        res = lp.run_loop(base, lambda g: ("done", ""))
+        assert res["stopped"] == "backlog-empty"
+        assert fake.done == ["a", "c"]              # b's completion could not be confirmed
+        assert fake.parked == ["b"]                 # downgraded to a park, not silently dropped
+        assert res["done"] == 2 and res["parked"] == 1 and res["failed"] == 0
+
+
+def test_run_loop_does_not_spin_forever_when_the_fallback_park_also_raises():
+    """POST-REVIEW FIX: if BOTH the primary record AND the fallback park-record fail for the same
+    goal, run_loop must still TERMINATE — not spin on that one goal forever. An independent review
+    reproduced exactly this as an unbounded, ~100%-CPU hang that silently defeats `max_iterations`
+    (worse than the original crash: loud-and-bounded beats silent-and-unbounded). The goal is
+    poisoned for the rest of THIS run only; `a` and `c` still complete normally."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 0, max_iter=10)
+        lp = _loop()
+
+        class Fake:
+            def __init__(s):
+                s.q = ["a", "b", "c"]; s.done = []; s.calls_for_b = 0
+            def next_pending(s, skip=()): return next((g for g in s.q if g not in skip), None)
+            def mark_in_progress(s, g): pass
+            def complete(s, g):
+                if g == "b":
+                    s.calls_for_b += 1
+                    if s.calls_for_b > 5:
+                        raise AssertionError("run_loop is spinning on 'b' — poisoning did not work")
+                    raise RuntimeError("gh: HTTP 502 Bad Gateway")
+                s.q.remove(g); s.done.append(g)
+            def park(s, g, r):
+                if g == "b":
+                    raise RuntimeError("gh: HTTP 502 Bad Gateway — park ALSO fails")   # b never de-listed
+                s.q.remove(g)
+
+        fake = Fake()
+        lp.sources.get_source = lambda sdlc_dir, config: fake
+        res = lp.run_loop(base, lambda g: ("done", ""))          # must return promptly, not hang
+        assert res["stopped"] == "backlog-empty"
+        assert fake.done == ["a", "c"]                            # b could not be recorded either way
+        assert res["parked"] == 1                                 # still counted, not silently dropped
+        assert fake.calls_for_b == 1                              # picked up exactly once this run
+
+
 # ---------------------------------------------------------------- #140: `emit` verb + `spend` extension
 # Every emit test below reuses `_telemetry_base` (ledger+telemetry ON) unless a test is specifically
 # about the default-off behaviour, in which case it builds its own config.

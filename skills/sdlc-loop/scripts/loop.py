@@ -87,12 +87,14 @@ def _lease(sdlc_dir, config):
         return (None, {})
 
 
-def _next(sdlc_dir, source, config):
+def _next(sdlc_dir, source, config, extra_skip=()):
     """(kind, goal): 'goal' (+marks in_progress, the commit point), 'DONE' (drained), 'BUDGET'.
     Drained backlog reports DONE even if budget is also spent (empty wins the tie). A goal another
-    loop already holds a ledger claim on is skipped (see _lease) so two people don't double-start it."""
+    loop already holds a ledger claim on is skipped (see _lease) so two people don't double-start it.
+    `extra_skip` (F4) is run_loop's own poison set — a goal neither the primary nor the fallback
+    park-record could be recorded for, this run — so a doubly-failing source doesn't spin forever."""
     me, lease = _lease(sdlc_dir, config)
-    skip = set()
+    skip = set(extra_skip)
     while True:
         goal = source.next_pending(skip=skip)
         if goal is None:
@@ -308,14 +310,37 @@ def run_loop(sdlc_dir, run_goal):
     _ensure_watcher(sdlc_dir, config)               # a loop trigger keeps the ledger flowing on its own
     source = sources.get_source(sdlc_dir, config)   # one source per run (e.g. github labels ensured once)
     done = parked = failed = 0
+    poisoned = set()      # F4: goals neither record attempt below could record — skipped for the
+                          # REST OF THIS RUN so a doubly-failing source can't spin on one goal forever
     while True:
-        kind, goal = _next(sdlc_dir, source, config)
+        kind, goal = _next(sdlc_dir, source, config, extra_skip=poisoned)
         if kind == "DONE":
             stopped = "backlog-empty"; break
         if kind == "BUDGET":
             stopped = "budget"; break
         result, detail = run_goal(goal)
-        _record(sdlc_dir, source, goal, result, detail)
+        try:
+            _record(sdlc_dir, source, goal, result, detail)
+        except Exception as exc:
+            # F4: a source-op failure while recording ONE goal (e.g. complete()'s `issue close`
+            # raising on a transient error) must never abort the whole drain — park-and-continue is
+            # the loop's core promise. Downgrade to a recorded PARK, never a silently-claimed "done":
+            # if the remote couldn't confirm completion, the issue may still be open and re-pickable
+            # next run, so the local record must not claim otherwise.
+            try:
+                _record(sdlc_dir, source, goal, "parked",
+                        f"source error recording '{result}' ({exc})")
+            except Exception:
+                # POST-REVIEW FIX: even the park-record failed — this goal cannot be reliably
+                # recorded at all. Without this, `source.next_pending` would re-serve it forever
+                # (nothing ever de-listed it): `_next` -> `run_goal` -> both records fail -> `_next`
+                # picks the SAME goal again, spinning run_loop on it at ~100% CPU with no
+                # termination — an independent review reproduced this empirically. That silently
+                # defeats `max_iterations` (worse than the original crash: loud and bounded beats
+                # silent and unbounded). Poison it for this run only — a fresh run may retry it,
+                # the goal itself is untouched (still exactly as pending as before this attempt).
+                poisoned.add(goal)
+            result = "parked"
         done += (result == "done")
         failed += (result == "failed")
         parked += (result not in ("done", "failed"))
