@@ -292,8 +292,26 @@ def test_verify_goal_and_refusal_in_process():
         assert lp._done_refusal(base, goal) is None
         # stale evidence (predates the run) refuses again
         lp.state.start_run(base)
-        import time as _t; _t.sleep(1.1)     # STATE stamps whole seconds
+        import time as _t; _t.sleep(1.1)     # comfortable margin past the evidence's own timestamp
         lp.state.start_run(base)
+        assert lp._done_refusal(base, goal) == "verify evidence predates this run"
+
+
+def test_done_refusal_in_process_rejects_sub_second_stale_evidence(monkeypatch):
+    """F11/#341: loop.py's own `_done_refusal` is a textual duplicate of state.done_refusal and
+    carried the identical whole-second-floor staleness hole (both `at` and `run_started_at` used
+    to be `int(time.time())`). Reproduces the issue's repro directly against loop.py's copy: a
+    verify evidence write that lands 0.1s into second T, this run starting 0.3s into that SAME
+    second T -- a genuine 0.2s of staleness that used to floor-collide and read as fresh."""
+    with tempfile.TemporaryDirectory() as d:
+        base, goal = _goal_backlog(d, verify_command="true", enforce=True)
+        lp = _mod("loop")
+        t = 1_700_000_000.0
+        monkeypatch.setattr(lp.time, "time", lambda: t + 0.3)
+        lp.state.start_run(base)                           # this run "starts" 0.3s into second T
+        monkeypatch.setattr(lp.time, "time", lambda: t + 0.1)
+        assert lp.verify_goal(base, goal) == 0              # evidence written 0.1s into the SAME second
+        assert int(t + 0.1) == int(t + 0.3) == int(t)       # the whole-second collision, confirmed
         assert lp._done_refusal(base, goal) == "verify evidence predates this run"
 
 
