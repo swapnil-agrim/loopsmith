@@ -7,7 +7,11 @@ is the judgement, and judgement you cannot unit-test will drift.
 
 Two independent suppressions, because they catch different mistakes:
 
-  * the **cursor** (`{actor: {stream: highest seq seen}}`) stops re-reading history on every tick;
+  * the **cursor** (`{writer: {stream: highest seq seen}}`) stops re-reading history on every
+    tick. `writer` is usually just the actor, but two concurrent loops sharing one login write
+    two separate ledger files (see ledger.py's per-actor-per-process files) — `_writer()` keys
+    those apart by pid so one writer's advancing seq can never suppress the other's not-yet-seen
+    entries;
   * the **signature** (`kind:issue:state`) stops the same mention firing again when a colleague's
     file is rewritten, rebased, or replayed — the cursor alone would re-fire all of it.
 
@@ -72,6 +76,18 @@ def _seq(entry):
     return int(tail) if tail.isdigit() else 0
 
 
+def _writer(entry):
+    """The cursor's baseline key. A post-#337 id is `who:pid:seq` (3 parts) — two concurrent
+    same-actor writers get distinct keys (`who:pid`) so one's advancing cursor can't swallow the
+    other's not-yet-seen entries. A legacy `who:seq` id (2 parts, or missing/malformed) falls
+    back to the real `actor` field, unchanged from the pre-#337 per-actor keying — those entries
+    all came from one shared per-actor file, so there was only ever one writer to key by."""
+    parts = str(entry.get("id", "")).split(":")
+    if len(parts) >= 3:
+        return f"{parts[0]}:{parts[1]}"
+    return entry.get("actor", "")
+
+
 def signature(entry):
     return f"{entry.get('kind')}:{entry.get('issue') or entry.get('goal')}:{entry.get('state') or ''}"
 
@@ -90,24 +106,24 @@ def _as_int(value):
 
 def classify(entries, cursor, me, stream=ENTRIES):
     """-> (items needing me, updated cursor). `stream` says which stream `entries` came from, so
-    the cursor's high-water mark is tracked per (actor, stream). Never returns my own entries: a
-    loop must not be woken by its own writes."""
+    the cursor's high-water mark is tracked per (writer, stream) — see `_writer()`. Never returns
+    my own entries: a loop must not be woken by its own writes."""
     raw = cursor.get("seen") or {}
-    # frozen, independent per-actor dicts: seen[actor] must never alias baseline[actor], or
-    # seen[actor][stream] = ... would mutate the "already processed" baseline mid-loop, wrongly
+    # frozen, independent per-writer dicts: seen[writer] must never alias baseline[writer], or
+    # seen[writer][stream] = ... would mutate the "already processed" baseline mid-loop, wrongly
     # suppressing a later entry in this same batch against its own sibling's just-written seq.
-    baseline = {actor: (dict(streams) if isinstance(streams, dict) else {})
-                for actor, streams in raw.items()}
+    baseline = {writer: (dict(streams) if isinstance(streams, dict) else {})
+                for writer, streams in raw.items()}
     signatures = set(cursor.get("signatures") or [])
-    seen = {actor: dict(streams) for actor, streams in baseline.items()}
+    seen = {writer: dict(streams) for writer, streams in baseline.items()}
     items = []
     for entry in entries:
-        actor, seq = entry.get("actor", ""), _seq(entry)
-        actor_seen = seen.setdefault(actor, {})
-        actor_seen[stream] = max(_as_int(actor_seen.get(stream)), seq)
+        actor, writer, seq = entry.get("actor", ""), _writer(entry), _seq(entry)
+        writer_seen = seen.setdefault(writer, {})
+        writer_seen[stream] = max(_as_int(writer_seen.get(stream)), seq)
         if actor == me or entry.get("to") != me:
             continue
-        if seq <= _as_int((baseline.get(actor) or {}).get(stream)):
+        if seq <= _as_int((baseline.get(writer) or {}).get(stream)):
             continue                                # an earlier tick already surfaced this
         sig = signature(entry)
         if sig in signatures:

@@ -144,6 +144,32 @@ def test_classify_keys_the_seen_baseline_on_actor_and_stream():
     assert cursor["seen"] == {"amy": {"events": 2}}
 
 
+def test_writer_keys_a_3_part_id_by_actor_and_pid_but_falls_back_to_actor_for_legacy_ids():
+    assert classify._writer(_entry("amy", 1, id="amy:111:1")) == "amy:111"
+    assert classify._writer(_entry("amy", 1)) == "amy"                    # legacy who:seq
+    assert classify._writer(dict(actor="amy")) == "amy"                   # missing id entirely
+
+
+def test_two_concurrent_same_actor_writers_do_not_suppress_each_others_entries():
+    """F10: two loops sharing the `amy` login write independent per-process ledger files, so their
+    `id` seqs are two unrelated counters (post-#337, `who:pid:seq`). If the cursor were still keyed
+    by bare actor, writer 111 racing ahead to a high seq would permanently swallow writer 222's
+    still-low, never-before-seen entries — a real hand-off silently dropped, not just delayed."""
+    first_tick = [
+        _entry("amy", 10, to=ME, issue=1, id="amy:111:10"),   # writer 111 has already written 10
+        _entry("amy", 1, to=ME, issue=2, id="amy:222:1"),     # writer 222's first entry
+    ]
+    items, cursor = classify.classify(first_tick, dict(classify.EMPTY_CURSOR), ME)
+    assert {e["issue"] for e in items} == {1, 2}
+    assert cursor["seen"] == {"amy:111": {"entries": 10}, "amy:222": {"entries": 1}}
+
+    # writer 222 catches up with its own next entry (seq 2) — must still surface even though
+    # writer 111's baseline (10) is far ahead of it.
+    second_tick = [_entry("amy", 2, to=ME, issue=3, id="amy:222:2")]
+    items, _ = classify.classify(second_tick, cursor, ME)
+    assert [e["issue"] for e in items] == [3]
+
+
 def test_classify_does_not_raise_on_a_garbage_seen_value_after_migration(tmp_path):
     """A corrupted pre-137 cursor value (`"garbage"`) must migrate to baseline 0, not to
     {"entries": "garbage"} — the latter makes classify() raise TypeError comparing int to str
@@ -319,7 +345,7 @@ def test_bootstrap_seeds_my_file_and_pushes(tmp_path, monkeypatch):
         calls.append(args[0])
         return "entries/rae.jsonl" if args[0] == "diff" else ""
     out = sync.bootstrap(d, ON, run=git)
-    mine = sync.worktree(d) / "entries" / f"{ledger.actor(ON)}.jsonl"
+    mine = sync.worktree(d) / "entries" / f"{ledger.actor(ON)}-{os.getpid()}.jsonl"
     assert mine.exists()                                          # my entries file was seeded
     assert "push" in calls                                        # and the branch pushed
     assert "already a worktree" in out and "published" in out
@@ -341,7 +367,7 @@ def test_publish_renders_and_stages_team_md(tmp_path, monkeypatch):
     team = (ledger.ledger_dir(d) / "TEAM.md").read_text()
     assert team.startswith("# Team ledger") and "claimed" in team    # the rolled-up view goes on the branch
     staged = next(a for a in calls if a[0] == "add")
-    assert "TEAM.md" in staged and f"entries/{ME}.jsonl" in staged    # committed alongside my entries
+    assert "TEAM.md" in staged and f"entries/{ME}-{os.getpid()}.jsonl" in staged  # alongside my entries
 
 
 def test_ensure_gitattributes_is_additive_and_idempotent(tmp_path):
@@ -374,8 +400,8 @@ def test_publish_stages_my_events_file_when_present(tmp_path, monkeypatch):
 
     assert sync.publish(d, ON, run=git) == "published"
     staged = next(a for a in calls if a[0] == "add")
-    assert f"events/{ME}.jsonl" in staged
-    assert f"entries/{ME}.jsonl" in staged
+    assert f"events/{ME}-{os.getpid()}.jsonl" in staged
+    assert f"entries/{ME}-{os.getpid()}.jsonl" in staged
     assert "TEAM.md" in staged
 
 
@@ -392,7 +418,7 @@ def test_publish_does_not_stage_a_phantom_events_path_when_absent(tmp_path, monk
 
     assert sync.publish(d, ON, run=git) == "published"
     staged = next(a for a in calls if a[0] == "add")
-    assert f"events/{ME}.jsonl" not in staged
+    assert not any(p.startswith("events/") for p in staged)
 
 
 def test_pull_aborts_a_bad_rebase_instead_of_wedging(tmp_path, monkeypatch):
@@ -579,7 +605,8 @@ def test_bootstrap_e2e_creates_the_worktree_and_seeds_my_file(tmp_path):
 
     sync.bootstrap(d, ON, run=git)
     assert sync.is_worktree(d)                                    # the ops-branch worktree exists
-    assert (sync.worktree(d) / "entries" / f"{ME}.jsonl").exists()   # my entries file was seeded
+    seeded = sync.worktree(d) / "entries" / f"{ME}-{os.getpid()}.jsonl"
+    assert seeded.exists()                                        # my entries file was seeded
 
 
 # ------------------------------------------------------------------ watch.sh

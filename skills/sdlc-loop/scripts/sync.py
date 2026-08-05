@@ -16,9 +16,10 @@ point:
     the worktree;
   * the branch starts from the EMPTY TREE, so it carries the ledger and nothing else.
 
-Because each person only ever writes their own `entries/<actor>.jsonl`, a rebase onto someone else's
-push cannot conflict — different files, every time. Push is fast-forward only with a bounded
-fetch-rebase-retry, so a race is resolved by replaying, never by forcing. Zero deps.
+Because each WRITING PROCESS only ever appends to its own `entries/<actor>-<pid>.jsonl` (ledger.py's
+F10 fix — two loops can share one login), a rebase onto someone else's push cannot conflict —
+different files, every time. Push is fast-forward only with a bounded fetch-rebase-retry, so a race
+is resolved by replaying, never by forcing. Zero deps.
 """
 import importlib.util
 import pathlib
@@ -54,9 +55,9 @@ BRANCH_README = """\
 Machine-written. **Never merged into the integration branch** and never runs CI: this is a
 coordination ledger, not code.
 
-`entries/<actor>.jsonl` is append-only and single-writer — each person writes only their own file,
-so concurrent appends cannot conflict. `TEAM.md` is generated; regenerate it rather than resolving
-it by hand.
+`entries/<actor>-<pid>.jsonl` is append-only and single-writer — each writing PROCESS writes only
+its own file (so two loops sharing one login never collide either), so concurrent appends cannot
+conflict. `TEAM.md` is generated; regenerate it rather than resolving it by hand.
 
 Checked out as a worktree at `.sdlc/ledger/` in each person's clone, so pulling it never disturbs
 their code checkout.
@@ -178,26 +179,30 @@ def pull(sdlc_dir, config, run=None):
     return "pulled"
 
 
-def publish(sdlc_dir, config, run=None, attempts=PUSH_ATTEMPTS):
-    """Render TEAM.md, commit MY entries file + the rolled-up view, and fast-forward both onto the
-    ops branch — so a lead can read one file on the branch instead of five.
+def _staged_paths(path, stream, who):
+    """`ledger.files_for()`'s results, as strings relative to the worktree root — what `git add`
+    and `git diff --cached --name-only` want, and what stays stable if `path` is later re-resolved."""
+    return [str(p.relative_to(path)) for p in ledger.files_for(path / stream, who)]
 
-    Only my entries file and TEAM.md ever change. Entries never conflict (single-writer, with
-    `merge=union` as a backstop). TEAM.md is a pure function of the entries, so on a race we rebase
-    (taking the winner's TEAM.md), regenerate it from the now-merged entries, and retry — the
-    conflict is resolved by re-running, never by hand."""
+
+def publish(sdlc_dir, config, run=None, attempts=PUSH_ATTEMPTS):
+    """Render TEAM.md, commit MY entries file(s) + the rolled-up view, and fast-forward both onto
+    the ops branch — so a lead can read one file on the branch instead of five.
+
+    Only my entries file(s) and TEAM.md ever change. Entries never conflict (single-writer per
+    file, with `merge=union` as a backstop). TEAM.md is a pure function of the entries, so on a race
+    we rebase (taking the winner's TEAM.md), regenerate it from the now-merged entries, and retry —
+    the conflict is resolved by re-running, never by hand."""
     git = run or _run_git
     path, name, rem = worktree(sdlc_dir), branch(config), remote(config)
     if not is_worktree(sdlc_dir):
         return "not a worktree — run `sync.py init` first (nothing published)"
     who = ledger.actor(config)
-    mine = f"{ledger.ENTRIES}/{who}.jsonl"
-    if not (path / mine).exists():
+    mine = _staged_paths(path, ledger.ENTRIES, who)
+    if not mine:
         return "nothing to publish"
-    to_stage = [mine]
-    events = f"{ledger.EVENTS}/{who}.jsonl"
-    if (path / events).exists():
-        to_stage.append(events)
+    to_stage = list(mine)
+    to_stage += _staged_paths(path, ledger.EVENTS, who)
     if _ensure_gitattributes(path):
         to_stage.append(".gitattributes")
     _write_team(sdlc_dir, path)
@@ -247,7 +252,9 @@ def bootstrap(sdlc_dir, config, run=None):
     in their own clone to join."""
     git = run or _run_git
     first = init(sdlc_dir, config, run=git)
-    mine = worktree(sdlc_dir) / ledger.ENTRIES / f"{ledger.actor(config)}.jsonl"
+    # the exact path a real append() would use right now — same function, so files_for() is
+    # guaranteed to find it (same actor, same os.getpid() within this one process).
+    mine = ledger.entry_file(sdlc_dir, ledger.actor(config))
     mine.parent.mkdir(parents=True, exist_ok=True)
     if not mine.exists():
         mine.touch()            # an empty file is enough for publish to land your presence + the branch
