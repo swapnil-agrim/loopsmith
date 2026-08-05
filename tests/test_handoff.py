@@ -406,3 +406,53 @@ def test_create_dependency_still_raises_when_even_the_unassigned_fallback_fails(
 
     with pytest.raises(RuntimeError, match="not authenticated"):
         _github_source(recorder).create_dependency("t", "b", "eng-owner")
+
+
+def test_create_dependency_note_uses_the_short_hint_not_the_whole_failed_command():
+    """Independent review of this PR: the fallback note used str(exc) wholesale. For a REAL gh
+    failure (via _run_gh, not a test double's clean one-liner), str(exc) is the ENTIRE reconstructed
+    command line -- 'gh issue create --repo ... --title ... --body <the whole multi-line issue body>
+    ... failed: <hint>' -- so the posted comment buried the one real reason in a wall of text
+    including the issue's own body duplicated raw. _run_gh now attaches the short reason alone as
+    exc.hint; the note must use that, not str(exc), whenever it's available."""
+    calls = []
+    body = "Blocking another area's work.\n\n**Area:** `engine`\n**What is needed:** a feature flag"
+
+    def recorder(args):
+        calls.append(args)
+        if args[:2] == ["issue", "create"] and "--assignee" in args:
+            hint = "could not add assignees to issue: 'org/eng-team' is not an assignable user"
+            exc = RuntimeError("gh " + " ".join(args) + " failed: " + hint)
+            exc.hint = hint
+            raise exc
+        if args[:2] == ["issue", "create"]:
+            return "https://github.com/acme/widget/issues/61"
+        return ""
+
+    number = _github_source(recorder).create_dependency("[engine] dep", body, "org/eng-team")
+    assert number == "61"
+    comment = next(c for c in calls if c[:2] == ["issue", "comment"])
+    note = comment[-1]
+    assert "is not an assignable user" in note                  # the real, short reason survives
+    assert "--body" not in note and "**Area:**" not in note     # the reconstructed command/body does not
+
+
+def test_run_gh_attaches_the_short_hint_separately_from_the_full_message(monkeypatch):
+    """The other half: _run_gh itself must actually set .hint, not just be assumed to."""
+    src = _mod("sources")
+    import subprocess
+
+    def fake_run(cmd, capture_output, text):
+        class P:
+            returncode = 1
+            stderr = "  could not add assignees to issue: 'x' is not an assignable user  \n"
+        return P()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    try:
+        src._run_gh(["issue", "create", "--body", "a very long body " * 20, "--assignee", "x"])
+        assert False, "expected a RuntimeError"
+    except RuntimeError as exc:
+        assert exc.hint == "could not add assignees to issue: 'x' is not an assignable user"
+        assert "a very long body" in str(exc)            # the full message is unchanged, still useful
+        assert "a very long body" not in exc.hint         # but .hint alone stays short

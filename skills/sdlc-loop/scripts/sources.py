@@ -64,12 +64,21 @@ class LocalSource:
 
 
 def _run_gh(args, binary="gh"):
-    """Run `gh <args>`, return stdout; raise a helpful RuntimeError on failure (binary is for tests)."""
+    """Run `gh <args>`, return stdout; raise a helpful RuntimeError on failure (binary is for tests).
+
+    The raised error's own `.hint` attribute carries just the short reason (`gh`'s own stderr, or the
+    auth-check fallback) — `str(exc)` includes the full reconstructed command line for a human reading
+    a traceback, but a caller that wants to quote the failure somewhere ELSE (e.g. F14/#338's
+    unassigned-fallback note, posted as a GitHub comment) needs the short form: `args` can carry an
+    entire issue body, and a comment re-embedding the whole failed command line — body and all — buries
+    the one line anyone actually needs to read."""
     import subprocess
     proc = subprocess.run([binary, *args], capture_output=True, text=True)
     if proc.returncode != 0:
         hint = proc.stderr.strip() or "is `gh` installed and authenticated? run `gh auth status`"
-        raise RuntimeError("gh " + " ".join(args) + " failed: " + hint)
+        exc = RuntimeError("gh " + " ".join(args) + " failed: " + hint)
+        exc.hint = hint
+        raise exc
     return proc.stdout
 
 
@@ -287,7 +296,11 @@ class GitHubSource:
             try:
                 candidate = self._create_issue(base_args + ["--assignee", assignee])
             except Exception as exc:
-                assignee_error = str(exc)
+                # .hint (see _run_gh) is the short reason alone; str(exc) is the fallback for an
+                # exception that never went through _run_gh (e.g. a test double) and so has no .hint
+                # -- but for the real path this matters most for, str(exc) would re-embed the WHOLE
+                # failed command line, --body <the entire issue body> included, into the note below.
+                assignee_error = getattr(exc, "hint", None) or str(exc)
             else:
                 if candidate is not None:
                     number, self.last_assignee_applied = candidate, True
