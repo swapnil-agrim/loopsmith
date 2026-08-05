@@ -43,6 +43,18 @@ leading token of its own line (optional indent) to count; trailing prose after i
 still fine. `_comment_directive` now calls it per comment, keeping the same "latest marker wins" rule
 across comments.
 
+### fix(loop): `verify.enforce` no longer silently disables the done-gate on `1` / `"true"`
+Both `record done`'s machine-checked gate and the `loop.py start` config warning tested
+`verify.enforce` with a strict `... is True` — the same idiom `ledger.enabled` deliberately uses so
+a stray truthy value can't quietly switch a team surface ON. `enforce` inverts which direction is
+safe: it gates `record done` itself, so `enforce: 1` or `enforce: "true"` (easy JSON typos for the
+literal bool) silently failed the strict check and let an unverified `done` through with no warning
+at all — the unsafe direction, the opposite of `ledger.enabled`'s. Adds `_enforce_enabled()`, used at
+both call sites: a real bool passes through unchanged, a string reads as off only when it spells out
+false/no/off/empty, and anything else falls back to plain truthiness — so a common misspelling now
+either enables the gate outright or (with an empty `verify.command`) still surfaces the existing
+"EVERY `done` will be refused" warning, never both silently off and silent about it (F17/#342).
+
 ## 1.0.0 — the zero-touch release
 
 The theme: one person on one machine can now point LoopSmith at a stack of their own assigned issues

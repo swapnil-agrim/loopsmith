@@ -386,6 +386,25 @@ def _surface_inbox(sdlc_dir):
         pass
 
 
+def _enforce_enabled(verify):
+    """`verify.enforce` as a bool, read generously — the mirror image of this file's `ledger.enabled`
+    idiom (deliberately strict `is True`, because a stray truthy value there must NOT quietly turn a
+    team surface on; failing safe there means off). `enforce` inverts which direction is safe: it
+    gates `record done` itself, so a truthy-but-not-bool value (JSON's easy `enforce: 1` or
+    `enforce: "true"` typos, both plainly meant as true) missing the strict check must not silently
+    leave the done-gate off and let unverified work through (F17/#342). A real bool passes through
+    unchanged. A string counts as off only when it spells out false/no/off/empty — `bool("false")`
+    being True in plain Python is exactly this same silent-unsafe trap in another guise. Anything
+    else falls back to plain truthiness, so an absent key, `0`, or `""` still reads as off, same as
+    before."""
+    value = verify.get("enforce")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "false", "0", "no", "off")
+    return bool(value)
+
+
 def _config_warnings(config):
     """Loud, once-per-run heads-ups for config states that silently do the wrong thing — found the hard
     way adopting into real repos. Plain strings so the CLI prints them to stderr, never touching stdout
@@ -395,7 +414,7 @@ def _config_warnings(config):
         out.append("work.enabled is off — the loop writes NOTHING to git: a completed goal's changes "
                    "stay in your working tree, no branch/commit/PR. Run /sdlc-setup or set work.enabled.")
     verify = config.get("verify") or {}
-    if verify.get("enforce") is True and not verify.get("command"):
+    if _enforce_enabled(verify) and not verify.get("command"):
         out.append("verify.enforce is on but verify.command is empty — EVERY `done` will be refused. "
                    "Set verify.command (or a per-goal verify_command), or turn enforce off.")
     return out
@@ -776,7 +795,9 @@ def main(argv):
         config = state.load_config(argv[2])
         # Machine done_when (opt-in): with verify.enforce on, a `done` needs fresh
         # passing evidence from `loop.py verify` — the sdlc-verify prose gate, enforced.
-        if argv[4] == "done" and (config.get("verify") or {}).get("enforce") is True:
+        # _enforce_enabled (not a strict `is True`): F17/#342 — `enforce: 1` / `"true"` must not
+        # silently skip this gate just because they aren't the literal bool `True`.
+        if argv[4] == "done" and _enforce_enabled(config.get("verify") or {}):
             refusal = _done_refusal(argv[2], argv[3])
             if refusal:
                 print(f"REFUSED: {refusal} — run `loop.py verify {argv[2]} <goal>` first "
