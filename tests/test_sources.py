@@ -70,6 +70,42 @@ def test_github_next_pending_skips_leased_issues():
     assert gh.next_pending(skip={"5", "7"}) is None     # both taken -> nothing free
 
 
+def test_github_next_pending_requests_oldest_first_sort():
+    """F12: the list call must ask GitHub's search API for ascending creation order — plain
+    `gh issue list` has no ASC option and defaults to newest-first, which is the root of the bug
+    below."""
+    src = _mod("sources")
+    run = _recording_runner({"list": "[]"})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh.next_pending()
+    assert any("--search sort:created-asc" in " ".join(c) for c in run.calls)
+
+
+def test_github_next_pending_true_oldest_survives_200_cap():
+    """F12: `gh issue list` defaults to created-DESC with no ASC option, so a bare `--limit 200` on a
+    backlog > 200 used to fetch the 200 NEWEST goals; sorting THOSE ascending and taking [0] returned
+    the oldest-of-the-newest-200 (here, issue 51) instead of the TRUE oldest (issue 1) -- the
+    genuinely old, highest-priority-under-oldest-first goals starved until newer ones drained the
+    backlog below 200.
+
+    This fake mimics the real distinction between plain `gh issue list` and one carrying
+    `--search "sort:created-asc"`: only the latter hands back the oldest slice, exactly like GitHub's
+    search API does. Issue number doubles as creation order (issue 1 is oldest)."""
+    src = _mod("sources")
+    all_issues = [{"number": n, "labels": [{"name": "sdlc:goal"}]} for n in range(1, 251)]  # 250 > 200 cap
+
+    def run(a):
+        verb = a[1] if len(a) > 1 else a[0]
+        if verb == "list":
+            asc = "--search" in a and "sort:created-asc" in a[a.index("--search") + 1]
+            page = all_issues[:200] if asc else list(reversed(all_issues))[:200]  # oldest 200 vs newest 200
+            return json.dumps(page)
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    assert gh.next_pending() == "1"          # true oldest, not "51" (oldest of the newest-200 slice)
+
+
 # --- GitHubSource transitions ---
 
 def test_github_transitions_issue_correct_gh_commands():
