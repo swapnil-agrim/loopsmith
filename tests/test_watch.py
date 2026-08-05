@@ -705,20 +705,32 @@ def test_watch_sh_ignores_a_stale_pid_and_runs(tmp_path):
 # shortcut) for the winner instead of an instant stop-file exit, and asserts on which processes are
 # STILL ALIVE partway through, not just on the eventual message tally.
 #
-# Honest scope note: two real bugs were found and fixed during this fix's own development -- an
-# mv-based eviction scheme that let a delayed racer's mv clobber an already-fresh winner (caught
-# directly by an EARLIER, stop-file-based version of the tests below, in this same pytest suite,
-# at 6-8 racers), and a `stat`-failure fallback that made "the mutex was already legitimately
-# released" indistinguishable from "infinitely stale", letting multiple losers reclaim an
-# already-free mutex at once (found via a native bash 40-racer loop; deliberately re-verified
-# non-vacuous against a scratch reproduction of that exact line before shipping the fix, but NOT
-# reliably reproduced by this file's own pytest/Popen-launched races, which appear too loosely
-# staggered to hit that specific window at a racer count still cheap enough to ship). The FINAL
-# design's correctness rests on BOTH this file's suite (which passes consistently, dozens of runs,
-# no flakes observed) AND substantially more extensive native-bash verification done during
-# development (100+ runs across 8/25/40-racer configurations, 0 anomalies) -- the tests below are a
-# genuine, real-process regression check for this property, not a purely theoretical one, but they
-# are not claimed to be maximally sensitive to every conceivable future regression in this area.
+# Honest scope note: three real bugs were found across this fix's development and its own
+# independent review -- an mv-based eviction scheme that let a delayed racer's mv clobber an
+# already-fresh winner (caught directly by an EARLIER, stop-file-based version of the tests below,
+# in this same pytest suite, at 6-8 racers); a `stat`-failure fallback that made "the mutex was
+# already legitimately released" indistinguishable from "infinitely stale", letting multiple losers
+# reclaim an already-free mutex at once (found via a native bash 40-racer loop; deliberately
+# re-verified non-vacuous against a scratch reproduction of that exact line before shipping the fix,
+# but NOT reliably reproduced by this file's own pytest/Popen-launched races, which appear too
+# loosely staggered to hit that specific razor-thin real-time window at a racer count still cheap
+# enough to ship); and a plain, unguarded stat+age-check+rmdir+mkdir RECLAIM sequence that let
+# several racers who all read the SAME stale mtime race that four-step sequence against each other
+# -- the identical shape as the pidfile bug, one level up in the mutex meant to prevent it. That
+# third one was found by independent review, not self-discovered -- and unlike the second, it IS
+# reliably reproduced by this file's own pytest/Popen-launched races (confirmed: 70-90% anomaly
+# rate at 15/40/80 racers against the unfixed code, 0/10 at all three after the fix, same harness
+# both directions), because its trigger condition is a wide, deliberately-planted stale window
+# (tens of seconds) rather than a razor-thin natural one -- Python's larger process-launch stagger
+# doesn't matter when the window it needs to land in is that wide.
+#
+# The FINAL design's correctness rests on BOTH this file's suite (which passes consistently, dozens
+# of runs, no flakes observed, and for two of the three bugs is independently sufficient on its own)
+# AND substantially more extensive native-bash verification done during development and re-review
+# (100+ runs across 8/25/40-racer configurations, 0 anomalies) for the one bug this suite alone
+# cannot reliably catch. The tests below are a genuine, real-process regression check for this
+# property, not a purely theoretical one, but they are not claimed to be maximally sensitive to
+# every conceivable future regression in this area.
 N_RACERS = 15
 
 
@@ -768,6 +780,31 @@ def test_watch_sh_exactly_one_of_several_racers_reclaims_a_stale_pidfile(tmp_pat
     assert len(winners) == 1, f"expected exactly one winner, got {len(winners)}: {outs}"
     assert not (d / "state" / "watch.pid").exists()
     assert not (d / "state" / "watch.decide.lock").exists()
+
+
+def test_watch_sh_exactly_one_of_several_racers_reclaims_a_stale_mutex_directory(tmp_path):
+    """The bug independent review found (and this file's OTHER two race tests did not cover): a
+    pre-existing, genuinely orphaned `watch.decide.lock` -- the crash-during-the-decision scenario
+    the mutex's own staleness recovery exists to handle -- used to let several racers who all read
+    the SAME stale mtime race an unguarded stat+rmdir+mkdir sequence against each other, the
+    identical TOCTOU shape as the original pidfile bug, one level up in the mutex meant to close it.
+    Confirmed via the harness below: 70-90% of runs showed 2+ simultaneously alive processes against
+    the unfixed code (at 15, 40, and 80 racers), 0/10 after the nested reclaim-gate fix, same harness
+    both directions -- unlike the mv-eviction and stat-fallback bugs, this one needs no native-bash
+    fallback verification because a genuinely orphaned mutex is stale for tens of seconds by
+    construction, wide enough that Python's larger process-launch stagger doesn't matter."""
+    d = _sdlc(tmp_path)
+    mutex = d / "state" / "watch.decide.lock"
+    mutex.mkdir(parents=True)
+    stale = time.time() - 60                          # well past the 30s staleness threshold
+    os.utime(mutex, (stale, stale))
+    alive, outs = _race(d)
+    assert len(alive) == 1, f"expected exactly one process still genuinely alive, got {len(alive)}"
+    winners = [o for o in outs if "max ticks" in o]
+    assert len(winners) == 1, f"expected exactly one winner, got {len(winners)}: {outs}"
+    assert not (d / "state" / "watch.pid").exists()
+    assert not mutex.exists()
+    assert not (d / "state" / "watch.decide.lock.reclaim").exists()   # the reclaim gate never leaks
 
 
 def test_worktree_path_is_absolute_even_for_a_relative_sdlc_dir(tmp_path, monkeypatch):
