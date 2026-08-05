@@ -767,7 +767,10 @@ def _race(d, n=N_RACERS):
     while time.monotonic() < deadline and sum(1 for p in procs if p.poll() is None) > 1:
         time.sleep(0.1)
     alive = [p for p in procs if p.poll() is None]
-    outs = [p.communicate(timeout=20)[0] for p in procs]
+    # combine stdout+stderr with the exit code so a genuine crash (nonzero, or output that isn't
+    # either backoff message) is distinguishable from a clean, expected outcome -- a bare captured
+    # string alone could not tell those apart on first sight when this suite failed in CI only.
+    outs = [f"[rc={p.returncode}] {p.communicate(timeout=20)[0]}" for p in procs]
     return alive, outs
 
 
@@ -778,12 +781,13 @@ def test_watch_sh_exactly_one_of_several_genuinely_concurrent_fresh_starts_wins(
     corrupt pidfile or mutex behind."""
     d = _sdlc(tmp_path)
     alive, outs = _race(d)
-    assert len(alive) == 1, f"expected exactly one process still genuinely alive, got {len(alive)}"
+    assert len(alive) == 1, f"expected exactly one process still genuinely alive, got {len(alive)}: {outs}"
     winners = [o for o in outs if "max ticks" in o]
     losers = [o for o in outs if "max ticks" not in o]
     assert len(winners) == 1, f"expected exactly one winner, got {len(winners)}: {outs}"
     assert len(losers) == N_RACERS - 1
-    assert all(("already running" in o) or ("sibling" in o) for o in losers)
+    assert all(("already running" in o) or ("sibling" in o) for o in losers), \
+        f"a loser produced unexpected output: {losers}"
     assert not (d / "state" / "watch.pid").exists()   # the sole winner's trap cleaned up on exit
     assert not (d / "state" / "watch.decide.lock").exists()   # the mutex never leaks
 
@@ -794,7 +798,7 @@ def test_watch_sh_exactly_one_of_several_racers_reclaims_a_stale_pidfile(tmp_pat
     d = _sdlc(tmp_path)
     (d / "state" / "watch.pid").write_text("2147483647\n")   # INT_MAX — no such process
     alive, outs = _race(d)
-    assert len(alive) == 1, f"expected exactly one process still genuinely alive, got {len(alive)}"
+    assert len(alive) == 1, f"expected exactly one process still genuinely alive, got {len(alive)}: {outs}"
     winners = [o for o in outs if "max ticks" in o]
     assert len(winners) == 1, f"expected exactly one winner, got {len(winners)}: {outs}"
     assert not (d / "state" / "watch.pid").exists()
@@ -818,7 +822,7 @@ def test_watch_sh_exactly_one_of_several_racers_reclaims_a_stale_mutex_directory
     stale = time.time() - 60                          # well past the 30s staleness threshold
     os.utime(mutex, (stale, stale))
     alive, outs = _race(d)
-    assert len(alive) == 1, f"expected exactly one process still genuinely alive, got {len(alive)}"
+    assert len(alive) == 1, f"expected exactly one process still genuinely alive, got {len(alive)}: {outs}"
     winners = [o for o in outs if "max ticks" in o]
     assert len(winners) == 1, f"expected exactly one winner, got {len(winners)}: {outs}"
     assert not (d / "state" / "watch.pid").exists()
