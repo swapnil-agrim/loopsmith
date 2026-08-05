@@ -270,14 +270,21 @@ class GitHubSource:
         issue, so an issue the loop creates isn't blank on Priority/Section/… while every human-made
         one carries them — the one board field-write beyond the built-in Status.
 
-        GitHub issues can only be assigned to individual collaborators, never a team — a CODEOWNERS
-        `@org/team` owner is the common way to hit that, but any assignee `gh` rejects (typo, not a
-        collaborator, removed account) fails identically. That used to take the whole hand-off down
-        with it (F14/#338): the failure raised out of this method uncaught, so no issue was created at
-        all and the dependency simply vanished. Now a rejected assignee is retried once, unassigned,
-        and the new issue gets a comment saying so — the hand-off always lands somewhere a human can
-        find it. `last_assignee_applied` records which happened, so a caller's own narrative (see
-        handoff.hand_off) doesn't go on to claim an assignment that didn't take."""
+        Create and assign are deliberately TWO separate `gh` calls, never `issue create --assignee`
+        combined (F14/#338, round 2 of its own review): `gh` performs those as two independent
+        GraphQL mutations (`createIssue`, then `replaceActorsForAssignable`) even from one CLI
+        invocation, and when the SECOND one fails — a CODEOWNERS `@org/team` owner, most often, since
+        GitHub issues can only be assigned to individual collaborators, but any assignee `gh` rejects
+        fails the same way — the issue it already created is not rolled back, and its number is never
+        printed to stdout, so a combined call has no way to learn the orphan exists. An earlier
+        version of this fix retried unassigned on that failure, which made it WORSE: a second,
+        genuinely duplicate issue, with the first silently orphaned forever (confirmed empirically
+        against real `gh`, not assumed). Creating unassigned FIRST and assigning as a separate,
+        independently retriable step against the now-known issue number cannot ever produce a
+        duplicate — a failed assign just leaves the one issue that already exists unassigned a little
+        longer, with a comment on it saying why. `last_assignee_applied` records which happened, so a
+        caller's own narrative (see handoff.hand_off) doesn't go on to claim an assignment that
+        didn't take."""
         self._ensure_labels()
         for label in labels:
             try:
@@ -285,38 +292,31 @@ class GitHubSource:
                            "--color", "d4c5f9", "--force"])
             except Exception:
                 pass                       # a missing label must not stop the hand-off
-        base_args = ["issue", "create", *self._repo_args(), "--title", title, "--body", body,
-                     "--label", self.goal_label]
+        args = ["issue", "create", *self._repo_args(), "--title", title, "--body", body,
+                "--label", self.goal_label]
         for label in labels:
-            base_args += ["--label", label]
+            args += ["--label", label]
 
         self.last_assignee_applied = False
-        number, assignee_error = None, None
+        number = self._create_issue(args)   # always unassigned -- see docstring
+        if number is None:
+            return None
         if assignee:
             try:
-                candidate = self._create_issue(base_args + ["--assignee", assignee])
+                self._run(["issue", "edit", number, *self._repo_args(), "--add-assignee", assignee])
+                self.last_assignee_applied = True
             except Exception as exc:
                 # .hint (see _run_gh) is the short reason alone; str(exc) is the fallback for an
-                # exception that never went through _run_gh (e.g. a test double) and so has no .hint
-                # -- but for the real path this matters most for, str(exc) would re-embed the WHOLE
-                # failed command line, --body <the entire issue body> included, into the note below.
-                assignee_error = getattr(exc, "hint", None) or str(exc)
-            else:
-                if candidate is not None:
-                    number, self.last_assignee_applied = candidate, True
-        if number is None:
-            number = self._create_issue(base_args)   # unassigned; a genuine failure here still raises
-            if assignee and number is not None:
-                note = (f"Could not assign @{assignee} to this hand-off "
-                        f"({assignee_error or 'gh rejected it'}) — opened unassigned instead. GitHub "
-                        "issues can't be assigned to a team; if that's not the cause here, the account "
-                        "may not be a repo collaborator. Needs manual routing to the right owner.")
+                # exception that never went through _run_gh (e.g. a test double) and so has no .hint.
+                hint = getattr(exc, "hint", None) or str(exc)
+                note = (f"Could not assign @{assignee} to this hand-off ({hint}) — left unassigned. "
+                        "GitHub issues can't be assigned to a team; if that's not the cause here, the "
+                        "account may not be a repo collaborator. Needs manual routing to the right owner.")
                 try:
                     self._run(["issue", "comment", number, *self._repo_args(), "--body", note])
                 except Exception:
                     pass   # best-effort; the issue existing at all is what matters
-        if number is None:
-            return None
+
         self._apply_custom_fields(number)      # stamp Priority/Section/… so the loop-made issue matches the board
         return number
 

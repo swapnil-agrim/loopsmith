@@ -336,9 +336,12 @@ def test_create_dependency_sends_assignee_goal_label_and_extras():
         "[engine] dependency", "body", "eng-owner", labels=["sdlc:dependency", "priority:P0"])
     assert number == "61"
     create = next(c for c in calls if c[:2] == ["issue", "create"])
-    assert "--assignee" in create and create[create.index("--assignee") + 1] == "eng-owner"
+    assert "--assignee" not in create                        # create is always unassigned (F14 round 2)
     assert create.count("--label") == 3                      # goal label + the two extras
     assert "sdlc:goal" in create and "priority:P0" in create
+    edit = next(c for c in calls if c[:2] == ["issue", "edit"])
+    assert edit[2] == "61" and "--add-assignee" in edit
+    assert edit[edit.index("--add-assignee") + 1] == "eng-owner"
 
 
 def test_create_dependency_returns_none_when_gh_says_nothing():
@@ -356,18 +359,24 @@ def test_create_dependency_tolerates_a_label_that_cannot_be_created():
 
 # ------------------------------------------------------------- F14/#338: rejected-assignee fallback
 
-def test_create_dependency_falls_back_to_unassigned_when_gh_rejects_the_assignee():
-    """The bug: a team-shaped (or otherwise gh-rejected) assignee used to take the WHOLE issue down
-    with it -- the RuntimeError propagated out of create_dependency uncaught, so nothing was ever
-    created. Now it retries once, unassigned, and the issue still opens with an explanatory comment."""
+def test_create_dependency_never_creates_a_duplicate_issue_when_the_assignee_is_rejected():
+    """Round 2 of independent review found the more serious bug: `gh issue create --assignee` is NOT
+    atomic -- it runs `createIssue` then a SEPARATE `replaceActorsForAssignable` mutation, and when
+    only the second one fails, the issue it already created is not rolled back, and its number is
+    never printed to stdout. A combined call has no way to learn that orphan exists -- confirmed
+    against real `gh`, not assumed -- so retrying unassigned on that failure (round 1 of this fix)
+    created a SECOND, genuinely duplicate, permanently untracked issue every time. create_dependency
+    now issues exactly ONE `issue create` call ever, always unassigned, and assigns as a separate
+    step against the now-known issue number -- there is structurally no way for two issues to exist,
+    and a rejected assignee just leaves the one issue unassigned with an explanatory comment."""
     calls = []
 
     def recorder(args):
         calls.append(args)
-        if args[:2] == ["issue", "create"] and "--assignee" in args:
-            raise RuntimeError("gh issue create failed: 'org/eng-team' is not a user")
         if args[:2] == ["issue", "create"]:
             return "https://github.com/acme/widget/issues/61"
+        if args[:2] == ["issue", "edit"] and "--add-assignee" in args:
+            raise RuntimeError("gh issue edit 61 failed: 'org/eng-team' is not a user")
         return ""
 
     src = _github_source(recorder)
@@ -375,8 +384,10 @@ def test_create_dependency_falls_back_to_unassigned_when_gh_rejects_the_assignee
     assert number == "61"
     assert src.last_assignee_applied is False
     creates = [c for c in calls if c[:2] == ["issue", "create"]]
-    assert len(creates) == 2, "the failed attempt, then the unassigned fallback"
-    assert "--assignee" not in creates[1]
+    assert len(creates) == 1, f"expected exactly one issue ever created, got {len(creates)}: {creates}"
+    assert "--assignee" not in creates[0]                       # never combined with create
+    edit = next(c for c in calls if c[:2] == ["issue", "edit"])
+    assert edit[2] == "61" and "--add-assignee" in edit
     comment = next(c for c in calls if c[:2] == ["issue", "comment"])
     assert comment[2] == "61" and "org/eng-team" in " ".join(comment)
 
@@ -396,9 +407,11 @@ def test_create_dependency_with_no_owner_never_posts_an_assignment_note():
     assert not any(c[:2] == ["issue", "comment"] for c in calls)
 
 
-def test_create_dependency_still_raises_when_even_the_unassigned_fallback_fails():
-    """A genuine, non-assignee-specific failure (auth broken, network down, ...) must still surface --
-    the fallback exists for a rejected ASSIGNEE, not as a blanket swallow of every gh error."""
+def test_create_dependency_still_raises_when_issue_create_itself_fails():
+    """A genuine, non-assignee-specific failure (auth broken, network down, ...) on the ONE `issue
+    create` call must still surface -- create_dependency never wraps that call in its own
+    try/except, so this has always been the behavior; pinned explicitly so a future change to the
+    assignment step can't accidentally start swallowing it too."""
     def recorder(args):
         if args[:2] == ["issue", "create"]:
             raise RuntimeError("gh: not authenticated")
@@ -409,32 +422,30 @@ def test_create_dependency_still_raises_when_even_the_unassigned_fallback_fails(
 
 
 def test_create_dependency_note_uses_the_short_hint_not_the_whole_failed_command():
-    """Independent review of this PR: the fallback note used str(exc) wholesale. For a REAL gh
-    failure (via _run_gh, not a test double's clean one-liner), str(exc) is the ENTIRE reconstructed
-    command line -- 'gh issue create --repo ... --title ... --body <the whole multi-line issue body>
-    ... failed: <hint>' -- so the posted comment buried the one real reason in a wall of text
-    including the issue's own body duplicated raw. _run_gh now attaches the short reason alone as
-    exc.hint; the note must use that, not str(exc), whenever it's available."""
+    """Independent review, round 1: the note used str(exc) wholesale. For a REAL gh failure (via
+    _run_gh, not a test double's clean one-liner), str(exc) is the entire reconstructed command line
+    -- 'gh issue edit 61 --repo ... --add-assignee org/eng-team failed: <hint>' -- not just the
+    reason. _run_gh now attaches the short reason alone as exc.hint; the note must use that, not
+    str(exc), whenever it's available."""
     calls = []
-    body = "Blocking another area's work.\n\n**Area:** `engine`\n**What is needed:** a feature flag"
 
     def recorder(args):
         calls.append(args)
-        if args[:2] == ["issue", "create"] and "--assignee" in args:
+        if args[:2] == ["issue", "create"]:
+            return "https://github.com/acme/widget/issues/61"
+        if args[:2] == ["issue", "edit"] and "--add-assignee" in args:
             hint = "could not add assignees to issue: 'org/eng-team' is not an assignable user"
             exc = RuntimeError("gh " + " ".join(args) + " failed: " + hint)
             exc.hint = hint
             raise exc
-        if args[:2] == ["issue", "create"]:
-            return "https://github.com/acme/widget/issues/61"
         return ""
 
-    number = _github_source(recorder).create_dependency("[engine] dep", body, "org/eng-team")
+    number = _github_source(recorder).create_dependency("[engine] dep", "body", "org/eng-team")
     assert number == "61"
     comment = next(c for c in calls if c[:2] == ["issue", "comment"])
     note = comment[-1]
     assert "is not an assignable user" in note                  # the real, short reason survives
-    assert "--body" not in note and "**Area:**" not in note     # the reconstructed command/body does not
+    assert "--repo" not in note and "issue edit" not in note    # the reconstructed command does not
 
 
 def test_run_gh_attaches_the_short_hint_separately_from_the_full_message(monkeypatch):
