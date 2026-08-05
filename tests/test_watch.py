@@ -770,7 +770,13 @@ def _race(d, n=N_RACERS):
     # combine stdout+stderr with the exit code so a genuine crash (nonzero, or output that isn't
     # either backoff message) is distinguishable from a clean, expected outcome -- a bare captured
     # string alone could not tell those apart on first sight when this suite failed in CI only.
-    outs = [f"[rc={p.returncode}] {p.communicate(timeout=20)[0]}" for p in procs]
+    # communicate() returns (stdout, stderr) as a TUPLE -- an earlier version of this diagnostic
+    # only grabbed [0] (stdout), silently dropping stderr, which is exactly where a genuine bash
+    # crash (an unbound-variable trip under `set -u`, an arithmetic-expansion error) would land,
+    # since none of watch.sh's own `echo` lines are ever redirected to stderr. That earlier version
+    # is why a real CI failure showed a bare "[rc=1] " with no error text at all -- fixed here.
+    results = [p.communicate(timeout=20) for p in procs]
+    outs = [f"[rc={p.returncode}] out={out!r} err={err!r}" for p, (out, err) in zip(procs, results)]
     return alive, outs
 
 
