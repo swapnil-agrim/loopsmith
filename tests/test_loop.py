@@ -516,6 +516,123 @@ def test_claim_lock_reclaims_a_stale_lock_past_the_staleness_window():
         assert lp._try_acquire_claim_lock(sdlc, "g.md") is True   # reclaimed, not stuck forever
 
 
+def test_claim_lock_stale_steal_is_exclusive_under_genuine_thread_concurrency():
+    """The steal branch specifically -- not just the fresh-create branch above: TWO callers racing to
+    reclaim the SAME already-stale lock at the exact same instant get exactly one winner. A plain
+    unlink()-then-recreate is NOT enough here -- unlink has no "was this still the file I inspected"
+    signal, so a second racer's unlink can silently remove the first racer's freshly-created lock (or
+    raise FileNotFoundError straight into the fail-open OSError branch), letting both callers win.
+    Rename-based eviction -- POSIX serializes concurrent renames of the same source path, so exactly
+    one caller's rename sees the path still there -- closes the TIGHT race, where both callers reach
+    the eviction attempt while the file is still the original stale one. (The LOOSER case -- one
+    caller's decision going stale itself, acted on after the other has already finished -- needs a
+    second guarantee; see the adversarial-ordering test below.) Pins both threads at the boundary that
+    matters -- right after each has read the ORIGINAL stale mtime, before either has started evicting
+    -- via a barrier spliced into `pathlib.Path.stat`, since a bare barrier at the top of the call
+    routinely lets one thread finish its entire cycle before the other even reads staleness, which
+    then sees the winner's fresh mtime and bails out via the ordinary "still held" branch without ever
+    touching the code this test exists to exercise."""
+    import threading, unittest.mock
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = str(pathlib.Path(d) / ".sdlc")
+        lp = _loop()
+        path = lp._claim_lock_path(sdlc, "g.md")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        stale = time.time() - (lp._CLAIM_LOCK_STALE_SECONDS + 10)
+        os.utime(path, (stale, stale))
+
+        real_stat = pathlib.Path.stat
+        barrier = threading.Barrier(2, timeout=5)
+
+        def patched_stat(self, *a, **kw):
+            result = real_stat(self, *a, **kw)
+            if self == path:
+                barrier.wait()          # hold BOTH threads here until both have read the stale mtime --
+            return result               # neither may proceed to evict until neither can see the other's
+
+        results = []
+        results_lock = threading.Lock()
+
+        def attempt():
+            got = lp._try_acquire_claim_lock(sdlc, "g.md")
+            with results_lock:
+                results.append(got)
+
+        with unittest.mock.patch.object(pathlib.Path, "stat", patched_stat):
+            t1, t2 = threading.Thread(target=attempt), threading.Thread(target=attempt)
+            t1.start(); t2.start(); t1.join(); t2.join()
+
+        assert sorted(results) == [False, True]   # exactly one winner steals the stale lock, never both
+        assert path.exists()                       # the winner's fresh lock is in place
+        leftovers = [p.name for p in path.parent.iterdir() if p.name != path.name]
+        assert leftovers == []                      # the loser's evicted husk was cleaned up, not leaked
+
+
+def test_claim_lock_stale_steal_concedes_and_restores_when_the_evicted_file_turns_out_to_be_fresh():
+    """The LOOSER case rename-exclusivity alone does not close: caller B reads the ORIGINAL stale
+    mtime, but is then descheduled by the OS long enough that caller A -- racing nobody -- runs its
+    entire steal-and-recreate to completion FIRST. When B finally resumes and acts on its now-stale
+    decision, a bare rename-is-exclusive guarantee is not enough: B's rename() doesn't know or care
+    that what's currently at `path` is A's brand-new, live lock rather than the stale file B actually
+    inspected -- rename() just moves whatever's there, so B would win a lock it has no business
+    winning. This is not contrived: two independent OS processes (not threads sharing one scheduler)
+    racing `_next()` have no shared clock bounding how long either can be descheduled between reading
+    staleness and acting on it -- see PR #392 review, which proved exactly this against a rename-only
+    fix with a real, unmodified module and a deterministic thread-pause construction (not a mock).
+
+    Forces this exact ordering: B's `stat()` captures the real stale mtime, then blocks (via the same
+    `pathlib.Path.stat` splice) until A has returned -- so A's entire cycle genuinely completes, with
+    no artificial pause of its own, before B's rename() ever runs. B must still lose, AND A's lock
+    must still be standing afterward (not just "B didn't also get True" -- a version of this fix that
+    left `path` deleted after conceding would reopen the original bug one level up, since a THIRD
+    caller would then see no lock at all and freely win A's goal instead)."""
+    import threading, unittest.mock
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = str(pathlib.Path(d) / ".sdlc")
+        lp = _loop()
+        path = lp._claim_lock_path(sdlc, "g.md")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        stale = time.time() - (lp._CLAIM_LOCK_STALE_SECONDS + 10)
+        os.utime(path, (stale, stale))
+
+        real_stat = pathlib.Path.stat
+        b_read_stat = threading.Event()
+        a_done = threading.Event()
+
+        def patched_stat(self, *a, **kw):
+            name = threading.current_thread().name
+            result = real_stat(self, *a, **kw)   # real value captured BEFORE any wait, never fabricated
+            if self == path:
+                if name == "B":
+                    b_read_stat.set()             # B has now captured the original stale mtime
+                    assert a_done.wait(timeout=5), "A never finished -- harness deadlock, not a real result"
+                elif name == "A":
+                    assert b_read_stat.wait(timeout=5), "B never read -- harness deadlock, not a real result"
+            return result
+
+        results = {}
+
+        def attempt(label):
+            got = lp._try_acquire_claim_lock(sdlc, "g.md")
+            results[label] = got
+            if label == "A":
+                a_done.set()
+
+        with unittest.mock.patch.object(pathlib.Path, "stat", patched_stat):
+            ta = threading.Thread(target=attempt, args=("A",), name="A")
+            tb = threading.Thread(target=attempt, args=("B",), name="B")
+            ta.start(); tb.start()
+            ta.join(); tb.join()
+
+        assert results == {"A": True, "B": False}   # A's legitimate steal wins; B concedes, not wins too
+        assert path.exists()                          # A's lock is standing -- NOT left deleted by B
+        assert path.read_bytes() == b""                # it's genuinely A's restored lock, not a new husk
+        leftovers = [p.name for p in path.parent.iterdir() if p.name != path.name]
+        assert leftovers == []                         # B's own evicted copy was cleaned up, not leaked
+
+
 def test_claim_lock_does_not_reclaim_a_lock_within_the_staleness_window():
     with tempfile.TemporaryDirectory() as d:
         sdlc = str(pathlib.Path(d) / ".sdlc")
