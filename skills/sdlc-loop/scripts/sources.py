@@ -162,7 +162,16 @@ class GitHubSource:
         if self.assignee:
             args += ["--assignee", self.assignee]     # scope the queue to one owner so parallel loops
                                                        # on a shared board don't pick the same issue
-        out = self._run(args)
+        try:
+            out = self._run(args)
+        except Exception as exc:
+            # F4: this is called first, every iteration — an unguarded raise here crashed run_loop's
+            # while-loop before a single goal could even be picked. A read we can't trust must not be
+            # silently mistaken for "nothing left" either, so this is loud (stderr) even though it
+            # degrades the same way an exhausted backlog would (the safest false: under-report, don't
+            # mis-report or crash).
+            print(f"sources.py: could not read the backlog ({exc}) — stopping", file=sys.stderr)
+            return None
         issues = json.loads(out or "[]")
         skip = {str(s) for s in skip}                 # goals a claim lease says belong to someone else
         pending = [i for i in issues
@@ -173,7 +182,11 @@ class GitHubSource:
 
     def mark_in_progress(self, goal):
         self._ensure_labels()
-        self._run(["issue", "edit", goal, *self._repo_args(), "--add-label", self.in_progress_label])
+        try:
+            self._run(["issue", "edit", goal, *self._repo_args(), "--add-label", self.in_progress_label])
+        except Exception:
+            pass   # F4: best-effort visibility label — a transient gh error must not stop the goal
+                   # from being picked; the loop's own state/ledger track real progress regardless
         self._set_board_status(goal, self.col["in_progress"])
 
     def mark_qc(self, goal):
@@ -193,15 +206,24 @@ class GitHubSource:
         self._offboard(goal, "Failed in the LoopSmith loop — needs a fix (not a decision): " + reason)
 
     def _offboard(self, goal, comment):
-        self._run(["issue", "comment", goal, *self._repo_args(), "--body", comment])
         self._ensure_labels()
+        # F4: de-list FIRST and unconditionally-attempted — whatever else below fails, next_pending's
+        # `--label <goal_label>` query must never re-serve this goal. This used to run LAST, so a
+        # raising `issue comment` (a transient 502/rate-limit) left the goal_label untouched AND
+        # crashed run_loop's while-loop before either later step ran — the exact opposite of
+        # park-and-continue. Re-queue by re-adding the label.
+        try:
+            self._run(["issue", "edit", goal, *self._repo_args(), "--remove-label", self.goal_label])
+        except Exception:
+            pass
         try:
             self._run(["issue", "edit", goal, *self._repo_args(), "--add-label", self.parked_label])
         except Exception:
-            pass   # the parked label is a human-visibility tag; the exclusion below doesn't need it
-        # Robust exclusion: drop the goal label so next_pending's `--label <goal>` query can't return
-        # this issue again, regardless of whether the parked label was applied. Re-queue by re-adding it.
-        self._run(["issue", "edit", goal, *self._repo_args(), "--remove-label", self.goal_label])
+            pass   # the parked label is a human-visibility tag; the exclusion above doesn't need it
+        try:
+            self._run(["issue", "comment", goal, *self._repo_args(), "--body", comment])
+        except Exception:
+            pass   # best-effort audit trail; a transient gh error must not abort the drain
         self._set_board_status(goal, self.col["blocked"])
 
     def note(self, goal, text):

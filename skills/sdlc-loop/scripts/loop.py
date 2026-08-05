@@ -315,7 +315,20 @@ def run_loop(sdlc_dir, run_goal):
         if kind == "BUDGET":
             stopped = "budget"; break
         result, detail = run_goal(goal)
-        _record(sdlc_dir, source, goal, result, detail)
+        try:
+            _record(sdlc_dir, source, goal, result, detail)
+        except Exception as exc:
+            # F4: a source-op failure while recording ONE goal (e.g. complete()'s `issue close`
+            # raising on a transient error) must never abort the whole drain — park-and-continue is
+            # the loop's core promise. Downgrade to a recorded PARK, never a silently-claimed "done":
+            # if the remote couldn't confirm completion, the issue may still be open and re-pickable
+            # next run, so the local record must not claim otherwise.
+            try:
+                _record(sdlc_dir, source, goal, "parked",
+                        f"source error recording '{result}' ({exc})")
+            except Exception:
+                pass   # even the park-record failed; still counted as parked below, run continues
+            result = "parked"
         done += (result == "done")
         failed += (result == "failed")
         parked += (result not in ("done", "failed"))

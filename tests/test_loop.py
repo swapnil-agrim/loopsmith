@@ -606,6 +606,35 @@ def test_run_loop_survives_a_raising_ledger_append(monkeypatch):
         assert res["done"] == 3 and res["parked"] == 0 and res["stopped"] == "backlog-empty"
 
 
+def test_run_loop_survives_a_raising_source_op_on_the_middle_goal():
+    """F4: a transient gh error recording ONE goal (e.g. complete()'s `issue close` raising) must not
+    abort the whole drain — `run_loop([a,b,c])` with `b` raising must still process `a` and `c`. The
+    failed goal is downgraded to a recorded PARK, never silently counted as done."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 0, max_iter=10)
+        lp = _loop()
+
+        class Fake:
+            def __init__(s):
+                s.q = ["a", "b", "c"]; s.done = []; s.parked = []
+            def next_pending(s, skip=()): return next((g for g in s.q if g not in skip), None)
+            def mark_in_progress(s, g): pass
+            def complete(s, g):
+                if g == "b":
+                    raise RuntimeError("gh: HTTP 502 Bad Gateway")   # NOT removed from q yet
+                s.q.remove(g); s.done.append(g)
+            def park(s, g, r):
+                s.q.remove(g); s.parked.append(g)   # only the fallback park() call de-lists "b"
+
+        fake = Fake()
+        lp.sources.get_source = lambda sdlc_dir, config: fake
+        res = lp.run_loop(base, lambda g: ("done", ""))
+        assert res["stopped"] == "backlog-empty"
+        assert fake.done == ["a", "c"]              # b's completion could not be confirmed
+        assert fake.parked == ["b"]                 # downgraded to a park, not silently dropped
+        assert res["done"] == 2 and res["parked"] == 1 and res["failed"] == 0
+
+
 # ---------------------------------------------------------------- #140: `emit` verb + `spend` extension
 # Every emit test below reuses `_telemetry_base` (ledger+telemetry ON) unless a test is specifically
 # about the default-off behaviour, in which case it builds its own config.

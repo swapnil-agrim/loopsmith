@@ -149,6 +149,62 @@ def test_park_excludes_issue_even_if_parked_label_cannot_be_applied():
     assert gh.next_pending() is None         # goal label removed -> excluded despite the parked-label failure
 
 
+def test_park_excludes_issue_even_if_the_comment_raises():
+    """F4: `_offboard` used to post the comment FIRST — a raising `issue comment` (a transient
+    502/rate-limit) left the goal label untouched AND crashed the caller before the label-removal
+    line ever ran. De-listing must happen regardless of what the comment does."""
+    src = _mod("sources")
+    issues = {5: {"open": True, "labels": {"sdlc:goal"}}}
+
+    def run(a):
+        verb = a[1] if len(a) > 1 else a[0]
+        if verb == "list":
+            want = a[a.index("--label") + 1]
+            return json.dumps([{"number": k, "labels": [{"name": l} for l in v["labels"]]}
+                               for k, v in issues.items() if v["open"] and want in v["labels"]])
+        if verb == "edit" and "--remove-label" in a:
+            issues[int(a[2])]["labels"].discard(a[a.index("--remove-label") + 1])
+            return ""
+        if verb == "comment":
+            raise RuntimeError("gh: HTTP 502 Bad Gateway")
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    assert gh.next_pending() == "5"
+    gh.park("5", "deploy gate")               # must not raise, despite the comment call failing
+    assert gh.next_pending() is None          # goal label removed -> excluded despite the comment failure
+
+
+def test_mark_in_progress_survives_a_raising_add_label():
+    """F4: a transient gh error setting the (best-effort) in-progress label must not stop the goal
+    from being picked — the loop's own state/ledger track real progress regardless of this label."""
+    src = _mod("sources")
+
+    def run(a):
+        verb = a[1] if len(a) > 1 else a[0]
+        if verb == "edit" and "--add-label" in a:
+            raise RuntimeError("gh: HTTP 502 Bad Gateway")
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh.mark_in_progress("5")                  # must not raise
+
+
+def test_next_pending_survives_a_raising_list_call():
+    """F4: `next_pending` is called first, every iteration of run_loop's while-loop — an unguarded
+    raise here crashed the ENTIRE drain before a single goal could be picked, not just one goal."""
+    src = _mod("sources")
+
+    def run(a):
+        verb = a[1] if len(a) > 1 else a[0]
+        if verb == "list":
+            raise RuntimeError("gh: HTTP 502 Bad Gateway")
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    assert gh.next_pending() is None          # degrades to "nothing pending", never a traceback
+
+
 def test_github_note_comments_on_the_issue():
     src = _mod("sources")
     run = _recording_runner()
