@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### fix(handoff): a rejected assignee no longer takes the whole dependency issue down with it
+`create_dependency()` built its `gh issue create` call with `--assignee <owner>` whenever CODEOWNERS
+resolved one, and let a failing call raise straight out uncaught. GitHub issues can only be assigned
+to individual collaborators, never a team — so a CODEOWNERS entry naming `@org/team` (a common,
+supported pattern) made `gh` reject the call every time, `hand_off()`'s existing try/except caught the
+RuntimeError, and the whole hand-off degraded to a ledger-only entry: no issue opened, nobody's loop
+ever routed the dependency, purely because the owner was a team. Any other assignee `gh` rejects (not
+a collaborator, a typo, a removed account) failed the identical way.
+
+A rejected assignee is now retried once, unassigned, and the new issue gets a comment naming the
+assignee that was dropped and why — the hand-off always lands somewhere a human can find it, instead
+of vanishing. `GitHubSource.last_assignee_applied` records whether the assignment actually took, and
+`hand_off()`'s own narrative comment now checks it before claiming "assigned to @owner" — a resolved
+CODEOWNERS owner is no longer treated as proof the assignment happened. A genuine, non-assignee-specific
+failure (auth broken, network down) still raises out of the unassigned fallback exactly as before —
+this closes the one bug where the assignee alone was fatal, not a blanket swallow of every `gh` error.
+
 ## 1.0.0 — the zero-touch release
 
 The theme: one person on one machine can now point LoopSmith at a stack of their own assigned issues

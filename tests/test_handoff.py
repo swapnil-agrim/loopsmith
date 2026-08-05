@@ -3,6 +3,8 @@ import json
 import os
 import pathlib
 
+import pytest
+
 S = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts"
 
 
@@ -159,6 +161,22 @@ def test_handoff_narrative_wording_actually_matches_the_auto_skip_regex(tmp_path
     assert backlog_check._BLOCK_RE.search(narrative), narrative
     body_goal, marker = src.body_appends[0]
     assert backlog_check._BLOCK_RE.search(marker), marker
+
+
+def test_handoff_narrative_does_not_claim_an_assignment_that_never_took(tmp_path):
+    """F14/#338: create_dependency can open the issue unassigned after gh rejects the resolved owner
+    (a team, most often) while still returning an issue number -- report["owner"] alone is then a
+    stale signal, not proof the assignment happened. The narrative must trust
+    source.last_assignee_applied, not just whether an owner was resolved."""
+    class RejectedAssignee(FakeSource):
+        last_assignee_applied = False
+
+    src = RejectedAssignee()
+    report = handoff.hand_off(_project(tmp_path), ON, "0006-x.md", "engine", "needs a flag", source=src)
+    assert report["owner"] == "eng-owner" and report["issue"] == "61"     # still resolved, still opened
+    goal, narrative = src.notes[0]
+    assert "@eng-owner" not in narrative, narrative
+    assert "assigned" not in narrative, narrative
 
 
 def test_handoff_still_records_when_no_owner_is_declared(tmp_path):
@@ -334,3 +352,57 @@ def test_create_dependency_tolerates_a_label_that_cannot_be_created():
         return "https://github.com/acme/widget/issues/7"
 
     assert _github_source(recorder).create_dependency("t", "b", "who", labels=["x"]) == "7"
+
+
+# ------------------------------------------------------------- F14/#338: rejected-assignee fallback
+
+def test_create_dependency_falls_back_to_unassigned_when_gh_rejects_the_assignee():
+    """The bug: a team-shaped (or otherwise gh-rejected) assignee used to take the WHOLE issue down
+    with it -- the RuntimeError propagated out of create_dependency uncaught, so nothing was ever
+    created. Now it retries once, unassigned, and the issue still opens with an explanatory comment."""
+    calls = []
+
+    def recorder(args):
+        calls.append(args)
+        if args[:2] == ["issue", "create"] and "--assignee" in args:
+            raise RuntimeError("gh issue create failed: 'org/eng-team' is not a user")
+        if args[:2] == ["issue", "create"]:
+            return "https://github.com/acme/widget/issues/61"
+        return ""
+
+    src = _github_source(recorder)
+    number = src.create_dependency("t", "b", "org/eng-team")
+    assert number == "61"
+    assert src.last_assignee_applied is False
+    creates = [c for c in calls if c[:2] == ["issue", "create"]]
+    assert len(creates) == 2, "the failed attempt, then the unassigned fallback"
+    assert "--assignee" not in creates[1]
+    comment = next(c for c in calls if c[:2] == ["issue", "comment"])
+    assert comment[2] == "61" and "org/eng-team" in " ".join(comment)
+
+
+def test_create_dependency_with_no_owner_never_posts_an_assignment_note():
+    """No assignee was ever attempted, so there is nothing to apologise for -- the note is specific
+    to a REJECTED assignee, not a general "how did this issue get made" disclosure."""
+    calls = []
+
+    def recorder(args):
+        calls.append(args)
+        return "https://github.com/acme/widget/issues/61" if args[:2] == ["issue", "create"] else ""
+
+    src = _github_source(recorder)
+    assert src.create_dependency("t", "b", None) == "61"
+    assert src.last_assignee_applied is False
+    assert not any(c[:2] == ["issue", "comment"] for c in calls)
+
+
+def test_create_dependency_still_raises_when_even_the_unassigned_fallback_fails():
+    """A genuine, non-assignee-specific failure (auth broken, network down, ...) must still surface --
+    the fallback exists for a rejected ASSIGNEE, not as a blanket swallow of every gh error."""
+    def recorder(args):
+        if args[:2] == ["issue", "create"]:
+            raise RuntimeError("gh: not authenticated")
+        return ""
+
+    with pytest.raises(RuntimeError, match="not authenticated"):
+        _github_source(recorder).create_dependency("t", "b", "eng-owner")

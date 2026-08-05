@@ -119,8 +119,15 @@ def hand_off(sdlc_dir, config, goal, area, why, priority=DEFAULT_PRIORITY,
         # backlog_check.py's _BLOCK_RE requires -- an earlier version of the narrative said
         # "Blocked on", which never matched at all; fixed here too so the human-visible text is
         # consistent with the machine-readable one, not just superficially similar.
+        #
+        # F14/#338: a resolved owner does not mean the assignment took -- create_dependency falls
+        # back to opening the issue unassigned when gh rejects it (a team, most often) and records
+        # which happened via last_assignee_applied. A source that predates this (or doesn't expose
+        # it) defaults to True: its assignment always either took or raised, so there was never a
+        # silent gap to report.
+        assignee_applied = getattr(source, "last_assignee_applied", True)
         narrative = (f"Blocked by a `{area}` dependency — opened #{report['issue']}"
-                    + (f" and assigned to @{report['owner']}" if report["owner"] else "")
+                    + (f" and assigned to @{report['owner']}" if report["owner"] and assignee_applied else "")
                     + f" ({priority}). Parking this goal until it lands.")
         if hasattr(source, "note"):
             try:
