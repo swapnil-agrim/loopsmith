@@ -112,13 +112,27 @@ def hand_off(sdlc_dir, config, goal, area, why, priority=DEFAULT_PRIORITY,
         issue=int(report["issue"]) if str(report["issue"] or "").isdigit() else None,
         priority=priority, why=why, state="open")
 
-    if report["issue"] and source is not None and hasattr(source, "note"):
-        try:
-            source.note(str(goal), f"Blocked on a `{area}` dependency — opened #{report['issue']}"
-                                   + (f" and assigned to @{report['owner']}" if report["owner"] else "")
-                                   + f" ({priority}). Parking this goal until it lands.")
-        except Exception as exc:                               # noqa: BLE001
-            report["warnings"].append(f"could not link the blocked issue: {exc}")
+    if report["issue"] and source is not None:
+        # two channels, two audiences (#376): a human-visible narrative comment, AND a
+        # machine-readable body marker so a future precheck() run can auto-skip this goal without
+        # a human re-stating what already happened. "Blocked by #N" is the exact phrase
+        # backlog_check.py's _BLOCK_RE requires -- an earlier version of the narrative said
+        # "Blocked on", which never matched at all; fixed here too so the human-visible text is
+        # consistent with the machine-readable one, not just superficially similar.
+        narrative = (f"Blocked by a `{area}` dependency — opened #{report['issue']}"
+                    + (f" and assigned to @{report['owner']}" if report["owner"] else "")
+                    + f" ({priority}). Parking this goal until it lands.")
+        if hasattr(source, "note"):
+            try:
+                source.note(str(goal), narrative)
+            except Exception as exc:                            # noqa: BLE001
+                report["warnings"].append(f"could not comment on the blocked issue: {exc}")
+        if hasattr(source, "append_to_body"):
+            try:
+                source.append_to_body(str(goal), f"**Blocked by:** #{report['issue']}")
+            except Exception as exc:                            # noqa: BLE001
+                report["warnings"].append(
+                    f"could not record the machine-readable blocker on the blocked issue's body: {exc}")
     return report
 
 

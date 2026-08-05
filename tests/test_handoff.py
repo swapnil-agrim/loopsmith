@@ -107,6 +107,7 @@ class FakeSource:
         self.number = number
         self.created = None
         self.notes = []
+        self.body_appends = []
 
     def issue_url(self, goal):
         return f"https://example.invalid/issues/{goal}"
@@ -117,6 +118,9 @@ class FakeSource:
 
     def note(self, goal, text):
         self.notes.append((goal, text))
+
+    def append_to_body(self, goal, marker):
+        self.body_appends.append((goal, marker))
 
 
 def test_handoff_opens_assigns_records_and_links(tmp_path):
@@ -139,6 +143,23 @@ def test_handoff_opens_assigns_records_and_links(tmp_path):
     goal, text = src.notes[0]
     assert "#61" in text and "@eng-owner" in text and "Parking" in text
 
+    body_goal, marker = src.body_appends[0]
+    assert body_goal == "0004-ui-restart.md" and marker == "**Blocked by:** #61"
+
+
+def test_handoff_narrative_wording_actually_matches_the_auto_skip_regex(tmp_path):
+    """#376: an earlier version of the narrative said 'Blocked on' -- backlog_check.py's own
+    _BLOCK_RE requires 'blocked by' (or depends on/needs/after/requires/waiting on), never 'on'.
+    Import the real regex rather than hand-copying it, so this test breaks loudly if the two ever
+    drift apart again instead of silently passing against a stale copy."""
+    backlog_check = _mod("backlog_check")
+    src = FakeSource()
+    handoff.hand_off(_project(tmp_path), ON, "0005-x.md", "engine", "needs a flag", source=src)
+    goal, narrative = src.notes[0]
+    assert backlog_check._BLOCK_RE.search(narrative), narrative
+    body_goal, marker = src.body_appends[0]
+    assert backlog_check._BLOCK_RE.search(marker), marker
+
 
 def test_handoff_still_records_when_no_owner_is_declared(tmp_path):
     sdlc = _project(tmp_path, codeowners="/server/ @srv-owner\n")
@@ -158,6 +179,44 @@ def test_handoff_survives_a_source_that_cannot_open_issues(tmp_path):
     assert report["issue"] is None
     assert any("cannot open issues" in w for w in report["warnings"])
     assert ledger.read_all(sdlc)[0]["to"] == "eng-owner"        # the addressee still lands
+
+
+def test_handoff_survives_append_to_body_failing(tmp_path):
+    """The comment (human-visible) and the body marker (machine-readable) are two independent
+    channels -- one failing must not lose the other, and neither failing may block the park."""
+    sdlc = _project(tmp_path)
+
+    class BodyBroken(FakeSource):
+        def append_to_body(self, goal, marker):
+            raise RuntimeError("gh: edit failed")
+
+    src = BodyBroken()
+    report = handoff.hand_off(sdlc, ON, "g.md", "engine", "needs a flag", source=src)
+    assert report["issue"] == "61"
+    assert any("machine-readable" in w for w in report["warnings"])
+    assert src.notes                                  # the human-visible comment still landed
+    assert ledger.read_all(sdlc)                       # the park is never blocked
+
+
+def test_handoff_degrades_honestly_when_the_source_has_no_append_to_body(tmp_path):
+    """A source implementation that predates #376 (or a future non-GitHub source) simply doesn't
+    have this method -- hand_off must not assume it does."""
+    sdlc = _project(tmp_path)
+
+    class NoBodyEdit:
+        def __init__(self):
+            self.notes = []
+
+        def create_dependency(self, title, body, assignee, labels=()):
+            return "61"
+
+        def note(self, goal, text):
+            self.notes.append((goal, text))
+
+    src = NoBodyEdit()
+    report = handoff.hand_off(sdlc, ON, "g.md", "engine", "needs a flag", source=src)
+    assert report["issue"] == "61" and not report["warnings"]
+    assert src.notes                                   # the comment channel still works fine
 
 
 def test_handoff_survives_a_failing_host(tmp_path):

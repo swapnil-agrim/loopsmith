@@ -214,6 +214,32 @@ def test_github_note_comments_on_the_issue():
     assert any("issue comment 5" in c and "research: 3 affected files" in c and "--repo o/r" in c for c in flat)
 
 
+def test_github_append_to_body_appends_without_overwriting():
+    """#376: the machine-readable channel `backlog_check.py`'s `_explicit_blockers()` actually
+    reads (title+body only, comments are never fetched -- see mirror.py). Must APPEND to the
+    existing body, never replace it -- `gh issue edit --body` overwrites wholesale, so the current
+    body has to be read first."""
+    src = _mod("sources")
+    run = _recording_runner({"view": "Existing body text."})
+    gh = src.GitHubSource({"discovery": {"source": "github", "github": {"repo": "o/r"}}}, run=run)
+    gh.append_to_body("5", "**Blocked by:** #61")
+    flat = [" ".join(c) for c in run.calls]
+    assert any("issue view 5" in c and "--json body" in c and "--repo o/r" in c for c in flat)
+    edit_call = next(c for c in run.calls if c[0] == "issue" and c[1] == "edit")
+    body = edit_call[edit_call.index("--body") + 1]
+    assert body == "Existing body text.\n\n**Blocked by:** #61\n"
+
+
+def test_github_append_to_body_handles_an_empty_body():
+    src = _mod("sources")
+    run = _recording_runner({"view": ""})
+    gh = src.GitHubSource({"discovery": {"source": "github", "github": {"repo": "o/r"}}}, run=run)
+    gh.append_to_body("5", "**Blocked by:** #61")
+    edit_call = next(c for c in run.calls if c[0] == "issue" and c[1] == "edit")
+    body = edit_call[edit_call.index("--body") + 1]
+    assert body == "\n\n**Blocked by:** #61\n"
+
+
 def test_local_note_appends_journey_log():
     src = _mod("sources")
     with tempfile.TemporaryDirectory() as d:
