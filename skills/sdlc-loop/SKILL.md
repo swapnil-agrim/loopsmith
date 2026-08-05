@@ -15,7 +15,41 @@ First, reset the per-run budget: `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" 
 
 Then repeat until the helper says stop:
 
-1. `goal=$(python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" next .sdlc)`
+1. `goals=$(python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" next-batch .sdlc)` — one goal per line, or a
+   lone `DONE`/`BUDGET`. Off by default (`parallel.goals.enabled`, config-gated): with it off, or only
+   one goal available, this is byte-identical to plain `next` — exactly one line — and everything below
+   runs inline exactly as documented, for that one goal (`goal=$goals`).
+
+   **1a. More than one line? Dispatch the batch, don't queue it** (F10.5-3/#375) — mirrors 3b's
+   slice-wave shape one level up: instead of ONE goal's implementation slices running concurrently,
+   MULTIPLE goals run concurrently, each all the way through its own steps 2-7. For each goal in the
+   batch, dispatch a **subagent** (fresh context) that runs this skill's steps 2 through 7 for that ONE
+   goal exactly as documented — it resolves its own model tier, cuts its own worktree (3a already
+   isolates goals from each other: separate worktree + branch + PR per goal, so no extra
+   `isolation: worktree` bookkeeping is needed beyond what `work.py start` already does for a single
+   goal), runs its own review, and records its own outcome. **Never** dispatch with an unattended
+   `claude -p` (same reason as 3b: uncapped spend, and a second unmanaged worker on one `.sdlc` breaks
+   state) — and **never** hand a subagent's own scratch/comparison work a `cp`/`rsync` of another
+   goal's live worktree; a worktree's `.git` is a file pointing at shared metadata, and copying it can
+   corrupt the real one.
+
+   Track which goals are currently live in your other slots — you already know this, you dispatched
+   them. As EACH subagent finishes (done/parked/failed) — not the whole batch — immediately refill
+   just that ONE freed slot: `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" next .sdlc --skip
+   <comma-separated other still-live goals>`. **The `--skip` list is not optional for a refill.**
+   `next`/`next-batch`'s own claim-liveness check (F10.5/#374) can only tell whether the SHORT-LIVED
+   `loop.py` process that wrote a claim is still literally running — and that process has already
+   exited by the time it returns the goal to you, regardless of whether a subagent is still actively
+   working it minutes later. Nothing else stands in for that once the picking call itself is gone: a
+   goal's own `in_progress` status alone does **not** exclude it from a later pick. Omitting `--skip`
+   on a refill can re-dispatch a goal a sibling slot already holds — two subagents doing the same
+   work, worse than not parallelizing at all. Continue refilling one slot at a time until a call
+   returns `DONE` or `BUDGET`. Unlike 3b's slices, goals carry no declared file-conflict graph — each
+   gets its own worktree and PR, so overlap surfaces later as an ordinary PR-rebase (this plugin's own
+   history already handles that routinely), not a silent lost edit. Note also that with multiple slots
+   live, it is the ORCHESTRATING pass — the one calling `next`/`next-batch` for refills — that sees any
+   **LEDGER INBOX** block (step 6 below), not a subagent mid-goal; handle it there, between refills,
+   the same way you would between goals in the single-goal path.
 2. If output is `DONE` (backlog empty) or `BUDGET` (a per-run budget hit: iterations always;
    wall-clock minutes / reported tokens when `config.json` sets them) → STOP. If the host surfaces
    token usage to you, report it between goals — `loop.py spend .sdlc <tokens>` — so

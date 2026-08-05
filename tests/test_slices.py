@@ -482,8 +482,13 @@ def test_flag_parser_handles_a_bare_switch():
 def test_config_template_ships_the_flag_off():
     tmpl = json.loads((pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-init"
                        / "templates" / "config.json.tmpl").read_text())
-    assert tmpl["parallel"] == {"enabled": False, "max_concurrent": 3}
+    assert tmpl["parallel"]["enabled"] is False
+    assert tmpl["parallel"]["max_concurrent"] == 3
     assert tmpl["_parallel"]
+    # F10.5-3/#375: goal-level parallelism is a sibling knob, off by default, independent of the
+    # slice-level flag above.
+    assert tmpl["parallel"]["goals"] == {"enabled": False, "max_concurrent": 3}
+    assert tmpl["_parallel_goals"]
 
 
 def _doctor():

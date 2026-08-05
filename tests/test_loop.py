@@ -424,6 +424,201 @@ def test_next_reports_done_when_every_goal_is_held_elsewhere():
         assert (kind, goal) == ("DONE", None) and src.marked == []       # nothing free for me
 
 
+# --------------------------------------------------------------------- goal-level batch (#375)
+# One managing session fills up to parallel.goals.max_concurrent slots per pass, each destined for
+# its own worktree subagent -- mirrors slices.py's wave-dispatch SHAPE (compute in Python, dispatch
+# in the skill), but goals need no file-conflict detection: each gets its own worktree+branch+PR.
+
+
+def test_goals_parallel_is_off_by_default():
+    assert _loop().goals_parallel({}) == (False, 3)
+
+
+def test_goals_parallel_reads_enabled_and_max_concurrent():
+    cfg = {"parallel": {"goals": {"enabled": True, "max_concurrent": 5}}}
+    assert _loop().goals_parallel(cfg) == (True, 5)
+
+
+def test_goals_parallel_requires_strict_true_not_truthy():
+    lp = _loop()
+    for value in ("yes", 1, "true"):
+        cfg = {"parallel": {"goals": {"enabled": value}}}
+        assert lp.goals_parallel(cfg)[0] is False, value
+
+
+def test_goals_parallel_falls_back_to_the_default_on_a_bad_cap():
+    cfg = {"parallel": {"goals": {"enabled": True, "max_concurrent": "oops"}}}
+    assert _loop().goals_parallel(cfg) == (True, 3)
+
+
+def test_goals_parallel_is_independent_of_the_slices_parallel_block():
+    """A repo with slice-level parallel.enabled on must not silently also enable goal-level
+    parallelism -- they are sibling, independently-opted-in blocks, not one shared switch."""
+    cfg = {"parallel": {"enabled": True, "max_concurrent": 4}}   # slices.py's own block, untouched
+    assert _loop().goals_parallel(cfg) == (False, 3)
+
+
+def test_next_batch_fills_up_to_the_cap_with_distinct_goals():
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[])
+        lp = _loop(); src = _Queue(["a", "b", "c", "d"])
+        picks = lp.next_batch(base, src, lp.state.load_config(base), max_concurrent=3)
+        assert picks == [("goal", "a"), ("goal", "b"), ("goal", "c")]
+        assert src.marked == ["a", "b", "c"]              # each one genuinely, durably claimed
+
+
+def test_next_batch_stops_early_and_reports_done_when_the_backlog_runs_out():
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[])
+        lp = _loop(); src = _Queue(["a", "b"])              # only 2 available, cap asks for 5
+        picks = lp.next_batch(base, src, lp.state.load_config(base), max_concurrent=5)
+        assert picks == [("goal", "a"), ("goal", "b"), ("DONE", None)]
+
+
+def test_next_batch_stops_at_the_remaining_iteration_budget_even_with_room_in_max_concurrent():
+    """A single pass must not dispatch more goals than max_iterations allows for the WHOLE run,
+    even though _budget_spent's cursor only advances on completion (not on a mere pick) -- without
+    an explicit remaining-budget cap, nothing would stop a burst past the configured ceiling within
+    one batch (found while testing an earlier, wrong assumption about this — see the commit)."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[])
+        (pathlib.Path(base) / "config.json").write_text(json.dumps(
+            {"ledger": {"enabled": True, "actor": "me", "lease": {"ttl_hours": 0}},
+             "budget": {"max_iterations": 2}}))
+        lp = _loop(); src = _Queue(["a", "b", "c", "d"])
+        picks = lp.next_batch(base, src, lp.state.load_config(base), max_concurrent=5)
+        assert picks == [("goal", "a"), ("goal", "b")]     # capped at 2, not the full max_concurrent=5
+
+
+def test_next_batch_reports_budget_immediately_when_it_is_already_fully_spent():
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[])
+        (pathlib.Path(base) / "config.json").write_text(json.dumps(
+            {"ledger": {"enabled": True, "actor": "me", "lease": {"ttl_hours": 0}},
+             "budget": {"max_iterations": 0}}))            # already spent before this batch starts
+        lp = _loop(); src = _Queue(["a", "b", "c", "d"])
+        picks = lp.next_batch(base, src, lp.state.load_config(base), max_concurrent=5)
+        assert picks == [("BUDGET", None)]                  # not even the first slot fills
+
+
+def test_next_batch_defaults_to_a_single_item_when_goal_parallelism_is_off():
+    """OFF (the default -- a repo that hasn't opted in) must be byte-identical to calling _next()
+    once, not a behavior change for every existing repo that never touched parallel.goals."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[])
+        lp = _loop(); src = _Queue(["a", "b", "c"])
+        picks = lp.next_batch(base, src, lp.state.load_config(base))   # no explicit cap
+        assert picks == [("goal", "a")]
+
+
+def test_next_batch_defaults_to_the_configured_cap_when_goal_parallelism_is_on():
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[])
+        (pathlib.Path(base) / "config.json").write_text(json.dumps(
+            {"ledger": {"enabled": True, "actor": "me", "lease": {"ttl_hours": 0}},
+             "parallel": {"goals": {"enabled": True, "max_concurrent": 2}}}))
+        lp = _loop(); src = _Queue(["a", "b", "c"])
+        picks = lp.next_batch(base, src, lp.state.load_config(base))   # no explicit cap
+        assert picks == [("goal", "a"), ("goal", "b")]
+
+
+def test_next_batch_never_reclaims_a_goal_it_already_picked_this_batch():
+    """The accumulating extra_skip is what makes this session's own multiple slots safe from each
+    other WITHOUT touching the ledger a second time per pick -- verified directly by checking the
+    ledger only ever recorded each goal claimed exactly once."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[])
+        lp = _loop(); src = _Queue(["a", "b", "c"])
+        lp.next_batch(base, src, lp.state.load_config(base), max_concurrent=3)
+        claimed_ids = [e["goal"] for e in lp.ledger.read_all(base) if e["kind"] == "claimed"]
+        assert sorted(claimed_ids) == ["a", "b", "c"]      # each claimed exactly once, never twice
+
+
+# ------------------------------------------------- cross-call skip for slot refills (#375 follow-up)
+# #374's writer-liveness check can only tell whether the SHORT-LIVED `loop.py` invocation that wrote
+# a claim is still literally running -- it has already exited by the time this process's own call
+# returns, regardless of whether the goal is still being actively worked by a long-running subagent.
+# Refilling ONE freed slot, some time after the batch that filled the others returned, needs the
+# caller to say "these other goals are still active" explicitly -- `next`/`next-batch`'s `--skip`.
+
+
+def test_cli_skip_parses_a_comma_separated_list_and_trims_whitespace():
+    lp = _loop()
+    assert lp._cli_skip(["--skip", "a, b ,c"]) == {"a", "b", "c"}
+
+
+def test_cli_skip_drops_empty_entries_from_stray_commas():
+    lp = _loop()
+    assert lp._cli_skip(["--skip", "a,,b,"]) == {"a", "b"}
+
+
+def test_cli_skip_is_empty_when_the_flag_is_absent():
+    lp = _loop()
+    assert lp._cli_skip(["--other", "x"]) == set()
+
+
+def test_cli_skip_is_empty_for_a_bare_flag_with_no_value():
+    """A bare `--skip` (nothing follows) hits `_flags`'s own "true" sentinel for a valueless flag --
+    must not be read as a literal goal named "true"."""
+    lp = _loop()
+    assert lp._cli_skip(["--skip"]) == set()
+
+
+def test_next_batch_extra_skip_excludes_a_goal_this_call_never_picked_itself():
+    """The whole point: a goal skipped via `extra_skip` here was NOT claimed by this call at all --
+    unlike the internal accumulation test above, which skips goals THIS batch just picked. This is
+    the caller (the orchestrating skill) saying "leave this one alone, a sibling from an earlier
+    call is still working it," and the ledger never sees a second claim attempt for it."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _lease_base(d, actor="me", claims=[])
+        lp = _loop(); src = _Queue(["a", "b", "c"])
+        picks = lp.next_batch(base, src, lp.state.load_config(base), max_concurrent=3,
+                               extra_skip={"a"})
+        # 2 real picks (a is excluded from the start) + a 3rd _next() call correctly finding the
+        # backlog now exhausted -- same shape as test_next_batch_stops_early_and_reports_done...
+        assert picks == [("goal", "b"), ("goal", "c"), ("DONE", None)]
+        claimed_ids = [e["goal"] for e in lp.ledger.read_all(base) if e["kind"] == "claimed"]
+        assert "a" not in claimed_ids
+
+
+def test_next_without_skip_would_redispatch_a_goal_still_marked_in_progress():
+    """Proves the gap `--skip` exists to close, not just the fix: with the ledger off (or a goal a
+    sibling slot claimed long enough ago that its short-lived writer process has already exited --
+    the normal case, see `next_batch`'s docstring), a source-level `in_progress` status alone does
+    NOT stop a later `next()` from re-returning the same goal. Without this proof the `--skip`
+    tests above could be read as defending against a risk that was never real."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        lp = _loop()
+        goal = base + "/goals/0001.md"
+        lp.sources.get_source(base, lp.state.load_config(base)).mark_in_progress(goal)
+        kind, got = lp._next(base, lp.sources.get_source(base, lp.state.load_config(base)),
+                              lp.state.load_config(base))
+        assert (kind, got) == ("goal", goal)      # re-dispatched -- exactly the bug --skip prevents
+
+
+def test_cli_next_skip_flag_prevents_redispatching_a_goal_a_sibling_slot_still_holds(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 2)
+        lp = _loop()
+        goal_a, goal_b = base + "/goals/0001.md", base + "/goals/0002.md"
+        lp.sources.get_source(base, lp.state.load_config(base)).mark_in_progress(goal_a)
+        rc = lp.main(["loop.py", "next", base, "--skip", goal_a])
+        assert rc == 0
+        assert capsys.readouterr().out.strip() == goal_b
+
+
+def test_cli_next_batch_skip_flag_is_wired_through(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 2)
+        lp = _loop()
+        goal_a, goal_b = base + "/goals/0001.md", base + "/goals/0002.md"
+        lp.sources.get_source(base, lp.state.load_config(base)).mark_in_progress(goal_a)
+        rc = lp.main(["loop.py", "next-batch", base, "--skip", goal_a])
+        assert rc == 0
+        assert capsys.readouterr().out.strip() == goal_b
+
+
 # --------------------------------------------------------------------- writer-aware lease (#374)
 # A claim held by MY OWN actor is not always mine to resume: two concurrent processes sharing one
 # gh login (a routine firing again before an earlier run finished) must not read each other's
