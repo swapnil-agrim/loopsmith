@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### fix(ledger): concurrent same-actor loops no longer collide on `id` or lose a hand-off
+Several parallel loops resolving to the SAME actor (a shared `gh` login) used to write the same
+`entries/<actor>.jsonl` file — two concurrent appends both read `_line_count` as 0 and both minted
+`<actor>:1`, corrupting the monotonic-per-author sequence the watcher-resume cursor and
+`open_claims`'s lease rely on. `entry_file()` now mints one file per WRITING PROCESS
+(`entries/<actor>-<pid>.jsonl`), and `id` itself now carries the pid too (`<actor>:<pid>:<seq>`) —
+every existing consumer takes the id's last `:`-segment or prints it whole, so this is
+backward-compatible by construction.
+
+The filename fix alone was not enough: `watch_classify.py`'s cursor tracked one high-water seq PER
+ACTOR, so two writers sharing a login would merge their independent per-file counters into one
+baseline — a second, slower-counting writer's still-new entries could be silently swallowed forever
+by a faster writer's higher seq, not just delayed. `classify()` now keys its cursor by a new
+`_writer()` (actor+pid, falling back to bare actor for pre-fix 2-part ids) instead of by actor alone.
+
+Neither fix alone was complete: `sync.py`'s `publish()`/`bootstrap()` hardcoded the OLD
+single-file-per-actor path directly, bypassing `entry_file()` — so the pid-suffixed rename by itself
+would have made `publish()` find nothing to stage and silently stop publishing every actor's ledger
+entries to the shared branch. Both now go through a new `ledger.files_for()`, which finds every file
+(any pid) an actor has written, including a legacy bare `<actor>.jsonl` left over from before this fix.
+
+Blast radius beyond this plugin: `insight/ingest/ledger_writer.py` (a separate BUSL-1.1 product in
+this repo that reimplements ledger reading rather than importing it) has its own resume cursor keyed
+`(project_id, actor_id)`, which assumed one monotonic seq space per actor — no longer true once one
+actor's records can come from multiple independent-pid writers. `_CURSOR_UPSERT_SQL` is now
+`GREATEST`-based instead of a plain overwrite, closing the worse failure mode (the cursor regressing
+backward and causing an already-landed record to be silently re-inserted as a duplicate — `fact_event`
+has no dedup constraint). This is a mitigation, not the full fix: a genuinely new record from a
+still-active writer whose own counter hasn't caught up to another writer's peak can still be silently
+skipped. The full fix needs the cursor keyed on `(project_id, actor_id, writer_id)`, which needs an
+actual schema migration (`store.py`'s additive-only `ALTER TABLE ... ADD COLUMN` mechanism can't widen
+a primary key) — tracked separately as loopsmith#380; see `ledger_writer.py`'s own "KNOWN LIMITATION,
+TRACKED" docstring section for the full accounting.
+
 ### fix(slices): the same file spelled two ways now correctly conflicts
 `slices.conflicts` compared declared file paths purely lexically (`fnmatch` + a literal-prefix
 check), so `engine/graph.py` and `./engine/graph.py` (or a `\`-separated spelling, or a redundant

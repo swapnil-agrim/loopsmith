@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Team coordination ledger: an append-only record of what the loop actually did.
 
-WHY PER-AUTHOR FILES. Every writer owns exactly one file (`ledger/entries/<actor>.jsonl`)
-and never touches anyone else's, so two people running the loop against one repo cannot
-conflict on a write — the "team view" is the UNION of those files, computed on read. The
-obvious alternative (one shared file everyone appends to) needs a lock this kit does not
-have, and git would turn every concurrent append into a merge conflict.
+WHY PER-AUTHOR-PROCESS FILES. Every writer owns exactly one file
+(`ledger/entries/<actor>-<pid>.jsonl`) and never touches anyone else's, so two people running
+the loop against one repo cannot conflict on a write — the "team view" is the UNION of those
+files, computed on read. The obvious alternative (one shared file everyone appends to) needs a
+lock this kit does not have, and git would turn every concurrent append into a merge conflict.
+The pid, not just the actor, is load-bearing: the actor resolves to the authenticated `gh`
+login, and several parallel loops can share one login (F10) — without the pid, two such
+loops would collide on the SAME file and could mint the same `id`.
 
 WHAT IT IS FOR. The review queue answers "what stopped?" for one person on one machine
 (and it is gitignored, so nobody else ever sees it). The ledger answers "what has the team
@@ -349,7 +352,45 @@ def entries_dir(sdlc_dir, stream=ENTRIES):
 
 
 def entry_file(sdlc_dir, who, stream=ENTRIES):
-    return entries_dir(sdlc_dir, stream) / f"{_safe_name(who)}.jsonl"
+    """F10: the filename carries the WRITING PROCESS, not just the actor. The per-author-file design
+    assumed one writer per file, but the actor resolves to the authenticated `gh` login — and several
+    parallel loops under a single shared account (all loops authenticate as the same user) all
+    resolve to the SAME `who`. Two concurrent appends to one file then read the same `_line_count`
+    and mint the same `id` (`shared:1 == shared:1`), breaking the monotonic-per-author guarantee the
+    watcher-resume cursor + `open_claims` lease rely on. The pid makes concurrent writers land in
+    different files instead — `read_all()`/`render()` already union EVERY `*.jsonl` under the stream
+    dir and attribute by the `actor` FIELD inside each entry (never the filename), so THOSE needed no
+    change. `sync.py`'s `publish()`/`bootstrap()` are the exception: they name a specific file to
+    stage rather than reading via `read_all()`, so they go through `files_for()` below to find every
+    file a given actor (any pid) has written."""
+    return entries_dir(sdlc_dir, stream) / f"{_safe_name(who)}-{os.getpid()}.jsonl"
+
+
+def files_for(directory, who):
+    """Every file `who` has ever written into a ledger stream directory (an `entries_dir()`/
+    `events_dir()` result) — one per writing process (see `entry_file()`), plus a pre-#337 bare
+    `<who>.jsonl` if one is still sitting there unpublished from before this plugin version.
+    `sync.py`'s `publish()`/`bootstrap()` need this: unlike `read_all()`, which safely unions every
+    `*.jsonl` in the directory, they must name exactly which files are (or might be) `who`'s to
+    stage — never a teammate's.
+
+    Matches the safe name exactly, never as a prefix: a naive `<safe>-*` glob would also match a
+    DIFFERENT actor whose safe name happens to start with `<safe>-` (e.g. "team" matching
+    "team-bot"'s files), so each candidate is split on its trailing `-<pid>` and the remainder is
+    compared for equality first."""
+    d = pathlib.Path(directory)
+    if not d.is_dir():
+        return []
+    safe = _safe_name(who)
+    out = []
+    for p in d.glob(f"{safe}-*.jsonl"):
+        name, _, pid = p.stem.rpartition("-")
+        if name == safe and pid.isdigit():
+            out.append(p)
+    legacy = d / f"{safe}.jsonl"
+    if legacy.exists():
+        out.append(legacy)
+    return sorted(out)
 
 
 def _safe_name(who):
@@ -593,7 +634,13 @@ def append(sdlc_dir, config, kind, goal, run=None, now=None, stream=ENTRIES, **f
     seq = _line_count(path) + 1
 
     entry = {
-        "id": f"{who}:{seq}",
+        # F10: the pid rides in `id` too, not just the filename — `watch_classify.py`'s cursor
+        # tracks a per-WRITER (not per-actor) high-water seq, and needs the pid to key on. Every
+        # existing `id` consumer (`_seq()` here and in watch_classify.py, and the 3 call sites that
+        # just print `entry["id"]` verbatim) takes the LAST `:`-segment or the whole string, so a
+        # 3-part id is a no-op for all of them — confirmed by reading every "id" reference in the
+        # plugin.
+        "id": f"{who}:{os.getpid()}:{seq}",
         "ts": _stamp(now),
         "actor": who,
         "kind": kind,

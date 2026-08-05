@@ -20,6 +20,27 @@ exactly these three points -- restated here so the next reader does not re-litig
      inert: ledger.py has no stream parameter yet (that's #136, E6.S1), so it is always exactly
      one value today. Widen the cursor's key when #136 ships a real second stream, not before.
 
+KNOWN LIMITATION, TRACKED (loopsmith#380, opened alongside the fix below -- not a settled
+decision like the three above, an open gap): ledger.py's own PR #337 (F10) gave every writing
+PROCESS of one actor its own file and put the pid into `id` (`<actor>:<pid>:<seq>`), so one
+actor's records read here can now carry MULTIPLE INDEPENDENT seq spaces (one per pid), not one
+monotonic space as decision 2 above still assumes. `_CURSOR_UPSERT_SQL` was widened from a plain
+overwrite to `GREATEST(last_seq, excluded.last_seq)` specifically to close the WORSE of the two
+failure modes this could otherwise cause: a lower-seq record from a different writer processed
+after a higher-seq one from another writer of the same actor no longer regresses the cursor
+backward, so it can no longer cause an already-landed record to be silently RE-INSERTED as a
+duplicate on a later run (fact_event has no dedup constraint -- see store.py -- so a duplicate
+insert would otherwise be invisible and would inflate every event-count metric for that actor).
+GREATEST does NOT close the other failure mode: a genuinely NEW record from a still-active writer
+whose OWN independent counter has not yet caught up to another (possibly now-gone) writer's peak
+seq will still read as `seq <= start_cursor[actor]` and be skipped -- silently lost, the same
+"swallowed hand-off" failure class PR #337 fixes in watch_classify.py, just relocated here. Fixing
+that fully needs the cursor keyed on (project_id, actor_id, writer_id), which needs `writer_id`
+added to ingest_ledger_cursor's PRIMARY KEY -- this module's own migration tool
+(`store.py`'s `_ALTER`) only supports additive `ADD COLUMN`, not a primary-key change, so that is
+a real migration story of its own (loopsmith#380), not a same-PR fix. Land the cheap, safe,
+additive mitigation now; do not treat this limitation as closed.
+
 WHERE THE ROWS GO, per spec §B.3's own column list (verified against insight/ingest/store.py,
 NOT invented here -- fact_event and fact_handoff are written with EXACTLY the columns store.py
 already declares, no new ones added by this story):
@@ -164,7 +185,7 @@ _CURSOR_UPSERT_SQL = """
     INSERT INTO ingest_ledger_cursor (project_id, actor_id, last_seq)
     VALUES (?, ?, ?)
     ON CONFLICT (project_id, actor_id) DO UPDATE SET
-      last_seq = excluded.last_seq
+      last_seq = GREATEST(ingest_ledger_cursor.last_seq, excluded.last_seq)
 """
 
 

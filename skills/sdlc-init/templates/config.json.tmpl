@@ -58,7 +58,7 @@
   },
   "ledger": {
     "enabled": false,
-    "_comment": "Append-only team record of what the loop did: .sdlc/ledger/entries/<actor>.jsonl, ONE FILE PER PERSON (you only ever write your own, so concurrent appends cannot conflict). The team view is their union - render it with `ledger.py render <dir> --write`. Off by default; absent, the loop behaves exactly as before.",
+    "_comment": "Append-only team record of what the loop did: .sdlc/ledger/entries/<actor>-<pid>.jsonl, ONE FILE PER WRITING PROCESS (you only ever write your own, so concurrent appends cannot conflict - the pid, not just the actor, since several parallel loops can share one login). The team view is their union - render it with `ledger.py render <dir> --write`. Off by default; absent, the loop behaves exactly as before.",
     "actor": "",
     "_actor": "Your handle in the ledger. Empty = resolved from the authenticated account (`gh api user`), else the shell user.",
     "owners": {},

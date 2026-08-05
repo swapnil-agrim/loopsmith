@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 
 import pytest
@@ -61,7 +62,8 @@ def test_append_writes_one_json_line_per_entry(tmp_path):
     lines = path.read_text().strip().splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0])["kind"] == "claimed"
-    assert first["id"] == "dana:1" and second["id"] == "dana:2"     # monotonic per author
+    pid = os.getpid()
+    assert first["id"] == f"dana:{pid}:1" and second["id"] == f"dana:{pid}:2"  # monotonic per author
 
 
 def test_entry_carries_the_core_fields(tmp_path):
@@ -226,7 +228,7 @@ def test_cli_append_prints_the_entry_id(tmp_path, capsys):
     d = _sdlc(tmp_path, ON)
     assert ledger.main(["ledger.py", "append", str(d), "handoff", "g.md",
                         "--to", "rae", "--issue", "61", "--priority", "P0"]) == 0
-    assert capsys.readouterr().out.strip() == "dana:1"
+    assert capsys.readouterr().out.strip() == f"dana:{os.getpid()}:1"
     assert json.loads(ledger.entry_file(d, "dana").read_text())["issue"] == 61   # coerced to int
 
 
@@ -461,16 +463,60 @@ def test_event_ids_monotonic_per_actor_and_stream(tmp_path):
     e2 = ledger.append(d, ON, "done", "g.md")
     e3 = ledger.append(d, ON, "phase", "g.md", stream="events", phase="implement", state="start")
     e4 = ledger.append(d, ON, "phase", "g.md", stream="events", phase="implement", state="end")
-    assert e1["id"] == "dana:1" and e2["id"] == "dana:2"
-    assert e3["id"] == "dana:1" and e4["id"] == "dana:2"          # independent per-stream counter
+    pid = os.getpid()
+    assert e1["id"] == f"dana:{pid}:1" and e2["id"] == f"dana:{pid}:2"
+    assert e3["id"] == f"dana:{pid}:1" and e4["id"] == f"dana:{pid}:2"  # independent per-stream counter
 
 
 def test_default_stream_unchanged(tmp_path):
     d = _sdlc(tmp_path, ON)
     ledger.append(d, ON, "note", "g.md")
     assert ledger.entry_file(d, "dana").exists()
-    assert ledger.entry_file(d, "dana") == ledger.entries_dir(d) / "dana.jsonl"
+    # F10: the filename now carries the writing pid too, not just the actor (see
+    # test_entry_file_is_per_actor_per_process below for the reason) — still under entries_dir,
+    # still named after the actor.
+    assert ledger.entry_file(d, "dana") == ledger.entries_dir(d) / f"dana-{os.getpid()}.jsonl"
     assert len(ledger.read_all(d)) == 1
+
+
+# --- F10: same-actor concurrency must not collide on `id` -------------------------------------
+
+
+def test_entry_file_is_per_actor_per_process(tmp_path):
+    d = _sdlc(tmp_path, ON)
+    assert ledger.entry_file(d, "dana").name == f"dana-{os.getpid()}.jsonl"
+
+
+def test_concurrent_same_actor_writers_never_collide_on_id(tmp_path, monkeypatch):
+    """The repro: several parallel loops resolve to the SAME actor (a shared gh login) and used to
+    write the same file — two concurrent appends both read `_line_count` as 0 and both minted
+    `dana:1`. Simulate two such writers (different pids, same actor) each appending: they must land
+    in different files and never produce the same `id`."""
+    d = _sdlc(tmp_path, ON)
+    monkeypatch.setattr(os, "getpid", lambda: 111)
+    e1 = ledger.append(d, ON, "claimed", "g.md")
+    monkeypatch.setattr(os, "getpid", lambda: 222)
+    e2 = ledger.append(d, ON, "claimed", "h.md")          # a "concurrent" writer, same actor
+    assert e1["id"] != e2["id"]                            # the collision this finding is about
+    assert e1["actor"] == e2["actor"] == "dana"             # same person, correctly attributed
+    files = sorted(p.name for p in ledger.entries_dir(d).glob("*.jsonl"))
+    assert files == ["dana-111.jsonl", "dana-222.jsonl"]    # never sharing a file
+    all_entries = ledger.read_all(d)
+    assert len(all_entries) == 2
+    assert len({e["id"] for e in all_entries}) == 2         # both entries survive the union, no collision
+
+
+def test_concurrent_same_actor_writers_each_still_get_their_own_monotonic_sequence(tmp_path, monkeypatch):
+    d = _sdlc(tmp_path, ON)
+    monkeypatch.setattr(os, "getpid", lambda: 111)
+    a1 = ledger.append(d, ON, "claimed", "g.md")
+    a2 = ledger.append(d, ON, "done", "g.md")
+    monkeypatch.setattr(os, "getpid", lambda: 222)
+    b1 = ledger.append(d, ON, "claimed", "h.md")
+    # id embeds the pid too (not just the filename) — watch_classify.py's cursor keys off it to
+    # tell these two writers apart (see test_watch.py's writer/cursor tests).
+    assert a1["id"] == "dana:111:1" and a2["id"] == "dana:111:2"  # process 111's own sequence
+    assert b1["id"] == "dana:222:1"                          # process 222 starts its own, in its own file
 
 
 def test_event_fields_land_in_the_jsonl(tmp_path):

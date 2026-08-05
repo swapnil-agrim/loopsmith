@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 
 S = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts"
@@ -221,7 +222,7 @@ def test_cli_open_reports_what_it_did(tmp_path, capsys, monkeypatch):
     assert handoff.main(["handoff.py", "open", str(sdlc), "g.md", "--area", "engine",
                          "--why", "needs a flag", "--priority", "P0"]) == 0
     out = capsys.readouterr().out
-    assert "eng-owner" in out and "#61" in out and "ledger amy:1" in out
+    assert "eng-owner" in out and "#61" in out and f"ledger amy:{os.getpid()}:1" in out
 
 
 def test_cli_ack_validates_the_state(tmp_path, capsys):
@@ -229,7 +230,7 @@ def test_cli_ack_validates_the_state(tmp_path, capsys):
     assert handoff.main(["handoff.py", "ack", str(sdlc), "--issue", "61", "--state", "maybe"]) == 2
     assert "--state" in capsys.readouterr().err
     assert handoff.main(["handoff.py", "ack", str(sdlc), "--issue", "61", "--state", "declined"]) == 0
-    assert capsys.readouterr().out.strip() == "amy:1"
+    assert capsys.readouterr().out.strip() == f"amy:{os.getpid()}:1"
 
 
 def test_cli_usage(capsys):
