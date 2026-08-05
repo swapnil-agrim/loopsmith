@@ -34,18 +34,24 @@ import sys
 import time
 
 #: Every kind a ledger line may carry. Small on purpose — an open vocabulary would make the
-#: team view unreadable within a week. `merged` records a PR the loop actually landed.
+#: team view unreadable within a week. `merged` records a PR the loop actually landed. `merge-armed`
+#: (F26/#344) is the separate, honest kind for the moment `work.py merge` calls `gh pr merge --auto`:
+#: that call only ARMS GitHub's auto-merge, it does not confirm the PR landed — a later-failing check
+#: or a cancelled auto-merge can still mean it never does. Logging that moment as `merged` was a false
+#: "landed" claim in TEAM.md's shared view. Nothing in this codebase watches for the real merge event
+#: yet, so `merged` currently has no write site — it stays declared for when one does.
 #: Sibling pin: tests/test_ledger.py::test_vocabulary_constants_match_spec_table (this file) and
 #: insight/contract/vocabulary.json's "entries_kinds" -- issue #298. Update both by hand.
-KINDS = ("claimed", "done", "parked", "failed", "handoff", "ack", "release", "note", "merged")
+KINDS = ("claimed", "done", "parked", "failed", "handoff", "ack", "release", "note", "merged", "merge-armed")
 
 #: Lifecycle of a hand-off, from the point of view of the person it is addressed TO.
 STATES = ("open", "accepted", "deferred", "declined", "resolved")
 
 #: Kinds that belong in the shared/team view even with no explicit addressee. `claimed` is shared so
 #: the team view records WHO started a ticket and WHEN (it pairs with `done` to show start→finish);
-#: `merged` is shared because a landed PR is a team event; `note` stays personal unless it names a `to`.
-SHARED_KINDS = ("claimed", "done", "parked", "failed", "handoff", "ack", "release", "merged")
+#: `merged`/`merge-armed` are shared because a landed-or-armed PR is a team event; `note` stays
+#: personal unless it names a `to`.
+SHARED_KINDS = ("claimed", "done", "parked", "failed", "handoff", "ack", "release", "merged", "merge-armed")
 
 #: Optional fields, all free-form except `state` (validated) — additive by design: an older
 #: reader ignores a field it does not know rather than failing. `pr` carries a pull-request number.

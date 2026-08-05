@@ -187,6 +187,27 @@ is sent and, per the issue's own verification method, that a mocked 250-issue ba
 200 cap) picks the true oldest rather than the oldest-of-the-newest-200 — confirmed to fail against
 the pre-fix code with exactly that symptom (`'51'` picked instead of `'1'`).
 
+### fix(ledger): auto-merge arm no longer logs a false `merged` entry (F26/#344)
+`work.py merge()` called `gh pr merge --auto` — which only ARMS GitHub's auto-merge, it does not
+confirm the PR landed; a later-failing check or a cancelled auto-merge can still mean it never does —
+then immediately appended a `merged` kind to the team ledger. TEAM.md's "Recent activity" table
+renders `kind` verbatim, so a PR that never actually merged still showed as landed, and nothing else
+in this codebase later corrects the record: there is no watcher that observes the real GitHub merge
+event.
+
+Adds `merge-armed` to the entries-stream vocabulary (`ledger.KINDS`/`SHARED_KINDS`, shared in
+TEAM.md same as `merged`) and switches the arm-time write in `work.py merge()` to it; `merged` stays
+declared for when a real merge-confirmation write site exists. Renamed
+`test_merge_logs_a_merged_entry_to_the_ledger` to `test_merge_logs_a_merge_armed_entry_to_the_ledger`
+and extended it to assert the arm path logs `merge-armed` and never `merged`; updated
+`test_vocabulary_constants_match_spec_table`'s pin to match.
+
+Known, disclosed gap left for `insight/`'s own owner: `insight/contract/vocabulary.json`'s
+`entries_kinds` and the `PRs landed` panel (`insight/dash/panel.py`, `WHERE kind='merged'`) still key
+on the literal `merged` string. The two sides are documented as kept in sync "by hand, not enforced"
+(`insight/contract/README.md`), and no engine write site has ever produced a `merged` entry insight
+could safely have counted as an actual landing, so this is not a regression of a working count.
+
 ## 1.0.0 — the zero-touch release
 
 The theme: one person on one machine can now point LoopSmith at a stack of their own assigned issues
