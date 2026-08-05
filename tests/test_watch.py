@@ -663,7 +663,11 @@ def test_watch_sh_no_ops_when_a_live_watcher_already_holds_the_pid(tmp_path):
                           env={**os.environ, "LOOPSMITH_WATCH_SLEEP_SCALE": "0",
                                "LOOPSMITH_WATCH_MAX_TICKS": "1"})
     assert proc.returncode == 0 and "already running" in proc.stdout
-    assert not (d / "state" / "watch.log").exists()                # never ticked
+    # The backoff message is tee'd to the log too (independent review of #409: a real invocation
+    # redirects stdout/stderr to /dev/null, so this is the only way it's actually discoverable) --
+    # the log now exists, but must show the backoff, never a tick.
+    log = (d / "state" / "watch.log").read_text()
+    assert "already running" in log and "tick #" not in log
     assert (d / "state" / "watch.pid").read_text().strip() == str(os.getpid())   # first pid intact
 
 

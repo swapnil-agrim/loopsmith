@@ -139,9 +139,17 @@ natural race. Fixed with the same discipline applied one level deeper: the recla
 gated behind its own atomic `mkdir` (`watch.decide.lock.reclaim`), so at most one racer can ever be
 inside the stat-evict-create sequence at a time. That inner gate deliberately gets no staleness
 recovery of its own — its critical section is shorter still, and an orphaned gate fails SAFE (every
-future racer backs off and prints "a sibling is deciding" forever, an inert and immediately visible
-watcher) rather than unsafe (silent double-execution), so a human clearing a stuck `.reclaim`
-directory by hand is an acceptable, self-announcing residual.
+future racer backs off and prints "a sibling is deciding" forever, an inert watcher) rather than
+unsafe (silent double-execution), so a human clearing a stuck `.reclaim` directory by hand is an
+acceptable, self-announcing residual.
+
+A third independent review, adversarial toward the shipped design specifically (300-racer bursts,
+fault injection comparing directly against the prior design, both-gates-stale total-hang
+confirmation), approved the race-safety itself but caught that "self-announcing" was aspirational:
+`loop.py`'s real invocation redirects `watch.sh`'s stdout/stderr to `/dev/null`, and the two backoff
+messages were plain `echo`, never written to `watch.log` the way tick-loop messages are — so the
+"immediately visible" half of the residual's risk acceptance was actually silent in the one context
+this script really runs in. Both backoff messages are now `tee`'d to the log too.
 
 ## 1.0.0 — the zero-touch release
 
