@@ -227,6 +227,50 @@ def test_spend_cli_verb_accumulates():
         assert lp.state.load_cursor(base)["run_tokens"] == 200
 
 
+# --- F8: a non-integer spend token count must refuse cleanly, never traceback ------------------
+
+
+def test_spend_rejects_a_float_token_count_with_a_usable_message_not_a_traceback():
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        proc = subprocess.run([sys.executable, str(S / "loop.py"), "spend", base, "1.5"],
+                              capture_output=True, text=True)
+        assert proc.returncode == 2
+        assert "Traceback" not in proc.stderr
+        assert "1.5" in proc.stderr and "not an integer" in proc.stderr
+
+
+def test_spend_rejects_a_non_numeric_token_count():
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        proc = subprocess.run([sys.executable, str(S / "loop.py"), "spend", base, "abc"],
+                              capture_output=True, text=True)
+        assert proc.returncode == 2
+        assert "Traceback" not in proc.stderr
+
+
+def test_spend_rejects_a_bad_token_count_without_corrupting_the_run_tokens_counter():
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        subprocess.run([sys.executable, str(S / "loop.py"), "spend", base, "120"],
+                       capture_output=True, text=True)
+        proc = subprocess.run([sys.executable, str(S / "loop.py"), "spend", base, "1.5"],
+                              capture_output=True, text=True)
+        assert proc.returncode == 2
+        lp = _loop()
+        assert lp.state.load_cursor(base)["run_tokens"] == 120   # unchanged by the rejected call
+
+
+def test_spend_still_accepts_a_clean_integer_after_the_fix():
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        proc = subprocess.run([sys.executable, str(S / "loop.py"), "spend", base, "50"],
+                              capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        lp = _loop()
+        assert lp.state.load_cursor(base)["run_tokens"] == 50
+
+
 # --- failed != parked (0.6): a fix-needed lane distinct from decide-needed ---
 
 def test_failed_result_gets_failed_status_and_own_queue_tag():
