@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### fix(handoff): a local/issue-less hand-off can now actually be acknowledged (F22/#347)
+`handoff.py`'s `ack` CLI unconditionally required `--issue <n>`, with no `--goal` flag at all — but
+`hand_off()` writes `issue=None` whenever its source can't open issues (no `gh`, or a local backlog),
+and `ledger.handoff_key()` has always fallen back to the goal string in exactly that case. A hand-off
+raised that way could never be settled: the CLI demanded an issue number that was never assigned, so
+it sat `outstanding`/`unanswered` forever, and the inbox's own instructions told the reader to run
+`ack --issue <n>` for an `<n>` that didn't exist. `main()`'s `ack` branch now accepts `--goal` as an
+alternative identifier — either satisfies the "which hand-off is this" requirement, and `--issue`
+still wins when both are given, matching `handoff_key()`'s own precedence — and threads it through to
+`acknowledge()`, which already keyed correctly the moment it actually received a goal.
+
 ### fix(work): `max_review_cycles: 0` (or negative) no longer silently disables the hard cap
 `post_review()`'s cap check computed `cap = int(... or 0)` then gated on `cap and cycles >= cap` —
 `cap and ...` short-circuits false the instant `cap` is exactly 0, so a configured
