@@ -297,6 +297,76 @@ def next_batch(sdlc_dir, source, config, max_concurrent=None, extra_skip=()):
     return picks
 
 
+def _session_marker_path(sdlc_dir):
+    return pathlib.Path(sdlc_dir) / "state" / "session.active"
+
+
+def session_start(sdlc_dir, session_pid):
+    """Record that a managing session — a routine/cron firing, or a manual overnight run — is now
+    driving `.sdlc` (F10.5-4/#377), so a routine firing again before this one finishes can tell NOT
+    to launch a redundant one — the same class of risk F10.5/#374 already closes one level down (a
+    routine blindly resuming ANOTHER session's in-flight worktree, not launching a whole second one).
+
+    `session_pid` must be the CALLER's own long-lived process id — the routine/skill layer's, not
+    any individual `loop.py` invocation's own. Confirmed empirically that this distinction is real,
+    not theoretical: two separate shell-tool calls in the SAME host session get two DIFFERENT `$$`
+    (a fresh subprocess each time — the same reason `next`'s `--skip` flag exists, see F10.5-3/#375),
+    but the SAME `$PPID` (the long-lived parent the shell-tool calls share). Recording THIS call's
+    own `os.getpid()` — a `python3 loop.py ...` process that exits within moments of returning —
+    would make the marker read as immediately dead, useless for a session running minutes-to-hours
+    across many separate `loop.py` calls. The routine/skill prompt captures `$PPID` (or an
+    equivalent stable id) ONCE, up front, and passes it through every call that needs it.
+
+    Fail-open: a marker this call cannot write must never stop the run — the worst case is simply
+    that a later liveness check falls through to "not active", exactly as if the routine had never
+    called this at all."""
+    try:
+        path = _session_marker_path(sdlc_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{int(session_pid)}\n")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def session_end(sdlc_dir):
+    """Clear the marker `session_start` wrote — best-effort, must never raise, and a safe no-op
+    when nothing was ever written (a run that never called `session_start` in the first place)."""
+    try:
+        _session_marker_path(sdlc_dir).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def session_active(sdlc_dir, config):
+    """True iff a managing session is still active for `sdlc_dir`, per the marker `session_start`
+    wrote — what a routine checks BEFORE deciding whether to launch one. Combines the same two
+    independent signals `ledger._held()` already combines for claim leases (F10.5/#374), not a new
+    pattern invented here: `ledger.pid_alive()` on the recorded pid (a DEFINITIVELY dead pid — the
+    kernel has no such process — means stale regardless of age, no timeout needed to detect a crash,
+    same reasoning as `_try_acquire_claim_lock`'s `flock`-based lock, F10.5-2/#387) AND the marker's
+    own age against `ledger.lease_ttl_seconds(config)` (the SAME 12h-default knob the team ledger
+    already exposes, not a second one to separately configure — applied unconditionally, exactly
+    like `_held()`'s own TTL cutoff, so an ancient marker eventually stops protecting even if its
+    pid happens to still resolve as alive — the realistic risk being pid REUSE over long spans, not
+    a legitimately-still-running session, since routine firings are expected to be far more frequent
+    than the TTL). No marker at all, or unparseable content, reads as not active — never raises."""
+    path = _session_marker_path(sdlc_dir)
+    try:
+        pid = int(path.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    ledger = _load("ledger")
+    if not ledger.pid_alive(pid):
+        return False
+    ttl = ledger.lease_ttl_seconds(config)
+    if ttl is None:
+        return True
+    try:
+        return (time.time() - path.stat().st_mtime) < ttl
+    except OSError:
+        return True                          # can't even stat it — fail toward "still active"
+
+
 def _surface_inbox(sdlc_dir):
     """Print anything a teammate needs from you BEFORE handing over the next goal.
 
@@ -661,6 +731,15 @@ def main(argv):
         state.start_run(argv[2])
         for warning in _config_warnings(state.load_config(argv[2])):
             print("loop: " + warning, file=sys.stderr)       # surface the trap up front, not 40 goals in
+        session_pid = _flags(argv[3:]).get("session-pid")    # F10.5-4/#377: opt-in, see session_start
+        if session_pid is not None and session_pid != "true":
+            session_start(argv[2], session_pid)
+        return 0
+    if len(argv) >= 3 and argv[1] == "session-end":          # F10.5-4/#377: routine cleanup on exit
+        session_end(argv[2]); return 0
+    if len(argv) >= 3 and argv[1] == "session-active":       # F10.5-4/#377: routine pre-flight check
+        config = state.load_config(argv[2])
+        print("ACTIVE" if session_active(argv[2], config) else "FREE")
         return 0
     if len(argv) >= 3 and argv[1] == "next":
         config = state.load_config(argv[2])
@@ -775,8 +854,10 @@ def main(argv):
         return 0
     if len(argv) >= 4 and argv[1] == "verify":      # machine done_when: run + persist evidence
         return verify_goal(argv[2], argv[3])
-    print("usage: loop.py start <dir> | next <dir> | next-batch <dir> | qc <dir> <goal> | "
-          "note <dir> <goal> <text> | record <dir> <goal> done|parked|failed [reason] | "
+    print("usage: loop.py start <dir> [--session-pid PID] | next <dir> [--skip a,b] | "
+          "next-batch <dir> [--skip a,b] | session-active <dir> | session-end <dir> | "
+          "qc <dir> <goal> | note <dir> <goal> <text> | "
+          "record <dir> <goal> done|parked|failed [reason] | "
           "spend <dir> <tokens> [goal] [--k v ...] | emit <dir> <goal> <kind> [--k v ...] | "
           "verify <dir> <goal>", file=sys.stderr)
     return 2

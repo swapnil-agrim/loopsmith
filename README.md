@@ -874,6 +874,48 @@ If a built-in ever shadows a LoopSmith skill you want, the fix is **on your side
 `/sdlc-doctor` surfaces this as an advisory (it can't detect a live conflict — no API exists — so it
 points you at these remedies rather than guessing).
 
+## Zero-touch routines (optional, off by default)
+
+Scheduling isn't something LoopSmith drives itself — that's the host's own recurring-trigger feature
+(Claude Desktop's "Routines," a cron job calling `claude -p`, whatever fires an agent unattended on a
+timer). What LoopSmith needs to be is **safe under repeated, possibly-overlapping invocation**, so a
+routine can be configured once and left running without double-launching a redundant session or ever
+substituting ambient conversational memory for a real backlog pick.
+
+**The session-active marker** (`loop.py session-active` / `session-end`, `start --session-pid`,
+F10.5-4/#377) is what makes the first half cheap. `loop.py start` optionally takes `--session-pid
+<pid>` recording the CALLER's own long-lived process id — **not** any individual `loop.py` call's own:
+each `loop.py` invocation is a short-lived subprocess that exits within moments of returning, so
+recording ITS pid would make the marker read as dead the instant it's written. A routine firing checks
+`session-active` first: a genuinely live session's marker reads `ACTIVE` and the firing exits
+immediately, no-op; a crashed session's marker — its recorded pid no longer exists — reads `FREE` with
+no timeout to wait out, the same reasoning `_try_acquire_claim_lock`'s kernel-mediated lock relies on
+(F10.5-2/#387).
+
+**Recommended routine prompt** (Claude Desktop, local use — adapt the `.sdlc` path for your project):
+
+> Run `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" session-active .sdlc`. If it prints `ACTIVE`,
+> stop here — a session is already running, nothing to do.
+>
+> If it prints `FREE`: capture a process id that stays stable for this WHOLE routine firing (not any
+> single `loop.py` call's own — `$PPID`, read once up front, is the strongest candidate; sanity-check
+> it stays constant across two separate commands in your own environment before relying on it, since
+> this hasn't been verified inside Desktop's own Routines execution model specifically). Then run
+> `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" start .sdlc --session-pid <that id>` and follow
+> `/sdlc-loop` exactly as documented above, with `parallel.goals.enabled` set in `.sdlc/config.json`
+> if you want it draining several goals at once. **Always call `loop.py next` / `next-batch` for the
+> next goal — never phrase this prompt as "continue where you left off" or otherwise lean on memory
+> of a prior run.** A fresh routine firing has no transcript continuity with whatever ran before it;
+> ambient conversational continuity must never substitute for a real backlog pick, or the whole point
+> of the marker (knowing precisely what's still live) is undermined by the one thing it can't see.
+> Let it run to backlog-empty or budget, exactly as `/sdlc-loop` already does unattended. When it
+> stops, run `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" session-end .sdlc` before exiting, so the
+> next firing correctly sees `FREE` again.
+
+Off by default in the sense that nothing writes or reads the marker unless a routine (or you, by hand)
+calls `--session-pid` / `session-active` / `session-end` — `start`/`next` behave exactly as before
+this existed when none of it is used.
+
 ## Status (honest)
 
 LoopSmith is **built on and validated only on Claude Code** — the always-on hook, one-command plugin
