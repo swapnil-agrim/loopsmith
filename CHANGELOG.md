@@ -11,13 +11,24 @@ RuntimeError, and the whole hand-off degraded to a ledger-only entry: no issue o
 ever routed the dependency, purely because the owner was a team. Any other assignee `gh` rejects (not
 a collaborator, a typo, a removed account) failed the identical way.
 
-A rejected assignee is now retried once, unassigned, and the new issue gets a comment naming the
-assignee that was dropped and why — the hand-off always lands somewhere a human can find it, instead
-of vanishing. `GitHubSource.last_assignee_applied` records whether the assignment actually took, and
-`hand_off()`'s own narrative comment now checks it before claiming "assigned to @owner" — a resolved
-CODEOWNERS owner is no longer treated as proof the assignment happened. A genuine, non-assignee-specific
-failure (auth broken, network down) still raises out of the unassigned fallback exactly as before —
-this closes the one bug where the assignee alone was fatal, not a blanket swallow of every `gh` error.
+`create_dependency()` now creates every issue unassigned first (one `gh issue create` call, never
+combined with `--assignee`), then assigns as a separate `gh issue edit --add-assignee` step against
+the now-known issue number. Two rounds of independent review shaped this: round 1 flagged that the
+first fix's fallback note embedded `str(exc)` wholesale, which for a real `gh` failure is the entire
+reconstructed command line (`--body <the whole issue body>` included) rather than just the reason —
+`_run_gh` now exposes the short reason alone via `exc.hint`, and the note uses that. Round 2 found a
+more serious problem with the fallback itself: `gh issue create --assignee` is not atomic (`gh` runs
+`createIssue` then a separate `replaceActorsForAssignable` mutation), so when only the assignment
+half fails, the issue it already created is not rolled back and its number is never printed — a
+combined call has no way to learn that orphan exists, so retrying unassigned created a SECOND,
+genuinely duplicate, permanently untracked issue every time (confirmed against real `gh`, not
+assumed). Creating unassigned first and assigning as an independently retriable second step makes a
+duplicate structurally impossible: a rejected assignee just leaves the one issue that already exists
+unassigned, with a comment on it naming why. `GitHubSource.last_assignee_applied` records whether the
+assignment actually took, and `hand_off()`'s own narrative comment checks it before claiming
+"assigned to @owner" — a resolved CODEOWNERS owner is no longer treated as proof the assignment
+happened. A genuine, non-assignee-specific failure on the issue-create call itself (auth broken,
+network down) still raises uncaught, exactly as before.
 
 ## 1.0.0 — the zero-touch release
 
