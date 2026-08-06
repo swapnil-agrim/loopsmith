@@ -1,7 +1,7 @@
 """Per-goal worktree + the clean-AND-safe merge gate. Every git/gh call is injected, so these are
 hermetic: no repo, no network, no `gh`. What they actually pin down is the gate's REFUSALS — the
 cheap way to get this wrong is to merge on a lazy UNKNOWN or on evidence from yesterday's run."""
-import importlib.util, json, os, pathlib, sys
+import importlib.util, json, os, pathlib, shutil, sys, time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "skills" / "sdlc-loop" / "scripts"
@@ -14,8 +14,10 @@ def _load(name):
 
 work = _load("work")
 state = _load("state")
+actionlog = _load("actionlog")
 
 ON = {"work": {"enabled": True}}
+ACTIONLOG = {"action_log": {"enabled": True}}
 NOSLEEP = lambda _: None                                          # noqa: E731 - one-liner test stub
 
 
@@ -1167,3 +1169,225 @@ def test_gate_checks_the_head_before_believing_any_github_verdict(tmp_path):
     ok, verdict, _ = work.gate(d, ON, goal, run=run, sleep=NOSLEEP)
     assert not ok
     assert "STALE HEAD" in verdict, "the head check must win over the conflict report"
+
+
+# --------------------------------------------------------------------------- local-only action log (#463)
+# One regression test per Python-layer call site in work.py — a future edit that quietly drops the
+# actionlog.safe_append call at one of these sites should fail a test, not go unnoticed (matches
+# this repo's own "hardened-sibling-divergence" concern, see plan section 5 §7). Every test here
+# also proves the ledger stays byte-identical when both features are on together, except the final
+# dedicated proof below, which is the acceptance criteria's own required, stronger version.
+
+
+def test_start_emits_worktree_start_to_the_action_log(tmp_path):
+    cfg = {**ON, **ACTIONLOG}
+    d = _sdlc(tmp_path, cfg)
+    run = _runner([("rev-parse", "main")])
+    work.start(d, cfg, "0001-x.md", run=run)
+    entries = actionlog.read_goal(d, "0001-x.md")
+    hits = [e for e in entries if e["kind"] == "worktree_start"]
+    assert len(hits) == 1
+    assert hits[0]["branch"] == "sdlc/0001-x"
+    assert "0001-x" in hits[0]["worktree"]
+
+
+def test_start_reattach_also_emits_worktree_start(tmp_path):
+    """The `branch outlived its record` fallback path is the OTHER path that converges on the same
+    `_save()` call `start()`'s docstring names (plan section 5 §1) — not just the direct-success add
+    -b path the test above already covers."""
+    cfg = {**ON, **ACTIONLOG}
+    d = _sdlc(tmp_path, cfg)
+    run = _runner([("rev-parse", "main"), ("worktree add -b", RuntimeError("already exists"))])
+    work.start(d, cfg, "0001-x.md", run=run)
+    entries = actionlog.read_goal(d, "0001-x.md")
+    assert len([e for e in entries if e["kind"] == "worktree_start"]) == 1
+
+
+def test_start_resume_does_not_re_emit_worktree_start(tmp_path):
+    """The `already started` idempotent-resume early return cuts no new worktree and isn't a new
+    mechanical action worth logging again (plan section 5 §1) — must NOT double the entry a prior
+    `start()` call already wrote."""
+    cfg = {**ON, **ACTIONLOG}
+    d = _sdlc(tmp_path, cfg)
+    goal = _started(d)
+    run = _runner([])
+    assert "already started" in work.start(d, cfg, goal, run=run)
+    entries = actionlog.read_goal(d, goal)
+    assert [e for e in entries if e["kind"] == "worktree_start"] == []
+
+
+def test_merge_emits_gate_for_merge_and_code_review_to_the_action_log(tmp_path):
+    cfg = {"work": {"enabled": True, "auto_merge": "always", "require_review": "approval"}, **ACTIONLOG}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); _evidence(d, goal)
+    run = _runner(_rights() + _review(decision="APPROVED") + [("pr view", _view())])
+    out = work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("auto-merge armed"), out
+    entries = actionlog.read_goal(d, goal)
+    gates = {e["gate"]: e["verdict"] for e in entries if e["kind"] == "gate"}
+    assert gates == {"merge": "pass", "code_review": "pass"}
+
+
+def test_merge_emits_a_block_gate_to_the_action_log_with_why(tmp_path):
+    cfg = {**ALWAYS, **ACTIONLOG}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); _evidence(d, goal)
+    run = _runner(_rights() + [("pr view", _view(mergeable="CONFLICTING"))])
+    out = work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("PARK: conflicts with the base branch")
+    entries = actionlog.read_goal(d, goal)
+    hits = [e for e in entries if e["kind"] == "gate" and e.get("gate") == "merge"]
+    assert len(hits) == 1 and hits[0]["verdict"] == "block"
+    assert "conflicts with the base branch" in hits[0]["why"]
+
+
+def test_merge_emits_no_code_review_entry_to_the_action_log_when_require_review_is_off(tmp_path):
+    cfg = {**ALWAYS, **ACTIONLOG}          # require_review unset -> off
+    d = _sdlc(tmp_path, cfg); goal = _started(d); _evidence(d, goal)
+    run = _runner(_rights() + _protected() + [("pr view", _view())])
+    work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
+    entries = actionlog.read_goal(d, goal)
+    assert [e for e in entries if e["kind"] == "gate" and e.get("gate") == "code_review"] == []
+
+
+def test_merge_emits_merge_armed_to_the_action_log(tmp_path):
+    cfg = {**ALWAYS, **ACTIONLOG}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); _evidence(d, goal)
+    run = _runner(_rights() + _protected() + [("pr view", _view())])
+    out = work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("auto-merge armed")
+    entries = actionlog.read_goal(d, goal)
+    hits = [e for e in entries if e["kind"] == "merge_armed"]
+    assert len(hits) == 1 and hits[0]["pr"] == "7"
+
+
+def test_post_review_emits_gate_to_the_action_log(tmp_path):
+    cfg = {**ON, **ACTIONLOG}
+    d = _sdlc(tmp_path, cfg); goal = _started(d)
+    work.post_review(d, cfg, goal, run=_runner([]), verdict="block", reason="missing null check")
+    entries = actionlog.read_goal(d, goal)
+    hits = [e for e in entries if e["kind"] == "gate" and e.get("gate") == "post_review"]
+    assert len(hits) == 1 and hits[0]["verdict"] == "block"
+    assert "cycle" not in hits[0]     # actionlog's `gate` kind has no `cycle` field — unlike the ledger's
+
+
+def test_post_review_approve_emits_a_pass_gate_to_the_action_log(tmp_path):
+    cfg = {**ON, **ACTIONLOG}
+    d = _sdlc(tmp_path, cfg); goal = _started(d)
+    work.post_review(d, cfg, goal, run=_runner([]), verdict="approve")
+    entries = actionlog.read_goal(d, goal)
+    hits = [e for e in entries if e["kind"] == "gate" and e.get("gate") == "post_review"]
+    assert len(hits) == 1 and hits[0]["verdict"] == "pass"
+
+
+def test_actionlog_survives_a_raising_actionlog_append(tmp_path, monkeypatch):
+    """The module's own fail-open guarantee, proven from the work.py side: a raising
+    `actionlog.append` must never break `start`/`merge`/`post_review` — mirrors
+    `test_work_survives_a_raising_ledger_append` above for the local action log."""
+    cfg = {**ALWAYS, **ACTIONLOG}
+    d = _sdlc(tmp_path, cfg); goal = _started(d); _evidence(d, goal)
+    run = _runner(_rights() + _protected() + [("pr view", _view())])
+
+    def raiser(*a, **k):
+        raise RuntimeError("actionlog broke")
+    monkeypatch.setattr(actionlog, "append", raiser)
+
+    out = work.merge(d, cfg, goal, run=run, sleep=NOSLEEP)
+    assert out.startswith("auto-merge armed on PR #7")
+    out2 = work.post_review(d, cfg, goal, run=_runner([]), verdict="approve")
+    assert "posted loopsmith:approve" in out2
+
+
+def test_ledger_is_byte_identical_across_a_full_actionlog_instrumented_sequence(tmp_path, monkeypatch):
+    """THE load-bearing proof (plan section 5, acceptance criteria — the user's explicit "must
+    never touch the ledger" constraint): run one identical scripted sequence — claim, worktree
+    start, verify, the merge/code_review/post_review gates, merge-armed, and the final record —
+    TWICE in the same `.sdlc` directory, with the ledger *on* both times (so a cross-write would be
+    observable; an off ledger trivially also "looks like" no change) and `action_log` OFF the first
+    time, ON the second. Assert the ledger ends up byte-identical either way — the only thing that
+    changed between the two runs is whether actionlog was ALSO writing.
+
+    NOT a naive before/after snapshot around one single run: the ledger is SUPPOSED to grow from
+    its own real, legitimate writes during the sequence (claimed, verify, three gates, done) — a
+    plain "assert the ledger is unchanged by the whole sequence" would be false by construction and
+    prove nothing. Comparing two full runs (action_log off vs on) isolates exactly the one variable
+    this test cares about. Wall-clock time, perf_counter, and pid are frozen so the two runs'
+    ledger content is byte-comparable — none of those are what this test is checking."""
+    monkeypatch.setattr(time, "time", lambda: 1780000000.0)
+    monkeypatch.setattr(time, "perf_counter", lambda: 0.0)
+    monkeypatch.setattr(os, "getpid", lambda: 999999)
+
+    loop = _load("loop")
+    base = tmp_path / ".sdlc"
+    (base / "goals").mkdir(parents=True)
+    (base / "state").mkdir()
+    goal_path = base / "goals" / "0001.md"
+    d = str(base)
+    goal = str(goal_path)
+
+    def reset_run_state():
+        for rel in ("state/work", "state/verify", "state/log", "state/claims", "ledger"):
+            p = base / rel
+            if p.exists():
+                shutil.rmtree(p)
+        (base / "state" / "STATE.md").write_text("iteration: 0\nrun_iteration: 0\nlast_run: none\n")
+        (base / "state" / "review-queue.md").write_text("# Q\n")
+        goal_path.write_text("---\nid: 0001\nstatus: pending\n---\nx\n")
+
+    def run_sequence(action_log_on):
+        cfg = {"work": {"enabled": True, "auto_merge": "always", "require_review": "approval"},
+               "ledger": {"enabled": True, "actor": "dana"}, "telemetry": {"enabled": True},
+               "action_log": {"enabled": action_log_on},
+               "budget": {"max_iterations": 10}, "verify": {"command": "true"}}
+        (base / "config.json").write_text(json.dumps(cfg))
+        source = loop.sources.get_source(d, cfg)
+        kind, claimed_goal = loop._next(d, source, cfg)
+        assert (kind, claimed_goal) == ("goal", goal)
+        work.start(d, cfg, goal, run=_runner([("rev-parse", "main")]))
+        rec = work._record(d, goal); rec["pr"] = "7"; work._save(d, goal, rec)
+        assert loop.verify_goal(d, goal) == 0
+        run_merge = _runner(_rights() + _review(decision="APPROVED") + [("pr view", _view())])
+        out = work.merge(d, cfg, goal, run=run_merge, sleep=NOSLEEP)
+        assert out.startswith("auto-merge armed"), out
+        out2 = work.post_review(d, cfg, goal, run=_runner([]), verdict="approve")
+        assert "posted loopsmith:approve" in out2
+
+        class _Sink:
+            def complete(self, g): pass
+            def fail(self, g, r): pass
+            def park(self, g, r): pass
+        loop._record(d, _Sink(), goal, "done")
+
+    def snapshot_ledger():
+        root = base / "ledger"
+        if not root.exists():
+            return {}
+        return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+    reset_run_state()
+    run_sequence(action_log_on=False)
+    ledger_off = snapshot_ledger()
+    assert ledger_off, "the sequence itself must produce SOME ledger content, or this proves nothing"
+
+    reset_run_state()
+    run_sequence(action_log_on=True)
+    ledger_on = snapshot_ledger()
+
+    assert ledger_on == ledger_off, "turning action_log on changed what landed in .sdlc/ledger/"
+
+    # Non-vacuous on the OTHER side too: the action-log run actually recorded every one of these
+    # call sites — so "no ledger change" is not simply "actionlog did nothing at all".
+    kinds = {e["kind"] for e in actionlog.read_goal(d, goal)}
+    assert kinds == {"claimed", "worktree_start", "verify_run", "gate", "merge_armed", "recorded"}
+
+
+def test_actionlog_module_has_no_ledger_import():
+    """Cheap belt-and-braces (actionlog.py's own module docstring: zero coupling BY CONSTRUCTION),
+    alongside the stronger behavioral proof above — a plain substring check that actionlog.py's own
+    source never loads ledger.py. Line-anchored (not a bare substring test) because the module's
+    own docstring legitimately DISCUSSES "import ledger.py" in prose (explaining that it doesn't) —
+    a plain `"import ledger" not in src` trips on that sentence; requiring the match at the START
+    of a line (ignoring leading whitespace) is immune to it, the same "AST/anchored, not a raw
+    substring" discipline this repo's own test_import_boundary.py argues for."""
+    import re
+    src = (SCRIPTS / "actionlog.py").read_text(encoding="utf-8")
+    assert '_load("ledger")' not in src
+    assert not re.search(r"^\s*(import ledger\b|from ledger import)", src, re.MULTILINE)

@@ -18,6 +18,17 @@ def _backlog(d, n, max_iter=10):
     return str(base)
 
 
+def _with_action_log(base):
+    """Patch an existing .sdlc's config.json to also turn `action_log` on, preserving everything
+    else already there — the action-log regression tests below reuse this file's existing
+    backlog/telemetry fixtures rather than building a parallel set (#463)."""
+    p = pathlib.Path(base) / "config.json"
+    cfg = json.loads(p.read_text())
+    cfg["action_log"] = {"enabled": True}
+    p.write_text(json.dumps(cfg))
+    return cfg
+
+
 def test_drains_backlog_all_done():
     with tempfile.TemporaryDirectory() as d:
         base = _backlog(d, 3)
@@ -1769,3 +1780,70 @@ def test_validate_event_uses_the_shared_reject_newline_helper():
     err = lp._validate_event("gate", {"gate": "plan_review", "verdict": "warn", "why": "a\nb"},
                              kind_allowlist=lp._EMIT_KINDS)
     assert err == lp.ledger.reject_newline("a\nb", "--why")
+
+
+# ------------------------------------------------------------- local-only action log (#463): one
+# regression test per Python-layer call site in loop.py — a future edit that quietly drops the
+# actionlog.safe_append call at one of these sites should fail a test, not go unnoticed (matches
+# this repo's own "hardened-sibling-divergence" concern, see plan section 5 §7).
+
+
+def test_next_emits_claimed_to_the_action_log():
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        cfg = _with_action_log(base)
+        lp = _loop()
+        kind, goal = lp._next(base, lp.sources.get_source(base, cfg), cfg)
+        assert kind == "goal"
+        entries = lp.actionlog.read_goal(base, goal)
+        assert [e["kind"] for e in entries] == ["claimed"]
+
+
+def test_verify_goal_emits_verify_run_to_the_action_log():
+    with tempfile.TemporaryDirectory() as d:
+        base, goal = _telemetry_backlog(d, verify_command="true")
+        _with_action_log(base)
+        lp = _loop()
+        assert lp.verify_goal(base, goal) == 0
+        entries = lp.actionlog.read_goal(base, goal)
+        hits = [e for e in entries if e["kind"] == "verify_run"]
+        assert len(hits) == 1
+        assert hits[0]["ok"] == "True" and hits[0]["exit"] == "0"
+
+
+def test_verify_goal_absent_command_does_not_emit_to_the_action_log():
+    """The NO-COMMAND early-return path is deliberately NOT one of the actionlog call sites (plan
+    section 5 §1: only the real-command path, right after the ledger try/except) — `verify_run`'s
+    own field whitelist (ok/exit/ms) has no `absent` field, so trying to log this path would raise."""
+    with tempfile.TemporaryDirectory() as d:
+        base, goal = _telemetry_backlog(d, verify_command=None)
+        _with_action_log(base)
+        lp = _loop()
+        assert lp.verify_goal(base, goal) == 3
+        entries = lp.actionlog.read_goal(base, goal)
+        assert [e for e in entries if e["kind"] == "verify_run"] == []
+
+
+def test_record_emits_recorded_to_the_action_log():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        _with_action_log(base)
+        lp = _loop()
+        lp._record(base, _Sink(), "g.md", "parked", "blocked on a decision")
+        entries = lp.actionlog.read_goal(base, "g.md")
+        hits = [e for e in entries if e["kind"] == "recorded"]
+        assert len(hits) == 1
+        assert hits[0]["result"] == "parked" and hits[0]["detail"] == "blocked on a decision"
+
+
+def test_record_done_emits_recorded_with_no_detail():
+    with tempfile.TemporaryDirectory() as d:
+        base = _telemetry_base(d)
+        _with_action_log(base)
+        lp = _loop()
+        lp._record(base, _Sink(), "g.md", "done")
+        entries = lp.actionlog.read_goal(base, "g.md")
+        hits = [e for e in entries if e["kind"] == "recorded"]
+        assert len(hits) == 1
+        assert hits[0]["result"] == "done"
+        assert "detail" not in hits[0]

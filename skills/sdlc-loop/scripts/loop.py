@@ -33,6 +33,7 @@ state = _load("state")
 sources = _load("sources")          # backlog source: local files or GitHub issues (config-selected)
 ledger = _load("ledger")            # team record (config-gated, default OFF; every call is fail-open)
 work = _load("work")                # per-goal worktree/branch/PR (config-gated, default OFF)
+actionlog = _load("actionlog")      # local-only action trace (config-gated, default OFF; never the ledger)
 
 
 def _ensure_watcher(sdlc_dir, config, spawn=None):
@@ -210,6 +211,7 @@ def _next(sdlc_dir, source, config, extra_skip=()):
             return ("BUDGET", None)
         source.mark_in_progress(goal)
         ledger.safe_append(sdlc_dir, "claimed", goal, config=config)
+        actionlog.safe_append(sdlc_dir, goal, "claimed")
         return ("goal", goal)
     finally:
         _release_claim_lock(lock_fd)
@@ -482,6 +484,8 @@ def _record(sdlc_dir, source, goal, result, detail=""):
     if outcome == "parked":
         ledger.safe_append(sdlc_dir, "park", goal, stream=ledger.EVENTS,
                            reason_class=_reason_class(detail), why=detail or None)
+    # One call regardless of outcome — the local action-log counterpart of the ledger calls above.
+    actionlog.safe_append(sdlc_dir, goal, "recorded", result=outcome, detail=(detail or None))
 
 
 def precheck(sdlc_dir, goal, config, source, run=None, now=None):
@@ -563,6 +567,9 @@ def verify_goal(sdlc_dir, goal):
                            command_sha256=hashlib.sha256(cmd.encode("utf-8")).hexdigest())
     except Exception:                # noqa: BLE001 - fail-open; a telemetry hash must never break verify_goal
         pass
+    # Independent concern from the ledger's own hash-computation guard above — an unconditional
+    # call, not nested inside that try.
+    actionlog.safe_append(sdlc_dir, goal, "verify_run", ok=(proc.returncode == 0), exit=proc.returncode, ms=ms)
     print(f"{'VERIFIED' if proc.returncode == 0 else 'FAILED'} exit={proc.returncode} evidence={ev}")
     return 0 if proc.returncode == 0 else 1
 
@@ -898,6 +905,27 @@ def _dispatch(argv):
               "OFF (config needs both \"ledger\": {\"enabled\": true} and "
               "\"telemetry\": {\"enabled\": true})")
         return 0
+    if len(argv) >= 5 and argv[1] == "log":         # agent-emitted LOCAL action-trace (never the ledger)
+        sdlc_dir, goal, kind = argv[2], argv[3], argv[4]
+        flags = _flags(argv[5:])
+        thread = flags.pop("thread", "main")        # an entry-level label, not a per-kind field
+        if kind not in actionlog.AGENT_KINDS:        # the CLI can never reach INTERNAL_KINDS — mirrors
+            print(f"loop.py log: unknown kind {kind!r} (expected one of "  # _EMIT_KINDS fencing `emit`
+                  f"{', '.join(actionlog.AGENT_KINDS)})", file=sys.stderr)  # off the ledger's Class-1 kinds
+            return 2
+        try:
+            entry = actionlog.append(sdlc_dir, goal, kind, "agent", thread=thread, **flags)
+        except ValueError as exc:                   # bad flag/newline/vocabulary — a usable refusal
+            print(f"loop.py log: {exc}", file=sys.stderr)
+            return 2
+        except OSError as exc:
+            # Same fail-open shape as `emit`'s own OSError branch: validation already passed, so a
+            # write failure now (full disk, an unwritable state dir) must never crash the caller.
+            print(f"actionlog: entry skipped (non-fatal): {exc}", file=sys.stderr)
+            return 0
+        if entry is None:                           # action_log.enabled is not true — best-effort,
+            print('OFF (config needs "action_log": {"enabled": true})')  # never gates progress
+        return 0                                     # silent on success — nothing parses this verb's stdout
     if len(argv) >= 4 and argv[1] == "verify":      # machine done_when: run + persist evidence
         return verify_goal(argv[2], argv[3])
     print("usage: loop.py start <dir> [--session-pid PID] | next <dir> [--skip a,b] | "
@@ -905,6 +933,7 @@ def _dispatch(argv):
           "qc <dir> <goal> | note <dir> <goal> <text> | "
           "record <dir> <goal> done|parked|failed [reason] | "
           "spend <dir> <tokens> [goal] [--k v ...] | emit <dir> <goal> <kind> [--k v ...] | "
+          "log <dir> <goal> <kind> [--thread T] [--k v ...] | "
           "verify <dir> <goal>", file=sys.stderr)
     return 2
 
