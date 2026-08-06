@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.2 — the second-pass release
+
 ### fix(loop): `next_pending` no longer trusts a single empty/failed backlog read as "nothing pending" (#447)
 Two prior investigations reproduced but did not root-cause a freshly-created, correctly
 `sdlc:goal`-labelled, non-parked issue being invisible to `next-batch`/`next` — repeated calls
