@@ -23,7 +23,7 @@ _PATTERNS = [
     ("opus",  r"\b(migrat|architect|redesign|securit|secure|authenticat|authoriz|crypto|concurren|"
               r"distribut|race condition|performance|breaking change|complex|scalab|scaling|"
               r"multi-service|data loss|backward compat|threat model|financial|payment)"),
-    ("fable", r"\b(vision|narrativ|storytell|story|blog|marketing copy|prose|tagline|creative writing)"),
+    ("fable", r"\b(vision|narrativ|storytell|blog|marketing copy|prose|tagline|creative writing)"),
     ("haiku", r"\b(typo|renam|whitespace|reformat|formatting|lint|docstring|changelog|spelling|"
               r"indentation|dead code|comment)"),
 ]

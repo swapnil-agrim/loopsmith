@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### fix(model): bare "story" no longer mis-tiers agile goals to the fable (creative) tier (F16/#350)
+`predict.py`'s fable pattern included a bare `story` alternative alongside `storytell`, so any goal
+merely containing the word — "Story: add pagination", "Implement the user story for checkout", "Add a
+story point field" — matched `\bstory` and routed to the fable (creative-writing) tier, even though
+none of it is creative writing. Genuine storytelling goals ("write the storytelling for the launch")
+still match via the separate `storytell` alternative, which was already in the pattern and untouched.
+Dropped the bare `story` alternative from `_PATTERNS`; agile "story" phrasing now falls through to the
+`sonnet` default like any other ordinary implementation goal. New test cases in
+`tests/test_model_predict.py` cover all three phrasings from the issue and confirm they fail against
+the pre-fix pattern with the exact symptom described.
+
 ### fix(handoff): a local/issue-less hand-off can now actually be acknowledged (F22/#347)
 `handoff.py`'s `ack` CLI unconditionally required `--issue <n>`, with no `--goal` flag at all — but
 `hand_off()` writes `issue=None` whenever its source can't open issues (no `gh`, or a local backlog),
