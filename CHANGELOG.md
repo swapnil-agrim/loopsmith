@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.3 — the observability release
+
 ### feat(loop): local-only action log + `sdlc-log` status command (#463)
 The ledger is shared, git-tracked, and meant for team-visible coordination events — the wrong place
 for a full local trace of what LoopSmith is doing right now (every file touched, model/effort
