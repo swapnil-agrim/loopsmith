@@ -145,6 +145,35 @@ def build_parser():
              "resolves, ic.html is skipped with a WARNING on stdout -- insight dash itself still "
              "exits 0.",
     )
+    # `users` (issue #306, E18.S1): the first NESTED subcommand in this file (verb+noun, `users
+    # add`, rather than a bare top-level verb) -- the only reading consistent with the issue's own
+    # literal wording ("insight users add"), and leaves room for `list`/`remove` in later stories
+    # without redesigning the top level. `--username`/`--role` are required FLAGS, not
+    # positionals -- ingest/gaps/dash have no positional-argument precedent anywhere in this file.
+    # The password is NEVER a CLI argument, in any form -- prompted interactively via
+    # getpass.getpass(), twice, in main()'s dispatch branch below. Same reasoning already written
+    # into this file for a different secret (see --claude-analytics's own help text above): a
+    # secret typed as a flag leaks into shell history and `ps`. See .sdlc/plans/306.md Decision 5.
+    users_parser = subparsers.add_parser(
+        "users",
+        help="manage insight web app accounts (issue #306, E18.S1)",
+    )
+    users_subparsers = users_parser.add_subparsers(dest="action", required=True)
+    users_add_parser = users_subparsers.add_parser(
+        "add",
+        help="create a new account with a role; password is prompted interactively, never a "
+             "CLI flag or positional",
+    )
+    users_add_parser.add_argument(
+        "--username", dest="username", required=True,
+        help="the new account's username",
+    )
+    users_add_parser.add_argument(
+        "--role", dest="role", required=True,
+        help="the new account's role -- a free-form, non-empty string, stored verbatim; no "
+             "fixed vocabulary exists yet (E19's job)",
+    )
+
     # the stub loop now has nothing left in it -- kept as an empty tuple rather than deleted, so
     # a FUTURE new stub subcommand has an obvious place to land, mirroring how this loop already
     # shrank from {"gaps", "dash"} to {"dash"} in #122 without changing shape
@@ -504,6 +533,37 @@ def main(argv=None):
                 serve_forever_until_interrupted(out_dir, port=args.port)
             except KeyboardInterrupt:
                 pass
+        return 0
+    if args.command == "users" and args.action == "add":
+        # Lazy, mirroring ingest/gaps/dash: keeps argon2-cffi (and insight.accounts.store /
+        # insight.accounts.hashing) out of the import graph for --help and every other
+        # subcommand. See the module docstring and the AST guard in test_cli.py.
+        import getpass
+
+        from insight.accounts import hashing, store
+
+        password = getpass.getpass("Password: ")
+        confirm = getpass.getpass("Confirm password: ")
+        if password != confirm:
+            print("insight users add: passwords do not match", file=sys.stderr)
+            return 1
+
+        try:
+            store.add_user(args.username, password, args.role)
+        except store.UsernameExistsError as e:
+            print("insight users add: %s" % e, file=sys.stderr)
+            return 1
+        except ValueError as e:
+            print("insight users add: %s" % e, file=sys.stderr)
+            return 1
+        except store.AccountsStoreCorruptError as e:
+            print("insight users add: %s" % e, file=sys.stderr)
+            return 1
+        except hashing.KDFUnavailableError as e:
+            print("insight users add: %s" % e, file=sys.stderr)
+            return 1
+
+        print("insight users add: created account %r (role: %s)" % (args.username, args.role))
         return 0
     issue = _TRACKING_ISSUE[args.command]
     print(
