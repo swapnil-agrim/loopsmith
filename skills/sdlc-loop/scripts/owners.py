@@ -10,8 +10,8 @@ The glob subset supported here is the one CODEOWNERS files actually use — `*`,
 `*.ext`, and `**` — not the whole gitignore grammar. An unmatched path simply has no owner, which
 callers must treat as "nobody in particular", never as an error. Zero deps.
 """
-import fnmatch
 import pathlib
+import re
 import sys
 
 #: Searched in order; the first file that exists is the roster (GitHub's own resolution order).
@@ -52,6 +52,25 @@ def load(project_root):
         return []
 
 
+def _glob_match(path, body):
+    """`fnmatch(path, body)`, but CODEOWNERS-correct: `*` matches within one path segment only
+    (never crosses `/`) and `**` matches across segments — unlike plain `fnmatch`, whose `*`
+    always crosses `/`, which is what let `engine/*` over-match `engine/a/b/c.py` (#355)."""
+    out = []
+    i, n = 0, len(body)
+    while i < n:
+        if body[i:i + 2] == "**":
+            out.append(".*")
+            i += 2
+        elif body[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        else:
+            out.append(re.escape(body[i]))
+            i += 1
+    return re.fullmatch("".join(out), path) is not None
+
+
 def _matches(pattern, path):
     """One CODEOWNERS pattern against a repo-relative path."""
     path = path.lstrip("/")
@@ -62,11 +81,11 @@ def _matches(pattern, path):
     if body.endswith("/"):                       # a directory rule owns everything beneath it
         body += "**"
     if anchored or "/" in body:
-        return fnmatch.fnmatch(path, body) or fnmatch.fnmatch(path, body.rstrip("/*") + "/*") \
+        return _glob_match(path, body) or _glob_match(path, body.rstrip("/*") + "/*") \
             or path == body.rstrip("/*")
     # An unanchored pattern (e.g. `*.py`, `build`) matches at any depth.
-    return fnmatch.fnmatch(path, body) or fnmatch.fnmatch(path, f"*/{body}") \
-        or any(fnmatch.fnmatch(part, body) for part in path.split("/"))
+    return _glob_match(path, body) or _glob_match(path, f"*/{body}") \
+        or any(_glob_match(part, body) for part in path.split("/"))
 
 
 def for_path(rules, path):

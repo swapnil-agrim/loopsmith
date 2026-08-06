@@ -99,6 +99,18 @@ def test_owners_cli(tmp_path, capsys):
     assert owners.main(["owners.py"]) == 2
 
 
+def test_single_star_does_not_cross_a_directory_boundary():
+    """CODEOWNERS `*` matches within one path segment only — unlike fnmatch's `*`, which matches
+    anything including `/`. `engine/*` owns direct children, not deep descendants; `**` still
+    crosses, for teams that opt into it (#355)."""
+    rules = [("engine/*", ["eng-owner"])]
+    assert owners.for_path(rules, "engine/a.py") == ["eng-owner"]
+    assert owners.for_path(rules, "engine/a/b/c.py") == []
+
+    double_star = [("engine/**", ["eng-owner"])]
+    assert owners.for_path(double_star, "engine/a/b/c.py") == ["eng-owner"]
+
+
 # ------------------------------------------------------------------ hand-off
 
 

@@ -25,6 +25,17 @@ string and confirms the fields come back correctly, proven to fail with a `KeyEr
 empty-dict symptom described in the issue) against the pre-fix regex before passing with
 the fix.
 
+### fix(coordination): `owners._matches` no longer lets a single `*` cross a `/` (F30/#355)
+`_matches` matched CODEOWNERS patterns with plain `fnmatch`, whose `*` matches anything including
+`/` — so `engine/*` (meant to own only direct children of `engine/`) also matched deep descendants
+like `engine/a/b/c.py`, over-assigning ownership beyond real CODEOWNERS/gitignore semantics, where a
+single `*` never crosses a path separator. A new `_glob_match` helper translates a pattern to a regex
+by hand, turning `*` into `[^/]*` and `**` into `.*`, and replaces the four `fnmatch.fnmatch` call
+sites inside `_matches`; the already-correct `**`-crosses-`/` behavior (used by directory rules like
+`/engine/` internally) is preserved. A new test in `tests/test_handoff.py` pins `engine/*` matching
+`engine/a.py` but not `engine/a/b/c.py`, confirmed to fail with the exact over-match symptom against
+the pre-fix code before passing with the fix.
+
 ### fix(collectors): `churn_hotspots` no longer collapses internal whitespace in a path (F27/#353)
 `alignment-collect.sh`'s `HOTSPOTS_JSON` step stripped the `uniq -c` count via awk's `$1=""`, which
 rebuilds `$0` using a single-space `OFS` — so a path with consecutive spaces or tabs (e.g. `"a  b.py"`)
