@@ -6,8 +6,14 @@ hashing.verify_password EXACTLY ONCE on every failure path, and the dummy hash i
 against for an unknown user is a precomputed constant, never something hashed inline in the
 request path.
 
-MODULE-LEVEL `pytest.importorskip("argon2")`: every test here really calls store.add_user/
-verify_user, which really hash/verify -- needs a real argon2 install.
+MODULE-LEVEL `pytest.importorskip("argon2")` -- deliberately kept module-level here, unlike
+test_accounts_store.py/test_accounts_hashing.py/test_accounts_no_leak.py (PR #461 review, second
+pass, SHOULD-FIX 3 split those into gated/ungated halves). Every test in THIS file really calls
+store.add_user/verify_user AND inspects real KDF-call counts/parameters -- the property under test
+(exactly one real hash-cost operation per failure path) is only meaningful against a real KDF; a
+faked `hashing.verify_password` would make every assertion here trivially true regardless of
+whether the underlying fix is correct, which is exactly the kind of test-weakening the project's
+ABSENT!=PASS rule warns against. So this file stays fully gated, and says so.
 """
 import re
 

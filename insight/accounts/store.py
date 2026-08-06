@@ -11,11 +11,23 @@ subpackage stays importable and testable with no assumption about where `insight
 `verify_user(username, password, accounts_path=None) -> str` (returns the role on success) are
 the two public entry points -- deliberately free of any KDF parameter or hashing detail.
 
-SYMLINK/TOCTOU HARDENING (PR #461 review, BLOCKING 1). Both the read and the write path refuse to
-follow a symlink at the accounts-store path itself (`_refuse_if_symlink`) -- a store path that is a
-symlink is refused loudly (`AccountsStoreCorruptError`), never silently followed, whether that would
-mean reading an attacker-controlled "accounts store" or writing through to an arbitrary
-process-writable file. The write path's temp file (`_open_fresh_temp_file`) is opened with a fresh,
+SYMLINK/TOCTOU HARDENING (PR #461 review, first pass BLOCKING 1; the read side hardened further in
+a second pass, BLOCKING 2 below -- both tracked under the same issue). Neither the read nor the
+write path silently follows a symlink at the accounts-store path itself, but they do it two
+DIFFERENT ways, deliberately: the write path calls `_refuse_if_symlink` (a separate
+`Path.is_symlink()` check) before it ever opens anything, because its actual write always goes
+through a same-directory temp file plus `os.replace()` -- a destination that `replace()`'s own
+POSIX `rename()` semantics never dereference, so the separate check is a courtesy for the
+ALREADY-symlinked case, not the thing standing between the write and the exploit. The read path
+CANNOT rely on the same courtesy-check-then-act shape, because a plain read has no second atomic
+step to fall back on the way `replace()` does for the write -- so `_read_accounts` opens the file
+descriptor exactly once with `O_NOFOLLOW` and reads from that fd, never a separate
+`is_symlink()` / `exists()` / `read_text()` sequence (that three-step, check-then-act shape was
+itself the second review's finding: a reviewer swapped the store for a symlink in the window
+between the check and the read and got a planted admin record trusted as real content -- see
+`_read_accounts`'s own docstring for exactly how the fix closes that window, and its own docstring
+for what it does NOT close: a symlinked or attacker-writable ANCESTOR directory, which no leaf-level
+guard can fix). The write path's temp file (`_open_fresh_temp_file`) is opened with a fresh,
 unpredictable, per-call random name via `O_CREAT | O_EXCL` (never a fixed, guessable name like
 `.accounts.json.tmp`) plus `O_NOFOLLOW` where the platform supports it, so a symlink pre-planted at
 a predictable temp path can no longer be written through, nor `os.replace()`d into place at the real
@@ -23,14 +35,24 @@ store path (the exact two-step exploit the review proved live). See
 insight/tests/test_accounts_store.py's symlink-hijack tests, which plant the attack for real and
 must go RED against the pre-hardening code.
 
-CORRUPT-PER-RECORD-HASH HANDLING (PR #461 review, BLOCKING 2). A single user's `password_hash`
+CORRUPT-PER-RECORD-HASH HANDLING (PR #461 review, first-pass BLOCKING 2; hardened further in the
+second pass, BLOCKING 1 below, after the first pass's `except hashing.CorruptHashError` allowlist
+was proven insufficient -- both tracked under the same issue). A single user's `password_hash`
 field can be malformed independently of the rest of the store (a partial write, a bad migration, a
 hand-edit) while the store's JSON stays perfectly valid -- this is NOT the same as
 `AccountsStoreCorruptError` (which covers the store shape as a whole) and must not surface as some
-third, caller-distinguishable exception type either. `verify_user` folds a corrupt per-record hash
-into the exact same `InvalidCredentials`/message as a wrong password or an unknown username --
-see `hashing.CorruptHashError` and `verify_user`'s own docstring for exactly how and why, including
-the extra dummy-hash verification that keeps this path from becoming a timing fast-path.
+third, caller-distinguishable exception type either. The first pass caught this only when argon2
+itself raised `InvalidHashError`/`VerificationError` (a well-formed-JSON-but-garbage hash string);
+a missing `password_hash` key (`KeyError`) or a non-string value (`AttributeError`/`TypeError` from
+inside argon2-cffi's own internals) reached the caller as a different, distinguishable exception
+type, raised roughly 1000x faster than a real KDF operation -- an allowlist of specific exception
+types is not a fix for "any malformed record," it is a fix for "the malformed records this reviewer
+happened to try." `verify_user` now wraps the WHOLE known-user branch in a single `except
+Exception` boundary (deliberately not an allowlist -- see its own docstring) so that it folds into
+the exact same `InvalidCredentials`/message as a wrong password or an unknown username, regardless of
+which exception type the NEXT unpredicted malformed shape happens to raise -- see
+`hashing.CorruptHashError` and `verify_user`'s own docstring for exactly how and why, including the
+extra dummy-hash verification that keeps this path from becoming a timing fast-path.
 
 Done-when 3 (message and timing indistinguishability): `verify_user` raises the SAME exception
 type, `InvalidCredentials`, with the IDENTICAL message string, for both "user exists, wrong
@@ -39,8 +61,28 @@ selectively. `verify_user` always calls `hashing.verify_password` EXACTLY ONCE o
 path -- for a known user, against their real stored hash; for an unknown user, against the
 precomputed dummy hash (`hashing.dummy_hash_for`, a value lookup, never an inline KDF operation)
 -- the standard mitigation for user-enumeration-by-timing (see hashing.py's own docstring for why
-the dummy hash is a constant, not computed lazily)."""
+the dummy hash is a constant, not computed lazily).
+
+TRUST BOUNDARY (PR #461 review, second pass, SHOULD-FIX 4 -- distinct from the FIRST pass's own
+SHOULD-FIX 4 below, about concurrent `add_user` invocations; the two reviews independently reused
+the same finding number for different findings). Every guard in this module operates on the LEAF
+path component only -- `_read_accounts`'s `O_NOFOLLOW` open and `_write_accounts`'s
+`_refuse_if_symlink` both ask "is *this exact path* a symlink," never "is anything ABOVE this path
+in the directory tree attacker-controlled." That is a deliberate, unfixed precondition, not an
+oversight: `resolve_accounts_path` resolves relative to CWD AT CALL TIME (see its own docstring),
+so this module already assumes the CWD and every ancestor directory above the accounts path (in
+practice, `.sdlc/` and whatever contains it) are trustworthy -- the same precondition every
+relative-path tool in this repo relies on (`insight/ingest/store.py`'s `resolve_db_path` included).
+A leaf-level symlink guard cannot meaningfully extend past that precondition: if an ancestor
+directory is itself a symlink, or writable by an attacker, the attacker does not need to plant a
+symlink at the leaf at all -- they can simply write an ordinary, non-symlink file there containing
+a planted admin account, and `O_NOFOLLOW` has no opinion whatsoever about an ordinary file (it only
+ever rejects a symlink). Closing that would mean validating every ancestor directory's ownership
+and permissions up to the filesystem root on every read/write, which is disproportionate machinery
+for a single-operator local CLI's account store; a compromised or attacker-writable `.sdlc/` is
+already a total-compromise scenario this module was never designed to survive."""
 import datetime
+import errno
 import json
 import os
 import pathlib
@@ -92,18 +134,21 @@ _MAX_TEMP_FILE_ATTEMPTS = 64
 
 
 def _refuse_if_symlink(path):
-    """Refuse loudly if `path` is itself a symlink, rather than silently reading or writing
-    through it (PR #461 review, BLOCKING 1). `Path.is_symlink()` never follows the link -- it asks
-    about the dentry at `path` itself -- so this is safe to call even when the link's target does
-    not exist (a dangling symlink must be refused too, not misread as "no accounts yet"). Reading
-    through a symlinked store path would let an attacker's fully-controlled file be trusted as the
-    accounts store (a planted admin account with a known password); writing through it would
-    clobber whatever process-writable file the link points at. Raises
+    """Refuse loudly if `path` is itself a symlink, rather than silently writing through it
+    (PR #461 review, BLOCKING 1; used by `_write_accounts` only -- `_read_accounts` uses its own
+    single-syscall `O_NOFOLLOW` open instead, see that function's own docstring for why a
+    check-then-act call like this one is not safe to reuse for the read path). `Path.is_symlink()`
+    never follows the link -- it asks about the dentry at `path` itself -- so this is safe to call
+    even when the link's target does not exist (a dangling symlink must be refused too, not
+    misread as "no accounts yet"). Writing through a symlinked store path would clobber whatever
+    process-writable file the link points at; this check is a courtesy for the ALREADY-symlinked
+    case (see the module docstring's SYMLINK/TOCTOU HARDENING note for why the write path's real
+    protection is `os.replace()`'s own non-dereferencing semantics, not this check). Raises
     `AccountsStoreCorruptError` -- the existing "this store cannot be trusted as-is" exception,
     not a new caller-visible type -- naming only the path, never a target."""
     if path.is_symlink():
         raise AccountsStoreCorruptError(
-            "accounts store at %s is a symlink -- refusing to read or write through it" % path
+            "accounts store at %s is a symlink -- refusing to write through it" % path
         )
 
 
@@ -141,14 +186,46 @@ def _read_accounts(path):
     """Return the parsed `users` dict for `path`. `{}` if the file does not exist yet -- a
     missing store is NOT a corrupt one, it is simply "no accounts exist yet" (treated identically
     to an unknown user by `verify_user`). Raises `AccountsStoreCorruptError` for unparseable JSON,
-    a shape missing the required `users`/`version` keys, or `path` itself being a symlink (see
-    `_refuse_if_symlink` -- checked FIRST, before the existence check, because a dangling symlink
-    would otherwise read as "does not exist" and be silently treated as an empty store)."""
-    _refuse_if_symlink(path)
-    if not path.exists():
-        return {}
+    a shape missing the required `users`/`version` keys, or `path` itself being a symlink.
+
+    ATOMIC, not check-then-act (PR #461 review, second pass, BLOCKING 2 -- correcting the FIRST
+    pass, which called `_refuse_if_symlink` -- an `is_symlink()` check -- then separately called
+    `path.exists()`, then separately called `path.read_text()`: three distinct filesystem calls,
+    each one a fresh opportunity for the path to have changed underneath since the previous call.
+    A reviewer proved that live: swap the real store for a symlink to an attacker-controlled file
+    in the window between the `is_symlink()` check (which still correctly saw a real file) and the
+    `read_text()` call (which then transparently followed the just-planted symlink), and
+    `_read_accounts` returns the attacker's planted admin record as trusted content, with no
+    exception at all.
+
+    The fix opens the file descriptor EXACTLY ONCE, with `O_NOFOLLOW` (where the platform supports
+    it -- absent on some platforms, in which case this is `0` and a no-op, exactly like
+    `_open_fresh_temp_file`'s own use of the same flag), and reads from that fd -- there is no
+    separate earlier check for an attacker to race against, because there is no separate check:
+    the kernel itself refuses to follow a symlink at the leaf path component as an atomic part of
+    the SAME `open()` syscall that reads the file, reporting it as `errno.ELOOP` (which this
+    function maps to `AccountsStoreCorruptError` below) whether or not the symlink's target exists
+    -- a dangling symlink must be refused too, not misread as "no accounts yet".
+
+    LEAF-ONLY (see this module's own "TRUST BOUNDARY" docstring note): `O_NOFOLLOW` only ever
+    inspects the FINAL path component. It says nothing about `path`'s ancestor directories, and
+    cannot be extended to say something without a much larger, deliberately out-of-scope check
+    (second pass SHOULD-FIX 4, documented not fixed -- see the module docstring's TRUST BOUNDARY
+    note)."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        raw = path.read_text(encoding="utf-8")
+        fd = os.open(str(path), flags)
+    except FileNotFoundError:
+        return {}
+    except OSError as e:
+        if getattr(os, "O_NOFOLLOW", 0) and e.errno == errno.ELOOP:
+            raise AccountsStoreCorruptError(
+                "accounts store at %s is a symlink -- refusing to read through it" % path
+            )
+        raise
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as f:
+            raw = f.read()
         data = json.loads(raw)
     except (OSError, ValueError):
         raise AccountsStoreCorruptError(
@@ -202,11 +279,17 @@ def add_user(username, password, role, accounts_path=None):
     rather than silently paving over a corrupt existing store -- a corrupt store must be fixed
     deliberately, since paving over it could silently destroy other admins' accounts.
 
-    NOT SAFE AGAINST CONCURRENT INVOCATIONS (PR #461 review, SHOULD-FIX 4, documented rather than
-    fixed -- deliberately). Two `insight users add` processes running at the same time each read
-    the same pre-write `users` dict, independently hash, and `os.replace()` -- last writer wins
-    silently: no error, no lock, no detection that the file changed underneath. This is judged low
-    severity and left undocumented-but-unfixed rather than gold-plated with a lock, because (a)
+    NOT SAFE AGAINST CONCURRENT INVOCATIONS (PR #461 review, first pass, SHOULD-FIX 4 -- distinct
+    from the SECOND pass's own SHOULD-FIX 4, about a symlinked ancestor directory; see the module
+    docstring's TRUST BOUNDARY note -- documented rather than fixed, deliberately). Two
+    `insight users add` processes running at the same time each read the same pre-write `users`
+    dict, independently hash, and `os.replace()` -- last writer wins silently: no error, no lock,
+    no detection that the file changed underneath. The second pass's reviewer MEASURED this for
+    real rather than reasoning about it in the abstract: 10 concurrent `add_user` calls, each for a
+    distinct username against the same store, and 8 of the 10 accounts were silently lost --
+    overwritten by a later racing write that never saw them -- with zero errors, zero exceptions,
+    and no signal to the caller that anything was wrong. This is judged low severity and left
+    undocumented-but-unfixed rather than gold-plated with a lock, because (a)
     `insight users add` is a single-operator local CLI, not a server handling concurrent requests --
     there is no realistic scenario where two invocations race by accident, only by a deliberate
     double-run; (b) the failure mode is "re-run the second `add` and it succeeds" -- an account is
@@ -239,25 +322,51 @@ def add_user(username, password, role, accounts_path=None):
 
 def verify_user(username, password, accounts_path=None):
     """Verify `username`/`password` and return the stored role on success. Raises
-    `InvalidCredentials` (identical message/type for a wrong password, an unknown username, OR a
-    corrupt per-record hash -- see below, PR #461 review BLOCKING 2) or `AccountsStoreCorruptError`
-    (the store as a whole is unparseable/malformed/a symlink, distinct from "no such user") or
-    `hashing.KDFUnavailableError` (argon2-cffi not installed).
+    `InvalidCredentials` (identical message/type for a wrong password, an unknown username, OR ANY
+    way a known user's own record turns out to be malformed -- see below, PR #461 review, second
+    pass BLOCKING 1) or `AccountsStoreCorruptError` (the store AS A WHOLE is
+    unparseable/malformed/a symlink, distinct from "no such user" or "this one user's record is
+    bad") or `hashing.KDFUnavailableError` (argon2-cffi not installed -- propagated unchanged,
+    from every branch, including the malformed-record one; see below for why that one exception
+    type is deliberately NOT folded in).
 
     Calls `hashing.verify_password` EXACTLY ONCE on every failure path in the common case -- for a
     known user, against their real stored hash; for an unknown user, against the precomputed dummy
     hash (`hashing.dummy_hash_for`, a constant lookup, zero KDF cost) -- so an unknown-user lookup
     costs the same KDF work as a wrong-password lookup, at every point including immediately after
     process start (done-when 3's timing half; see hashing.py's own docstring). The ONE exception is
-    a known user whose stored `password_hash` is itself corrupt/malformed
-    (`hashing.CorruptHashError`): that path calls `verify_password` a SECOND time, against the
-    dummy hash, specifically so it still pays a real KDF-sized cost rather than becoming a fast
-    path that would itself be a timing side-channel distinguishing "corrupt record" from "wrong
-    password" -- both now cost one real KDF verification's worth of wall-clock time, same as every
-    other failure path. The corrupt-record case is logged to stderr (naming the username and store
-    path, never the password or the malformed hash's raw bytes) so an operator has a way to learn
-    about it -- that signal deliberately does NOT reach the caller's exception, which stays
-    identical to every other failure (done-when 3)."""
+    a known user whose own record turns out to be malformed in ANY way -- that path calls
+    `verify_password` a SECOND time, against the dummy hash, specifically so it still pays a real
+    KDF-sized cost rather than becoming a fast path that would itself be a timing side-channel
+    distinguishing "malformed record" from "wrong password" -- both now cost one real KDF
+    verification's worth of wall-clock time, same as every other failure path.
+
+    "Malformed in any way" is enforced by a SINGLE `except Exception` around the whole known-user
+    branch below -- deliberately not a narrower `except hashing.CorruptHashError`, which is exactly
+    what the first pass shipped and the second pass's review broke twice, live: a record missing
+    the `password_hash` key raises a plain `KeyError` (from the dict lookup itself, never even
+    reaching `hashing.verify_password`); a `password_hash` that is not a string (an int, a list --
+    a plausible shape for a botched migration to produce) raises `AttributeError`/`TypeError` from
+    INSIDE argon2-cffi's own internals, upstream of `hashing.verify_password`'s own
+    `except (InvalidHashError, VerificationError)` clause. Both reached the first pass's caller as
+    a different, caller-distinguishable exception type, and roughly 1000x faster than a real KDF
+    operation -- a louder timing tell than the one the first pass closed. An allowlist of caught
+    exception TYPES is, structurally, a promise to correctly guess every way a hand-edit, a bad
+    migration, or a partial write can break a JSON record -- which is not a promise this function
+    can keep. Catching the base `Exception` instead makes the guarantee "any exception raised while
+    processing this known user's record becomes IDENTICAL InvalidCredentials", full stop, with no
+    third case for the next unpredicted malformed shape to slip through as. The ONE exception type
+    excluded from that boundary is `hashing.KDFUnavailableError` (re-raised, never folded in): a
+    completely absent argon2-cffi install is not a property of any one user's record -- it is
+    identical for every branch of this function, including the `record is None` one above (which
+    never wraps its own `hashing.verify_password` call either) -- so treating it as "just another
+    malformed-record exception" here would make this one branch behave differently from every
+    other call site in this module for the exact same underlying condition.
+
+    The malformed-record case is logged to stderr (naming the username, the store path, and the
+    exception's type/message, never the password or the record's raw bytes) so an operator has a
+    way to learn about it -- that signal deliberately does NOT reach the caller's exception, which
+    stays identical to every other failure (done-when 3)."""
     path = resolve_accounts_path(accounts_path)
     users = _read_accounts(path)
     record = users.get(username)
@@ -269,14 +378,21 @@ def verify_user(username, password, accounts_path=None):
     try:
         if hashing.verify_password(password, record["password_hash"]):
             return record["role"]
-    except hashing.CorruptHashError as e:
+    except hashing.KDFUnavailableError:
+        # Not a malformed-record concern -- argon2 itself is unavailable, identically for every
+        # call site in this module. Re-raised, never folded into InvalidCredentials (see docstring).
+        raise
+    except Exception as e:
+        # ANY OTHER exception raised while touching this known user's record: a single defensive
+        # boundary, deliberately not an allowlist of specific types (see docstring -- that is what
+        # broke twice already).
         print(
-            "insight accounts: corrupt password_hash for user %r in store %s (%s) -- "
-            "treating as invalid credentials" % (username, path, e),
+            "insight accounts: corrupt record for user %r in store %s (%s: %s) -- "
+            "treating as invalid credentials" % (username, path, type(e).__name__, e),
             file=sys.stderr,
         )
         # Pay the same KDF-sized cost as every other failure path (see docstring above) -- never a
-        # fast path that itself distinguishes a corrupt record from a wrong password by timing.
+        # fast path that itself distinguishes a malformed record from a wrong password by timing.
         hashing.verify_password(password, hashing.dummy_hash_for(hashing.PRODUCTION_PARAMS))
 
     raise InvalidCredentials(_INVALID_CREDENTIALS_MESSAGE)
