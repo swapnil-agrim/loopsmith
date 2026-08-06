@@ -145,16 +145,32 @@ def create_tracked_issue(sdlc_dir, config, goal, area, why, *,
     Labels always applied: `priority:<priority>`, `area:<area>`, any `extra_labels`, plus the goal
     label iff `immediately_actionable` (`GitHubSource.create_dependency`'s own `goal_label=`).
 
-    Ledger shape reuses two existing kinds, adds no new one:
-      same_area=False (cross-area) → `kind="handoff"`, `to=<resolved owner>`, `state="open"` —
-        byte-identical to `hand_off()`'s pre-existing write, so it still participates in
-        `ledger.outstanding()`/`unanswered()` and is answerable via `handoff.py ack`.
-      same_area=True (self-assigned follow-up) → `kind="note"`, `to=<the same actor who filed it>`,
-        no `state` — deliberately NOT a "handoff": `outstanding()` only ever looks at `kind ==
-        "handoff"`, so a self-addressed note can never get stuck as a permanently-unanswered
-        hand-off nobody was ever meant to `ack`. Addressing it to the filer's own login exploits the
-        existing LEDGER INBOX mechanism so a LATER session by the same actor (after a compact, a
-        crash, or just picking the loop back up) is reminded the tracked issue exists.
+    Ledger shape reuses two existing kinds, adds no new one — gated on `blocks_goal` too, not just
+    `same_area` (PR #466 review finding): `backlog_check._ledger_signals()` is a SECOND, independent
+    blocking mechanism from the body-marker/`_explicit_blockers()` channel above — it treats any
+    `ledger.outstanding()` entry (`kind == "handoff"`, not yet acked) as a confident block against
+    whatever `ledger.handoff_key()` resolves to, and `handoff_key()` FALLS BACK TO THE FILING GOAL'S
+    OWN REF whenever no real issue number was recorded (the default outcome for any source without
+    `create_dependency`, e.g. `LocalSource` — not a rare failure). Writing `kind="handoff"`
+    unconditionally for every `same_area=False` call — including `blocks_goal=False`, a fully
+    sanctioned "cross-area FYI, not a blocker" combination — let a degraded/local source's unresolved
+    entry confident-block the FILING goal against itself, exactly the false-blocking bug this whole
+    axis exists to prevent, one layer deeper than the body marker:
+      `(not same_area) and blocks_goal` (a genuine cross-area BLOCKING dependency) → `kind="handoff"`,
+        `to=<resolved owner>`, `state="open"` — byte-identical to `hand_off()`'s pre-existing write
+        (`hand_off()` always pins `blocks_goal=True`, so its behavior is completely unchanged), so it
+        still participates in `ledger.outstanding()`/`unanswered()` and is answerable via
+        `handoff.py ack`.
+      Anything else (`same_area=True`, OR `blocks_goal=False` regardless of `same_area`) →
+        `kind="note"`, `to=<ledger.actor(config, run) if same_area else the resolved owner>`, no
+        `state` — deliberately NOT a "handoff": `outstanding()` only ever looks at `kind ==
+        "handoff"`, so this can never get stuck as a permanently-unanswered hand-off nobody was ever
+        meant to `ack`, AND never triggers `_ledger_signals()`'s ledger-based block either. A
+        `same_area=True` note is self-addressed so a LATER session by the same actor (after a
+        compact, a crash, or just picking the loop back up) is reminded the tracked issue exists; a
+        `same_area=False, blocks_goal=False` note is addressed to the CODEOWNERS-resolved owner
+        instead, so they still see it for visibility — just without the (incorrect, for a
+        non-blocker) outstanding-hand-off treatment.
 
     Returns a report dict (`goal`, `area`, `owner`, `issue`, `entry`, `warnings`); never raises."""
     report = {"goal": str(goal), "area": area, "owner": None, "issue": None,
@@ -199,16 +215,21 @@ def create_tracked_issue(sdlc_dir, config, goal, area, why, *,
     else:
         report["warnings"].append("backlog source cannot open issues — ledger entry only")
 
-    if same_area:
-        report["entry"] = ledger.safe_append(
-            sdlc_dir, "note", goal, config=config, to=report["owner"], area=area,
-            issue=int(report["issue"]) if str(report["issue"] or "").isdigit() else None,
-            priority=priority, why=why)
-    else:
+    # #466 review: gate on blocks_goal too, not solely same_area -- see the docstring above. Only a
+    # genuine cross-area BLOCKING dependency (same_area=False AND blocks_goal=True, hand_off()'s own
+    # always-pinned case) may write kind="handoff" -- that is the one kind ledger.outstanding() /
+    # backlog_check._ledger_signals() treat as a real, confident block. Everything else is a "note",
+    # regardless of same_area, so it can never be mistaken for one.
+    if (not same_area) and blocks_goal:
         report["entry"] = ledger.safe_append(
             sdlc_dir, "handoff", goal, config=config, to=report["owner"], area=area,
             issue=int(report["issue"]) if str(report["issue"] or "").isdigit() else None,
             priority=priority, why=why, state="open")
+    else:
+        report["entry"] = ledger.safe_append(
+            sdlc_dir, "note", goal, config=config, to=report["owner"], area=area,
+            issue=int(report["issue"]) if str(report["issue"] or "").isdigit() else None,
+            priority=priority, why=why)
 
     if report["issue"] and source is not None:
         # two channels, two audiences (#376): a human-visible narrative comment, AND (blocks_goal
