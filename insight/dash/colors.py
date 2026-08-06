@@ -157,7 +157,17 @@ PANEL = {
     "cyan-deep": "#2e8f6d",  # live-tick gradient foot
     "red": "#ff5f52",      # breach / p85 marker
     "void": "#171d1f",     # ABSENT fill -- achromatic, see above
-    "void-ink": "#5a6467",  # ABSENT type -- achromatic, see above
+    # ABSENT type -- achromatic, see above. #79868a, not the shipped #5a6467 (issue #303,
+    # Decision f1): #5a6467 on #171d1f measures 2.80:1, failing even the 3:1 non-text floor let
+    # alone WCAG AA text's 4.5:1 -- rendered as real text at 19px regular (instrument.py's
+    # `.ro.absent .val`, below "large text" size) in five places, with NO existing test pinning
+    # the old hex (verified by grep). #79868a lifts LIGHTNESS only, to exactly 4.54:1 -- hue held
+    # at 193.8 deg and HSL saturation held at 6.7%, unchanged from the original -- restoring the
+    # rule this module's own docstring already states ("Absence must differ from a reading in
+    # LIGHTNESS and TEXTURE, never in hue alone"). A deliberate, measured visual change; see the
+    # PR body and retro. Mechanically checked by insight/tests/test_panel_tokens.py via
+    # PANEL_CONTRAST_PAIRS below.
+    "void-ink": "#79868a",
 }
 
 # Event-mix stack colours, fixed order. Reuses the panel's own accents rather than importing the
@@ -176,6 +186,26 @@ PANEL_ALPHA = {
     "grain": "rgba(233,227,214,.014)",   # the body's fine scanline texture
     "glow": "rgba(255,166,41,.07)",      # the masthead's warm bloom; the one tinted alpha
 }
+
+
+def web_tokens_css(prefix="panel"):
+    """Emit `colors.PANEL` / `PANEL_ALPHA` / `PANEL_MIX` / `TYPE_SCALE` (as `--panel-text-*`) as a
+    plain `:root { --panel-*: ...; }` custom-property block for `insight/web/`'s
+    `tokens.generated.css` (issue #303, Decision a). Deliberately NOT `panel_css_vars()`: that
+    function also emits the two `@font-face` rules base64-embedded from `insight.dash.fonts` --
+    the offline artifact's own delivery mechanism (`panel.py`, one static HTML file, no server to
+    cache real font files from). The web app has a real server, so it self-hosts real `.woff2`
+    files under `public/fonts/` instead (Decision b) and references them from its own
+    hand-written `@font-face` rules -- see `insight/dash/generate_web_tokens.py`, which appends
+    those rules and the `body`/`code,pre` font-family rules (Decision c) to this function's
+    output. This function itself carries no `@font-face`, no base64: it is colour + type-scale
+    tokens only, the one piece `colors.py` (the single source of truth, Decision a) is
+    responsible for."""
+    parts = [f"--{prefix}-{k}: {v};" for k, v in PANEL.items()]
+    parts += [f"--{prefix}-{k}: {v};" for k, v in PANEL_ALPHA.items()]
+    parts += [f"--{prefix}-mix-{i}: {c};" for i, c in enumerate(PANEL_MIX)]
+    parts += [f"--{prefix}-text-{k}: {v};" for k, v in TYPE_SCALE.items()]
+    return f":root {{ color-scheme: dark; {' '.join(parts)} }}\n"
 
 
 def panel_css_vars(prefix="panel"):
@@ -614,3 +644,44 @@ def _resolve(token_path, mode):
         seq = SEQUENTIAL_BLUE_LIGHT if mode == "light" else SEQUENTIAL_BLUE_DARK
         return seq[idx]
     raise KeyError(f"unresolvable contrast-registry token path: {token_path!r}")
+
+
+# --------------------------------------------------------------------------- PANEL contrast
+# registry (issue #303, Decision f2): a small sibling of CONTRAST_PAIRS above, same
+# fg/bg/floor/why shape (floor: None + a mandatory second_channel for the tier-3 exemption,
+# enforced by test_every_exempt_pair_names_its_second_channel-equivalent below), but a SEPARATE
+# registry -- `PANEL` is NOT covered by CONTRAST_PAIRS/`_all_exported_color_tokens()`.
+# `_all_exported_color_tokens()` only recognises light/dark-leaf dicts and `*_LIGHT`/`*_DARK` list
+# pairs (see its own docstring); `PANEL` is a flat dict of bare hex strings, dark-only by design
+# (see PANEL's own module comment -- there is no light mode to fork against), so it is silently
+# invisible to that registry. This is what let `void-ink` ship at 2.80:1 with zero contrast
+# coverage at all (see .sdlc/plans/303.md Decision f for the full measurement).
+#
+# Resolved directly against the live PANEL dict every run by
+# insight/tests/test_panel_tokens.py -- nothing hardcoded here, so a future colour change fails
+# loudly rather than drifting (same posture as CONTRAST_PAIRS).
+PANEL_CONTRAST_PAIRS = [
+    {"fg": "PANEL.void-ink", "bg": "PANEL.void", "floor": 4.5,
+     "why": "instrument.py renders this as real text -- `.ro.absent .val` at 19px regular "
+            "(below WCAG 'large text' size, so the 4.5:1 AA text floor governs, not the 3:1 "
+            "non-text floor), plus the `.nm`/`.n` cell labels -- the tertiary-axis-label grey "
+            "(byte-identical to PANEL['faint']) reused as the ABSENT reading's own ink"},
+    {"fg": "PANEL.void", "bg": "PANEL.raised", "floor": None,
+     "second_channel": "the ABSENT cell's dashed border (`.alert.void` / the not-measured "
+                        "primitive's own border convention), the repeating-linear-gradient hatch "
+                        "texture layered over the fill, and the literal words 'not measured' -- "
+                        "three non-colour channels already carry this distinction; raising "
+                        "`void`'s luminance to clear a 3:1 floor against every neighbouring "
+                        "elevation would mean redesigning the panel's whole elevation ramp, out "
+                        "of scope for issue #303 (see .sdlc/plans/303.md Decision f2)"},
+]
+
+
+def _panel_resolve(token_path):
+    """Resolve a PANEL_CONTRAST_PAIRS token path (e.g. "PANEL.void-ink") to its hex string.
+    PANEL is dark-only and mode-invariant -- unlike `_resolve()` above, there is no "light"/"dark"
+    argument, because there is no second mode to resolve against (see PANEL's own module
+    comment)."""
+    if token_path.startswith("PANEL."):
+        return PANEL[token_path.split(".", 1)[1]]
+    raise KeyError(f"unresolvable PANEL-contrast-registry token path: {token_path!r}")

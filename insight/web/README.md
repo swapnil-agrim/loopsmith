@@ -48,7 +48,15 @@ none is a stub.
 - **`test`** is real: `scripts/prove-metric-contract-safety.mjs` is the mechanical proof that
   renaming a Pydantic field and regenerating breaks the frontend type-check (see
   `src/lib/api/metric.consumer.ts`'s `metricLabel`), plus the discriminated-union narrowing proof
-  (`measuredValueOrNull`). Unchanged by this story.
+  (`measuredValueOrNull`). As of **E17.S2** (#303), `test` also runs
+  `scripts/prove-fonts-actually-apply.mjs` — the done-when-3 proof that the embedded typefaces
+  are actually *applied* (Chrome DevTools Protocol `CSS.getPlatformFontsForNode`), not merely
+  declared. **Toolchain prerequisite: a real Chromium-family browser.** The script prefers the
+  machine's/runner's own installed Google Chrome (`channel: "chrome"` — no download at all,
+  satisfied out of the box on GitHub's `ubuntu-latest`) and falls back to Playwright's bundled
+  Chromium if that is unavailable; if NEITHER is present it fails loudly naming the fix (`npx
+  playwright install chromium`), rather than skipping. See `launchBrowser()` in that script for
+  the full reasoning and `.sdlc/plans/303.md` Step 1 for the measured numbers behind the choice.
 - **`build`** is real: `next build`, with `next.config.mjs` setting `output: "standalone"` so
   `insight/Dockerfile.web`'s runtime stage can copy a self-contained `.next/standalone/server.js`
   without a second `npm ci`.
