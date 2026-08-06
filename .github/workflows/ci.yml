@@ -75,7 +75,8 @@ jobs:
   # Playwright Chromium (a plain Linux dev box, a fresh contributor checkout, a minimal container,
   # any non-GitHub CI) would park EVERY goal, not just web ones, on a proof it cannot run. The font
   # proof still runs — as its own `npm run prove:fonts` step below, straight after this one, in
-  # THIS job — and `ubuntu-latest` ships Google Chrome, so it never skips here either. Since `web`
+  # THIS job — where a browser is provisioned explicitly (see the install step below) rather than
+  # assumed from the runner image, so it never skips here either. Since `web`
   # is one of the five required branch-protection contexts (see the `insight` job's comment above),
   # the font proof still hard-gates every merge to main; it has just moved out of the repo-wide
   # local gate and into the one place guaranteed to have a browser.
@@ -99,7 +100,22 @@ jobs:
         run: python3 insight/verify_web.py
       # Browser-dependent -- deliberately NOT part of verify_web.py's CHECKS, see this job's own
       # header comment above for why. node_modules is already installed here by the verify_web.py
-      # step above (its own `npm ci`), so this step needs no separate install.
+      # step above (its own `npm ci`), so neither step below needs a separate `npm ci`.
+      #
+      # The browser IS installed explicitly, on purpose. `ubuntu-latest` does ship Google Chrome
+      # (confirmed against actions/runner-images' own Ubuntu 24.04 inventory), and
+      # prove-fonts-actually-apply.mjs prefers it via `channel: "chrome"` -- but "the runner
+      # happens to have a browser" is the same incidental dependency that got the earlier version
+      # of this proof blocked in review, just moved from a dev box to a runner image. Chrome's
+      # sandbox on Ubuntu 24.04 depends on unprivileged user namespaces, which that release
+      # restricts by default, and the runner image's browser inventory is not a contract this repo
+      # controls. So the script's documented fallback -- Playwright's own bundled Chromium -- is
+      # made REAL here rather than left as a path that would itself throw "please run npx playwright
+      # install". `--with-deps` pulls the matching system libraries. This is provisioning, never a
+      # weakening: the proof itself is unchanged and still fails loudly if no browser launches.
+      - name: install the Playwright browser the font proof falls back to
+        run: npx playwright install --with-deps chromium
+        working-directory: insight/web
       - name: prove fonts actually apply (npm run prove:fonts)
         run: npm run prove:fonts
         working-directory: insight/web
