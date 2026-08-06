@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### fix(loop): CLI verbs no longer crash with a raw traceback on a never-init'd .sdlc dir (#403)
+`next`, `next-batch`, `start`, and `session-active` all call `state.load_config` before any of
+their own logic runs; pointed at a `.sdlc` directory that was never `/sdlc-init`'d (no
+`config.json` at all), this raised an unhandled `FileNotFoundError` — a raw Python traceback,
+identically for all four (confirmed empirically, matching the issue's own repro). Reproducing
+further showed the same unguarded crash on every other verb that touches config too (`qc`,
+`precheck`, `note`, `record`, `spend` with a goal, `emit`, `verify`) — not just the four named.
+Unlike `state._state_file()`'s STATE.md (gitignored per-run state, safe to scaffold on first read
+— see its own docstring), `config.json` is never safe to default: it carries the actual project
+choices (discovery source, ledger, verify command...), and silently inventing one could even
+misreport a never-set-up repo as an empty-but-configured backlog instead of surfacing the real
+problem. `state.load_config` now raises a distinctly-typed `state.ConfigMissing` with a clear,
+actionable message ("no config.json under `<dir>`... Run /sdlc-init..."), and `loop.py`'s `main()`
+is now a thin wrapper around the renamed `_dispatch()` with a single `except state.ConfigMissing`
+catch — one shared guard at the one function every verb already funnels through, rather than a
+separate try/except at each call site, so the fix covers every current and future verb uniformly.
+A `config.json` that exists but fails to parse is left as a plain `json.JSONDecodeError` — a real
+corruption bug, not a setup problem, so it deliberately keeps its own (different) failure mode.
+New tests: `test_state.py` pins `load_config` raising `ConfigMissing` (and, by contrast, NOT
+swallowing a malformed-JSON config into the same message); `test_loop.py` drives the CLI boundary
+for all four issue-named verbs and asserts a clean exit 2 with an actionable one-liner and no
+"Traceback" on stderr — confirmed to fail with the exact original symptom (an unhandled
+`FileNotFoundError` propagating out of `lp.main()`) against the pre-fix code before passing with
+the fix restored.
+
 ## 1.0.1 — the hardening release
 
 ### fix(doctor): north-star "filled" check now clears every tier, not just Vision (F33/#358)

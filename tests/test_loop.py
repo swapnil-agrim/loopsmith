@@ -783,6 +783,28 @@ def test_cli_session_end_clears_what_cli_start_wrote(capsys):
         assert capsys.readouterr().out.strip() == "FREE"
 
 
+def test_cli_verbs_handle_a_never_init_d_sdlc_dir_gracefully(capsys):
+    """#403: `next`/`next-batch`/`start`/`session-active` all call `state.load_config` before any
+    of their own logic runs. Pointed at a `.sdlc` that was never `/sdlc-init`'d (no config.json at
+    all), each used to crash with a raw, unhandled FileNotFoundError traceback instead of a usable
+    message. Non-vacuous: reverting just the fix (`state.ConfigMissing` + `loop.py` main()'s catch)
+    makes this fail — `rc` comes back `None` (the process would have raised instead of returning)
+    and/or "Traceback" appears on stderr."""
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        base = str(pathlib.Path(d) / ".sdlc")             # deliberately never created at all
+        for argv in (["loop.py", "next", base],
+                     ["loop.py", "next-batch", base],
+                     ["loop.py", "start", base],
+                     ["loop.py", "session-active", base]):
+            rc = lp.main(argv)
+            err = capsys.readouterr().err
+            assert rc == 2, f"{argv[1]}: expected a clean exit 2, got {rc!r}"
+            assert "Traceback" not in err, f"{argv[1]}: a raw traceback leaked to stderr: {err!r}"
+            assert "config.json" in err and "/sdlc-init" in err, (
+                f"{argv[1]}: stderr isn't an actionable one-liner: {err!r}")
+
+
 # --------------------------------------------------------------------- writer-aware lease (#374)
 # A claim held by MY OWN actor is not always mine to resume: two concurrent processes sharing one
 # gh login (a routine firing again before an earlier run finished) must not read each other's

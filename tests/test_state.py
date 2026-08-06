@@ -1,5 +1,7 @@
 import json, pathlib, importlib.util, tempfile
 
+import pytest
+
 S = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts"
 
 
@@ -79,6 +81,33 @@ def test_state_and_queue_scaffold_themselves_on_a_fresh_clone(tmp_path):
     s.park(str(d), str(goal), "needs a decision")        # queue absent too
     queue = (d / "state" / "review-queue.md").read_text()
     assert "# Morning Review Queue" in queue and "- needs: human review" in queue
+
+
+def test_load_config_raises_a_clear_error_when_config_json_is_missing(tmp_path):
+    """Sibling regression to the scaffold-on-demand test above, but the opposite fix shape (#403):
+    `.sdlc/state/` is gitignored runtime state, safe to invent on demand (see `_state_file`'s own
+    docstring); `.sdlc/config.json` is NOT — it carries the actual project choices (discovery
+    source, ledger, verify command...), so silently defaulting it would run the loop in a mode
+    nobody chose. A directory that was never `/sdlc-init`'d must say so clearly instead — not
+    crash with a raw FileNotFoundError traceback, and not silently invent a config either."""
+    s = _state()
+    d = tmp_path / ".sdlc"
+    d.mkdir()                                             # no config.json at all
+    with pytest.raises(s.ConfigMissing) as exc:
+        s.load_config(str(d))
+    assert "config.json" in str(exc.value) and "/sdlc-init" in str(exc.value)
+
+
+def test_load_config_still_raises_normally_on_malformed_json(tmp_path):
+    """Contrast case: a config.json that EXISTS but fails to parse is a real corruption bug, not a
+    setup problem — ConfigMissing must stay scoped to "the file is absent" and not also swallow a
+    parse failure into the same (wrong, in this case) "run /sdlc-init" advice."""
+    s = _state()
+    d = tmp_path / ".sdlc"
+    d.mkdir()
+    (d / "config.json").write_text("not valid json{{{")
+    with pytest.raises(json.JSONDecodeError):
+        s.load_config(str(d))
 
 
 # --- F11/#341: the whole-second staleness hole in done_refusal ---------------------------------
