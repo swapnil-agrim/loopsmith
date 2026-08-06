@@ -220,6 +220,12 @@ def start(sdlc_dir, config, goal, run=None):
         run(base_root, ["git", "worktree", "add", str(path), branch])
     _save(sdlc_dir, goal, {"worktree": str(path), "branch": branch, "base": base,
                            "remote": s["remote"], "pr": ""})
+    # Loaded lazily, here, not at module top level — actionlog.py itself loads work.py (for
+    # work.stem()), so an eager module-level `_load("actionlog")` here would cycle. This runs for
+    # both paths that reach this line (the direct-success add -b above, and the branch-outlived-
+    # its-record fallback) — never the `already started` idempotent-resume early return, which cuts
+    # no new worktree and isn't a new mechanical action worth logging again.
+    _load("actionlog").safe_append(sdlc_dir, goal, "worktree_start", worktree=str(path), branch=branch)
     return f"worktree {path} on {branch} (cut from {s['remote']}/{base})"
 
 
@@ -546,6 +552,10 @@ def merge(sdlc_dir, config, goal, run=None, sleep=time.sleep):
     beginning `PR #` is a TERMINAL SUCCESS — the loop did everything it could and the PR is the
     deliverable — so it records `done`, not a park; nothing about it wants attention."""
     run = run or _run
+    # Loaded lazily (see start()'s own comment on why: actionlog.py loads work.py for stem(), so an
+    # eager module-level `_load("actionlog")` here would cycle) — once per call, reused below for
+    # all three of this function's own actionlog call sites.
+    actionlog = _load("actionlog")
     rec = _record(sdlc_dir, goal)
     if not rec or not rec.get("pr"):
         return "PARK: no PR for this goal — run `work.py pr` first"
@@ -570,6 +580,8 @@ def merge(sdlc_dir, config, goal, run=None, sleep=time.sleep):
     ledger.safe_append(sdlc_dir, "gate", goal, config=config, stream=ledger.EVENTS,
                        gate="merge", verdict=("pass" if ok else "block"),
                        why=None if ok else verdict)
+    actionlog.safe_append(sdlc_dir, goal, "gate", gate="merge", verdict=("pass" if ok else "block"),
+                          why=None if ok else verdict)
     if not ok:
         return f"PARK: {verdict}"
 
@@ -586,6 +598,8 @@ def merge(sdlc_dir, config, goal, run=None, sleep=time.sleep):
         ledger.safe_append(sdlc_dir, "gate", goal, config=config, stream=ledger.EVENTS,
                            gate="code_review", verdict=("pass" if rok else "block"),
                            why=None if rok else rverdict)
+        actionlog.safe_append(sdlc_dir, goal, "gate", gate="code_review",
+                              verdict=("pass" if rok else "block"), why=None if rok else rverdict)
     if not rok:
         return f"PARK: {rverdict}"
     guarded, detail = protection(sdlc_dir, config, goal, run=run)
@@ -600,6 +614,7 @@ def merge(sdlc_dir, config, goal, run=None, sleep=time.sleep):
     # ledger problem must never turn a successful arm into a failure.
     ledger.safe_append(sdlc_dir, "merge-armed", goal, config=config, pr=rec["pr"],
                        why=f"auto-merge ({settings(config)['merge_method']}) armed on PR #{rec['pr']}")
+    actionlog.safe_append(sdlc_dir, goal, "merge_armed", pr=rec["pr"])
     return f"auto-merge armed on PR #{rec['pr']} — " + (
         detail if guarded else f"WARNING: {detail}; local verify was the only gate")
 
@@ -620,6 +635,7 @@ def post_review(sdlc_dir, config, goal, run=None, verdict="", reason=""):
     genuinely not converged and a human is needed. This is enforced here, in code — not left to the prose
     the model is asked to follow. Fail-soft: reports, never throws."""
     run = run or _run
+    actionlog = _load("actionlog")   # loaded lazily — see start()'s own comment on why
     rec = _record(sdlc_dir, goal)
     if not rec or not rec.get("pr"):
         return "no PR for this goal — run `work.py pr` first"
@@ -667,6 +683,10 @@ def post_review(sdlc_dir, config, goal, run=None, verdict="", reason=""):
                        gate="post_review", verdict=("pass" if v == "approve" else "block"),
                        cycle=(rec.get("review_cycles") if v == "block" else None),
                        why=reason or None)
+    # actionlog's `gate` kind has no `cycle` field (INTERNAL_FIELDS["gate"] is gate/verdict/why
+    # only) — the cycle count already lives in state/work/<goal>.json for as long as it matters.
+    actionlog.safe_append(sdlc_dir, goal, "gate", gate="post_review",
+                          verdict=("pass" if v == "approve" else "block"), why=reason or None)
     if over_cap:
         return (f"PARK: post-PR review did not converge after {rec['review_cycles']} cycles on PR "
                 f"#{rec['pr']} — a human is needed")

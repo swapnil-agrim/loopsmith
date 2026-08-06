@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### feat(loop): local-only action log + `sdlc-log` status command (#463)
+The ledger is shared, git-tracked, and meant for team-visible coordination events — the wrong place
+for a full local trace of what LoopSmith is doing right now (every file touched, model/effort
+choice, subagent dispatch, and every mechanically-guaranteed loop action). New, fully separate
+mechanism: `skills/sdlc-loop/scripts/actionlog.py` writes one JSONL file per goal under
+`.sdlc/state/log/<goal-stem>.jsonl` (gitignored via the existing `RUNTIME_IGNORES` — no new
+gitignore code needed), config-gated (`action_log.enabled`, default `false`, matching this repo's
+universal opt-in convention). Two write paths, closed and separate vocabularies: six
+mechanically-guaranteed Python-layer call sites (`loop.py::_next/_record/verify_goal`,
+`work.py::start/merge/post_review`) emit `INTERNAL_KINDS` directly, never reachable from the CLI;
+a new `loop.py log <dir> <goal> <kind> [--thread T] [--k v ...]` verb lets an agent emit only the
+five `AGENT_KINDS` (file/model_choice/agent_dispatch/agent_done/note) — the CLI's own
+kind_allowlist check keeps it from ever forging an internal kind, mirroring how `_EMIT_KINDS`
+already fences `loop.py emit` off from the ledger's own Class-1 kinds. Millisecond-precision
+timestamps (not the ledger's whole-second `_stamp()`) because this log has a genuine same-file
+concurrent-write case the ledger's per-writer-pid files never need to handle (two slice subagents
+in one wave). Zero coupling to `ledger.py` by construction — `actionlog.py` never imports it — and
+zero coupling the other direction too: the new read-side `sdlc-log` skill
+(`skills/sdlc-log/`, `status`/`goal` subcommands, matching `sdlc-status`'s shape) reads the same
+JSONL format independently, format-only coupling, importing neither `actionlog.py` nor `ledger.py`.
+`sdlc-loop/SKILL.md` gained five small prose insertions at verified anchor points so the loop logs
+its own dispatch/file/model-choice activity during a run. Verified non-vacuously: a byte-identical
+ledger proof (run the identical scripted sequence twice, ledger *on* both times, `action_log` off
+then on, assert the ledger ends up byte-for-byte identical either way — proving actionlog can never
+leak into it) and a real two-process concurrency test (matching this repo's own #387 bar: genuine
+OS subprocesses, not threads) that 2 processes appending 40 lines each to the same goal's log file
+produce exactly 80 valid, uncorrupted JSON lines.
+
 ## 1.0.2 — the second-pass release
 
 ### fix(loop): `next_pending` no longer trusts a single empty/failed backlog read as "nothing pending" (#447)

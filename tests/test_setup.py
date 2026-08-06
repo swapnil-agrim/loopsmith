@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import pathlib
+import subprocess
 
 S = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-setup" / "scripts" / "setup.py"
 
@@ -94,6 +95,24 @@ def test_ensure_ignore_adds_missing_runtime_dirs_to_tracked(tmp_path):
     gi = (tmp_path / ".gitignore").read_text()
     assert set(added) == set(setup.RUNTIME_IGNORES) and skipped == []
     assert ".sdlc/ledger/" in gi and ".sdlc/state/" in gi
+
+
+def test_log_dir_inherits_the_existing_state_ignore_coverage(tmp_path):
+    """Extends this test's own pattern for the new local-only action log (#463): after
+    `setup.ensure_ignore()` runs, write a REAL file under `.sdlc/state/log/` — the new action-log
+    directory `actionlog.py` writes to — and assert `git check-ignore` reports it ignored. Proves
+    the plan's "`.sdlc/state/log/` inherits `.sdlc/state/`'s existing coverage for free — no new
+    RUNTIME_IGNORES entry, no new setup.py code" claim BEHAVIORALLY, against real git, not by
+    reading the tuple (which would pass even if `.gitignore`'s actual matching rules didn't agree)."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    setup.ensure_ignore(str(tmp_path), scope="tracked")
+    log_dir = tmp_path / ".sdlc" / "state" / "log"
+    log_dir.mkdir(parents=True)
+    probe = log_dir / "158.jsonl"
+    probe.write_text('{"kind": "note"}\n', encoding="utf-8")
+    result = subprocess.run(["git", "-C", str(tmp_path), "check-ignore", "--quiet", str(probe)])
+    assert result.returncode == 0, (
+        "a file under .sdlc/state/log/ must be git-ignored via the existing .sdlc/state/ coverage")
 
 
 def test_ensure_ignore_targets_local_exclude_when_asked(tmp_path):

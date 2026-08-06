@@ -24,7 +24,8 @@ Then repeat until the helper says stop:
    slice-wave shape one level up: instead of ONE goal's implementation slices running concurrently,
    MULTIPLE goals run concurrently, each all the way through its own steps 2-7. For each goal in the
    batch, dispatch a **subagent** (fresh context) that runs this skill's steps 2 through 7 for that ONE
-   goal exactly as documented — it resolves its own model tier, cuts its own worktree (3a already
+   goal (log the dispatch: `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" log .sdlc "$goal" agent_dispatch
+   --role goal-slot`) exactly as documented — it resolves its own model tier, cuts its own worktree (3a already
    isolates goals from each other: separate worktree + branch + PR per goal, so no extra
    `isolation: worktree` bookkeeping is needed beyond what `work.py start` already does for a single
    goal), runs its own review, and records its own outcome. **Never** dispatch with an unattended
@@ -34,7 +35,9 @@ Then repeat until the helper says stop:
    corrupt the real one.
 
    Track which goals are currently live in your other slots — you already know this, you dispatched
-   them. As EACH subagent finishes (done/parked/failed) — not the whole batch — immediately refill
+   them. As EACH subagent finishes (done/parked/failed) — not the whole batch — log it first:
+   `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" log .sdlc "$goal" agent_done --role goal-slot --result
+   <done|parked|failed>` for the goal that just finished, THEN immediately refill
    just that ONE freed slot: `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" next .sdlc --skip
    <comma-separated other still-live goals>`. **The `--skip` list is not optional for a refill.**
    `next`/`next-batch`'s own claim-liveness check (F10.5/#374) can only tell whether the SHORT-LIVED
@@ -71,14 +74,20 @@ Then repeat until the helper says stop:
    informed by history instead of a flushed window (no-op when the KG is off).
    **Match the model to the goal** — run `python3 "${CLAUDE_SKILL_DIR}/../sdlc-model/scripts/predict.py"
    resolve "$goal" .sdlc`. If it prints a tier (`haiku`/`sonnet`/`opus`/`fable`), that tier is the GOAL's
-   ceiling — run **each phase as its own subagent** with that `model` (the Task tool's model override —
-   the session can't switch its own model). One subagent PER PHASE, not one for the whole goal: that is
+   ceiling — log it (`python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" log .sdlc "$goal" model_choice --model
+   <tier>`), then run **each phase as its own subagent** with that `model` (the Task tool's model override —
+   the session can't switch its own model). Bracket each phase-subagent dispatch itself:
+   `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" log .sdlc "$goal" agent_dispatch --role phase --phase
+   <phase>` right after dispatching it, `agent_done --role phase --phase <phase> --result <...>` right
+   when it returns. One subagent PER PHASE, not one for the whole goal: that is
    what keeps a reviewer phase a **sibling** of the maker phase it checks (fresh context, no nesting),
    never a continuation of it — see the maker≠checker rule below. Artifacts pass between phases through
    the filesystem (`.sdlc/plans/`, the worktree diff, the issue timeline), not shared context. If it
    prints `off` (the default, or you're off-Claude), run the phases inline as usual. **Per-STEP downgrade:** once the plan exists, resolve each plan
    step too — `python3 "${CLAUDE_SKILL_DIR}/../sdlc-model/scripts/predict.py" resolve-step "<step
-   text>" .sdlc` prints `model=<tier> effort=<low|medium|high>` — and run a MECHANICAL step (run the
+   text>" .sdlc` prints `model=<tier> effort=<low|medium|high>` — log it too (`python3
+   "${CLAUDE_SKILL_DIR}/scripts/loop.py" log .sdlc "$goal" model_choice --model <tier> --effort <effort>
+   --phase <phase>`) — and run a MECHANICAL step (run the
    tests, a watcher/poll, lint) in a subagent at ITS cheaper tier/effort instead of the goal
    ceiling. Where the host's subagent API takes a reasoning-effort parameter, pass the effort;
    otherwise the tier alone. Never run a step ABOVE the goal ceiling. Then read the goal and
@@ -132,8 +141,11 @@ Then repeat until the helper says stop:
    `python3 "${CLAUDE_SKILL_DIR}/scripts/slices.py" plan .sdlc "$goal"`. It groups the runnable slices
    into **waves** — each wave mutually non-conflicting by declared files, capped at
    `parallel.max_concurrent`. Do ONE wave at a time: dispatch each of its slices as a **subagent**
-   (fresh context), with **`isolation: worktree`** for every slice the plan marks that way, so two of
-   them cannot fight over one checkout. Land the wave, then re-run `plan` for the next. **Never**
+   (fresh context), with **`isolation: worktree`** for every slice the plan marks that way (log each
+   dispatch: `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" log .sdlc "$goal" agent_dispatch --thread
+   <slice-id> --role slice --phase implement`), so two of
+   them cannot fight over one checkout. Land the wave — logging each landed slice first (`agent_done
+   --thread <slice-id> --role slice --result <...>`) — then re-run `plan` for the next. **Never**
    dispatch a slice with an unattended `claude -p` — uncapped spend, and a second worker on one
    `.sdlc` breaks every state file here. A slice the plan marks `dispatch: session` will not fit one
    subagent's context: **print its exact `claude --worktree <name>` line and let the human start it**
@@ -157,6 +169,9 @@ Then repeat until the helper says stop:
    at the start of each phase, `--state end` when it finishes. Best-effort telemetry — never gates
    progress, skip it rather than guess the phase name. Do not invent `ms`, `tokens_in`, or
    `tokens_out` for a `phase` event — the loop cannot measure per-phase timing or spend from prose.
+   The first time in a phase you create, edit, or delete a file not already logged this phase, log
+   that too: `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" log .sdlc "$goal" file --path <path> --op
+   create|edit|delete` — do not log a re-edit of an already-logged file, and do not log reads.
    For a decision/finding/fix worth keeping, record a 🔒 Critical Insight (the
    `.github/CRITICAL_INSIGHT_TEMPLATE.md` format) the same way. This comments the issue in github mode
    and appends to `.sdlc/journey/<goal>.md` in local mode; it's fail-open (never breaks the run).
