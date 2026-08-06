@@ -13,6 +13,19 @@ Dropped the bare `story` alternative from `_PATTERNS`; agile "story" phrasing no
 `tests/test_model_predict.py` cover all three phrasings from the issue and confirm they fail against
 the pre-fix pattern with the exact symptom described.
 
+### fix(loop): `max_iterations` now follows the header's own "absent/zero enforces nothing" rule (F18/#349)
+`_budget_spent` special-cased `max_iterations` with `budget.get("max_iterations", 20)` and a plain
+`>=` — an absent key silently capped a run at 20 goals, and an explicit `max_iterations: 0` halted it
+immediately (0 goals) — while the file's own header and this same function's docstring both already
+promised "an absent/zero key enforces nothing." `max_minutes`/`max_tokens` (and `next_batch`'s own
+remaining-budget cap, a few functions down in the same file) already honored that rule; only
+`max_iterations` didn't. `max_iterations` now uses the identical falsy-guard as the other two budgets,
+and the header/`SKILL.md`/`README.md` prose describing "iterations always enforces" is corrected to
+match. A new test pins the fixed semantics directly against `_budget_spent`, proven to fail with the
+exact pre-fix symptom (absent key tripping at 20) before the fix and pass after; two existing tests
+that relied on `max_iterations: 0` as an "already spent" sentinel now use a genuinely-reached nonzero
+cap instead.
+
 ### fix(handoff): a local/issue-less hand-off can now actually be acknowledged (F22/#347)
 `handoff.py`'s `ack` CLI unconditionally required `--issue <n>`, with no `--goal` flag at all — but
 `hand_off()` writes `issue=None` whenever its source can't open issues (no `gh`, or a local backlog),

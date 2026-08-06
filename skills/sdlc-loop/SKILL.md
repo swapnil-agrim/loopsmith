@@ -50,8 +50,8 @@ Then repeat until the helper says stop:
    live, it is the ORCHESTRATING pass — the one calling `next`/`next-batch` for refills — that sees any
    **LEDGER INBOX** block (step 6 below), not a subagent mid-goal; handle it there, between refills,
    the same way you would between goals in the single-goal path.
-2. If output is `DONE` (backlog empty) or `BUDGET` (a per-run budget hit: iterations always;
-   wall-clock minutes / reported tokens when `config.json` sets them) → STOP. If the host surfaces
+2. If output is `DONE` (backlog empty) or `BUDGET` (a per-run budget hit: iterations, wall-clock
+   minutes, or reported tokens — each only when `config.json` sets it) → STOP. If the host surfaces
    token usage to you, report it between goals — `loop.py spend .sdlc <tokens>` — so
    `budget.max_tokens` can actually enforce; never guess a number (no report = no token cap). If
    the host breaks that usage down per phase (rare), attribute it instead of the plain form:
