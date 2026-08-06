@@ -82,6 +82,58 @@ def _run_gh(args, binary="gh"):
     return proc.stdout
 
 
+DEFAULT_COMMENT_LIMIT = 20   # most-recent comments considered; see the cost note in the docstring below
+
+
+def fetch_comments(config, goal, run=None, limit=DEFAULT_COMMENT_LIMIT):
+    """Fetch up to `limit` most-recent comments on issue `goal`, oldest-first:
+    [{"id": str, "author": str, "body": str, "created_at": str}, ...].
+
+    ONE `gh issue view --json comments` call. Read-only, injectable `run` (default `_run_gh`) for
+    hermetic tests -- same DI contract as every other GitHub read in this file. FAIL-OPEN: any error
+    (not `gh`, no auth, bad `goal` ref, network blip, malformed JSON) returns [] rather than raising.
+    This sits on a hot path (backlog_check.precheck's pre-token check) and will sit on a periodic one
+    too (a future watch tick) — neither may ever stall or crash because a comment fetch failed.
+
+    Body text is NOT scrubbed here. Scrubbing is caller-specific (e.g. backlog_check.py calls
+    scrub.scrub() explicitly, mirroring how it already scrubs title/body) — a third, silent scrub
+    pass here would be a scrub callers can't see and can't reason about, which is worse than none.
+
+    `id` is GitHub's GraphQL node id (e.g. `IC_kwDOTE1deM8AAAABNe8Wcg`) — opaque, NOT a sortable
+    integer (verified live against a real repo: `gh issue view <n> --json comments`). Ordering for
+    "new vs. seen" is therefore by `created_at` (ISO-8601, always present, string-sortable); identity
+    for "have I seen this before" is by `id` (a dedup key only, never assumed orderable).
+
+    Known, explicit cost caveat: `gh issue view --json comments` has no server-side comment-count
+    limit flag (confirmed via `gh issue view --help` — only `-c/--comments` to toggle inclusion, no
+    count). `limit` bounds what THIS FUNCTION returns and callers process, not the underlying
+    network/GraphQL cost of the one `gh` call itself — for the overwhelming majority of SDLC goal
+    issues (single digits to low dozens of comments) this is a non-issue; an issue with
+    hundreds/thousands of comments would make this one call slow. Not solved here (no `gh` flag
+    exists to solve it); documented so nobody mistakes `limit` for a request-size cap.
+    """
+    try:
+        gh = (config.get("discovery") or {}).get("github") or {}
+        repo_args = ["--repo", gh["repo"]] if gh.get("repo") else []
+        raw = (run or _run_gh)(["issue", "view", str(goal), *repo_args, "--json", "comments"])
+        data = json.loads(raw or "{}")
+        comments = data.get("comments") if isinstance(data, dict) else None
+        out = []
+        for c in comments or []:
+            if not isinstance(c, dict):
+                continue
+            out.append({
+                "id": str(c.get("id") or ""),
+                "author": ((c.get("author") or {}).get("login") or ""),
+                "body": c.get("body") or "",
+                "created_at": c.get("createdAt") or "",
+            })
+        out.sort(key=lambda c: c["created_at"])          # defensive: never assume gh's own order
+        return out[-limit:] if limit else out
+    except Exception:
+        return []
+
+
 class GitHubSource:
     """Goals are open GitHub issues labelled `goal_label`, ordered by issue number. Status via labels;
     done closes the issue; parked labels + comments it. Talks to GitHub through `run` (default _run_gh)."""

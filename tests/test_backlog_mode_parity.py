@@ -63,9 +63,22 @@ def test_align_due_counter_is_not_blind_in_github_mode():
 
 def test_local_only_surfaces_are_genuinely_local_in_both_modes():
     """Not everything needs a github branch: standing docs and plans are files whichever backlog is
-    in use. Pinning this stops a well-meaning 'add github support' pass from inventing one."""
+    in use. Pinning this stops a well-meaning 'add github support' pass from inventing one.
+
+    Scoped to `hygiene()` and its own helpers specifically (not the whole doctor.py module): #389
+    added a DIFFERENT, explicitly github-gated code path (`check()`'s `_dependency_marker_scan`,
+    reachable only behind `disc.get("source") == "github"`) that legitimately calls `gh issue` to
+    catch a dependency marker left only as a comment. That is not a backlog opinion leaking into
+    hygiene — hygiene's own source must still never reference it."""
     for name in ("sdlc-doctor", "sdlc-retro"):
         t = _skill(name)
         assert ".sdlc/" in t, f"{name} lost its .sdlc path reference"
-    doctor = (ROOT / "skills" / "sdlc-doctor" / "scripts" / "doctor.py").read_text()
-    assert "gh issue" not in doctor          # hygiene scans files; it has no backlog opinion
+    import importlib.util, inspect
+    spec = importlib.util.spec_from_file_location(
+        "doctor", ROOT / "skills" / "sdlc-doctor" / "scripts" / "doctor.py")
+    doctor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(doctor)
+    hygiene_src = "".join(inspect.getsource(fn) for fn in
+                          (doctor.hygiene, doctor._standing_docs, doctor._stale_paths,
+                           doctor._dangling_links, doctor._detail))
+    assert "gh issue" not in hygiene_src     # hygiene scans files; it has no backlog opinion

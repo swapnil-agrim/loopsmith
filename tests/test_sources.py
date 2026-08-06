@@ -401,3 +401,67 @@ def test_github_fail_comments_fix_not_decision_and_excludes_issue():
     joined = [" ".join(c) for c in run.calls]
     assert any("needs a fix (not a decision): red suite" in c for c in joined)
     assert any("--remove-label" in c and "sdlc:goal" in c for c in joined)
+
+
+# --- #389: fetch_comments() -- the one shared, bounded comment-read primitive #385 will later
+# consume too (see the plan doc). Module-level, not a GitHubSource method: backlog_check.cross_check
+# only has config/run, no source instance -- same module-level + injectable-run shape as every other
+# read in this file.
+
+def test_fetch_comments_shapes_id_author_body_created_at():
+    src = _mod("sources")
+    # out of order by createdAt on purpose -- the function must sort, not trust gh's own order
+    payload = {"comments": [
+        {"id": "IC_2", "author": {"login": "bob"}, "body": "second", "createdAt": "2026-08-02T00:00:00Z"},
+        {"id": "IC_1", "author": {"login": "amy"}, "body": "first", "createdAt": "2026-08-01T00:00:00Z"},
+    ]}
+    run = _recording_runner({"view": json.dumps(payload)})
+    out = src.fetch_comments({}, "5", run=run)
+    assert out == [
+        {"id": "IC_1", "author": "amy", "body": "first", "created_at": "2026-08-01T00:00:00Z"},
+        {"id": "IC_2", "author": "bob", "body": "second", "created_at": "2026-08-02T00:00:00Z"},
+    ]
+    assert any("issue view 5" in " ".join(c) and "--json comments" in " ".join(c) for c in run.calls)
+
+
+def test_fetch_comments_respects_limit_keeping_the_most_recent():
+    src = _mod("sources")
+    comments = [{"id": f"IC_{i}", "author": {"login": "amy"}, "body": str(i),
+                "createdAt": f"2026-08-0{i}T00:00:00Z"} for i in range(1, 6)]   # 5 comments, days 1..5
+    run = _recording_runner({"view": json.dumps({"comments": comments})})
+    out = src.fetch_comments({}, "5", run=run, limit=2)
+    assert [c["id"] for c in out] == ["IC_4", "IC_5"]   # the 2 newest, still oldest-first between them
+
+
+def test_fetch_comments_fails_open_on_gh_error_bad_json_and_non_dict_payload():
+    src = _mod("sources")
+
+    def raising(args):
+        raise RuntimeError("gh: HTTP 502 Bad Gateway")
+
+    assert src.fetch_comments({}, "5", run=raising) == []                                    # gh raised
+    assert src.fetch_comments({}, "5", run=_recording_runner({"view": "not json"})) == []     # bad JSON
+    assert src.fetch_comments({}, "5", run=_recording_runner({"view": "[]"})) == []           # a list, not a dict
+
+
+def test_fetch_comments_passes_repo_flag_when_configured():
+    src = _mod("sources")
+    run = _recording_runner({"view": json.dumps({"comments": []})})
+    src.fetch_comments({"discovery": {"github": {"repo": "o/r"}}}, "5", run=run)
+    assert any("--repo o/r" in " ".join(c) for c in run.calls)
+    run2 = _recording_runner({"view": json.dumps({"comments": []})})
+    src.fetch_comments({}, "5", run=run2)
+    assert not any("--repo" in " ".join(c) for c in run2.calls)
+
+
+def test_fetch_comments_maps_a_missing_id_to_empty_string():
+    """Plan-review §8.6: a comment with no `id` field must map to id == "" -- never crash, never
+    silently drop the field -- so a future id-based-dedup consumer's handling of it (comment_watch.py,
+    #385, not built here) is a deliberate choice made against a proven contract, not an accident
+    discovered live. #389 itself never consumes `id`, but the shared helper's FULL contract is tested
+    in this PR since another PR relies on it unchanged."""
+    src = _mod("sources")
+    payload = {"comments": [{"author": {"login": "amy"}, "body": "no id here", "createdAt": "2026-08-01T00:00:00Z"}]}
+    run = _recording_runner({"view": json.dumps(payload)})
+    out = src.fetch_comments({}, "5", run=run)
+    assert out == [{"id": "", "author": "amy", "body": "no id here", "created_at": "2026-08-01T00:00:00Z"}]

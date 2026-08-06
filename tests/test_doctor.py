@@ -634,6 +634,105 @@ def test_check_backlog_thresholds_ok_when_sane_and_absent_when_disabled(tmp_path
     assert "backlog cross-check thresholds sane" not in {c["name"] for c in d.check(off, run=_runner())}
 
 
+# --- #389: /sdlc-doctor dependency-marker check -- a comment matching backlog_check._BLOCK_RE with
+# NO matching body marker is likely-intended-but-silently-ignored by precheck(). Cost-bounded (R6:
+# default max_issues=10, ~6s added on a real repo, down from an initial 30/~18.5s draft) and the
+# bound is always visibly reported in the check's own `name`, pass or fail -- never silently applied.
+# NOT gated on backlog_check.enabled (same github-only gating as the existing gh auth/project checks).
+
+def _dm_run(issues, comments=None, view_calls=None):
+    """Fake doctor runner: `gh issue list` answers `issues` ([{"number", "body"}, ...]); every
+    `gh issue view ... --json comments` answers the SAME canned `comments` list (tests that care which
+    issue was asked don't need to here -- there is only ever one real candidate in play). Records every
+    `issue view` call into `view_calls` when given, so a test can assert on cost (how many, not just
+    whether)."""
+    comments = comments if comments is not None else []
+
+    def run(args):
+        if args[:3] == ["gh", "auth", "status"]:
+            return "Logged in."
+        if args[:3] == ["gh", "issue", "list"]:
+            return json.dumps(issues)
+        if args[:3] == ["gh", "issue", "view"]:
+            if view_calls is not None:
+                view_calls.append(list(args))
+            return json.dumps({"comments": comments})
+        return ""
+    return run
+
+
+def _dm_check(checks):
+    return next(c for n, c in checks.items() if n.startswith("dependency markers:"))
+
+
+def test_dependency_marker_doctor_check_flags_comment_only_marker(tmp_path):
+    d = _doc()
+    base = _sdlc(tmp_path, {"discovery": {"source": "github", "github": {"repo": "acme/widget"}}})
+    issues = [{"number": 42, "body": "no marker here"}]
+    comment = {"id": "IC_1", "author": {"login": "bob"}, "body": "blocked by #9 until that lands",
+               "createdAt": "2026-08-01T00:00:00Z"}
+    checks = {c["name"]: c for c in d.check(base, run=_dm_run(issues, [comment]))}
+    hit = _dm_check(checks)
+    assert hit["ok"] is False
+    assert "#42" in hit["fix"]
+
+
+def test_dependency_marker_doctor_check_silent_when_body_already_has_marker(tmp_path):
+    d = _doc()
+    base = _sdlc(tmp_path, {"discovery": {"source": "github", "github": {"repo": "acme/widget"}}})
+    issues = [{"number": 9, "body": "do the migration\n\n**Blocked by:** #3"}]
+    view_calls = []
+    checks = {c["name"]: c for c in d.check(base, run=_dm_run(issues, view_calls=view_calls))}
+    hit = _dm_check(checks)
+    assert hit["ok"] is True
+    assert view_calls == []          # a body-marked issue is never charged a comment fetch (cost proof)
+
+
+def test_dependency_marker_doctor_check_caps_at_max_issues_and_reports_the_bound(tmp_path):
+    d = _doc()
+    base = _sdlc(tmp_path, {"discovery": {"source": "github", "github": {"repo": "acme/widget"}},
+                            "backlog_check": {"doctor_scan": {"max_issues": 5}}})
+    issues = [{"number": n, "body": "no marker"} for n in range(1, 51)]     # 50 candidates, none pre-marked
+    view_calls = []
+    checks = {c["name"]: c for c in d.check(base, run=_dm_run(issues, view_calls=view_calls))}
+    hit = _dm_check(checks)
+    assert len(view_calls) == 5              # capped at max_issues, not charged for all 50
+    assert "5/50" in hit["name"]             # the bound is visible on every run, pass or fail
+
+
+def test_dependency_marker_doctor_check_skipped_in_local_mode(tmp_path):
+    d = _doc()
+    base = _sdlc(tmp_path, {"discovery": {"source": "local-goals"}})
+    names = [c["name"] for c in d.check(base, run=_runner())]
+    assert not any(n.startswith("dependency markers:") for n in names)
+
+
+def test_dependency_marker_doctor_check_default_max_issues_is_ten(tmp_path):
+    """R6: the plan-review measured ~0.62s/call for `gh issue view --json comments` on a real repo;
+    at the ORIGINAL draft default of 30 that is ~18.5s added to a routine /sdlc-doctor run (4-7x
+    regression), and since candidates are issues WITHOUT a body marker -- nearly all of them in
+    practice -- that cap is hit on essentially any real backlog, so it was the TYPICAL cost, not a
+    worst case. Lowered to 10 (~6s) by default, still configurable."""
+    d = _doc()
+    base = _sdlc(tmp_path, {"discovery": {"source": "github", "github": {"repo": "acme/widget"}}})
+    issues = [{"number": n, "body": "no marker"} for n in range(1, 31)]    # 30 candidates, no override
+    view_calls = []
+    checks = {c["name"]: c for c in d.check(base, run=_dm_run(issues, view_calls=view_calls))}
+    assert len(view_calls) == 10
+    assert "10/30" in _dm_check(checks)["name"]
+
+
+def test_dependency_marker_doctor_check_survives_a_malformed_doctor_scan_block(tmp_path):
+    # F6 class: a truthy non-dict backlog_check.doctor_scan (a hand-edited config typo) must degrade
+    # to the defaults, never crash the one tool an adopter runs BECAUSE their config is wrong --
+    # matches every other block reader in this file (_block()'s own documented contract).
+    d = _doc()
+    base = _sdlc(tmp_path, {"discovery": {"source": "github", "github": {"repo": "acme/widget"}},
+                            "backlog_check": {"doctor_scan": "oops"}})
+    issues = [{"number": 1, "body": "no marker"}]
+    d.check(base, run=_dm_run(issues))    # must not raise
+
+
 # --- standing-doc hygiene: the mechanical half of context maintenance -------------------------
 # Rot that a script can settle (a reference that no longer resolves), NOT the judgment half
 # (demoting a rule CI now enforces) — that's sdlc-retro's, because it changes files.
