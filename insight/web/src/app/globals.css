@@ -1,1 +1,52 @@
+/* issue #303 [E17.S2], .sdlc/plans/303.md Decision (c). tokens.generated.css is generated --
+   never hand-edit it, see its own banner comment; colors.py's PANEL / TYPE_SCALE tokens are the
+   single source of truth (Decision a). This file (globals.css) is the hand-maintained half: the
+   Tailwind entry point plus a `@theme` mapping that turns the generated custom properties into
+   real Tailwind utility classes (`bg-panel-ground`, `text-panel-bone`, etc.) for future stories
+   (E17.S4+) to reach for.
+
+   MEASURED (Step 5's own build-output inspection, correcting the plan's draft assumption): an
+   UNREFERENCED `--color-panel-*` theme value here is fully tree-shaken out of the built CSS --
+   Tailwind v4 does not keep it in `:root` "just in case" the way v3's static theme did. The
+   moment a future page actually uses e.g. `bg-panel-ground` in scanned source, Tailwind
+   generates BOTH the utility class and its backing `--color-panel-ground: var(--panel-ground)`
+   variable together (verified end to end: added a throwaway `className="bg-panel-ground"`,
+   rebuilt, confirmed both appeared in the compiled CSS, then reverted). So this block is inert
+   today -- not silently broken, just not yet exercised -- exactly like any unused Tailwind
+   utility. Plain `@theme` (not `@theme inline`) is enough even though the value is a `var()`
+   defined in a separate imported file: verified directly, not assumed from `inline`'s
+   documented dark-mode-focused use case, which does not apply here (PANEL has no light mode to
+   fork against, see colors.py's own PANEL comment). */
 @import "tailwindcss";
+@import "./tokens.generated.css";
+
+@theme {
+  --color-panel-ground: var(--panel-ground);
+  --color-panel-panel: var(--panel-panel);
+  --color-panel-raised: var(--panel-raised);
+  --color-panel-bone: var(--panel-bone);
+  --color-panel-dim: var(--panel-dim);
+  --color-panel-faint: var(--panel-faint);
+  --color-panel-amber: var(--panel-amber);
+  --color-panel-amber-deep: var(--panel-amber-deep);
+  --color-panel-cyan: var(--panel-cyan);
+  --color-panel-cyan-deep: var(--panel-cyan-deep);
+  --color-panel-red: var(--panel-red);
+  --color-panel-void: var(--panel-void);
+  --color-panel-void-ink: var(--panel-void-ink);
+  --color-panel-rule: var(--panel-rule);
+  --color-panel-rule-hard: var(--panel-rule-hard);
+  --color-panel-void-edge: var(--panel-void-edge);
+  --color-panel-grid: var(--panel-grid);
+  --color-panel-hatch: var(--panel-hatch);
+  --color-panel-hatch-soft: var(--panel-hatch-soft);
+  --color-panel-grain: var(--panel-grain);
+  --color-panel-glow: var(--panel-glow);
+  --color-panel-mix-0: var(--panel-mix-0);
+  --color-panel-mix-1: var(--panel-mix-1);
+  --color-panel-mix-2: var(--panel-mix-2);
+  --color-panel-mix-3: var(--panel-mix-3);
+  --color-panel-mix-4: var(--panel-mix-4);
+  --color-panel-mix-5: var(--panel-mix-5);
+  --color-panel-mix-6: var(--panel-mix-6);
+}
