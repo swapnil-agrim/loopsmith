@@ -16,30 +16,45 @@ exactly these three points -- restated here so the next reader does not re-litig
      `id`, `<actor>:<seq>`, already unique per author) is never ingested twice. It does NOT mean
      two ingest runs produce identical row counts anywhere -- fact_collector_pack in particular
      is EXPECTED to grow every run; that is a different table with a different contract.
-  3. The resume cursor is keyed on (project_id, actor_id) only, never (..., stream). `stream` is
-     inert: ledger.py has no stream parameter yet (that's #136, E6.S1), so it is always exactly
-     one value today. Widen the cursor's key when #136 ships a real second stream, not before.
+  3. SUPERSEDED BY loopsmith#380 (see the next section) -- recorded here rather than deleted,
+     because this decision was parked six times and the next reader deserves to know it was
+     EXECUTED, not reversed. It read: "The resume cursor is keyed on (project_id, actor_id) only,
+     never (..., stream). `stream` is inert: ledger.py has no stream parameter yet (that's #136,
+     E6.S1), so it is always exactly one value today. Widen the cursor's key when #136 ships a
+     real second stream, not before." #136 (PR #241) shipped `stream=` in ledger.py, PR #242
+     published the second stream to the shared ledger branch, and the stated precondition was
+     therefore met. Widening the key is what this decision asked for.
 
-KNOWN LIMITATION, TRACKED (loopsmith#380, opened alongside the fix below -- not a settled
-decision like the three above, an open gap): ledger.py's own PR #337 (F10) gave every writing
-PROCESS of one actor its own file and put the pid into `id` (`<actor>:<pid>:<seq>`), so one
-actor's records read here can now carry MULTIPLE INDEPENDENT seq spaces (one per pid), not one
-monotonic space as decision 2 above still assumes. `_CURSOR_UPSERT_SQL` was widened from a plain
-overwrite to `GREATEST(last_seq, excluded.last_seq)` specifically to close the WORSE of the two
-failure modes this could otherwise cause: a lower-seq record from a different writer processed
-after a higher-seq one from another writer of the same actor no longer regresses the cursor
-backward, so it can no longer cause an already-landed record to be silently RE-INSERTED as a
-duplicate on a later run (fact_event has no dedup constraint -- see store.py -- so a duplicate
-insert would otherwise be invisible and would inflate every event-count metric for that actor).
-GREATEST does NOT close the other failure mode: a genuinely NEW record from a still-active writer
-whose OWN independent counter has not yet caught up to another (possibly now-gone) writer's peak
-seq will still read as `seq <= start_cursor[actor]` and be skipped -- silently lost, the same
-"swallowed hand-off" failure class PR #337 fixes in watch_classify.py, just relocated here. Fixing
-that fully needs the cursor keyed on (project_id, actor_id, writer_id), which needs `writer_id`
-added to ingest_ledger_cursor's PRIMARY KEY -- this module's own migration tool
-(`store.py`'s `_ALTER`) only supports additive `ADD COLUMN`, not a primary-key change, so that is
-a real migration story of its own (loopsmith#380), not a same-PR fix. Land the cheap, safe,
-additive mitigation now; do not treat this limitation as closed.
+#380: THE RESUME CURSOR'S KEY IS (project_id, actor_id, writer_id, stream). ledger.py computes a
+record's `seq` from the LINE COUNT of the one file it is appending to, and that file is
+`<sdlc>/ledger/<stream>/<actor>-<pid>.jsonl` -- so `seq` is monotonic per (actor, pid, stream) and
+NOT per actor, which decision 2 above had assumed. One actor's records therefore arrive carrying
+several INDEPENDENT counters, and a single scalar watermark cannot be the high-water mark for more
+than one of them: whichever counter runs ahead pushes the shared cursor past the others, and every
+later record from the slower ones reads as `seq <= cursor`, "already ingested", and is silently
+dropped. Two separate axes produce this:
+
+  * the WRITER axis (what #380 was filed for): PR #337 (F10) gave every writing PROCESS of one
+    actor its own file and put the pid into `id` (`<actor>:<pid>:<seq>`).
+  * the STREAM axis (found while researching #380, and the one that was LIVE): #136 / PR #241 gave
+    ledger.py its `stream=` parameter -- #136's own done_when reads "ids stay monotonic per
+    (actor, stream)" -- and PR #242 made sync.py publish that stream to the shared ledger branch.
+    One process writing both streams mints `who:pid:1` twice, once per stream. On the largest real
+    ledger available when this landed, EVERY id in the shorter (events) stream collided exactly
+    with an id in the longer (entries) stream, so once the entries stream had pushed the shared
+    cursor past the events stream's own count, every subsequent events record was discarded --
+    about 35% of that ledger's records, invisibly, into a store whose whole purpose is analytics.
+
+A third, latent space exists too: `read_all_with_reliability` also reads `<sdlc>/events/` (only
+when telemetry.share is off), a different directory from `ledger/events/` and so a third
+line-count space. `reliability_class` cannot distinguish it -- both are class 2 -- which is why
+`stream`, not `reliability_class`, is the key column.
+
+WHAT THE FIX COST, and what it did NOT change: the pre-#380 `GREATEST(last_seq, excluded.last_seq)`
+upsert stays, for a NEW reason (see _CURSOR_UPSERT_SQL). Changing a PRIMARY KEY is beyond what
+store.py's additive `_ALTER` mechanism can express, so this needed a real one-shot migration --
+see store.py's `_migrate_cursor_key` for the structural half and `ingest_ledger` below for the
+per-project rebuild that finishes it.
 
 WHERE THE ROWS GO, per spec §B.3's own column list (verified against insight/ingest/store.py,
 NOT invented here -- fact_event and fact_handoff are written with EXACTLY the columns store.py
@@ -169,28 +184,83 @@ def _issue_of(record):
 # --------------------------------------------------------------------------- resume cursor
 
 
+#: The stream a record is treated as belonging to when the reader somehow did not tag it. Every
+#: production record arrives tagged (read_all_with_reliability stamps all three globs), but
+#: `stream` goes straight into a NOT-NULL PRIMARY KEY column, so it needs a non-NULL floor --
+#: the same reason _actor_key has its "" sentinel.
+_DEFAULT_STREAM = "entries"
+
+
+def _writer_key(record):
+    """The independent seq-space this record belongs to, within its actor: `<who>:<pid>` for a
+    post-#337 3-part id, the actor itself for a legacy `<who>:<seq>` one (missing, short or
+    malformed) -- every such record came from the one shared per-actor file, so the actor IS its
+    writer. `>= 3` rather than `== 3` deliberately, so a 4-part id degrades the same way; seq_of()
+    likewise takes the LAST ':'-segment, so the two parsers agree on any part count.
+
+    Mirrors skills/sdlc-loop/scripts/watch_classify.py's _writer() and its verbatim twin in
+    ledger.py. Kept as an independent copy rather than imported: the plugin/product import
+    boundary (insight/README.md, tests/test_import_boundary.py) forbids the import outright, and
+    per-module duplication of this parser is the documented house convention there, not an
+    oversight.
+
+    DELIBERATELY NOT byte-identical to those two copies in one respect: the fallback is
+    _actor_key(record), not record.get("actor", ""). `.get(k, default)` returns None for a line
+    that literally carries `"actor": null` -- harmless as a dict key in watch_classify, fatal
+    here, where the value goes straight into a NOT-NULL PRIMARY KEY column and would raise,
+    blocking that writer for the rest of the run."""
+    parts = str(record.get("id", "")).split(":")
+    if len(parts) >= 3:
+        return "%s:%s" % (parts[0], parts[1])
+    return _actor_key(record)
+
+
+def _stream_key(record):
+    """The reader's own per-record `stream` tag (ledger_reader.read_all_with_reliability), or
+    _DEFAULT_STREAM when it is absent or blank -- never NULL, see that constant."""
+    value = record.get("stream")
+    return str(value) if value not in (None, "") else _DEFAULT_STREAM
+
+
 def _load_cursor(conn, project_id):
-    """{actor_key: last_seq} already ingested for this project, from ingest_ledger_cursor. A
-    fresh project (no rows yet) returns {} -- every actor starts at "nothing seen". Loaded ONCE
-    per ingest_ledger call and never mutated afterward -- see the module docstring's own
-    "cursor's skip decision" paragraph for why."""
+    """{(writer_key, stream_key): last_seq} already ingested for this project, from
+    ingest_ledger_cursor. A fresh project (no rows yet) returns {} -- every writer starts at
+    "nothing seen". Loaded ONCE per ingest_ledger call and never mutated afterward -- see the
+    module docstring's own "cursor's skip decision" paragraph for why.
+
+    `max(last_seq)` rather than a bare column read: `actor_id` is part of the stored PRIMARY KEY
+    but not of the in-memory key (it is a readable dimension, redundant with the writer_id that
+    embeds it), so a ledger whose `id` prefix and `actor` field disagree -- a hand-edited line --
+    can legitimately leave two rows for one (writer, stream). Taking the max makes the load
+    deterministic AND keeps it on the safe side of that disagreement: the same reasoning as the
+    GREATEST upsert below, applied on read. Picking an arbitrary row could take the lower value
+    and re-ingest an already-landed record as a duplicate."""
     rows = conn.execute(
-        "SELECT actor_id, last_seq FROM ingest_ledger_cursor WHERE project_id = ?",
+        "SELECT writer_id, stream, max(last_seq) FROM ingest_ledger_cursor "
+        "WHERE project_id = ? GROUP BY writer_id, stream",
         [project_id],
     ).fetchall()
-    return {actor_id: last_seq for actor_id, last_seq in rows}
+    return {(writer_id, stream): last_seq for writer_id, stream, last_seq in rows}
 
 
+#: GREATEST survives #380's key widening, but its justification changed completely, so do not read
+#: the old one into it. Pre-#380 it guarded against a DIFFERENT writer's lower seq regressing the
+#: shared per-actor cursor; each writer now has its own row, and within one (writer, stream) the
+#: seq space really is monotonic, so a plain overwrite would be correct for well-formed data.
+#: What it guards now is malformed data: seq_of() degrades an unparseable id tail to 0
+#: (ledger_reader._seq), so a single corrupt line from an otherwise-healthy writer would reset
+#: that writer's cursor to 0 and re-ingest its entire history as duplicate rows -- invisible,
+#: since neither fact table has a dedup constraint.
 _CURSOR_UPSERT_SQL = """
-    INSERT INTO ingest_ledger_cursor (project_id, actor_id, last_seq)
-    VALUES (?, ?, ?)
-    ON CONFLICT (project_id, actor_id) DO UPDATE SET
+    INSERT INTO ingest_ledger_cursor (project_id, actor_id, writer_id, stream, last_seq)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (project_id, actor_id, writer_id, stream) DO UPDATE SET
       last_seq = GREATEST(ingest_ledger_cursor.last_seq, excluded.last_seq)
 """
 
 
-def _advance_cursor(conn, project_id, actor_key, seq):
-    conn.execute(_CURSOR_UPSERT_SQL, [project_id, actor_key, seq])
+def _advance_cursor(conn, project_id, actor_key, writer_key, stream_key, seq):
+    conn.execute(_CURSOR_UPSERT_SQL, [project_id, actor_key, writer_key, stream_key, seq])
 
 
 # --------------------------------------------------------------------------- fact_event
@@ -295,31 +365,114 @@ def _apply_ack(conn, project_id, record):
     )
 
 
+# --------------------------------------------------------------------------- #380 rebuild
+
+
+def _has_legacy_marker(conn, project_id):
+    """True while this project still carries a pre-#380 cursor row in store.py's carrier table,
+    i.e. its fact_event/fact_handoff rows were ingested under the old per-actor key and have to be
+    rebuilt before the new key can be trusted. The carrier row is the ONLY trigger. "The cursor is
+    empty" is the tempting alternative and would be wrong: a genuinely fresh store's cursor is
+    empty too, and rebuilding on that signal would delete rows on a store's very first ingest."""
+    return bool(conn.execute(
+        "SELECT count(*) FROM ingest_ledger_cursor_legacy WHERE project_id = ?",
+        [project_id],
+    ).fetchone()[0])
+
+
+#: Project-scoped, and in this order so that the marker is consumed in the SAME transaction that
+#: clears the rows it describes -- there is no state in which one has happened and the other has
+#: not.
+_REBUILD_SQL = (
+    "DELETE FROM fact_event WHERE project_id = ?",
+    "DELETE FROM fact_handoff WHERE project_id = ?",
+    "DELETE FROM ingest_ledger_cursor WHERE project_id = ?",
+    "DELETE FROM ingest_ledger_cursor_legacy WHERE project_id = ?",
+)
+
+
+def _rebuild_migrated_project(conn, project_id):
+    """issue #380, the per-project half of the migration: clear everything this project's ledger
+    facts were derived from, so the very same ingest_ledger call can rebuild them from the JSONL
+    source of truth under the new key. Raises on failure, having rolled back -- the caller must
+    NOT then fall through to ingest (see ingest_ledger).
+
+    WHY A REBUILD RATHER THAN A BACKFILL. The old cursor rows cannot be converted: see store.py's
+    _migrate_cursor_key. Nor can the answer be reconstructed from the rows themselves --
+    `fact_event` carries no record identity (no `id`, no `seq`; the closest match key is
+    (project_id, actor_id, ts, kind, goal_id, reliability_class), and ledger.py stamps `ts` to
+    whole-second precision, so several records from one actor in one burst are indistinguishable),
+    and `fact_handoff` is lossy by construction (one row absorbs a handoff and EVERY later ack,
+    last-write-wins, so N acks collapse into one scalar and no reconstruction can say which of
+    them were ingested). Rebuilding is not the cheap option, it is the only exact one.
+
+    WHY THIS IS NOT IN ensure_schema. That function runs on every open_store(), including
+    read-intent commands (`insight gaps`, `dash`, `ic`, `manager`, `panel`, `leadership`,
+    `cross-functional`), and in a multi-repo store built with `insight ingest --repos <glob>` a
+    wipe there would destroy the ledger facts of every project the next ingest run does not happen
+    to cover. Here it fires exactly once per project, inside the call that immediately refills it.
+
+    CRASH SAFETY. If the process dies between this transaction and the end of the re-ingest, the
+    project is left with no fact rows, no cursor rows and no marker -- i.e. exactly the
+    "fresh project" state, which is this module's best-tested path. No duplicates, no permanent
+    loss: the next run re-ingests the whole ledger. DuckDB takes an exclusive file lock for a
+    read-write connection, so two `insight ingest` processes cannot interleave on one store, and
+    open_store_read_only never calls ensure_schema, so the API service can never reach any of
+    this."""
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        for sql in _REBUILD_SQL:
+            conn.execute(sql, [project_id])
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass  # a failed statement already aborts its transaction; never mask the real cause
+        raise
+
+
 # --------------------------------------------------------------------------- orchestration
 
 
 def ingest_ledger(conn, project_root, sdlc_dir=None):
     """The write orchestration `insight ingest` calls (issue #105). Reads every ledger record
     via read_all_with_reliability (oldest-first), skips any this project has already ingested
-    (per-actor resume cursor), writes the rest into fact_event/fact_handoff, and advances the
-    cursor -- one record, one transaction, at a time (see the module docstring for why). Never
-    raises. Returns {'events', 'handoffs', 'skipped'} counts for CLI printing.
+    (the per-(writer, stream) resume cursor -- see the module docstring's #380 section), writes
+    the rest into fact_event/fact_handoff, and advances the cursor -- one record, one transaction,
+    at a time (see the module docstring for why). Never raises. Returns
+    {'events', 'handoffs', 'skipped'} counts for CLI printing.
 
-    ONE ACTOR'S RECORDS ARE PROCESSED IN ORDER, AND A FAILURE STOPS THAT ACTOR FOR THE REST OF
+    ONE WRITER'S RECORDS ARE PROCESSED IN ORDER, AND A FAILURE STOPS THAT WRITER FOR THE REST OF
     THIS RUN -- found live while proving the "interrupt mid-run, resume" contract, not merely
     assumed safe: an EARLIER version advanced the cursor per-record independently, so a record
-    that failed (rolled back, never written) followed by a LATER record for the SAME actor that
-    SUCCEEDED left the cursor sitting past the failed one's seq -- the failed record then read as
-    "already ingested" forever, a silent, permanent GAP, exactly what this story's own done_when
-    forbids. `blocked` closes it: the moment one of this actor's records fails, every later
-    record for that SAME actor in THIS run is deferred without being attempted, so the cursor can
-    never advance past a hole for that actor. The accepted trade: a record that fails for a
-    reason THIS run cannot recover from (not a transient lock, a genuinely bad value) stalls
-    every later record from that one actor until fixed -- preferred over the alternative, which
-    is silently losing a record forever. A DIFFERENT actor's records are entirely unaffected
-    (blocked is keyed per actor, not global) -- one actor's bad record must not stall the whole
-    ingest either, same "guard the computation, degrade the record" shape as everywhere else in
-    this package."""
+    that failed (rolled back, never written) followed by a LATER record sharing its cursor row
+    that SUCCEEDED left the cursor sitting past the failed one's seq -- the failed record then
+    read as "already ingested" forever, a silent, permanent GAP, exactly what this story's own
+    done_when forbids. `blocked` closes it: the moment one record fails, every later record
+    sharing its cursor row in THIS run is deferred without being attempted, so the cursor can
+    never advance past a hole. The accepted trade: a record that fails for a reason THIS run
+    cannot recover from (not a transient lock, a genuinely bad value) stalls every later record
+    from that one writer until fixed -- preferred over the alternative, which is silently losing
+    a record forever. Anything with a DIFFERENT cursor row is entirely unaffected: `blocked` is
+    keyed exactly as the cursor is, on (writer, stream), so one bad record stalls neither another
+    actor nor a healthy sibling PROCESS of the same actor nor that same process's other stream.
+    Keying it per actor would still be safe, merely needlessly over-blocking -- the same
+    over-blocking this paragraph already rejects one level up, for actors.
+
+    THE #380 REBUILD runs first, at most once per project, and ONLY when this project carries a
+    migration marker AND the ledger actually read back some records. That `records` condition is
+    load-bearing, not incidental. `.sdlc/ledger/` is a WORKTREE of an ops branch, so it is
+    routinely absent -- never bootstrapped, pruned, re-cloned, or a `--repos <glob>` run over
+    repos that never had one -- and when it is missing while `.sdlc/` is present, the reader
+    returns [] and the repo still counts as adopted, so this function still runs. Wiping then
+    would consume the marker, find nothing to refill with, and leave NO future run any reason to
+    retry: wipe-and-reingest silently degrading to wipe, which is the same class of silent loss
+    #380 exists to close. A project holding a marker had cursor rows by definition, so an empty
+    read means the source is missing, never that there is nothing to rebuild -- leaving the marker
+    armed is correct and self-healing, and it covers the sibling cases for free (the outer
+    `except: records = []` guard below, and a project whose records only ever came from
+    `<sdlc>/events/` back when telemetry.share was off)."""
     project_root = pathlib.Path(project_root)
     sdlc_dir = pathlib.Path(sdlc_dir) if sdlc_dir is not None else project_root / ".sdlc"
     project_id = project_id_for(project_root)
@@ -333,17 +486,31 @@ def ingest_ledger(conn, project_root, sdlc_dir=None):
         # way #103's own history shows for a different reader -- guarded regardless.
         records = []
 
-    start_cursor = _load_cursor(conn, project_id)
-    blocked = set()  # actor_keys with a write failure THIS run -- see this function's own
-                      # docstring for the gap this closes
+    try:
+        if records and _has_legacy_marker(conn, project_id):
+            _rebuild_migrated_project(conn, project_id)
+        start_cursor = _load_cursor(conn, project_id)
+    except Exception:
+        # A wipe that did not commit must NEVER fall through to ingest: with the old rows still
+        # in place and the cursor about to be rebuilt from scratch, that is precisely how every
+        # already-landed record becomes a duplicate (neither fact table has a dedup constraint).
+        # The marker survives, so the next run retries against an untouched store. Returning
+        # all-zeros is consistent with `skipped` counting write failures only.
+        return {"events": 0, "handoffs": 0, "skipped": 0}
+
+    blocked = set()  # (writer_key, stream_key) pairs with a write failure THIS run -- see this
+                      # function's own docstring for the gap this closes
     events, handoffs, skipped = 0, 0, 0
     for record in records:
         try:
             actor_key = _actor_key(record)
+            writer_key = _writer_key(record)
+            stream_key = _stream_key(record)
+            cursor_key = (writer_key, stream_key)
             seq = seq_of(record)
-            if actor_key in blocked:
-                continue  # an earlier record for this SAME actor already failed this run
-            if actor_key in start_cursor and seq <= start_cursor[actor_key]:
+            if cursor_key in blocked:
+                continue  # an earlier record sharing this cursor row already failed this run
+            if cursor_key in start_cursor and seq <= start_cursor[cursor_key]:
                 continue  # already ingested in a prior run -- identity-keyed skip, see docstring
             kind = record.get("kind")
             conn.execute("BEGIN TRANSACTION")
@@ -357,7 +524,7 @@ def ingest_ledger(conn, project_root, sdlc_dir=None):
                 else:
                     _write_event(conn, project_id, record)
                     events += 1
-                _advance_cursor(conn, project_id, actor_key, seq)
+                _advance_cursor(conn, project_id, actor_key, writer_key, stream_key, seq)
                 conn.execute("COMMIT")
             except Exception:
                 # A well-typed record can still surprise DuckDB at INSERT/UPDATE time (an
@@ -365,14 +532,14 @@ def ingest_ledger(conn, project_root, sdlc_dir=None):
                 # is cleanly excluded (never landed-but-uncursored) rather than half-applied.
                 # Same reasoning as artifact_reader.ingest_artifacts' per-goal transaction.
                 conn.execute("ROLLBACK")
-                blocked.add(actor_key)
+                blocked.add(cursor_key)
                 skipped += 1
                 continue
         except Exception:
-            # One record's OWN shape breaking this loop's bookkeeping (actor/seq/kind
-            # extraction, not the SQL -- that's the inner guard above) must not abort every
-            # other record's ingest either. actor_key may not even be bound yet here, so this
-            # record's own actor cannot be added to `blocked` -- it is simply retried next run,
+            # One record's OWN shape breaking this loop's bookkeeping (actor/writer/stream/seq/
+            # kind extraction, not the SQL -- that's the inner guard above) must not abort every
+            # other record's ingest either. cursor_key may not even be bound yet here, so this
+            # record's own writer cannot be added to `blocked` -- it is simply retried next run,
             # same as any other skip.
             skipped += 1
             continue

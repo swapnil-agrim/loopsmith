@@ -570,6 +570,55 @@ def test_ensure_schema_upgrades_a_pre_147_fact_event_table_in_place(tmp_path):
     conn.close()
 
 
+#: issue #380: the resume cursor's key. `seq` is a per-FILE line count in ledger.py, and one
+#: actor's records now come from N files -- one per (writer process, stream) -- so a single
+#: watermark per actor cannot represent N independent counters. actor_id is redundant with
+#: writer_id (which embeds it) but is kept, so a query can group by actor without string-splitting.
+_CURSOR_COLUMNS = ["project_id", "actor_id", "writer_id", "stream", "last_seq"]
+_CURSOR_LEGACY_COLUMNS = ["project_id", "actor_id", "last_seq"]
+
+
+def _pk_columns(conn, table):
+    row = conn.execute(
+        "select constraint_column_names from duckdb_constraints() "
+        "where table_name = ? and constraint_type = 'PRIMARY KEY'", [table]).fetchone()
+    return list(row[0]) if row else []
+
+
+def test_ingest_ledger_cursor_columns_and_key_match_this_storys_design(tmp_path):
+    """No assertion existed for this table's shape at all before #380 -- which is how the key
+    stayed one dimension short of the ledger's own seq space through two stream additions. The
+    carrier is asserted here too: it is declared UNCONDITIONALLY in _DDL (empty on every fresh
+    store) rather than created only when a migration fires, so a store's table set never depends
+    on its history and test_ensure_schema_creates_all_tables's `== set(TABLES)` stays true for
+    migrated and fresh stores alike."""
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    assert _columns(conn, "ingest_ledger_cursor") == _CURSOR_COLUMNS
+    assert _pk_columns(conn, "ingest_ledger_cursor") == _CURSOR_COLUMNS[:-1]
+    assert _columns(conn, "ingest_ledger_cursor_legacy") == _CURSOR_LEGACY_COLUMNS
+    assert _pk_columns(conn, "ingest_ledger_cursor_legacy") == []  # a carrier, not a keyed table
+    conn.close()
+
+
+def test_ingest_ledger_cursor_pk_separates_writers_and_streams(tmp_path):
+    """The key's whole point, exercised as rows rather than as DDL text: four watermarks that a
+    per-actor key would have collapsed into one coexist, and only a full-key repeat conflicts."""
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    ensure_schema(conn)
+    conn.execute("""
+        insert into ingest_ledger_cursor values
+          ('p', 'dana', 'dana:111', 'entries', 5),
+          ('p', 'dana', 'dana:111', 'events', 2),
+          ('p', 'dana', 'dana:222', 'entries', 1),
+          ('p', 'dana', 'dana:222', 'local-events', 3)
+    """)
+    assert conn.execute("select count(*) from ingest_ledger_cursor").fetchone()[0] == 4
+    with pytest.raises(duckdb.ConstraintException):
+        conn.execute("insert into ingest_ledger_cursor values ('p','dana','dana:111','entries',9)")
+    conn.close()
+
+
 def test_mandated_columns_match_spec_exactly(tmp_path):
     conn = duckdb.connect(str(tmp_path / "s.duckdb"))
     ensure_schema(conn)

@@ -13,12 +13,15 @@ around it.
 """
 import json
 import pathlib
+import subprocess
+import sys
 
 import pytest
 
 duckdb = pytest.importorskip("duckdb")
 
 from insight.ingest import ledger_writer  # noqa: E402
+from insight.ingest.ledger_reader import read_all_with_reliability  # noqa: E402
 from insight.ingest.ledger_writer import ingest_ledger  # noqa: E402
 from insight.ingest.packs import project_id_for  # noqa: E402
 from insight.ingest.store import ensure_schema  # noqa: E402
@@ -288,18 +291,31 @@ def test_cursor_is_scoped_per_project_two_projects_do_not_interfere(tmp_path, co
     assert conn.execute("SELECT count(*) FROM fact_event").fetchone()[0] == 2
 
 
-# --------------------------------------------------------------------------- same-actor, multiple writers
-# (loopsmith#337/F10 gives each writing PROCESS of one actor its own file + its own independent seq
-# space embedded in `id` -- <actor>:<pid>:<seq>. See ledger_writer.py's "KNOWN LIMITATION, TRACKED"
-# docstring section for exactly what the fix below closes and what loopsmith#380 still needs to.)
+# --------------------------------------------------------------------------- same-actor, multiple
+# writers, multiple streams
+#
+# TWO independent seq spaces feed one actor's records, and the resume cursor has to carry both
+# (loopsmith#380). ledger.py computes `seq` from the LINE COUNT of the one file it is appending to
+# (skills/sdlc-loop/scripts/ledger.py's own append()), and that file is
+# `<sdlc>/ledger/<stream>/<actor>-<pid>.jsonl` -- so the counter is scoped to (actor, pid, stream):
+#   * the WRITER axis: loopsmith#337/F10 gave each writing PROCESS of one actor its own file and
+#     put the pid into `id` (<actor>:<pid>:<seq>), so two live processes of one actor count
+#     independently from 1;
+#   * the STREAM axis: issue #136 / PR #241 gave ledger.py its `stream=` parameter (its own
+#     done_when: "ids stay monotonic per (actor, stream)") and PR #242 published the second stream
+#     to the shared ledger branch -- so one process writing to both streams mints `who:pid:1`
+#     TWICE, once per stream.
+# A single scalar per actor cannot be the high-water mark for N independent counters, so the cursor
+# keys on (project_id, actor_id, writer_id, stream). See ledger_writer.py's own "#380: THE RESUME
+# CURSOR'S KEY" docstring section.
 
 
-def test_a_lower_seq_from_a_different_writer_no_longer_regresses_the_shared_cursor(tmp_path, conn):
-    """A plain cursor overwrite let a lower-seq record from one writer, processed after a
-    higher-seq record from a DIFFERENT writer of the same actor, regress the shared per-actor
-    cursor backward -- causing the higher-seq record to be silently RE-INGESTED as a duplicate
-    fact_event row on the very next run (fact_event has no dedup constraint, store.py). The
-    GREATEST-based upsert closes this: the cursor can only ever advance, never regress."""
+def test_two_writers_of_one_actor_keep_independent_cursor_rows(tmp_path, conn):
+    """Each (writer, stream) gets its OWN cursor row, so neither writer's progress is expressed
+    through the other's counter. Replaces the pre-#380 test that asserted a single shared per-actor
+    row could not REGRESS (a `SELECT last_seq ... WHERE actor_id = 'dana'` + fetchone(), which is
+    non-deterministic the moment `dana` legitimately has more than one row). The anti-duplicate
+    half that the GREATEST upsert bought is preserved below and still asserted."""
     sdlc = tmp_path / ".sdlc"
     _write_records(sdlc, "dana", [
         _rec("dana", 1, "2026-01-01T00:00:00Z", "claimed", id="dana:111:1"),
@@ -308,39 +324,246 @@ def test_a_lower_seq_from_a_different_writer_no_longer_regresses_the_shared_curs
     ])
     first = ingest_ledger(conn, tmp_path)
     assert first == {"events": 3, "handoffs": 0, "skipped": 0}
-    cursor = conn.execute(
-        "SELECT last_seq FROM ingest_ledger_cursor WHERE actor_id = 'dana'").fetchone()[0]
-    assert cursor == 5   # the true max across both writers, not just the last-processed writer's seq
+    cursor_rows = {(r["writer_id"], r["stream"], r["last_seq"])
+                   for r in _rows(conn, "ingest_ledger_cursor")}
+    assert cursor_rows == {("dana:111", "entries", 5), ("dana:222", "entries", 1)}
+    # actor_id survives as a readable dimension alongside the writer it embeds.
+    assert {r["actor_id"] for r in _rows(conn, "ingest_ledger_cursor")} == {"dana"}
 
     second = ingest_ledger(conn, tmp_path)          # a resume run, no new records at all
     assert second == {"events": 0, "handoffs": 0, "skipped": 0}   # nothing re-ingested as a duplicate
     assert len(_rows(conn, "fact_event")) == 3       # still exactly 3 rows, not 3 + a duplicate
 
 
-def test_a_still_open_gap_tracked_in_loopsmith_380_a_slower_writers_new_entry_can_be_swallowed(tmp_path, conn):
-    """KNOWN LIMITATION, TRACKED (loopsmith#380) -- documents current behavior, does not endorse
-    it. The GREATEST mitigation stops the cursor regressing backward, but a per-ACTOR cursor still
-    cannot represent two writers' independent seq spaces at once: once writer 111 has pushed the
-    cursor to a high seq, a genuinely NEW record from writer 222 whose own counter has not caught
-    up is silently skipped as 'already seen' on the run after. This test exists so a fix for #380
-    has an obvious, explicit place to flip red->green -- if this test ever starts FAILING (the
-    record stops being swallowed) unexpectedly, #380 was fixed; rewrite this test to assert the
-    correct behavior instead of treating the failure as a regression to work around."""
+def test_a_slower_writers_new_entry_is_no_longer_swallowed_by_a_faster_siblings_cursor(tmp_path, conn):
+    """loopsmith#380's own acceptance criterion, and the exact scenario PR #337's independent
+    review named: writer 111 races ahead to seq 5; writer 222 -- a different, still-active process
+    of the SAME actor -- then writes its own first entry, genuinely new but numbered 1 in ITS
+    counter. A per-actor cursor read that as `1 <= 5`, "already seen", and dropped it silently.
+
+    This test replaces test_a_still_open_gap_tracked_in_loopsmith_380_..., which asserted the
+    OPPOSITE (`{"events": 0}`, 2 rows) and was green -- so the red->green flip here is proven by
+    that test's own history, not merely claimed."""
     sdlc = tmp_path / ".sdlc"
     _write_records(sdlc, "dana", [
         _rec("dana", 1, "2026-01-01T00:00:00Z", "claimed", id="dana:111:1"),
         _rec("dana", 5, "2026-01-01T00:05:00Z", "note", id="dana:111:5"),
     ])
-    ingest_ledger(conn, tmp_path)                    # cursor now at 5 (writer 111's peak)
+    ingest_ledger(conn, tmp_path)                    # writer 111's own cursor now at 5
 
-    # writer 222 (a different, still-active process of the SAME actor) writes its OWN first entry
-    # -- genuinely new, never ingested, but its seq (1) is behind writer 111's already-seen peak.
     _write_records(sdlc, "dana", [
         _rec("dana", 1, "2026-01-01T00:10:00Z", "claimed", id="dana:222:1", goal="g-new"),
     ])
     second = ingest_ledger(conn, tmp_path)
-    assert second == {"events": 0, "handoffs": 0, "skipped": 0}   # the gap: this "should" be 1 event
-    assert len(_rows(conn, "fact_event")) == 2       # dana:222:1's real, new work never lands
+    assert second == {"events": 1, "handoffs": 0, "skipped": 0}
+    goals = sorted(r["goal_id"] for r in _rows(conn, "fact_event"))
+    assert goals == ["g-new", "g1", "g1"]            # writer 222's real, new work lands
+
+
+def test_a_legacy_two_part_id_keys_on_the_bare_actor(tmp_path, conn):
+    """A pre-#337 `<actor>:<seq>` id has no pid to key on, and every such record came from the one
+    shared per-actor file -- so writer_id falls back to the actor itself, exactly as
+    watch_classify._writer()/ledger._writer() already do for the same id shape."""
+    sdlc = tmp_path / ".sdlc"
+    _write_records(sdlc, "alice", [_rec("alice", 1, "2026-01-01T00:00:00Z", "claimed")])
+    ingest_ledger(conn, tmp_path)
+    rows = _rows(conn, "ingest_ledger_cursor")
+    assert len(rows) == 1
+    assert (rows[0]["actor_id"], rows[0]["writer_id"], rows[0]["stream"]) == (
+        "alice", "alice", "entries")
+
+
+def test_a_mixed_legacy_and_pid_bearing_file_keeps_both_writers_separate(tmp_path, conn):
+    """The real upgrade path: a ledger that straddles the #337 boundary. The legacy records were
+    written before pids were in `id`; a post-#337 process then appends with its own counter, which
+    restarts at 1. Both must be tracked, and the new record must not read as "already seen"."""
+    sdlc = tmp_path / ".sdlc"
+    _write_records(sdlc, "alice", [
+        _rec("alice", 1, "2026-01-01T00:00:00Z", "claimed"),
+        _rec("alice", 2, "2026-01-01T00:01:00Z", "note"),
+        _rec("alice", 3, "2026-01-01T00:02:00Z", "done"),
+    ])
+    assert ingest_ledger(conn, tmp_path) == {"events": 3, "handoffs": 0, "skipped": 0}
+
+    _write_records(sdlc, "alice", [
+        _rec("alice", 1, "2026-01-01T00:03:00Z", "claimed", id="alice:99:1", goal="g-post-337"),
+    ])
+    assert ingest_ledger(conn, tmp_path) == {"events": 1, "handoffs": 0, "skipped": 0}
+
+    assert {(r["writer_id"], r["last_seq"]) for r in _rows(conn, "ingest_ledger_cursor")} == {
+        ("alice", 3), ("alice:99", 1)}
+    assert len(_rows(conn, "fact_event")) == 4
+
+
+def test_the_events_stream_is_not_swallowed_by_the_entries_stream_across_runs(tmp_path, conn):
+    """The stream axis, reduced to its smallest reproduction. `seq` is a per-FILE line count and
+    the two streams are two files, so the entries stream and the events stream number from 1
+    independently -- and entries always outruns events in a real ledger, so once the shared cursor
+    is past the events stream's own counter, EVERY later events record reads as already-seen.
+
+    MUST be two runs. The cursor snapshot is frozen within a single call (see ledger_writer.py's
+    own "cursor's skip decision" paragraph), which is exactly why
+    test_reliability_class_1_for_entries_2_for_events_stream above is green on the buggy code and
+    proves nothing about this."""
+    sdlc = tmp_path / ".sdlc"
+    _write_records(sdlc, "alice", [
+        _rec("alice", i, "2026-01-01T00:0%d:00Z" % i, "note", goal="e%d" % i) for i in range(1, 6)
+    ], stream="entries")
+    _write_records(sdlc, "alice", [
+        _rec("alice", i, "2026-01-01T00:0%d:30Z" % i, "phase", goal="v%d" % i) for i in (1, 2)
+    ], stream="events")
+    assert ingest_ledger(conn, tmp_path) == {"events": 7, "handoffs": 0, "skipped": 0}
+
+    _write_records(sdlc, "alice", [
+        _rec("alice", 3, "2026-01-01T00:06:00Z", "phase", goal="v3"),
+    ], stream="events")
+    assert ingest_ledger(conn, tmp_path) == {"events": 1, "handoffs": 0, "skipped": 0}
+    assert "v3" in {r["goal_id"] for r in _rows(conn, "fact_event")}
+    assert {(r["writer_id"], r["stream"], r["last_seq"])
+            for r in _rows(conn, "ingest_ledger_cursor")} == {
+        ("alice", "entries", 5), ("alice", "events", 3)}
+
+
+def test_the_local_events_glob_is_tagged_local_events(tmp_path, conn):
+    """`<sdlc>/events/` (read only when telemetry.share is off) is a THIRD, independent line-count
+    space: a different directory from `<sdlc>/ledger/events/`, so its own files number from 1 too.
+    reliability_class cannot tell the two apart -- both are class 2 -- so the cursor's stream
+    dimension has to, or the third space collides with the second exactly the way the second
+    collides with the first."""
+    sdlc = tmp_path / ".sdlc"
+    sdlc.mkdir(parents=True, exist_ok=True)
+    (sdlc / "config.json").write_text(json.dumps({"telemetry": {"share": False}}), encoding="utf-8")
+    _write_records(sdlc, "alice", [
+        _rec("alice", 1, "2026-01-01T00:00:00Z", "phase", goal="from-ledger-events"),
+    ], stream="events")
+    local = sdlc / "events" / "alice.jsonl"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text(
+        json.dumps(_rec("alice", 1, "2026-01-01T00:00:01Z", "phase", goal="from-local-events")) + "\n",
+        encoding="utf-8",
+    )
+
+    tagged = {r["goal"]: r["stream"] for r in read_all_with_reliability(sdlc)}
+    assert tagged == {"from-ledger-events": "events", "from-local-events": "local-events"}
+
+    assert ingest_ledger(conn, tmp_path) == {"events": 2, "handoffs": 0, "skipped": 0}
+    assert {(r["writer_id"], r["stream"]) for r in _rows(conn, "ingest_ledger_cursor")} == {
+        ("alice", "events"), ("alice", "local-events")}
+
+
+def test_a_hand_written_stream_field_cannot_spoof_the_source_glob(tmp_path, conn):
+    """`stream` is stamped by the reader from the glob the record was READ from, never taken from
+    the record's own JSON -- a ledger line is a hand-editable file, and a line claiming
+    "stream": "entries" while sitting in ledger/events/ must not be able to collapse itself onto
+    another counter's cursor row."""
+    sdlc = tmp_path / ".sdlc"
+    _write_records(sdlc, "alice", [
+        _rec("alice", 1, "2026-01-01T00:00:00Z", "phase", stream="entries"),
+    ], stream="events")
+    ingest_ledger(conn, tmp_path)
+    assert [r["stream"] for r in _rows(conn, "ingest_ledger_cursor")] == ["events"]
+
+
+def test_a_writers_failure_does_not_stall_a_sibling_writer_of_the_same_actor(tmp_path, conn,
+                                                                            monkeypatch):
+    """`blocked` guards the cursor against advancing past a hole, so it has to be keyed the same
+    way the cursor is. Keyed per ACTOR it would still be SAFE, but one writer's bad record would
+    needlessly defer a healthy sibling writer's records -- the exact over-blocking ingest_ledger's
+    own docstring already rejects one level up, for actors."""
+    sdlc = tmp_path / ".sdlc"
+    _write_records(sdlc, "dana", [
+        _rec("dana", 1, "2026-01-01T00:00:00Z", "claimed", id="dana:111:1", goal="boom"),
+        _rec("dana", 2, "2026-01-01T00:01:00Z", "note", id="dana:111:2", goal="deferred"),
+        _rec("dana", 1, "2026-01-01T00:02:00Z", "claimed", id="dana:222:1", goal="sibling"),
+    ])
+
+    real_write_event = ledger_writer._write_event
+
+    def flaky(conn, project_id, record):
+        if record.get("goal") == "boom":
+            raise RuntimeError("writer 111's first record always fails")
+        return real_write_event(conn, project_id, record)
+
+    monkeypatch.setattr(ledger_writer, "_write_event", flaky)
+    result = ingest_ledger(conn, tmp_path)
+    assert result == {"events": 1, "handoffs": 0, "skipped": 1}
+    assert [r["goal_id"] for r in _rows(conn, "fact_event")] == ["sibling"]
+    # writer 111's cursor never advanced past its own hole, so the deferred record is retried.
+    assert {(r["writer_id"], r["last_seq"]) for r in _rows(conn, "ingest_ledger_cursor")} == {
+        ("dana:222", 1)}
+
+
+# --------------------------------------------------------------------------- real concurrent writers
+#
+# The pid/concurrent-writer class loopsmith#380 notes was entirely absent from this file (a lone
+# comment, zero tests). Real OS subprocesses with real pids, not threads and not a monkeypatched
+# os.getpid -- this repo's own established bar for a concurrency proof (see the 1.0.1 CHANGELOG's
+# action-log entry: "a real two-process concurrency test ... genuine OS subprocesses, not threads").
+# The children write JSONL directly, so no plugin module is imported and the product/plugin import
+# boundary (insight/README.md, tests/test_import_boundary.py) is untouched.
+
+_CHILD_WRITER = """
+import json, os, pathlib, sys
+directory, actor, count = pathlib.Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+pid = os.getpid()
+directory.mkdir(parents=True, exist_ok=True)
+with (directory / ("%s-%d.jsonl" % (actor, pid))).open("a", encoding="utf-8") as f:
+    for seq in range(1, count + 1):
+        f.write(json.dumps({
+            "id": "%s:%d:%d" % (actor, pid, seq),
+            "ts": "2026-01-01T00:00:%02dZ" % seq,
+            "actor": actor,
+            "kind": "note",
+            "goal": "g-%d-%d" % (pid, seq),
+        }) + "\\n")
+sys.stdout.write(str(pid))
+"""
+
+
+def _spawn_writers(directory, actor, count, cwd, how_many=2):
+    """`how_many` children appending concurrently to their OWN per-pid file, joined before the
+    caller ingests. Returns their real pids.
+
+    `cwd` is required, and is the test's own tmp_path: pytest-cov bootstraps coverage into every
+    Python subprocess via a .pth file, and coverage writes its `.coverage.<host>.<pid>.<rand>` data
+    file into the process's CWD -- which would otherwise be the repo root, littering a real
+    checkout (and CI's) with junk on every run of this test."""
+    children = [
+        subprocess.Popen([sys.executable, "-c", _CHILD_WRITER, str(directory), actor, str(count)],
+                         cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(how_many)
+    ]
+    pids = []
+    for child in children:
+        stdout, stderr = child.communicate(timeout=120)
+        assert child.returncode == 0, stderr
+        pids.append(int(stdout.strip()))
+    return pids
+
+
+def test_two_real_processes_writing_concurrently_are_all_ingested_exactly_once(tmp_path, conn):
+    """Two concurrent processes per round, two rounds with fresh pids -- the shape a loop that runs
+    twice actually produces. Round 2's records all number 1..N in their OWN counters, so a
+    per-actor cursor already sitting at N swallows every one of them; each (writer, stream) tracked
+    separately, all 4N land, exactly once."""
+    sdlc = tmp_path / ".sdlc"
+    entries = sdlc / "ledger" / "entries"
+    per_writer = 3
+
+    pids = _spawn_writers(entries, "worker", per_writer, cwd=tmp_path)
+    assert ingest_ledger(conn, tmp_path) == {"events": 2 * per_writer, "handoffs": 0, "skipped": 0}
+
+    pids += _spawn_writers(entries, "worker", per_writer, cwd=tmp_path)
+    assert ingest_ledger(conn, tmp_path) == {"events": 2 * per_writer, "handoffs": 0, "skipped": 0}
+
+    assert len(set(pids)) == 4  # four genuinely distinct OS processes wrote this ledger
+    rows = _rows(conn, "fact_event")
+    assert len(rows) == 4 * per_writer                      # no gap
+    assert len({r["goal_id"] for r in rows}) == 4 * per_writer   # and no duplicate
+    assert {(r["writer_id"], r["last_seq"]) for r in _rows(conn, "ingest_ledger_cursor")} == {
+        ("worker:%d" % pid, per_writer) for pid in pids}
+
+    assert ingest_ledger(conn, tmp_path) == {"events": 0, "handoffs": 0, "skipped": 0}
 
 
 # --------------------------------------------------------------------------- interrupt / resume (required)
