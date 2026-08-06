@@ -949,6 +949,76 @@ def test_cli_agent_start_and_agent_end_round_trip():
         assert lp.agent_threads(base, goal) == []
 
 
+# ------------------------------------------------------------------ thread path-traversal (PR #467 review)
+# Independent review of #467 reproduced a real write-outside-sandbox primitive: `thread` (an
+# LLM-authored slice id from .sdlc/plans/<goal>.slices.json, validated by slices.py with only
+# .strip() -- no character/format check) was spliced directly into _agent_marker_path's join with
+# no validation. `f"{thread}.active"` is a single Python string, but pathlib's own `/` join
+# operator RE-PARSES it for separator characters -- so a `/` inside `thread` becomes additional
+# path segments, some of which can be a literal `..`, escaping .sdlc/state/agents/<goal>/ entirely
+# once the OS resolves the path during mkdir/write. These tests are NON-VACUOUS: written and run
+# BEFORE the fix below, they failed with the exact symptom (a real file created outside the
+# sandbox, e.g. at tmp_path/evil.active); after the fix, they pass.
+
+TRAVERSAL_THREAD = "../../../../evil"    # 4 levels: g's dir -> agents -> state -> sdlc_dir -> escapes it
+
+
+def test_agent_marker_path_rejects_a_thread_containing_a_path_separator():
+    lp = _loop()
+    for bad in (TRAVERSAL_THREAD, "..", "a/b", "a\\b", "C:evil", "/etc/passwd"):
+        try:
+            lp._agent_marker_path("/tmp/.sdlc", "g.md", thread=bad)
+            assert False, f"expected _agent_marker_path to refuse thread={bad!r}"
+        except ValueError:
+            pass
+
+
+def test_agent_marker_path_accepts_ordinary_thread_ids():
+    """No false positives: real slice ids (main, slice-a1, dotted versions) still work."""
+    lp = _loop()
+    for ok in ("main", "slice-a1", "v1.2"):
+        path = lp._agent_marker_path("/tmp/.sdlc", "g.md", thread=ok)
+        assert path.name == f"{ok}.active"
+
+
+def test_agent_start_never_writes_a_marker_outside_the_sandbox_for_a_traversal_thread(tmp_path):
+    """The actual reviewer-reproduced exploit, proven functionally against the real filesystem --
+    not just that a ValueError is raised somewhere. Before the fix this created tmp_path/evil.active
+    (four '../' unwind exactly out of .sdlc/state/agents/<goal>/ back past .sdlc/ itself)."""
+    lp = _loop()
+    sdlc = str(tmp_path / ".sdlc")
+    lp.agent_start(sdlc, "g.md", os.getpid(), AGENT_WATCH_ON, thread=TRAVERSAL_THREAD)
+    assert not (tmp_path / "evil.active").exists()                     # did not escape .sdlc/ entirely
+    assert not (tmp_path / ".sdlc" / "evil.active").exists()           # nor even to the .sdlc root
+    for p in tmp_path.rglob("*.active"):
+        assert str(p.parent).startswith(str(tmp_path / ".sdlc" / "state" / "agents")), \
+            f"a marker file landed outside the sandbox: {p}"
+
+
+def test_agent_alive_returns_unknown_for_a_traversal_thread_rather_than_raising():
+    """agent_alive must stay fail-open (never raise) even for a malicious thread -- "unknown" is
+    the semantically correct answer: nobody validly registered this (goal, thread)."""
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        assert lp.agent_alive(sdlc, "g.md", AGENT_WATCH_ON, thread=TRAVERSAL_THREAD) == ("unknown", None)
+
+
+def test_cli_agent_start_rejects_a_thread_with_path_traversal(capsys):
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        goal = base + "/goals/0001.md"
+        rc = lp.main(["loop.py", "agent-start", base, goal, "--pid", str(os.getpid()),
+                     "--thread", TRAVERSAL_THREAD])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "thread" in err and ("invalid" in err.lower() or "not valid" in err.lower())
+        # nothing escaped onto disk outside base's own .sdlc tree
+        assert not (pathlib.Path(base).parent / "evil.active").exists()
+        assert not (pathlib.Path(base) / "evil.active").exists()
+
+
 def test_cli_verbs_handle_a_never_init_d_sdlc_dir_gracefully(capsys):
     """#403: `next`/`next-batch`/`start`/`session-active` all call `state.load_config` before any
     of their own logic runs. Pointed at a `.sdlc` that was never `/sdlc-init`'d (no config.json at

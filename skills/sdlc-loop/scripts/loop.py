@@ -372,7 +372,39 @@ def session_active(sdlc_dir, config):
         return True                          # can't even stat it — fail toward "still active"
 
 
+def _unsafe_thread_reason(thread):
+    """None iff `thread` is safe to embed as a single path component in `_agent_marker_path`,
+    else the reason it is not — the one place this check lives, shared by that function AND the
+    `agent-start` CLI verb's own loud refusal, so the two can never drift apart (matching this
+    file's other shared-validator idiom, e.g. `ledger.reject_newline`).
+
+    `thread` reaches here from an LLM-authored slice id (`.sdlc/plans/<goal>.slices.json`,
+    validated by `slices.py` with only `.strip()` — no character/format check) inside an
+    unattended pipeline, so it must be treated as untrusted, exactly like any other agent-typed
+    CLI value. `f"{thread}.active"` is built as a single Python string, but pathlib's own `/`
+    join operator RE-PARSES a string argument for separator characters — so a `/` or `\\` inside
+    `thread` does not stay one filename, it becomes ADDITIONAL path segments, some of which can
+    be a literal `..` (or, worse, an absolute-path segment that pathlib's `/` operator lets
+    silently REPLACE everything joined before it). Checking for a literal `..` alone would miss
+    that: rejecting any separator closes the join's only real danger directly, and `..` is kept
+    as an explicit belt-and-suspenders check for readability and in case a future refactor ever
+    changes the fixed `.active` suffix this relies on. `:` is rejected too for the same class of
+    risk on Windows (a drive-letter-rooted path). Never raises — `str(thread)` handles anything."""
+    text = str(thread)
+    if any(c in text for c in ("/", "\\", ":")) or ".." in text:
+        return ("must not contain '/', '\\', ':', or '..' "
+                 "(it becomes a filename under .sdlc/state/agents/<goal>/)")
+    return None
+
+
 def _agent_marker_path(sdlc_dir, goal, thread="main"):
+    """Raises ValueError for an unsafe `thread` (see `_unsafe_thread_reason`) — every existing
+    caller already treats that as fail-open: `agent_start`'s try/except already catches
+    ValueError, and `agent_alive` catches it too (the call sits inside its own try block, right
+    alongside the read it was already guarding)."""
+    reason = _unsafe_thread_reason(thread)
+    if reason:
+        raise ValueError(f"unsafe thread id {thread!r}: {reason}")
     return pathlib.Path(sdlc_dir) / "state" / "agents" / work.stem(goal) / f"{thread}.active"
 
 
@@ -400,9 +432,11 @@ def agent_alive(sdlc_dir, goal, config, thread="main"):
     machine (pid_alive() is single-machine-only), or a session that predates this feature. Only a
     marker whose pid resolves DEFINITIVELY dead, or whose file is past the lease TTL despite a
     resolvable pid (reuse risk, same reasoning session_active already applies), is "dead" — the
-    same fail-toward-inaction bias pid_alive()'s own docstring argues for."""
-    path = _agent_marker_path(sdlc_dir, goal, thread)
+    same fail-toward-inaction bias pid_alive()'s own docstring argues for. An unsafe `thread`
+    (see `_agent_marker_path`) degrades to "unknown" too, via the same except clause — that is
+    the correct answer either way: nobody validly registered a marker for it."""
     try:
+        path = _agent_marker_path(sdlc_dir, goal, thread)
         pid = int(path.read_text().strip())
     except (OSError, ValueError):
         return "unknown", None
@@ -875,7 +909,12 @@ def _dispatch(argv):
         except ValueError:
             print(f"loop.py agent-start: --pid {pid!r} is not an integer", file=sys.stderr)
             return 2
-        agent_start(argv[2], argv[3], pid, config, thread=flags.get("thread") or "main")
+        thread = flags.get("thread") or "main"
+        reason = _unsafe_thread_reason(thread)
+        if reason:
+            print(f"loop.py agent-start: --thread {thread!r} is invalid: {reason}", file=sys.stderr)
+            return 2
+        agent_start(argv[2], argv[3], pid, config, thread=thread)
         return 0
     if len(argv) >= 4 and argv[1] == "agent-end":             # manual escape hatch; _record() already calls this
         agent_end(argv[2], argv[3]); return 0
