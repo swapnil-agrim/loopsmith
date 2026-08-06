@@ -914,3 +914,83 @@ def test_malformed_nested_github_project_block_does_not_crash(tmp_path):
     d = _doc()
     base = _sdlc(tmp_path, {"discovery": {"source": "github", "github": {"project": "oops"}}})
     d.check(base, run=_runner(gh_auth="Logged in. Token scopes: 'repo', 'project'"))
+
+
+# --- F33/#358: "north-star filled" must clear every tier, not just Vision ----------------------
+# The check used to test the file for ONLY the Vision-tier placeholder, so a north-star with Vision
+# written up but Strategy/Design/Architecture still on the scaffolded placeholder text read as
+# "filled" anyway.
+
+_NS_VISION_ONLY = """# demo - North Star
+
+## Vision (why this exists, for whom)
+We help QA teams ship browser tests fast, for engineers who hate writing selectors by hand.
+
+## Strategy (what we're building now)
+- Priorities: <the few things that matter this cycle>
+- Non-goals: <what we are deliberately NOT doing - the alignment gate uses these>
+
+## Design (how the product should feel)
+<the experience + the principles a change must respect>
+
+## Architecture (how it's built + the rules we develop by)
+<the shape of the system - the stack itself lives in project.md.>
+1. <e.g. the UI layer holds no business logic>
+"""
+
+_NS_FULLY_FILLED = """# demo - North Star
+
+## Vision (why this exists, for whom)
+We help QA teams ship browser tests fast.
+
+## Strategy (what we're building now)
+- Priorities: ship the parser this cycle
+- Non-goals: no mobile support yet
+
+## Design (how the product should feel)
+Fast, forgiving, terse output.
+
+## Architecture (how it's built + the rules we develop by)
+A LangGraph engine with Postgres state.
+1. The UI layer holds no business logic
+"""
+
+
+def _ns(d, content):
+    base = _sdlc(d, {})
+    (pathlib.Path(base) / "context").mkdir(parents=True, exist_ok=True)
+    (pathlib.Path(base) / "context" / "north-star.md").write_text(content)
+    return base
+
+
+def test_flags_not_filled_when_only_vision_tier_is_written(tmp_path):
+    # The issue's own acceptance case: Vision filled, the other three tiers still on the scaffolded
+    # placeholder text. Must NOT read as "filled".
+    d = _doc()
+    base = _ns(tmp_path, _NS_VISION_ONLY)
+    c = _by_name(d.check(base, run=_runner()))
+    assert c["north-star filled"]["ok"] is False
+    assert "Strategy" in c["north-star filled"]["fix"]        # names the first unfilled tier
+
+
+def test_north_star_filled_when_every_tier_is_written(tmp_path):
+    d = _doc()
+    base = _ns(tmp_path, _NS_FULLY_FILLED)
+    c = _by_name(d.check(base, run=_runner()))
+    assert c["north-star filled"]["ok"] is True
+    assert c["north-star filled"]["fix"] == ""
+
+
+def test_flags_not_filled_when_only_the_last_tier_is_a_placeholder(tmp_path):
+    # Every tier but Architecture is written - proves the check walks ALL FOUR tiers (not just
+    # Vision, the bug) and correctly names a LATER tier, not only ever the first one.
+    content = _NS_FULLY_FILLED.replace(
+        "A LangGraph engine with Postgres state.\n1. The UI layer holds no business logic\n",
+        "<the shape of the system - the stack itself lives in project.md.>\n"
+        "1. <e.g. the UI layer holds no business logic>\n",
+    )
+    d = _doc()
+    base = _ns(tmp_path, content)
+    c = _by_name(d.check(base, run=_runner()))
+    assert c["north-star filled"]["ok"] is False
+    assert "Architecture" in c["north-star filled"]["fix"]

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### fix(doctor): north-star "filled" check now clears every tier, not just Vision (F33/#358)
+`doctor.py`'s north-star "filled" probe tested the file for only the Vision-tier placeholder
+(`"<the change you want"`), so a north-star with Vision written up but Strategy/Design/Architecture
+still on the scaffolded placeholder text read as "filled" anyway. A new `_NORTH_STAR_TIERS` table
+holds one distinctive placeholder prefix per tier (Vision/Strategy/Design/Architecture, mirroring
+`sdlc_init.py`'s `_NORTH_STAR` template); the check now walks all four and reports the first tier
+still on its placeholder text in the fix message instead of a generic "fill the tiers" line. New
+tests in `test_doctor.py` cover a Vision-only north-star (the issue's own acceptance case), a
+fully-filled one, and one where only Architecture remains a placeholder — confirmed to fail with the
+exact symptom (the check reading `ok: True`) against the pre-fix code before passing with the fix.
+
 ### fix(loop): `discovery.next_pending` no longer treats a blank `status:` as runnable (F32/#357)
 `next_pending`'s pending-check was `status is not None and status not in _SKIP` — a goal file with
 `status:` present but empty (or whitespace-only, which `frontmatter.parse` already collapses to `""`
