@@ -30,8 +30,27 @@ import random, re, sys, time
 
 # done must key on SUCCESS-specific markers only: the loop's stop REPORT ("N done, M
 # parked") prints on EVERY stop — budget stops included — so it must never mean done.
-_DONE = re.compile(r"backlog[- ]empty|backlog is empty|LOOP STOP: backlog|^DONE\s*$", re.I | re.M)
-_BUDGET = re.compile(r"^BUDGET\s*$|LOOP STOP: budget|stopped.{0,12}budget|budget (cap|stop|hit|reached)", re.I | re.M)
+# ANCHORED TO LINE START (2026-08-06). A marker is a LINE, not a substring -- SKILL.md already
+# says so ("At STOP, print one machine-readable line FIRST"), this only enforces it. Unanchored,
+# these patterns matched a session that was being scrupulously HONEST: having hit a blocker it
+# refused to emit a stop it had not earned and said so --
+#     "I'm deliberately not printing `LOOP STOP: backlog-empty` ...; neither is true, and
+#      emitting one would tell your tooling something false."
+# -- and the classifier read that disclaimer as the marker, exiting action=done with 28 goals
+# queued. Honesty was indistinguishable from success. A mention of a marker, a quote of one, or a
+# negation of one must never BE one.
+_DONE = re.compile(
+    r"^\s*\**\s*(?:stopped:\s*)?(?:LOOP STOP:\s*)?backlog(?:[- ]empty|\s+is\s+empty)\s*[.*]*\s*$"
+    r"|^\s*DONE\s*$",
+    re.I | re.M)
+# Same anchoring, same reason: the sentence that broke _DONE names `LOOP STOP: budget` in the very
+# same breath, so fixing only the done-arm would leave the identical false-positive one line down.
+_BUDGET = re.compile(
+    r"^\s*BUDGET\s*$"
+    r"|^\s*\**\s*LOOP STOP:\s*budget\b"
+    r"|^\s*stopped.{0,12}budget\b"
+    r"|^\s*budget (cap|stop|hit|reached)\b",
+    re.I | re.M)
 _LIMIT = re.compile(r"(usage|rate).{0,3}limit|limit (reached|exhausted|hit)|out of (usage|quota)|"
                     r"hit your.{0,12}limit|quota exceeded", re.I)
 _RESET_AT = re.compile(r"reset[s]?\s*(?:at\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", re.I)

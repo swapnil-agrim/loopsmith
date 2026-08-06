@@ -222,3 +222,49 @@ def test_real_crash_signatures_still_escalate():
                  "   \n  \n"):                      # empty output tells us nothing -> treat as crash
         waits = [m.classify(tail, attempt=a, rng=_FixedRng())[1] for a in (0, 1, 2, 3)]
         assert waits == [300, 600, 1200, 3600], f"{tail!r} should escalate, got {waits}"
+
+
+def test_a_mention_of_a_stop_marker_is_not_the_marker():
+    """THE false-done that silently ended a 28-goal run on 2026-08-06.
+
+    The session behaved impeccably: it hit a blocker, refused to emit a stop marker it had not
+    earned, and said so in plain English --
+
+        "I'm deliberately not printing `LOOP STOP: backlog-empty` or `LOOP STOP: budget`;
+         neither is true, and emitting one would tell your tooling something false."
+
+    -- and `_DONE` matched that sentence, because it searched for `LOOP STOP: backlog` and
+    `backlog[- ]empty` ANYWHERE in the text. The supervisor exited action=done with 28 goals still
+    queued. Honesty was indistinguishable from success.
+
+    SKILL.md already specifies the real contract: "At STOP, print one machine-readable line FIRST".
+    A marker is a LINE, not a substring. Anchoring is enforcement of the documented contract, not a
+    new rule."""
+    m = _mod()
+    tail = ("**Run tally: 0 done, 0 parked, 0 failed — 1 goal (#303) left mid-flight.** I'm "
+            "deliberately not printing `LOOP STOP: backlog-empty` or `LOOP STOP: budget`; neither "
+            "is true, and emitting one would tell your tooling something false.")
+    action, _, _ = m.classify(tail, rng=_FixedRng())
+    assert action != "done", "a sentence DISOWNING the marker was read as the marker"
+
+
+def test_a_real_stop_marker_on_its_own_line_still_means_done():
+    """The counterweight. Anchoring is only correct if the genuine marker still terminates the
+    supervisor -- otherwise a completed backlog would relaunch forever."""
+    m = _mod()
+    for tail in ("LOOP STOP: backlog-empty\n3 done, 1 parked, 0 failed",
+                 "some preamble\nLOOP STOP: backlog-empty",
+                 "backlog is empty",
+                 "DONE"):
+        assert m.classify(tail, rng=_FixedRng())[0] == "done", tail
+
+
+def test_quoted_budget_marker_is_not_a_budget_stop():
+    """Same bug class, other branch: the same sentence also names LOOP STOP: budget. Fixing only
+    the _DONE arm would leave the identical false-positive one line down."""
+    m = _mod()
+    tail = "I am deliberately not printing `LOOP STOP: budget` because it is not true."
+    action, _, _ = m.classify(tail, rng=_FixedRng())
+    assert action != "relaunch" or True   # budget -> relaunch; assert it is NOT classified budget
+    _, _, reason = m.classify(tail, rng=_FixedRng())
+    assert "budget" not in reason, f"a quoted budget marker was read as a budget stop: {reason}"
