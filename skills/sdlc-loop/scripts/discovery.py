@@ -25,7 +25,7 @@ def next_pending(goals_dir, skip=()):
         if str(path) in skip:
             continue
         status = frontmatter.get(path.read_text(), "status")
-        if status is not None and status not in _SKIP:
+        if status and status not in _SKIP:
             return str(path)
     return None
 

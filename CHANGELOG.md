@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### fix(loop): `discovery.next_pending` no longer treats a blank `status:` as runnable (F32/#357)
+`next_pending`'s pending-check was `status is not None and status not in _SKIP` — a goal file with
+`status:` present but empty (or whitespace-only, which `frontmatter.parse` already collapses to `""`
+via its own `.strip()`) satisfies both `"" is not None` and `"" not in _SKIP`, so it was picked up as
+the next runnable goal instead of being skipped like a missing or terminal status. The check now reads
+`status and status not in _SKIP`, so `None` and `""` are both excluded via the same falsy branch, and
+any genuine non-terminal status still runs exactly as before. A new test writes goals with an empty and
+a whitespace-only `status:` ahead of a real `pending` one and asserts the `pending` goal is returned,
+confirmed to fail against the pre-fix code with the exact symptom described (the blank-status goal
+returned instead).
+
 ### fix(collectors): `churn_hotspots` no longer collapses internal whitespace in a path (F27/#353)
 `alignment-collect.sh`'s `HOTSPOTS_JSON` step stripped the `uniq -c` count via awk's `$1=""`, which
 rebuilds `$0` using a single-space `OFS` — so a path with consecutive spaces or tabs (e.g. `"a  b.py"`)
