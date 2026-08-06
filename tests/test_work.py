@@ -149,6 +149,14 @@ def test_start_reattaches_to_a_branch_that_outlived_its_record(tmp_path):
     work.start(d, ON, "0001-x.md", run=run)
     assert any(c.startswith("git worktree add ") and "-b" not in c for c in run.calls)
 
+    # Same fallback, but with the ledger ON and no rival claim for the goal: the guard added by
+    # #388 must narrow an unsafe resume, not newly block a legitimate one when there is nothing to
+    # refuse — ledger-enabled is not, by itself, a reason to stop reattaching.
+    d2 = _sdlc(tmp_path / "ledger-on", LEDGER_ON)
+    run2 = _runner([("rev-parse", "main"), ("worktree add -b", RuntimeError("already exists"))])
+    work.start(d2, LEDGER_ON, "0001-x.md", run=run2)
+    assert any(c.startswith("git worktree add ") and "-b" not in c for c in run2.calls)
+
 
 # --- start's resume guard: a local worktree existing is not proof it's safe to reuse (F10.5/#374) -
 
@@ -178,6 +186,26 @@ def test_start_refuses_to_resume_when_a_live_sibling_process_holds_the_claim(tmp
     out = work.start(d, LEDGER_ON, goal, run=run)
     assert out.startswith("REFUSED")
     assert run.calls == []                             # never touched git — the worktree stays as-is
+
+
+def test_start_reattach_refuses_to_resume_when_a_live_sibling_process_holds_the_claim(tmp_path, monkeypatch):
+    """The narrower sibling of the guard above (#388): the local STATE RECORD can go missing (a
+    partial `.sdlc/state` cleanup, a corrupted/truncated JSON file, a machine migration) while the
+    branch and worktree it described still exist on disk. `start()` notices via a failed `-b` add
+    and falls back to reattaching directly (`test_start_reattaches_to_a_branch_that_outlived_its_
+    record` above) — that fallback must refuse exactly like the `already started` path does, not
+    skip the check just because it got here without ever finding a record to resume from."""
+    d = _sdlc(tmp_path, LEDGER_ON)
+    goal = "0001-x.md"                          # deliberately NOT `_started()` — no local record at all
+    real_pid = os.getpid()
+    _claim(d, "rae", goal, real_pid)
+    monkeypatch.setattr(os, "getpid", lambda: real_pid + 1)   # simulate a DIFFERENT process of "rae"
+    run = _runner([("rev-parse", "main"), ("worktree add -b", RuntimeError("already exists"))])
+    out = work.start(d, LEDGER_ON, goal, run=run)
+    assert out.startswith("REFUSED")
+    # the failed `-b` attempt is expected (that's what triggers the fallback) — what must NEVER
+    # happen is the second, no `-b` reattach that the fallback runs once the guard clears it.
+    assert not any(c.startswith("git worktree add ") and "-b" not in c for c in run.calls)
 
 
 def test_start_still_resumes_when_the_claim_is_my_own_current_process(tmp_path, monkeypatch):

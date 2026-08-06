@@ -27,6 +27,28 @@ for all four issue-named verbs and asserts a clean exit 2 with an actionable one
 `FileNotFoundError` propagating out of `lp.main()`) against the pre-fix code before passing with
 the fix restored.
 
+### fix(coordination): `work.py start()`'s "branch outlived its record" fallback now also guards against a live sibling (#388)
+`start()` has two resume-like paths. The primary `already started` return (a local state record is
+present and its worktree still exists) has been guarded by `_resume_blocked_by_a_live_sibling` since
+#374. A second, narrower fallback a few lines later was not: it fires when the record is MISSING but
+the branch and worktree already exist on disk (a partial `.sdlc/state` cleanup, a corrupted or
+truncated JSON file, a machine migration) — it catches `git worktree add -b`'s failure (the branch
+already exists) and silently reattaches via a plain `git worktree add <path> <branch>`, with no
+liveness check at all. A still-live sibling process holding the ledger's claim on that goal could be
+double-worked through this second path exactly as #374 closed for the first, just reached via a
+lost-record precondition instead of a normal resume. The fix calls the same
+`_resume_blocked_by_a_live_sibling` guard inside the `except` branch, before the reattach, and returns
+its `REFUSED` string instead of running `git worktree add` when the claim belongs to a different,
+still-live writer.
+
+New test `test_start_reattach_refuses_to_resume_when_a_live_sibling_process_holds_the_claim` mirrors
+#374's own `test_start_refuses_to_resume_when_a_live_sibling_process_holds_the_claim`, but via the
+missing-record precondition instead of the existing-record one; confirmed to fail with the exact
+symptom (a silent `worktree ... on ...` success instead of `REFUSED`) against the pre-fix code before
+passing with the fix. `test_start_reattaches_to_a_branch_that_outlived_its_record` is extended to also
+exercise a ledger-enabled config with no rival claim present, proving the guard narrows an unsafe
+resume without newly blocking a legitimate one.
+
 ## 1.0.1 — the hardening release
 
 ### fix(doctor): north-star "filled" check now clears every tier, not just Vision (F33/#358)
