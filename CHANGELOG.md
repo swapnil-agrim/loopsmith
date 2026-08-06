@@ -13,6 +13,15 @@ directly (`match($0,/^ *[0-9]+ /)`) and takes everything after it as the path ve
 a path with a double space and confirms it survives verbatim in `churn_hotspots`, proven to fail
 against the pre-fix awk with the exact collapsed-path symptom before passing with the fix.
 
+### fix(init): `sdlc-setup configure()` no longer clobbers an explicit `assignee` on re-run (F24/#352)
+`configure()`'s github-discovery block set `gh["assignee"] = "@me"` unconditionally, while every other
+default in the same function uses `setdefault` — so re-running `/sdlc-setup configure` on an adopter's
+`.sdlc/config.json` silently overwrote a deliberately-scoped `assignee: "specific-user"` back to `@me`,
+breaking idempotency. `gh.setdefault("assignee", "@me")` now defaults only when the key is unset, and
+the discovery note interpolates the resolved value instead of a hardcoded `@me`, matching the pattern
+`work.auto_merge`'s note already uses a few lines down. A new test pins a pre-set assignee surviving a
+`configure()` re-run, confirmed to fail with the exact clobber symptom against the pre-fix code.
+
 ### fix(model): bare "story" no longer mis-tiers agile goals to the fable (creative) tier (F16/#350)
 `predict.py`'s fable pattern included a bare `story` alternative alongside `storytell`, so any goal
 merely containing the word — "Story: add pagination", "Implement the user story for checkout", "Add a

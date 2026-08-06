@@ -73,8 +73,9 @@ def configure(sdlc_dir, repo="", source="github", verify_command="", auto_merge=
         gh.setdefault("goal_label", "sdlc:goal")
         gh.setdefault("in_progress_label", "sdlc:in-progress")
         gh.setdefault("parked_label", "sdlc:parked")
-        gh["assignee"] = "@me"                         # always: a shared board needs per-person scoping
-        notes.append("discovery: github repo=%s, assignee=@me" % (repo or "UNSET (set discovery.github.repo)"))
+        gh.setdefault("assignee", "@me")               # default to @me, but never clobber an adopter's explicit choice
+        notes.append("discovery: github repo=%s, assignee=%s" % (
+            repo or "UNSET (set discovery.github.repo)", gh["assignee"]))
     else:
         disc["source"] = "local-goals"
         notes.append("discovery: local-goals")
