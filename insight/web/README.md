@@ -48,15 +48,29 @@ none is a stub.
 - **`test`** is real: `scripts/prove-metric-contract-safety.mjs` is the mechanical proof that
   renaming a Pydantic field and regenerating breaks the frontend type-check (see
   `src/lib/api/metric.consumer.ts`'s `metricLabel`), plus the discriminated-union narrowing proof
-  (`measuredValueOrNull`). As of **E17.S2** (#303), `test` also runs
-  `scripts/prove-fonts-actually-apply.mjs` — the done-when-3 proof that the embedded typefaces
-  are actually *applied* (Chrome DevTools Protocol `CSS.getPlatformFontsForNode`), not merely
-  declared. **Toolchain prerequisite: a real Chromium-family browser.** The script prefers the
-  machine's/runner's own installed Google Chrome (`channel: "chrome"` — no download at all,
-  satisfied out of the box on GitHub's `ubuntu-latest`) and falls back to Playwright's bundled
-  Chromium if that is unavailable; if NEITHER is present it fails loudly naming the fix (`npx
-  playwright install chromium`), rather than skipping. See `launchBrowser()` in that script for
-  the full reasoning and `.sdlc/plans/303.md` Step 1 for the measured numbers behind the choice.
+  (`measuredValueOrNull`). **`test` does NOT run the font-applied proof** — see `prove:fonts`
+  below for why and where that proof actually runs.
+- **`prove:fonts`** (`scripts/prove-fonts-actually-apply.mjs`, added **E17.S2** / #303) is the
+  done-when-3 proof that the embedded typefaces are actually *applied* (Chrome DevTools Protocol
+  `CSS.getPlatformFontsForNode`), not merely declared. **Toolchain prerequisite: a real
+  Chromium-family browser.** The script prefers the machine's/runner's own installed Google Chrome
+  (`channel: "chrome"` — no download at all, satisfied out of the box on GitHub's `ubuntu-latest`)
+  and falls back to Playwright's bundled Chromium if that is unavailable; if NEITHER is present it
+  fails loudly naming the fix (`npx playwright install chromium`), rather than skipping. See
+  `launchBrowser()` in that script for the full reasoning and `.sdlc/plans/303.md` Step 1 for the
+  measured numbers behind the choice.
+
+  This is deliberately **NOT** part of `npm run test`, and so NOT part of `verify_web.py`'s
+  `CHECKS` / `.sdlc/config.json`'s repo-wide `verify.command` (an issue #303 [E17.S2] review fix,
+  correcting an earlier version of this file that claimed otherwise). That gate runs in a fresh
+  worktree for every goal in this repo, with `verify.enforce: true`, on any machine — a hard
+  requirement on a real browser there would park every goal, not just web ones, on any box without
+  system Chrome or an installed Playwright Chromium. Instead, `npm run prove:fonts` runs as its own
+  step in `.github/workflows/ci.yml`'s `web` job, right after the `python3 insight/verify_web.py`
+  step (which has already run `npm ci`, so `node_modules` is in place). `ubuntu-latest` ships
+  Google Chrome and `web` is one of the five required branch-protection contexts, so the proof
+  still hard-gates every merge to main and still never skips — it has just moved out of the
+  repo-wide local gate into the one place guaranteed to have a browser.
 - **`build`** is real: `next build`, with `next.config.mjs` setting `output: "standalone"` so
   `insight/Dockerfile.web`'s runtime stage can copy a self-contained `.next/standalone/server.js`
   without a second `npm ci`.

@@ -6,7 +6,8 @@
     "pretypecheck": "node scripts/check-schema-fresh.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "node scripts/prove-metric-contract-safety.mjs && node scripts/prove-fonts-actually-apply.mjs",
+    "test": "node scripts/prove-metric-contract-safety.mjs",
+    "prove:fonts": "node scripts/prove-fonts-actually-apply.mjs",
     "build": "next build"
   },
   "dependencies": {

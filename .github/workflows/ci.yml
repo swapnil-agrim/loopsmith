@@ -62,10 +62,23 @@ jobs:
   # comment above for the corrected, five-context fact (this job is one of the five); it is stated
   # there once, in full, rather than repeated here as a second paraphrase that could drift from it.
   # Runs insight/verify_web.py, the SAME script `.sdlc/config.json`'s verify.command calls (that
-  # file is gitignored — see the PR body for the out-of-band edit it also needs) — CI and the local
-  # gate read one definition of "the web checks", so they cannot drift from each other. Pre-E17.S1
-  # there is no insight/web/package.json yet: verify_web.py SKIPs loudly and exits 0 rather than
-  # silently passing something it never ran.
+  # file is gitignored — see the PR body for the out-of-band edit it also needs). Pre-E17.S1 there
+  # is no insight/web/package.json yet: verify_web.py SKIPs loudly and exits 0 rather than silently
+  # passing something it never ran.
+  #
+  # CI and the local gate now DELIBERATELY DIFFER by exactly one check (issue #303 [E17.S2] review
+  # fix, superseding the "one definition, cannot drift" claim this comment used to make): `npm run
+  # test` (part of verify_web.py's CHECKS) no longer runs prove-fonts-actually-apply.mjs, because
+  # that script needs a real Chromium-family browser, and verify_web.py's `test` check runs inside
+  # `.sdlc/config.json`'s repo-wide `verify.command`, in a FRESH worktree, for EVERY goal in this
+  # repo, with verify.enforce: true — a machine with neither system Chrome nor an installed
+  # Playwright Chromium (a plain Linux dev box, a fresh contributor checkout, a minimal container,
+  # any non-GitHub CI) would park EVERY goal, not just web ones, on a proof it cannot run. The font
+  # proof still runs — as its own `npm run prove:fonts` step below, straight after this one, in
+  # THIS job — and `ubuntu-latest` ships Google Chrome, so it never skips here either. Since `web`
+  # is one of the five required branch-protection contexts (see the `insight` job's comment above),
+  # the font proof still hard-gates every merge to main; it has just moved out of the repo-wide
+  # local gate and into the one place guaranteed to have a browser.
   web:
     runs-on: ubuntu-latest
     steps:
@@ -84,5 +97,11 @@ jobs:
           node-version: "22"
       - name: web checks (type-check, lint, unit tests, build) via insight/verify_web.py
         run: python3 insight/verify_web.py
+      # Browser-dependent -- deliberately NOT part of verify_web.py's CHECKS, see this job's own
+      # header comment above for why. node_modules is already installed here by the verify_web.py
+      # step above (its own `npm ci`), so this step needs no separate install.
+      - name: prove fonts actually apply (npm run prove:fonts)
+        run: npm run prove:fonts
+        working-directory: insight/web
       - name: docker build (Dockerfile.web) -- the Dockerfile is proven to build, not just present
         run: docker build -f insight/Dockerfile.web -t insight-web-scaffold:ci insight/

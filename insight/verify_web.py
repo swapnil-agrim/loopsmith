@@ -1,8 +1,22 @@
 # SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
-"""The one definition of "the web checks" — type-check, lint, unit tests, production build — run by
-BOTH the CI `web` job and `.sdlc/config.json`'s `verify.command`, so the two can never drift (issue
-#295). insight/web/ does not exist yet (E17.S1); until it does, this SKIPs loudly and exits 0 rather
-than silently passing something it never ran.
+"""The definition of "the web checks" — type-check, lint, unit tests, production build — run by
+BOTH the CI `web` job and `.sdlc/config.json`'s `verify.command` (issue #295). insight/web/ does not
+exist yet pre-E17.S1; until it does, this SKIPs loudly and exits 0 rather than silently passing
+something it never ran.
+
+CI and the local gate DELIBERATELY DIFFER by exactly one check as of issue #303 [E17.S2]'s review
+fix, correcting this docstring's former "one definition, cannot drift" claim. `npm run test` (the
+`test` entry in CHECKS below) no longer runs `prove-fonts-actually-apply.mjs` — that script needs a
+real Chromium-family browser, and this module runs inside `.sdlc/config.json`'s repo-wide
+`verify.command`, in a FRESH worktree, for EVERY goal in this repo, with `verify.enforce: true`. A
+machine with neither system Chrome nor an installed Playwright Chromium (a plain Linux dev box, a
+fresh contributor checkout, a minimal container, any non-GitHub CI) would park EVERY goal in the
+repo, not just web ones, on a proof it structurally cannot run. The font proof still runs — as its
+own `npm run prove:fonts` step in `.github/workflows/ci.yml`'s `web` job, right after this module's
+own `python3 insight/verify_web.py` step — and `ubuntu-latest` ships Google Chrome, so it never
+skips there. `web` is one of the five required branch-protection contexts (see ci.yml's own
+comments), so the font proof still hard-gates every merge to main; it has just moved out of the
+repo-wide local gate into the one place guaranteed to have a browser.
 
 package.json (`insight/web/package.json`) is the single source of truth for "does the app exist":
 absent -> SKIP; present -> every one of CHECKS below is actually invoked via `npm run <name>`, so a

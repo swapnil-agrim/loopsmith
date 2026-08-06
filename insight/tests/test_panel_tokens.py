@@ -31,6 +31,16 @@ from insight.dash.colors import PANEL, PANEL_ALPHA, PANEL_CONTRAST_PAIRS, contra
 #: HSL saturation ceiling for "hueless". Current max among the tokens/composites checked here is
 #: 14.8% (`void` itself); the least-saturated real PANEL signal colour is `cyan-deep` at 51.3%.
 #: 20% sits with real margin on both sides -- see .sdlc/plans/303.md Decision f's own table.
+#:
+#: This is a JUDGMENT THRESHOLD, not literal huelessness (an HSL saturation of exactly 0.0%) --
+#: `PANEL['panel']` itself (the card-face token, not a target this test measures directly, but
+#: composited into some of the hatch-over-surface targets below) sits at exactly 20.0% saturation,
+#: i.e. AT this ceiling, and a token landing exactly on the ceiling PASSES (`<=`, not `<`). 20% was
+#: chosen as the measured gap between the highest-saturation token/composite actually checked here
+#: (14.8%) and the least-saturated real PANEL *signal* colour, `cyan-deep` at ~51.3% -- the ceiling
+#: sits roughly in the middle of that gap, comfortably above every hueless target and comfortably
+#: below the least-saturated colour PANEL ever uses to mean something. Do not change this value
+#: (or any PANEL colour) without re-measuring that gap.
 _HUELESS_CEILING_PCT = 20.0
 
 _RGBA_RE = re.compile(r"rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)")
