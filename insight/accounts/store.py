@@ -63,6 +63,43 @@ precomputed dummy hash (`hashing.dummy_hash_for`, a value lookup, never an inlin
 -- the standard mitigation for user-enumeration-by-timing (see hashing.py's own docstring for why
 the dummy hash is a constant, not computed lazily).
 
+WEAK-EMBEDDED-KDF-PARAMETER HANDLING (PR #461 review, third pass BLOCKING -- a third, independent
+way one user's `password_hash` can be untrustworthy without the store's JSON breaking, following
+the first pass's BLOCKING 2 and the second pass's BLOCKING 1 above). A record's `password_hash` can
+be a completely well-formed argon2id hash -- decodes fine, `hasher.verify()` runs without raising --
+while still embedding cheap KDF parameters (e.g. `m=8,t=1,p=1`) instead of the real,
+currently-in-force ones (e.g. `m=65536,t=3,p=4`), because argon2's own `verify()` reads its cost
+parameters OUT OF the hash string itself, never from the verifying `PasswordHasher` instance's own
+config. Neither of the first two passes' fixes catches this: nothing raises, `verify_password`
+returns a clean `True`/`False`, and the malformed-record `except Exception` boundary in
+`verify_user` below never fires because there is no exception to catch -- so this ONE path pays no
+KDF-sized cost at all. A reviewer measured it live: 0.0001s for a wrong password against a
+weak-parameter record, versus 0.0234s for a normal record and 0.0238s for an unknown user -- a 262x
+gap, though the exception type and message were identical in all three. The fix lives in
+`hashing.verify_password`, not here: it now checks `encoded_hash`'s OWN embedded cost parameters
+against the caller's expected `params` BEFORE running any cryptographic work, and raises
+`hashing.CorruptHashError` on a mismatch -- see `hashing.py`'s own module docstring
+(WEAK-EMBEDDED-PARAMETER HANDLING) and `verify_password`'s docstring for exactly how. That
+`CorruptHashError` then falls straight into the SAME `except Exception` boundary below that already
+handles every other malformed-record shape, with no changes needed in this module: the dummy-hash
+fallback call fires exactly as it does for a missing key or a non-string value, so a weak-parameter
+record now costs the same one real, `PRODUCTION_PARAMS`-strength KDF operation as every other
+failure path. This is also why the "calls `verify_password` a SECOND time... so it still pays a
+real KDF-sized cost" claim in `verify_user`'s own docstring below is true only AS OF this fix -- a
+prior version of that docstring made the same claim unconditionally, which was false for exactly
+this one shape.
+
+PERMISSION-DENIED AND FIFO HANDLING (PR #461 review, third pass SHOULD-FIX, same review as the
+BLOCKING above but a robustness gap rather than a per-user timing leak -- both are GLOBAL
+conditions of the store as a whole, not something that varies per account, so neither is an
+enumeration oracle). `_read_accounts` now (a) catches `PermissionError` (e.g. the store file is
+`chmod 000`) and turns it into the same `AccountsStoreCorruptError` a symlinked or unparseable store
+already raises, rather than letting a raw `PermissionError` escape uncaught all the way through
+`insight/__main__.py` (which has no dispatch clause for it) as a bare traceback; and (b) opens with
+`O_NONBLOCK` in addition to `O_NOFOLLOW`, so that a FIFO planted at the accounts path can no longer
+block `os.open()` forever waiting for a writer that will never arrive -- see `_read_accounts`'s own
+docstring for both.
+
 TRUST BOUNDARY (PR #461 review, second pass, SHOULD-FIX 4 -- distinct from the FIRST pass's own
 SHOULD-FIX 4 below, about concurrent `add_user` invocations; the two reviews independently reused
 the same finding number for different findings). Every guard in this module operates on the LEAF
@@ -186,7 +223,9 @@ def _read_accounts(path):
     """Return the parsed `users` dict for `path`. `{}` if the file does not exist yet -- a
     missing store is NOT a corrupt one, it is simply "no accounts exist yet" (treated identically
     to an unknown user by `verify_user`). Raises `AccountsStoreCorruptError` for unparseable JSON,
-    a shape missing the required `users`/`version` keys, or `path` itself being a symlink.
+    a shape missing the required `users`/`version` keys, `path` itself being a symlink, `path`
+    being unreadable (permission denied), or `path` being a FIFO/other special file that would
+    otherwise never yield readable JSON.
 
     ATOMIC, not check-then-act (PR #461 review, second pass, BLOCKING 2 -- correcting the FIRST
     pass, which called `_refuse_if_symlink` -- an `is_symlink()` check -- then separately called
@@ -211,12 +250,41 @@ def _read_accounts(path):
     inspects the FINAL path component. It says nothing about `path`'s ancestor directories, and
     cannot be extended to say something without a much larger, deliberately out-of-scope check
     (second pass SHOULD-FIX 4, documented not fixed -- see the module docstring's TRUST BOUNDARY
-    note)."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    note).
+
+    NEVER BLOCKS (PR #461 review, third pass SHOULD-FIX): the open also carries `O_NONBLOCK`
+    (absent on some platforms, in which case `0`, a no-op, exactly like `O_NOFOLLOW` above) so that
+    a FIFO planted at `path` -- deliberately, or a stray `mkfifo` -- cannot turn a read into a hang.
+    Without it, `os.open(path, O_RDONLY)` on a FIFO with no writer never returns at all: not an
+    exception, not a timeout, an indefinite hang, which is worse than any of the exceptions this
+    function raises (an operator can at least see and act on an exception). `O_NONBLOCK` is
+    deliberately NOT paired with a separate `stat()`-then-`open()` check for "is this a FIFO" --
+    that would reintroduce exactly the check-then-act race the ATOMIC note above already closed,
+    just for a different special file type. Added to the SAME single `open()` call instead: for a
+    regular file it changes nothing (`O_NONBLOCK` has no effect on disk I/O); for a FIFO with no
+    writer, `open()` itself still returns immediately (POSIX: `O_NONBLOCK` set on a read-only FIFO
+    open never blocks the open() call, regardless of whether a writer exists), and the subsequent
+    read either sees immediate EOF or raises `BlockingIOError` (an `OSError` subclass, already
+    caught by the JSON-parse `except (OSError, ValueError)` below) -- either way, a FIFO at the
+    accounts path (never a shape `_write_accounts` itself produces) ends up refused as
+    `AccountsStoreCorruptError`, not hung forever."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         fd = os.open(str(path), flags)
     except FileNotFoundError:
         return {}
+    except PermissionError:
+        # A store the process cannot read at all -- e.g. `chmod 000` -- is not a symlink and not
+        # unparseable JSON, but it is exactly as untrustworthy-as-is (PR #461 review, third pass
+        # SHOULD-FIX): a raw `PermissionError` propagating past this point would reach
+        # `insight/__main__.py` as an unhandled traceback, since none of its dispatch clauses name
+        # this type. Folded into the same `AccountsStoreCorruptError` the CLI already handles
+        # cleanly, rather than adding a fourth caller-visible exception type for one more way the
+        # store can be unusable.
+        raise AccountsStoreCorruptError(
+            "accounts store at %s could not be opened (permission denied) -- check the file's "
+            "owner and permissions" % path
+        )
     except OSError as e:
         if getattr(os, "O_NOFOLLOW", 0) and e.errno == errno.ELOOP:
             raise AccountsStoreCorruptError(
@@ -340,6 +408,22 @@ def verify_user(username, password, accounts_path=None):
     KDF-sized cost rather than becoming a fast path that would itself be a timing side-channel
     distinguishing "malformed record" from "wrong password" -- both now cost one real KDF
     verification's worth of wall-clock time, same as every other failure path.
+
+    THIS CLAIM DEPENDS ON `hashing.verify_password` RAISING FOR EVERY MALFORMED SHAPE, INCLUDING A
+    SYNTACTICALLY VALID HASH UNDER THE WRONG PARAMETERS (PR #461 review, third pass BLOCKING --
+    correcting an earlier version of this docstring, which made the "always pays a second, real
+    KDF-sized cost" claim unconditionally when it was not yet true). A well-formed argon2id hash
+    embedding cheap KDF parameters (e.g. `m=8,t=1,p=1` where the account's real hash carries
+    `m=65536,t=3,p=4`) does not raise anything on its own -- `verify()` happily runs the now-trivial
+    KDF and returns a clean `True`/`False`, so the `except Exception` boundary below never fired for
+    it and this path paid no KDF-sized cost at all: a reviewer measured a 262x gap between that case
+    and a normal wrong password, message and exception type identical throughout. `verify_password`
+    now closes that by checking `encoded_hash`'s embedded parameters against the ones currently in
+    force and raising `hashing.CorruptHashError` on a mismatch (see hashing.py's own docstring's
+    WEAK-EMBEDDED-PARAMETER HANDLING note and this module's own WEAK-EMBEDDED-KDF-PARAMETER
+    HANDLING note above) -- which this function's `except Exception` boundary catches exactly like
+    any other malformed shape, so the claim above now holds for it too, with no changes needed in
+    this function itself.
 
     "Malformed in any way" is enforced by a SINGLE `except Exception` around the whole known-user
     branch below -- deliberately not a narrower `except hashing.CorruptHashError`, which is exactly

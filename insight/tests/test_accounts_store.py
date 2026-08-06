@@ -339,6 +339,94 @@ def test_read_accounts_wins_the_check_then_act_race_between_symlink_check_and_re
     )
 
 
+# --------------------------------------------------------------------------- PR #461 review, third pass SHOULD-FIX: PermissionError is not a raw traceback, and a FIFO does not hang forever
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not a concept on Windows")
+def test_read_accounts_raises_a_clean_error_not_a_raw_permission_error(tmp_path):
+    """Ungated -- `_read_accounts` is a pure file-handling function; this guard needs no hashing at
+    all (PR #461 review, third pass SHOULD-FIX). Pre-fix, `os.open()`'s own `PermissionError` (a
+    `chmod 000` store) fell through `_read_accounts`'s `except OSError` clause -- which only ever
+    special-cased `errno.ELOOP` -- and re-raised RAW, with no dispatch clause anywhere in
+    `insight/__main__.py` naming `PermissionError`, so it would reach a real CLI invocation as a
+    bare traceback instead of a clean, actionable message. Skipped when running as root: `chmod
+    000` does not deny root's own reads (a common CI/container default), which would make the
+    assertions below meaningless rather than merely un-exercised."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("running as root -- chmod 000 does not deny root's own read access")
+    accounts_path = tmp_path / "accounts.json"
+    accounts_path.write_text(json.dumps({"version": 1, "users": {}}), encoding="utf-8")
+    os.chmod(accounts_path, 0o000)
+    try:
+        with pytest.raises(store.AccountsStoreCorruptError) as exc:
+            store._read_accounts(accounts_path)
+        assert "permission" in str(exc.value).lower()
+        assert str(accounts_path) in str(exc.value)
+    finally:
+        os.chmod(accounts_path, 0o600)  # tmp_path's own cleanup needs to be able to remove this
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not a concept on Windows")
+def test_add_user_reports_a_clean_error_not_a_raw_traceback_for_an_unreadable_store(tmp_path):
+    """Ungated -- `add_user` calls `_read_accounts` before it ever reaches `hashing.hash_password`,
+    so this proves the fix all the way up to the CLI-adjacent entry point, not just
+    `_read_accounts` in isolation -- `insight/__main__.py`'s `users add` dispatch already catches
+    `store.AccountsStoreCorruptError` cleanly (see its own except clauses), so folding
+    `PermissionError` into that existing type, rather than inventing a fourth caller-visible
+    exception type, is what makes this fix a one-line change instead of new CLI plumbing."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("running as root -- chmod 000 does not deny root's own read access")
+    accounts_path = tmp_path / "accounts.json"
+    accounts_path.write_text(json.dumps({"version": 1, "users": {}}), encoding="utf-8")
+    os.chmod(accounts_path, 0o000)
+    try:
+        with pytest.raises(store.AccountsStoreCorruptError):
+            store.add_user("alice", "pw", "manager", accounts_path=accounts_path)
+    finally:
+        os.chmod(accounts_path, 0o600)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="FIFOs are not a POSIX concept on Windows")
+def test_read_accounts_refuses_a_fifo_instead_of_hanging_forever(tmp_path):
+    """Ungated -- proves the `O_NONBLOCK` fix (PR #461 review, third pass SHOULD-FIX). Pre-fix,
+    `os.open(path, O_RDONLY)` on a FIFO with no writer never returns AT ALL -- not an exception, an
+    indefinite hang -- confirmed live during implementation with a bounded subprocess reproduction
+    of the pre-fix flags (no O_NONBLOCK): it timed out after 5s with the child process still
+    blocked inside the open() syscall, and would have stayed blocked indefinitely without the
+    external timeout killing it.
+
+    Run here in a background DAEMON thread with a generous, bounded `join(timeout=...)` so a
+    regression fails this test PROMPTLY rather than hanging the actual test run: if the fix ever
+    regresses, the thread is still blocked in the C-level `open()` syscall when the timeout
+    expires, `thread.is_alive()` is True, and the assertion below fails outright. The thread itself
+    is never joined past the timeout and is killed for good only when the process exits (a thread
+    blocked in a blocking syscall cannot be interrupted from Python) -- acceptable here because
+    `daemon=True` means it can never keep the test process alive on its own."""
+    import threading
+
+    accounts_path = tmp_path / "accounts.json"
+    os.mkfifo(str(accounts_path))
+
+    result = {}
+
+    def target():
+        try:
+            result["value"] = store._read_accounts(accounts_path)
+        except Exception as e:
+            result["error"] = e
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive(), (
+        "store._read_accounts blocked for more than 5s opening a FIFO with no writer -- it must "
+        "refuse promptly instead of hanging forever"
+    )
+    assert "error" in result, "expected a refusal, got: %r" % result
+    assert isinstance(result["error"], store.AccountsStoreCorruptError), result["error"]
+
+
 # --------------------------------------------------------------------------- PR #461 review, first pass BLOCKING 2 / second pass BLOCKING 1: corrupt per-record hash, EVERY malformed shape
 
 
@@ -461,21 +549,46 @@ def test_corrupt_password_hash_is_logged_to_stderr_but_not_in_the_exception(tmp_
             "password_hash_is_garbage_string",
             lambda rec: rec.__setitem__("password_hash", "not-a-well-formed-argon2-hash-at-all"),
         ),
+        (
+            "password_hash_is_well_formed_but_under_different_kdf_params",
+            # A genuine, well-formed argon2id hash -- but produced under parameters different from
+            # whatever hashing.PRODUCTION_PARAMS currently resolves to (TEST_PARAMS, via this
+            # file's fast_params fixture). PR #461 review, third pass BLOCKING -- see
+            # test_well_formed_hash_under_different_kdf_params_... below for the full exploit and
+            # RED narrative; this parametrize entry is the cheap regression-coverage twin, proving
+            # this shape is folded into the SAME "every malformed shape" guarantee as the others.
+            lambda rec: rec.__setitem__(
+                "password_hash",
+                hashing.hash_password(
+                    "correct-password",
+                    params=hashing.Params(
+                        time_cost=hashing.TEST_PARAMS.time_cost + 1,
+                        memory_cost=hashing.TEST_PARAMS.memory_cost,
+                        parallelism=hashing.TEST_PARAMS.parallelism,
+                    ),
+                ),
+            ),
+        ),
     ],
 )
 def test_every_malformed_password_hash_shape_raises_identical_invalid_credentials_and_pays_kdf_cost(
     tmp_path, monkeypatch, shape_name, mutate
 ):
-    """Gated -- the REAL, argon2-backed proof (PR #461 review, second pass BLOCKING 1). The first
-    pass's fix (`except hashing.CorruptHashError`) only ever caught the LAST shape here
-    ('password_hash_is_garbage_string', argon2's own InvalidHashError/VerificationError). Every
+    """Gated -- the REAL, argon2-backed proof (PR #461 review, second pass BLOCKING 1; extended in
+    the third pass with one more shape, see below). The first pass's fix (`except
+    hashing.CorruptHashError`) only ever caught the shape here named
+    'password_hash_is_garbage_string' (argon2's own InvalidHashError/VerificationError). Every
     other shape reached the caller as a DIFFERENT, distinguishable exception type -- a plain
     `KeyError` for the missing key (raised before `hashing.verify_password` is even called), and
     `AttributeError`/`TypeError` from inside argon2-cffi's own internals for the non-string values
     -- and, measured, roughly 1000x faster than a real KDF operation: a louder timing tell than the
-    one the first pass closed. Every shape here must now be completely indistinguishable from a
-    wrong password: identical exception type, identical message, and the real KDF-sized dummy-hash
-    verification must still have been paid (the `assert ... in calls` below)."""
+    one the first pass closed. The THIRD pass added one more shape
+    ('password_hash_is_well_formed_but_under_different_kdf_params') that raises NOTHING at all
+    pre-fix -- not even a fast exception -- because it decodes and verifies just fine, only under
+    the wrong cost parameters; see hashing.py's own docstring for why. Every shape here must now be
+    completely indistinguishable from a wrong password: identical exception type, identical
+    message, and the real KDF-sized dummy-hash verification must still have been paid (the
+    `assert ... in calls` below)."""
     pytest.importorskip("argon2")
     accounts_path = tmp_path / "accounts.json"
     store.add_user("alice", "correct-password", "manager", accounts_path=accounts_path)
@@ -506,6 +619,91 @@ def test_every_malformed_password_hash_shape_raises_identical_invalid_credential
     # Real KDF work was paid on the corrupt-record path -- the dummy hash was verified against.
     assert hashing.dummy_hash_for(hashing.TEST_PARAMS) in calls, (
         "%s: no real KDF-sized dummy-hash verification happened" % shape_name
+    )
+
+
+# --------------------------------------------------------------------------- PR #461 review, third pass BLOCKING: a well-formed hash with weak/wrong embedded parameters is a 262x timing oracle
+
+
+def test_well_formed_hash_under_different_kdf_params_raises_identical_invalid_credentials_and_pays_kdf_cost(
+    tmp_path, monkeypatch
+):
+    """Gated -- the REAL, argon2-backed proof for a THIRD, independent way a record's hash can be
+    untrustworthy without the store's JSON breaking (PR #461 review, third pass BLOCKING). Argon2's
+    own `verify()` reads its cost parameters (m=/t=/p=) OUT OF the hash string itself, never from
+    the verifying `PasswordHasher` instance's own config -- so a SYNTACTICALLY VALID argon2id hash
+    carrying different-than-expected parameters raises NOTHING at all: `hasher.verify()` just runs
+    those (here, cheaper) embedded parameters and returns a clean True/False. Pre-fix, that meant
+    the malformed-record `except Exception` boundary in `store.verify_user` never fired for this
+    shape -- unlike every OTHER malformed shape in the parametrized test above -- so it paid no
+    KDF-sized cost at all. A reviewer measured this live, with a genuine argon2id hash produced
+    under TEST_PARAMS swapped into a normal-strength record: 0.0001s for a wrong password against
+    the weak-parameter record, versus 0.0234s for a normal record and 0.0238s for an unknown user
+    -- a 262x gap, though the exception type and message were identical in all three.
+
+    RED, PRECISELY (not a crash): pre-fix, the type/message assertions below ALREADY PASS -- the
+    wrong password still fails to verify against the weak-param hash, same as any wrong password
+    would, so `store.verify_user` still raises the identical `InvalidCredentials`. What fails
+    pre-fix is the LAST assertion: pre-fix, `hashing.verify_password` is called EXACTLY ONCE
+    (against the weak-param hash, which returns `False` cleanly -- no exception, so the
+    except-Exception dummy-hash fallback below never runs), so `hashing.dummy_hash_for(...)` is
+    never in `calls` and no real KDF-sized cost was ever paid for this path. Post-fix, it is called
+    TWICE, exactly like every other shape in the parametrized test above: first against the
+    weak-param hash (which now RAISES `CorruptHashError`), then against the dummy hash (paying a
+    real, currently-in-force-parameter-strength cost)."""
+    pytest.importorskip("argon2")
+    accounts_path = tmp_path / "accounts.json"
+    store.add_user("alice", "correct-password", "manager", accounts_path=accounts_path)
+
+    # A REAL, well-formed argon2id hash of a password, produced under parameters that are
+    # DIFFERENT from whatever `hashing.PRODUCTION_PARAMS` currently resolves to (TEST_PARAMS, via
+    # this file's `fast_params` fixture) -- simulating a hand-edit, a bad migration, or an account
+    # created under an older/weaker parameter set. Only `time_cost` differs so this stays fast
+    # (Decision 8) while still being unambiguously a parameter MISMATCH, not a coincidental match.
+    different_params = hashing.Params(
+        time_cost=hashing.TEST_PARAMS.time_cost + 1,
+        memory_cost=hashing.TEST_PARAMS.memory_cost,
+        parallelism=hashing.TEST_PARAMS.parallelism,
+    )
+    assert different_params != hashing.PRODUCTION_PARAMS  # sanity: really is a mismatch
+    hash_under_different_params = hashing.hash_password(
+        "correct-password", params=different_params
+    )
+
+    data = json.loads(accounts_path.read_text(encoding="utf-8"))
+    data["users"]["alice"]["password_hash"] = hash_under_different_params
+    accounts_path.write_text(json.dumps(data), encoding="utf-8")
+    os.chmod(accounts_path, 0o600)
+
+    calls = []
+    real_verify_password = hashing.verify_password
+
+    def spy(password, encoded_hash):
+        calls.append(encoded_hash)
+        return real_verify_password(password, encoded_hash)
+
+    monkeypatch.setattr(hashing, "verify_password", spy)
+
+    with pytest.raises(store.InvalidCredentials) as exc_corrupt:
+        store.verify_user("alice", "totally-wrong-password", accounts_path=accounts_path)
+    with pytest.raises(store.InvalidCredentials) as exc_unknown:
+        store.verify_user("no-such-user", "whatever", accounts_path=accounts_path)
+
+    assert type(exc_corrupt.value) is store.InvalidCredentials
+    assert (
+        exc_corrupt.value.args == exc_unknown.value.args == (store._INVALID_CREDENTIALS_MESSAGE,)
+    )
+    # The assertion that fails RED pre-fix: comparable work, proven by the SAME
+    # dummy-hash-was-verified-against signal the parametrized test above already uses for every
+    # other malformed shape.
+    assert hashing.dummy_hash_for(hashing.TEST_PARAMS) in calls, (
+        "no real KDF-sized dummy-hash verification happened for a well-formed hash under "
+        "different-than-expected parameters -- this is exactly the 262x timing oracle the fix "
+        "closes"
+    )
+    assert calls == [hash_under_different_params, hashing.dummy_hash_for(hashing.TEST_PARAMS)], (
+        "expected exactly two verify_password calls -- first against the mismatched-parameter "
+        "hash (which must raise), second against the dummy hash (which pays the real cost)"
     )
 
 

@@ -27,8 +27,45 @@ operation inside the request path (only a cheap value lookup via `dummy_hash_for
 generated once, interactively, on a machine with argon2-cffi installed, by calling
 `hash_password("dummy-password-never-verified-against", params=<the matching PARAMS>)` and pasting
 the resulting encoded hash string here.
+
+WEAK-EMBEDDED-PARAMETER HANDLING (PR #461 review, third pass BLOCKING -- a well-formed hash with
+weak parameters is a timing oracle, following the first pass's BLOCKING 2 and the second pass's
+BLOCKING 1, both about a malformed `password_hash` field; this is a THIRD, independent way one
+account record's hash can be untrustworthy without the store's JSON breaking). Argon2's own
+`PasswordHasher().verify()` reads its cost parameters (`m=`/`t=`/`p=`) OUT OF `encoded_hash` itself
+-- the hasher instance's own configured `time_cost`/`memory_cost`/`parallelism` are irrelevant to
+which parameters the KDF actually runs with (see `verify_password`'s own docstring). That means a
+SYNTACTICALLY VALID argon2id hash carrying cheap parameters (e.g. `m=8,t=1,p=1` instead of the
+account's real `m=65536,t=3,p=4`) does not raise anything at all -- it runs a now-trivial KDF and
+returns a clean `True`/`False`. A reviewer measured this live: a wrong password against a
+weak-parameter record cost 0.0001s, against a normal record 0.0234s, and against an unknown user
+0.0238s -- a 262x gap, though every path raised the identical `InvalidCredentials` with the
+identical message.
+
+`verify_password` closes this the same way `store.verify_user` already closes every other
+malformed-record shape: by refusing to trust ANYTHING about a hash whose embedded parameters do not
+match the caller's `params` (`PRODUCTION_PARAMS` by default, resolved dynamically -- see
+`hash_password`'s own docstring for why that resolution happens inside the function body). A
+parameter mismatch is treated as `CorruptHashError` -- the exact same store-level "this record
+cannot be trusted" signal a garbled hash string or a wrong-typed field already raises -- which
+`store.verify_user`'s existing `except Exception` boundary already folds into `InvalidCredentials`
+and pays a real, `PRODUCTION_PARAMS`-strength dummy-hash KDF operation for (no changes needed in
+`store.py` beyond its own docstring, which claimed the dummy-hash fallback fires on "ANY exception
+raised while processing this known user's record" -- true after this fix, but was NOT true before
+it for this one shape, since a weak-param hash raised nothing to catch).
+
+The parameter check itself (`_embedded_cost_params`) is deliberately pure `re`-stdlib string
+parsing, with NO dependency on `argon2` being importable at all -- a second testable seam, alongside
+the `argon2 = None` one below, so the extraction/comparison logic has real unit coverage on a
+machine that lacks argon2-cffi entirely (this one, as of this fix). It inspects ONLY the cost
+parameters (`m=`/`t=`/`p=`) embedded in the PHC-format hash string -- never `salt_len`/`hash_len`/
+the argon2 variant (`id` vs `i` vs `d`) also embedded there -- because cost parameters are the only
+embedded property that materially changes `verify()`'s wall-clock cost; the others affect output
+size/format, not KDF work, so they are out of THIS check's scope (a mismatch there still very
+likely fails verification for unrelated reasons, just not via this path).
 """
 import collections
+import re
 
 try:
     import argon2
@@ -45,10 +82,15 @@ class KDFUnavailableError(Exception):
 class CorruptHashError(Exception):
     """Raised by `verify_password` when `encoded_hash` is not a well-formed argon2 hash -- e.g. a
     single account record's `password_hash` field was mangled by a partial write, a bad migration,
-    or a hand-edit, while the rest of the store stays valid JSON (PR #461 review, BLOCKING 2).
-    Distinct from a wrong-password mismatch (`VerifyMismatchError`, handled separately inside
-    `verify_password` and turned into a plain `False` return, never an exception) and from
-    `KDFUnavailableError` (argon2 itself unavailable, checked before any hash is ever touched).
+    or a hand-edit, while the rest of the store stays valid JSON (PR #461 review, BLOCKING 2) --
+    OR when `encoded_hash` parses fine but embeds different cost parameters than the ones currently
+    in force (PR #461 review, third pass BLOCKING -- see the module docstring's
+    WEAK-EMBEDDED-PARAMETER HANDLING note): a well-formed hash under stale/weak parameters is just
+    as untrustworthy as a garbled one, since verifying against it would run a cheaper-than-expected
+    KDF and leak that fact through timing. Distinct from a wrong-password mismatch
+    (`VerifyMismatchError`, handled separately inside `verify_password` and turned into a plain
+    `False` return, never an exception) and from `KDFUnavailableError` (argon2 itself unavailable,
+    checked before any hash is ever touched).
 
     `insight.accounts.store.verify_user` catches this and folds it into the exact same
     `InvalidCredentials` exception and message it already uses for a wrong password and an unknown
@@ -111,6 +153,58 @@ def _require_argon2():
         )
 
 
+#: Matches the `$m=<memory_cost>,t=<time_cost>,p=<parallelism>$` segment of a standard PHC-format
+#: argon2 encoded hash string (e.g. `$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>`). Pure `re`
+#: stdlib, no argon2-cffi dependency -- see `_embedded_cost_params`'s own docstring and the module
+#: docstring's WEAK-EMBEDDED-PARAMETER HANDLING note for why that independence is load-bearing.
+_COST_PARAMS_RE = re.compile(r"\$m=(\d+),t=(\d+),p=(\d+)\$")
+
+
+def _embedded_cost_params(encoded_hash):
+    """Parse the `m=`/`t=`/`p=` argon2 cost parameters embedded in `encoded_hash`'s own PHC-format
+    string, returning a `Params`. Pure `re`-stdlib string parsing -- deliberately does NOT import
+    or call anything from `argon2`, so this function (and the parameter-mismatch check that uses
+    it, inside `verify_password`) is unit-testable on a machine that lacks argon2-cffi entirely
+    (this one, as of this fix), exactly like the `argon2 = None` seam above.
+
+    Raises `CorruptHashError` -- never lets a `TypeError`/`AttributeError` from a non-string
+    `encoded_hash`, or a silent `None` from a failed regex match, escape as some third,
+    caller-distinguishable exception type -- if `encoded_hash` is not a string, or is a string with
+    no well-formed `$m=...,t=...,p=...$` segment. Both cases mean "the embedded parameters cannot
+    be trusted," which is exactly the same bucket a garbled or wrongly-typed `password_hash` value
+    already falls into elsewhere in this module and in `store.verify_user`."""
+    if not isinstance(encoded_hash, str):
+        raise CorruptHashError(
+            "encoded_hash must be a string to read its embedded KDF parameters, got %s"
+            % type(encoded_hash).__name__
+        )
+    match = _COST_PARAMS_RE.search(encoded_hash)
+    if not match:
+        raise CorruptHashError(
+            "could not find argon2 m=/t=/p= cost parameters embedded in the hash string"
+        )
+    memory_cost, time_cost, parallelism = (int(group) for group in match.groups())
+    return Params(time_cost=time_cost, memory_cost=memory_cost, parallelism=parallelism)
+
+
+def _require_matching_cost_params(encoded_hash, params):
+    """Raise `CorruptHashError` unless `encoded_hash`'s own embedded cost parameters equal
+    `params` exactly. Deliberately a SEPARATE function from `verify_password`, not inlined there,
+    so the `!=` comparison below -- a plain comparison of small integers, never of secret/derived
+    material, so it carries no timing signal about the password -- lives outside
+    `verify_password`'s own function body. `verify_password`'s own AST is scanned elsewhere
+    (test_accounts_hashing.py's `test_verify_uses_librarys_constant_time_compare_not_bare_equality`)
+    for exactly this operator, as a blunt guard against the PASSWORD/HASH comparison ever
+    regressing to a bare `==`/`!=`; keeping this unrelated, cleartext parameter comparison in its
+    own function avoids that guard flagging a comparison it was never meant to catch."""
+    embedded = _embedded_cost_params(encoded_hash)
+    if embedded != params:
+        raise CorruptHashError(
+            "hash embeds KDF parameters %r but %r are currently in force -- refusing to trust a "
+            "well-formed hash under different-than-expected parameters" % (embedded, params)
+        )
+
+
 def hash_password(password, params=None):
     """Hash `password` with argon2id, returning the encoded hash string (parameters embedded).
     `params` defaults to `PRODUCTION_PARAMS`, resolved HERE (inside the function body) rather
@@ -125,20 +219,38 @@ def hash_password(password, params=None):
     return hasher.hash(password)
 
 
-def verify_password(password, encoded_hash):
+def verify_password(password, encoded_hash, params=None):
     """Verify `password` against `encoded_hash` using argon2-cffi's own constant-time compare
     (`PasswordHasher().verify(...)` -- never a bare `==`/`!=` string comparison, which would
-    reintroduce the timing side-channel argon2's own verify() avoids). The hasher's own
-    parameters (time_cost/memory_cost/parallelism) are irrelevant here -- `verify()` reads the
-    real parameters back out of `encoded_hash` itself, so a default-constructed `PasswordHasher()`
-    correctly verifies a hash produced under ANY parameter set. Returns True/False for a
-    well-formed hash; raises `CorruptHashError` for a malformed one (a store-level concern, not a
-    wrong password -- see `CorruptHashError`'s own docstring for exactly how
-    `insight.accounts.store.verify_user` handles it, which is NOT by exposing it to its own
-    caller as a distinguishable type; PR #461 review, BLOCKING 2, correcting an earlier version of
-    this docstring that claimed a distinguishing `try/except` existed in store.py when it did
-    not)."""
+    reintroduce the timing side-channel argon2's own verify() avoids). `params` defaults to
+    `PRODUCTION_PARAMS`, resolved HERE inside the function body (never a bound default -- same
+    reason as `hash_password`, see the module docstring) -- it names the cost parameters this
+    caller EXPECTS `encoded_hash` to have been produced under.
+
+    BEFORE doing any cryptographic work, this function checks `encoded_hash`'s OWN embedded cost
+    parameters against `params` (`_require_matching_cost_params` -- a separate function, not
+    inlined here, so the equality check itself stays outside this docstring's own "never a bare
+    `==`/`!=`" guarantee and the AST scan that enforces it; see that function's own docstring) and
+    raises `CorruptHashError` on a mismatch (PR #461 review, third pass BLOCKING -- see the module
+    docstring's WEAK-EMBEDDED-PARAMETER HANDLING note for the full exploit and why). This is necessary because,
+    for the actual argon2 comparison below, the hasher's own configured parameters
+    (time_cost/memory_cost/parallelism) are IRRELEVANT to what the KDF actually runs with --
+    `verify()` reads the real parameters back out of `encoded_hash` itself, so a
+    default-constructed `PasswordHasher()` "correctly" verifies a hash produced under ANY parameter
+    set, including a trivially cheap one an attacker (or a bad migration) planted. Without the
+    check above, that "correctness" is exactly what turns a well-formed-but-weak hash into a 260x+
+    timing oracle: the KDF would run, but for a fraction of the expected cost.
+
+    Returns True/False for a well-formed hash embedding the EXPECTED parameters; raises
+    `CorruptHashError` for a malformed hash, one embedding unexpected parameters, or an
+    `encoded_hash` that is not even a string (a store-level concern, not a wrong password -- see
+    `CorruptHashError`'s own docstring for exactly how `insight.accounts.store.verify_user` handles
+    it, which is NOT by exposing it to its own caller as a distinguishable type; PR #461 review,
+    BLOCKING 2, correcting an earlier version of this docstring that claimed a distinguishing
+    `try/except` existed in store.py when it did not)."""
     _require_argon2()
+    params = params or PRODUCTION_PARAMS
+    _require_matching_cost_params(encoded_hash, params)
     hasher = argon2.PasswordHasher()
     try:
         hasher.verify(encoded_hash, password)

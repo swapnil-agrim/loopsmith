@@ -64,6 +64,68 @@ def test_production_params_actually_hash_and_verify_for_real():
     assert elapsed < 3.0, "production-parameter hash+verify round trip took %.3fs" % elapsed
 
 
+# --------------------------------------------------------------------------- PR #461 review, third pass BLOCKING: weak-embedded-parameter detection (pure re-stdlib, no argon2 needed)
+
+
+def test_embedded_cost_params_parses_the_precomputed_dummy_hash_constants():
+    """Ungated -- `_embedded_cost_params` is pure `re`-stdlib string parsing, deliberately with no
+    dependency on argon2 being importable (a second testable seam, alongside `argon2 = None`
+    above; see hashing.py's own module docstring, WEAK-EMBEDDED-PARAMETER HANDLING). Proven here
+    against the two REAL, hand-generated hash constants already in the module -- not synthetic
+    strings -- so this is also an independent check that DUMMY_HASH_PRODUCTION/DUMMY_HASH_TEST
+    embed exactly the parameters their own names and comments claim."""
+    assert hashing._embedded_cost_params(hashing.DUMMY_HASH_PRODUCTION) == hashing.PRODUCTION_PARAMS
+    assert hashing._embedded_cost_params(hashing.DUMMY_HASH_TEST) == hashing.TEST_PARAMS
+
+
+def test_embedded_cost_params_rejects_a_non_string():
+    """Ungated -- a non-string password_hash (an int, a list -- the exact malformed shapes
+    test_accounts_store.py's parametrized test already covers at the store level) must not escape
+    as a raw TypeError/AttributeError; it folds into the same CorruptHashError every other
+    malformed shape does."""
+    with pytest.raises(hashing.CorruptHashError):
+        hashing._embedded_cost_params(12345)
+    with pytest.raises(hashing.CorruptHashError):
+        hashing._embedded_cost_params(["not", "a", "string"])
+
+
+def test_embedded_cost_params_rejects_a_string_with_no_recognizable_parameters():
+    """Ungated -- a garbage string (or an empty string) has no `$m=...,t=...,p=...$` segment to
+    find at all."""
+    with pytest.raises(hashing.CorruptHashError):
+        hashing._embedded_cost_params("not-a-well-formed-argon2-hash-at-all")
+    with pytest.raises(hashing.CorruptHashError):
+        hashing._embedded_cost_params("")
+
+
+def test_require_matching_cost_params_accepts_an_exact_match():
+    """Ungated -- must not raise when the embedded and expected parameters are identical (the
+    common case: every hash `hash_password` ever produces, verified against the SAME params it was
+    produced under)."""
+    hashing._require_matching_cost_params(hashing.DUMMY_HASH_PRODUCTION, hashing.PRODUCTION_PARAMS)
+    hashing._require_matching_cost_params(hashing.DUMMY_HASH_TEST, hashing.TEST_PARAMS)
+
+
+def test_require_matching_cost_params_rejects_a_well_formed_hash_under_different_parameters():
+    """Ungated -- the core of the third-pass fix (PR #461 review, third pass BLOCKING), exercised
+    directly with NO argon2 dependency at all: `hashing._require_matching_cost_params` and
+    `_embedded_cost_params` are pure `re`-stdlib string parsing, so this test runs (never skips) on
+    a machine that genuinely lacks argon2-cffi, exactly like this one.
+
+    `DUMMY_HASH_TEST` is a completely well-formed, real argon2id hash -- it would pass every check
+    the pre-fix code ever ran, and `hasher.verify()` would happily run its (here, weaker) embedded
+    parameters and return a clean True/False. `PRODUCTION_PARAMS` is what a real deployment expects
+    every stored hash to have been produced under. Pre-fix, `verify_password` had no parameter
+    check at all -- this exact mismatch would sail through undetected, which is precisely the 262x
+    timing oracle a reviewer measured live (0.0001s for a weak-parameter record vs 0.0234s for a
+    normal one). Post-fix, the mismatch is refused outright, before any KDF work is attempted."""
+    with pytest.raises(hashing.CorruptHashError) as exc:
+        hashing._require_matching_cost_params(hashing.DUMMY_HASH_TEST, hashing.PRODUCTION_PARAMS)
+    message = str(exc.value)
+    assert repr(hashing.TEST_PARAMS) in message
+    assert repr(hashing.PRODUCTION_PARAMS) in message
+
+
 def test_verify_uses_librarys_constant_time_compare_not_bare_equality():
     """Ungated -- a pure source/AST scan of hashing.py's own text; touches no hashing at runtime,
     so it needs no argon2 install to mean something. Source-scans hashing.py's text for a bare
