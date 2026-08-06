@@ -42,6 +42,23 @@ class KDFUnavailableError(Exception):
     module docstring's "testable seam" note)."""
 
 
+class CorruptHashError(Exception):
+    """Raised by `verify_password` when `encoded_hash` is not a well-formed argon2 hash -- e.g. a
+    single account record's `password_hash` field was mangled by a partial write, a bad migration,
+    or a hand-edit, while the rest of the store stays valid JSON (PR #461 review, BLOCKING 2).
+    Distinct from a wrong-password mismatch (`VerifyMismatchError`, handled separately inside
+    `verify_password` and turned into a plain `False` return, never an exception) and from
+    `KDFUnavailableError` (argon2 itself unavailable, checked before any hash is ever touched).
+
+    `insight.accounts.store.verify_user` catches this and folds it into the exact same
+    `InvalidCredentials` exception and message it already uses for a wrong password and an unknown
+    username -- it is never re-raised to `verify_user`'s own caller as a distinguishable type, and
+    the caller-facing behavior for "this specific known user's record is corrupt" is deliberately
+    indistinguishable from "wrong password" or "no such user" (done-when 3). See `store.py`'s
+    `verify_user` docstring for exactly how, including why that path pays a second, dummy-hash KDF
+    verification rather than becoming a timing fast path."""
+
+
 #: A KDF parameter set. Plain attribute access (`.time_cost`, `.memory_cost`, `.parallelism`) --
 #: no argon2-cffi type leaks into this tuple's shape.
 Params = collections.namedtuple("Params", ("time_cost", "memory_cost", "parallelism"))
@@ -115,20 +132,27 @@ def verify_password(password, encoded_hash):
     parameters (time_cost/memory_cost/parallelism) are irrelevant here -- `verify()` reads the
     real parameters back out of `encoded_hash` itself, so a default-constructed `PasswordHasher()`
     correctly verifies a hash produced under ANY parameter set. Returns True/False for a
-    well-formed hash; raises for a malformed one (a store-level concern, not a wrong password)."""
+    well-formed hash; raises `CorruptHashError` for a malformed one (a store-level concern, not a
+    wrong password -- see `CorruptHashError`'s own docstring for exactly how
+    `insight.accounts.store.verify_user` handles it, which is NOT by exposing it to its own
+    caller as a distinguishable type; PR #461 review, BLOCKING 2, correcting an earlier version of
+    this docstring that claimed a distinguishing `try/except` existed in store.py when it did
+    not)."""
     _require_argon2()
     hasher = argon2.PasswordHasher()
     try:
         hasher.verify(encoded_hash, password)
     except argon2.exceptions.VerifyMismatchError:
         return False
-    except (argon2.exceptions.InvalidHashError, argon2.exceptions.VerificationError):
+    except (argon2.exceptions.InvalidHashError, argon2.exceptions.VerificationError) as e:
         # Order matters: VerifyMismatchError IS-A VerificationError in argon2-cffi's own
         # hierarchy, so it must be caught first (above), or this clause would silently also
         # swallow a wrong password. A malformed/corrupt stored hash is a distinct, store-level
-        # concern -- re-raised as-is; insight.accounts.store catches this to distinguish a
-        # corrupt record from a genuine credential mismatch.
-        raise
+        # concern -- wrapped in CorruptHashError (never argon2's own exception type, which would
+        # leak an argon2-cffi implementation detail across the module boundary) so
+        # insight.accounts.store can catch ONE hashing-module-owned type regardless of which of
+        # argon2-cffi's own exception classes actually fired.
+        raise CorruptHashError(str(e)) from e
     return True
 
 
