@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.1 — the hardening release
+
 ### fix(doctor): north-star "filled" check now clears every tier, not just Vision (F33/#358)
 `doctor.py`'s north-star "filled" probe tested the file for only the Vision-tier placeholder
 (`"<the change you want"`), so a north-star with Vision written up but Strategy/Design/Architecture
