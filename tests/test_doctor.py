@@ -677,6 +677,32 @@ def test_dependency_marker_doctor_check_flags_comment_only_marker(tmp_path):
     assert "#42" in hit["fix"]
 
 
+def test_dependency_marker_doctor_check_fix_nudges_toward_enabling_backlog_check_when_off(tmp_path):
+    """C1 (independent review of PR #480): this check is deliberately NOT gated on
+    backlog_check.enabled (a nudge toward turning it on) -- but precheck() returns OFF before ever
+    reaching cross_check() while it's off, so a BODY marker is ignored exactly as much as a
+    comment-only one is. The fix text must say so -- otherwise its own suggested next step (re-file,
+    or add a body marker) does nothing while the setting stays off."""
+    d = _doc()
+    issues = [{"number": 42, "body": "no marker here"}]
+    comment = {"id": "IC_1", "author": {"login": "bob"}, "body": "blocked by #9 until that lands",
+               "createdAt": "2026-08-01T00:00:00Z"}
+
+    off = _sdlc(tmp_path / "off", {"discovery": {"source": "github", "github": {"repo": "acme/widget"}}})
+    off_hit = _dm_check({c["name"]: c for c in d.check(off, run=_dm_run(issues, [comment]))})
+    assert off_hit["ok"] is False
+    assert "backlog_check.enabled" in off_hit["fix"]
+    assert "true" in off_hit["fix"]
+
+    # once actually enabled, the base advice IS actionable -- the off-specific nudge would be noise,
+    # so it must NOT appear.
+    on = _sdlc(tmp_path / "on", {"discovery": {"source": "github", "github": {"repo": "acme/widget"}},
+                                 "backlog_check": {"enabled": True}})
+    on_hit = _dm_check({c["name"]: c for c in d.check(on, run=_dm_run(issues, [comment]))})
+    assert on_hit["ok"] is False
+    assert "backlog_check.enabled" not in on_hit["fix"]
+
+
 def test_dependency_marker_doctor_check_silent_when_body_already_has_marker(tmp_path):
     d = _doc()
     base = _sdlc(tmp_path, {"discovery": {"source": "github", "github": {"repo": "acme/widget"}}})

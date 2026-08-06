@@ -349,6 +349,15 @@ def check(sdlc_dir=".sdlc", run=None):
                       + (f" (+{len(flagged) - 10} more)" if len(flagged) > 10 else "")
                       + " -- re-file the dependency via handoff.py, or manually add a `Blocked by #N` "
                       "line to the issue body.")
+            if bchk.get("enabled") is not True:
+                # C1 (PR #480 review): this check is deliberately NOT gated on backlog_check.enabled
+                # (see the comment above) -- but while it's off, precheck() returns "OFF" before ever
+                # reaching cross_check(), so the advice above (re-file, or add a body marker) does
+                # NOTHING yet: a body marker is ignored exactly as much as a comment-only one is. Say
+                # so, or the fix text points at an action that fixes nothing.
+                dm_fix += (' Also: backlog_check.enabled is off, so even a body marker won\'t '
+                           'currently be honored by precheck() -- set `backlog_check: {"enabled": '
+                           'true}` to fix that too.')
             out.append(_chk(dm_name, not flagged, dm_fix))
 
     if kg.get("enabled") is True:
