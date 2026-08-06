@@ -31,7 +31,13 @@ def load_config(sdlc_dir):
             f"no config.json under {sdlc_dir} — this .sdlc directory was never initialized. "
             "Run /sdlc-init to scaffold it (or /sdlc-setup to adopt LoopSmith into an existing repo)."
         ) from None
-    return json.loads(text)
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ConfigMissing(
+            f"config.json under {sdlc_dir} does not contain a JSON object (is {type(parsed).__name__} instead). "
+            "Run /sdlc-init to scaffold a valid config (or /sdlc-setup to adopt LoopSmith into an existing repo)."
+        )
+    return parsed
 
 
 _STATE_TEMPLATE = """# Loop State
