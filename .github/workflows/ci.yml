@@ -82,6 +82,14 @@ jobs:
   # local gate and into the one place guaranteed to have a browser.
   web:
     runs-on: ubuntu-latest
+    # issue #304 [E17.S3], .sdlc/plans/304.md Step 5. Job-level, not step-level: this job's own
+    # `npm run build` (inside `python3 insight/verify_web.py`'s CHECKS, below) is the SAME `.next`
+    # output prove-absence-primitives-render.mjs starts its server from later in this job (no
+    # rebuild) -- the env var must be set before that build runs, not just before the Playwright
+    # step. `insight/web/src/app/dev/absence-states/page.tsx` reads this to gate itself out of
+    # every OTHER build (local always-on gate, the shipped Docker image) where it is unset.
+    env:
+      INSIGHT_DEV_ROUTES: "1"
     steps:
       - uses: actions/checkout@v4
       - name: setup-node (cached — once insight/web/package-lock.json exists)
@@ -118,6 +126,16 @@ jobs:
         working-directory: insight/web
       - name: prove fonts actually apply (npm run prove:fonts)
         run: npm run prove:fonts
+        working-directory: insight/web
+      # issue #304 [E17.S3], .sdlc/plans/304.md Decision (d)/Step 6. Reuses the browser the font
+      # proof's own install step above already provisioned -- zero incremental provisioning cost,
+      # same job, same reasoning as prove:fonts. Deliberately NOT in verify_web.py's CHECKS/the
+      # always-on gate -- see that script's own docstring and this job's header comment for why a
+      # browser-dependent check cannot live there. Starts its own `next start` server against the
+      # `.next` output the `npm run build` check above (this job's own step) already produced,
+      # under this job's own INSIGHT_DEV_ROUTES=1 -- no rebuild.
+      - name: prove absence primitives render + are visually distinct (npm run prove:absence-states)
+        run: npm run prove:absence-states
         working-directory: insight/web
       - name: docker build (Dockerfile.web) -- the Dockerfile is proven to build, not just present
         run: docker build -f insight/Dockerfile.web -t insight-web-scaffold:ci insight/

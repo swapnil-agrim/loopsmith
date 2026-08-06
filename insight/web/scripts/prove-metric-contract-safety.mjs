@@ -20,17 +20,13 @@
 //
 // Network-free: all three scenarios use only the already-`npm ci`'d local `openapi-typescript`/
 // `tsc` binaries and the committed openapi.json -- 3 `tsc` subprocess calls total, sub-second.
-import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, copyFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, readFileSync, copyFileSync } from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
 
 import { generate } from "./generate-schema.mjs";
+import { WEB, runTsc, runScenario, runScenarioInWeb } from "./lib/tsc-scratch.mjs";
 
-const WEB = path.resolve(fileURLToPath(import.meta.url), "..", "..");
-const TSC_BIN = path.join(WEB, "node_modules", ".bin", "tsc");
 const SRC_API = path.join(WEB, "src", "lib", "api");
 const OPENAPI_JSON = path.join(WEB, "openapi.json");
 const FIXTURES = path.join(WEB, "fixtures");
@@ -40,56 +36,45 @@ const FIXTURES = path.join(WEB, "fixtures");
 // nesting), so `include` must differ from the real file's; restating the rest keeps this script
 // self-contained and immune to an unrelated tsconfig.json edit silently loosening what these
 // scenarios prove.
+// issue #304 [E17.S3], .sdlc/plans/304.md Decision (b): `"jsx": "react-jsx"` and the `*.tsx`
+// include pattern are new here, added to this SHARED function rather than forked into a second
+// one. Both are inert for the three original .ts-only scenarios above (no .tsx file is ever
+// written into their scratch dirs, so the extra include pattern matches nothing there, and the
+// `jsx` option only affects files that actually contain JSX syntax).
 function scratchTsconfig() {
   return {
     compilerOptions: {
       target: "ES2022",
-      lib: ["ES2022"],
+      lib: ["ES2022", "DOM"],
       module: "ESNext",
       moduleResolution: "Bundler",
+      jsx: "react-jsx",
       strict: true,
       noEmit: true,
       esModuleInterop: true,
       skipLibCheck: true,
       forceConsistentCasingInFileNames: true,
     },
-    include: ["*.ts"],
+    include: ["*.ts", "*.tsx"],
   };
 }
 
-/** Runs `tsc -p dir`, returning { ok, output } -- never throws on a nonzero exit. */
-function runTsc(dir) {
-  try {
-    const output = execFileSync(TSC_BIN, ["-p", dir], { encoding: "utf-8" });
-    return { ok: true, output };
-  } catch (err) {
-    // tsc writes diagnostics to stdout and exits nonzero; execFileSync throws with both
-    // captured on the error object.
-    return { ok: false, output: (err.stdout || "") + (err.stderr || "") };
-  }
-}
-
-function mkScratch() {
-  return mkdtempSync(path.join(tmpdir(), "insight-web-contract-proof-"));
-}
+// runTsc/runScenario/runScenarioInWeb now live in ./lib/tsc-scratch.mjs -- issue #304 [E17.S3],
+// factored out so prove-metric-view-behavior.mjs can reuse the same "compile a scratch dir with
+// the local tsc" machinery instead of Node's unflagged TypeScript type-stripping. Behaviour is
+// unchanged: runScenario()/runScenarioInWeb() below still tear down their dir in a `finally`,
+// and mkScratchInWeb()'s dirs are still rooted under insight/web/ (gitignored -- see
+// insight/web/.gitignore's `.contract-proof-scratch-*/` entry) for the same @types/react
+// upward-node_modules-walk reason the comment above used to explain here.
 
 function writeTsconfig(dir) {
   writeFileSync(path.join(dir, "tsconfig.json"), JSON.stringify(scratchTsconfig(), null, 2));
 }
 
-function runScenario(fn) {
-  const dir = mkScratch();
-  try {
-    return fn(dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 // --------------------------------------------------------------------------------- control
 
 function control() {
-  return runScenario((dir) => {
+  return runScenario("insight-web-contract-proof-", (dir) => {
     writeTsconfig(dir);
     copyFileSync(path.join(SRC_API, "schema.d.ts"), path.join(dir, "schema.d.ts"));
     copyFileSync(path.join(SRC_API, "metric.ts"), path.join(dir, "metric.ts"));
@@ -103,7 +88,7 @@ function control() {
 // --------------------------------------------------------------------------------- criterion 3
 
 function criterionThreeUnnarrowedValueFails() {
-  return runScenario((dir) => {
+  return runScenario("insight-web-contract-proof-", (dir) => {
     writeTsconfig(dir);
     copyFileSync(path.join(SRC_API, "schema.d.ts"), path.join(dir, "schema.d.ts"));
     copyFileSync(path.join(SRC_API, "metric.ts"), path.join(dir, "metric.ts"));
@@ -138,7 +123,7 @@ function renameLabelToTitleInSchema(openapiDoc) {
 }
 
 function criterionTwoRenameBreaksMetricLabel() {
-  return runScenario((dir) => {
+  return runScenario("insight-web-contract-proof-", (dir) => {
     writeTsconfig(dir);
 
     const mutated = renameLabelToTitleInSchema(JSON.parse(readFileSync(OPENAPI_JSON, "utf-8")));
@@ -165,10 +150,86 @@ function criterionTwoRenameBreaksMetricLabel() {
   });
 }
 
+// --------------------------------------------------------------------------------- done-when 4
+
+/** issue #304 [E17.S3], .sdlc/plans/304.md Step 2 / Decision (e). A `MeasuredMetric` object
+ * literal missing `coverage` (a required, non-optional member for every reliability class) must
+ * fail `tsc`: "cannot be rendered" reduces to "cannot be constructed". */
+function measuredMetricMissingCoverageFails() {
+  return runScenario("insight-web-contract-proof-", (dir) => {
+    writeTsconfig(dir);
+    copyFileSync(path.join(SRC_API, "schema.d.ts"), path.join(dir, "schema.d.ts"));
+    copyFileSync(path.join(SRC_API, "metric.ts"), path.join(dir, "metric.ts"));
+    copyFileSync(
+      path.join(FIXTURES, "measured-metric-missing-coverage.ts.fixture"),
+      path.join(dir, "measured-metric-missing-coverage.ts"),
+    );
+    const { ok, output } = runTsc(dir);
+    assert.ok(
+      !ok && output.includes("TS2741"),
+      "done-when 4: a MeasuredMetric literal omitting 'coverage' must fail tsc --noEmit with " +
+      `TS2741 (missing required property), got:\n${output}`,
+    );
+    console.log("OK: done-when 4 (MeasuredMetric literal without coverage fails TS2741)");
+  });
+}
+
+// --------------------------------------------------------------------------------- done-when 2
+
+/** issue #304 [E17.S3], .sdlc/plans/304.md Step 4. Done-when 2's literal ask: "a component
+ * reaching metric.value" -- not a plain function (criterion 3 above already covers that) --
+ * "fails tsc" without `state` narrowing. Uses the new JSX-capable scratch path
+ * (mkScratchInWeb()/scratchTsconfig()'s `jsx`/`*.tsx` additions, Decision (b)). */
+function componentUnnarrowedValueAccessFails() {
+  return runScenarioInWeb(".contract-proof-scratch-", (dir) => {
+    writeTsconfig(dir);
+    copyFileSync(path.join(SRC_API, "schema.d.ts"), path.join(dir, "schema.d.ts"));
+    copyFileSync(path.join(SRC_API, "metric.ts"), path.join(dir, "metric.ts"));
+    copyFileSync(
+      path.join(FIXTURES, "unnarrowed-value-access-component.tsx.fixture"),
+      path.join(dir, "unnarrowed-value-access-component.tsx"),
+    );
+    const { ok, output } = runTsc(dir);
+    assert.ok(
+      !ok && output.includes("TS2339"),
+      "done-when 2: a component reading props.metric.value with no 'state' narrowing must fail " +
+      `tsc --noEmit with TS2339, got:\n${output}`,
+    );
+    console.log("OK: done-when 2 (unnarrowed component .value access fails TS2339)");
+  });
+}
+
+/** Positive control for the new JSX-capable scratch path (mirrors the top-level `control()`
+ * scenario's purpose, applied to the machinery `componentUnnarrowedValueAccessFails()` newly
+ * depends on): a component that DOES narrow `state` before reading `.value` must compile clean.
+ * Without this, "the unnarrowed fixture fails" would be indistinguishable from "the scratch dir
+ * can't resolve react types at all and everything fails" -- see .sdlc/plans/304.md Step 4. */
+function componentNarrowedValueAccessCompiles() {
+  return runScenarioInWeb(".contract-proof-scratch-", (dir) => {
+    writeTsconfig(dir);
+    copyFileSync(path.join(SRC_API, "schema.d.ts"), path.join(dir, "schema.d.ts"));
+    copyFileSync(path.join(SRC_API, "metric.ts"), path.join(dir, "metric.ts"));
+    copyFileSync(
+      path.join(FIXTURES, "narrowed-value-access-component.tsx.fixture"),
+      path.join(dir, "narrowed-value-access-component.tsx"),
+    );
+    const { ok, output } = runTsc(dir);
+    assert.ok(
+      ok,
+      "positive control: a component that narrows 'state' before reading .value must compile " +
+      `clean under the new JSX-capable scratch path, got:\n${output}`,
+    );
+    console.log("OK: positive control (narrowed component .value access compiles clean)");
+  });
+}
+
 function main() {
   control();
   criterionThreeUnnarrowedValueFails();
   criterionTwoRenameBreaksMetricLabel();
+  measuredMetricMissingCoverageFails();
+  componentNarrowedValueAccessCompiles();
+  componentUnnarrowedValueAccessFails();
 }
 
 main();

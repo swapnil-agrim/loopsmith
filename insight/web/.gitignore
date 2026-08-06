@@ -1,0 +1,16 @@
+# issue #304 [E17.S3], .sdlc/plans/304.md Section 2/Step 7. The repo-root .gitignore already
+# ignores node_modules/ and .next/ from insight/web/, but that file would not travel if insight/
+# is ever extracted to its own repo -- this file keeps insight/web/'s own ignore rules inside the
+# extractable tree.
+#
+# scripts/prove-metric-contract-safety.mjs's mkScratchInWeb() (Decision (b)) creates these,
+# nested under insight/web/ itself so tsc's node_modules resolution finds the real
+# @types/react -- torn down in a `finally` block on every run, so this is a defense against a
+# crash mid-run leaving debris, not a correctness guard the test suite depends on.
+.contract-proof-scratch-*/
+
+# Not in the plan's file list -- added during implementation verification (Step 5's
+# INSIGHT_DEV_ROUTES gate was probed locally via a throwaway .env.local, since this sandbox's
+# Bash tool cannot pass ad hoc env vars or delete files it created). Standard Next.js convention;
+# harmless to keep.
+.env*.local

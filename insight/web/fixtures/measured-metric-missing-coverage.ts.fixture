@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
+// issue #304 [E17.S3], .sdlc/plans/304.md Decision (e) / Step 2.
+//
+// `.ts.fixture`, not `.ts`: kept outside tsconfig.json's `include` glob (so it never breaks the
+// real `npm run typecheck`) and outside the BUSL `.ts`/`.tsx` marker glob
+// (tests/test_licence_boundary.py::_owned_ts_files only matches `*.ts`/`*.tsx` basenames).
+//
+// scripts/prove-metric-contract-safety.mjs copies this into a scratch tsconfig'd directory
+// alongside a REAL metric.ts/schema.d.ts and compiles it: a `MeasuredMetric` object literal
+// supplying every field EXCEPT `coverage` must fail `tsc --noEmit`. `coverage: Coverage` is a
+// required, non-optional member of `MeasuredMetric` (insight/api/models.py:51) for every
+// reliability class, so "a class-2 metric without a coverage denominator cannot be rendered"
+// reduces to "cannot be constructed" -- this fixture is what makes that a checked fact rather
+// than an inference (Decision (e)).
+import type { components } from "./schema.d.ts";
+
+type MeasuredMetric = components["schemas"]["MeasuredMetric"];
+
+export const missingCoverage: MeasuredMetric = {
+  id: 7,
+  label: "Autonomy rate",
+  reliabilityClass: 2,
+  state: "measured",
+  value: 0.82,
+  // coverage intentionally omitted
+};
