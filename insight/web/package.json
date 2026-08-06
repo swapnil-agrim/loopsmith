@@ -6,9 +6,10 @@
     "pretypecheck": "node scripts/check-schema-fresh.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "node scripts/prove-metric-contract-safety.mjs && node scripts/prove-metric-view-behavior.mjs",
+    "test": "node scripts/prove-metric-contract-safety.mjs && node scripts/prove-metric-view-behavior.mjs && node scripts/prove-nav-items.mjs",
     "prove:fonts": "node scripts/prove-fonts-actually-apply.mjs",
     "prove:absence-states": "node scripts/prove-absence-primitives-render.mjs",
+    "prove:shell-responsive": "node scripts/prove-shell-responsive-frame.mjs",
     "build": "next build"
   },
   "dependencies": {
