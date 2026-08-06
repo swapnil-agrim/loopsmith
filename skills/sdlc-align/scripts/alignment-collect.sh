@@ -27,7 +27,22 @@ SCHEMA="alignment-collect/v1"
 # -- JSON helpers (no jq dependency) -------------------------------------------
 json_string() {
   local s="$1"
-  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\t'/\\t}"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  s="${s//$'\b'/\\b}"; s="${s//$'\f'/\\f}"
+  # C0 control-byte fallback (\u00XX): a static ANSI-C-quoted replace per byte, NOT a runtime loop —
+  # each $'\NNN' is resolved at bash PARSE time, so this never forks a subshell (F28 follow-up: the
+  # original fix built these via `$(printf ...)` per byte per call, up to 52 forks/call, ~700x slower
+  # on real collector runs; a fixed ~30-byte value now costs the same either way).
+  s="${s//$'\001'/\\u0001}"; s="${s//$'\002'/\\u0002}"; s="${s//$'\003'/\\u0003}"
+  s="${s//$'\004'/\\u0004}"; s="${s//$'\005'/\\u0005}"; s="${s//$'\006'/\\u0006}"
+  s="${s//$'\007'/\\u0007}"; s="${s//$'\013'/\\u000b}"; s="${s//$'\016'/\\u000e}"
+  s="${s//$'\017'/\\u000f}"; s="${s//$'\020'/\\u0010}"; s="${s//$'\021'/\\u0011}"
+  s="${s//$'\022'/\\u0012}"; s="${s//$'\023'/\\u0013}"; s="${s//$'\024'/\\u0014}"
+  s="${s//$'\025'/\\u0015}"; s="${s//$'\026'/\\u0016}"; s="${s//$'\027'/\\u0017}"
+  s="${s//$'\030'/\\u0018}"; s="${s//$'\031'/\\u0019}"; s="${s//$'\032'/\\u001a}"
+  s="${s//$'\033'/\\u001b}"; s="${s//$'\034'/\\u001c}"; s="${s//$'\035'/\\u001d}"
+  s="${s//$'\036'/\\u001e}"; s="${s//$'\037'/\\u001f}"
   printf '"%s"' "$s"
 }
 
@@ -224,7 +239,16 @@ scan_hardstops() {
   git -C "$PROJECT_DIR" show -p --no-color --format='' "$sha" \
       -- . "$PATHSPEC_EXCLUDE" 2>/dev/null \
     | awk -v sha="$sha" '
-      function jesc(s){ gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s); return s }
+      function jesc(s,  i,c,cr) {
+        gsub(/\\/,"\\\\",s); gsub(/"/,"\\\"",s)
+        cr = sprintf("%c",13); if (index(s,cr)) gsub(cr,"\\r",s)
+        for (i=1;i<=31;i++) {
+          if (i==13) continue
+          c = sprintf("%c",i)
+          if (index(s,c)) gsub(c,sprintf("\\u%04x",i),s)
+        }
+        return s
+      }
       # A real "--- "/"+++ " file header only appears OUTSIDE a hunk (before the first @@). Once inside
       # a hunk, a line rendered "+++ ..." is added CONTENT whose source began "++ " — treating it as a
       # header would capture the line (secret and all) into `file` and emit it. Track hunk state, so an
