@@ -71,6 +71,48 @@ both directions, not just that the marker was written. All 12 pre-existing `hand
 tests in `tests/test_handoff.py` pass unmodified (`FakeSource.create_dependency` gained the new
 `goal_label=` parameter, the one sanctioned test-double fix).
 
+### feat(loop): background-agent-death watcher + email/ledger notification (#465)
+If a background/subagent collapses mid-run during an unattended drain, nothing previously
+noticed — the goal it was working silently never progressed, wasting the rest of the run's budget
+watching a dead agent that would never finish. Generalizes the existing `session_start`/
+`session_active`/`session_end` marker mechanism (`loop.py`, `.sdlc/state/session.active`, built for
+the since-abandoned Routines feature but not dependent on it) from one whole-`.sdlc`-dir pid marker
+to one marker per `(goal, thread)`: `.sdlc/state/agents/<goal-stem>/<thread>.active`, same
+bare-pid-text format, same two-signal liveness check (`ledger.pid_alive()` + the existing lease
+TTL). New `loop.py agent-start <dir> <goal> --pid PID [--thread T]` / `agent-end <dir> <goal>` CLI
+verbs, emitted by `/sdlc-loop` at the exact points a goal (and, for slice parallelism, each
+dispatched slice) starts driving; cleanup is automatic and gate-free from `loop.py`'s own
+`_record()`, so a cleanly-finished goal never lingers in the candidate set regardless of how it
+ended (done/parked/failed). New `agent_watch.py` module wires one more step into `watch.sh`'s
+existing periodic tick — mirroring `watch.py`'s own thin shape — checking every goal with an open
+ledger claim for a registered marker whose pid has genuinely died. Notification is off by default
+(`agent_watch.enabled`) and, even when on, only ever runs because `watch.sh` itself already
+requires `ledger.enabled`. Email (`agent_watch.notify.email`, its own nested `enabled` flag) is
+stdlib `smtplib`/`email.message` only — zero new dependency — and deliberately never accepts a
+literal password from `config.json` (which is git-committed): `pass_env` names an environment
+variable instead (default `LOOPSMITH_SMTP_PASS`), so a credential can structurally never land in
+version control. A misconfigured or failing email send is loud on stderr and always falls back to a
+ledger note (reusing #385's existing `to`-addressed note+inbox mechanism) addressed to the goal's
+claimant — never silently drops a notification, and never sends both. Exactly-once via a
+signature-based cursor (`.sdlc/state/agent-watch-cursor.json`, `goal:thread:pid`), so the same dead
+pid on the same (goal, thread) is suppressed after the first notification until a fresh
+`agent-start` registers a new pid. New `tests/test_agent_watch.py` includes a real
+`SIGKILL`-on-a-real-subprocess test (spawn a genuine child, register its real pid, kill it for
+real, confirm detection within one tick and exactly one notification across two ticks) matching
+`tests/test_watch.py`'s own `N_RACERS` non-vacuous-concurrency precedent, plus DI-mocked SMTP tests
+proving the email/ledger-fallback contract and the env-var-only credential path — never a real mail
+server. A follow-up fix in the same PR closes an independent-review finding: `thread` (an
+LLM-authored slice id from `.sdlc/plans/<goal>.slices.json`, validated by `slices.py` with only
+`.strip()`) was spliced unvalidated into `_agent_marker_path`'s path join — a `--thread` value
+containing `../` sequences could write a marker file outside `.sdlc/state/agents/` entirely, since
+pathlib's own `/` join re-parses a string argument for separator characters. Fixed with a shared
+`_unsafe_thread_reason()` check (rejects `/`, `\`, `:`, `..`) enforced at both the CLI layer
+(`agent-start`, matching `--pid`'s existing exit-2 rigor) and the `_agent_marker_path` chokepoint
+itself, so every caller is protected regardless of whether it wraps the call in its own
+try/except. Proven non-vacuously: the regression test was written and run against the pre-fix code
+first, failed with the exact symptom (a real file created outside `.sdlc/`), then passed after the
+fix.
+
 ## 1.0.2 — the second-pass release
 
 ### fix(loop): `next_pending` no longer trusts a single empty/failed backlog read as "nothing pending" (#447)

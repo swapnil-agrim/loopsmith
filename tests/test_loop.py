@@ -794,6 +794,161 @@ def test_cli_session_end_clears_what_cli_start_wrote(capsys):
         assert capsys.readouterr().out.strip() == "FREE"
 
 
+# ------------------------------------------------------------------ agent marker: per (goal, thread) — #465
+# Generalizes the session-active marker above from one whole-.sdlc-dir pid to one pid per
+# (goal, thread), so a background/subagent's death is detectable goal-by-goal instead of only
+# session-wide. Same two-signal liveness check (pid_alive() + lease TTL) as session_active.
+
+AGENT_WATCH_ON = {"agent_watch": {"enabled": True}}
+
+
+def test_agent_start_writes_and_agent_alive_reads_a_live_pid():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        lp.agent_start(sdlc, "g.md", os.getpid(), AGENT_WATCH_ON)
+        assert lp.agent_alive(sdlc, "g.md", AGENT_WATCH_ON) == ("alive", os.getpid())
+
+
+def test_agent_alive_reports_dead_for_a_definitively_dead_pid():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        dead_pid = 2**30                                # not a real pid on any sane system
+        lp.agent_start(sdlc, "g.md", dead_pid, AGENT_WATCH_ON)
+        assert lp.agent_alive(sdlc, "g.md", AGENT_WATCH_ON) == ("dead", dead_pid)
+
+
+def test_agent_alive_reports_unknown_with_no_marker_at_all():
+    """"unknown" (nobody registered) must never collapse into "dead" -- a claim held by a
+    different actor, a different machine, or a pre-#465 session all leave no marker at all."""
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        assert lp.agent_alive(sdlc, "g.md", AGENT_WATCH_ON) == ("unknown", None)
+
+
+def test_agent_alive_expires_a_stale_marker_past_the_ttl_even_for_a_resolvable_pid():
+    """Mirrors test_session_active_expires_a_stale_marker_past_the_ttl_even_for_a_resolvable_pid."""
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        lp.agent_start(sdlc, "g.md", os.getpid(), AGENT_WATCH_ON)   # alive pid throughout
+        path = lp._agent_marker_path(sdlc, "g.md")
+        stale = time.time() - (lp.ledger.DEFAULT_LEASE_TTL_HOURS * 3600 + 60)
+        os.utime(path, (stale, stale))
+        assert lp.agent_alive(sdlc, "g.md", AGENT_WATCH_ON) == ("dead", os.getpid())
+
+
+def test_agent_start_is_a_noop_when_agent_watch_disabled():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        lp.agent_start(sdlc, "g.md", os.getpid(), {})              # no agent_watch block at all
+        assert lp.agent_alive(sdlc, "g.md", {}) == ("unknown", None)
+        lp.agent_start(sdlc, "g.md", os.getpid(), {"agent_watch": {"enabled": False}})
+        assert lp.agent_alive(sdlc, "g.md", {}) == ("unknown", None)
+
+
+def test_agent_start_is_a_safe_noop_on_an_unparseable_pid():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        lp.agent_start(sdlc, "g.md", "not-a-pid", AGENT_WATCH_ON)  # must not raise
+        assert lp.agent_alive(sdlc, "g.md", AGENT_WATCH_ON) == ("unknown", None)
+
+
+def test_agent_threads_lists_every_registered_thread_for_a_goal():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        assert lp.agent_threads(sdlc, "g.md") == []
+        lp.agent_start(sdlc, "g.md", os.getpid(), AGENT_WATCH_ON)
+        lp.agent_start(sdlc, "g.md", os.getpid(), AGENT_WATCH_ON, thread="slice-a1")
+        assert lp.agent_threads(sdlc, "g.md") == ["main", "slice-a1"]
+
+
+def test_agent_end_clears_every_thread_for_a_goal():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        lp.agent_start(sdlc, "g.md", os.getpid(), AGENT_WATCH_ON)
+        lp.agent_start(sdlc, "g.md", os.getpid(), AGENT_WATCH_ON, thread="slice-a1")
+        assert lp.agent_threads(sdlc, "g.md") == ["main", "slice-a1"]
+        lp.agent_end(sdlc, "g.md")
+        assert lp.agent_threads(sdlc, "g.md") == []
+
+
+def test_agent_end_is_a_safe_noop_when_nothing_was_ever_started():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        lp.agent_end(d + "/.sdlc", "g.md")              # must not raise
+
+
+def test_agent_end_clears_a_marker_even_when_agent_watch_was_since_disabled():
+    """Cleanup carries NO gate of its own (unlike agent_start) -- a marker written while the
+    feature was on must not linger forever just because config later turned it off."""
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        sdlc = d + "/.sdlc"
+        lp.agent_start(sdlc, "g.md", os.getpid(), AGENT_WATCH_ON)
+        assert lp.agent_threads(sdlc, "g.md") == ["main"]
+        lp.agent_end(sdlc, "g.md")                       # called with agent_watch off/absent, still clears
+        assert lp.agent_threads(sdlc, "g.md") == []
+
+
+def test_record_calls_agent_end_regardless_of_outcome():
+    """One regression test per terminal outcome, matching this file's own hardened-sibling-
+    divergence discipline: the background-agent-death watcher (#465) must not silently stop
+    firing on a future edit to _record()."""
+    lp = _loop()
+    for verb in ("done", "parked", "failed"):
+        with tempfile.TemporaryDirectory() as d:
+            base = _backlog(d, 1)
+            goal = base + "/goals/0001.md"
+            config = lp.state.load_config(base)
+            lp.agent_start(base, goal, os.getpid(), AGENT_WATCH_ON)
+            assert lp.agent_threads(base, goal) == ["main"]
+            source = lp.sources.get_source(base, config)
+            lp._record(base, source, goal, verb, "reason" if verb != "done" else "")
+            assert lp.agent_threads(base, goal) == []
+
+
+def test_cli_agent_start_requires_pid(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        lp = _loop()
+        rc = lp.main(["loop.py", "agent-start", base, base + "/goals/0001.md"])
+        assert rc == 2
+        assert "--pid is required" in capsys.readouterr().err
+
+
+def test_cli_agent_start_rejects_a_non_integer_pid(capsys):
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        lp = _loop()
+        rc = lp.main(["loop.py", "agent-start", base, base + "/goals/0001.md", "--pid", "nope"])
+        assert rc == 2
+        assert "not an integer" in capsys.readouterr().err
+
+
+def test_cli_agent_start_and_agent_end_round_trip():
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 1)
+        goal = base + "/goals/0001.md"
+        lp = _loop()
+        cfg_path = pathlib.Path(base) / "config.json"
+        cfg_path.write_text(json.dumps({"budget": {"max_iterations": 10},
+                                        "agent_watch": {"enabled": True}}))
+        assert lp.main(["loop.py", "agent-start", base, goal, "--pid", str(os.getpid())]) == 0
+        assert lp.agent_threads(base, goal) == ["main"]
+        assert lp.main(["loop.py", "agent-start", base, goal, "--pid", str(os.getpid()),
+                        "--thread", "slice-a1"]) == 0
+        assert lp.agent_threads(base, goal) == ["main", "slice-a1"]
+        assert lp.main(["loop.py", "agent-end", base, goal]) == 0
+        assert lp.agent_threads(base, goal) == []
+
+
 def test_cli_verbs_handle_a_never_init_d_sdlc_dir_gracefully(capsys):
     """#403: `next`/`next-batch`/`start`/`session-active` all call `state.load_config` before any
     of their own logic runs. Pointed at a `.sdlc` that was never `/sdlc-init`'d (no config.json at

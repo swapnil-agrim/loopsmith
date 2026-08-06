@@ -4,7 +4,9 @@
 # It runs against the ledger WORKTREE only (.sdlc/ledger, checked out to the ops branch), so
 # fetching every few minutes never touches your code checkout: no surprise rebase, no lost work.
 # Each tick: pull the ops branch -> classify what is addressed to you and not yet surfaced ->
-# write .sdlc/state/inbox.md -> publish anything of your own that is still local -> sleep.
+# write .sdlc/state/inbox.md -> check every claimed goal's registered agent marker for a
+# genuinely dead pid and notify (agent_watch.py, off by default — agent_watch.enabled) ->
+# publish anything of your own that is still local -> sleep.
 #
 # The loop reads that inbox between goals (loop.py next prints it on stderr), which is the honest
 # delivery mechanism: nothing can inject a message into a running session, so the hand-off waits at
@@ -161,6 +163,8 @@ while :; do
   python3 "$HERE/sync.py" pull "$SDLC_DIR" >> "$LOG" 2>&1 || true
   summary="$(python3 "$HERE/watch.py" "$SDLC_DIR" 2>>"$LOG" || echo '')"
   [ -n "$summary" ] && echo "watch: $summary" | tee -a "$LOG"
+  agent_summary="$(python3 "$HERE/agent_watch.py" "$SDLC_DIR" 2>>"$LOG" || echo '')"
+  [ -n "$agent_summary" ] && echo "watch: $agent_summary" | tee -a "$LOG"
   python3 "$HERE/sync.py" publish "$SDLC_DIR" >> "$LOG" 2>&1 || true
 
   sleep_for=$(( INTERVAL * SCALE ))

@@ -243,6 +243,7 @@ Everything optional ships OFF — `/sdlc-doctor` prints this dashboard live (`do
 | `.sdlc/pipeline.json` | absent | the bidirectional report card + `propose` (findings → groomable goals) |
 | `ledger: {"enabled": true}` | off | the committed team ledger — claims and outcomes recorded per author, plus cross-area hand-off |
 | `ledger.watch.interval_seconds` | 900 | how often `watch.sh` pulls the ledger ops branch and refreshes the inbox |
+| `agent_watch: {"enabled": true}` | off | background-agent-death watch — a claimed goal's registered pid confirmed dead notifies (email if `notify.email` is also configured, else always a ledger note); needs `ledger.enabled` too, since `watch.sh` is what runs the check |
 | `parallel: {"enabled": true}` | off | a goal's independent slices run concurrently in waves (`max_concurrent`, default 3) from `.sdlc/plans/<goal>.slices.json` |
 | `parallel: {"goals": {"enabled": true}}` | off | `next-batch` returns up to `max_concurrent` (default 3) BACKLOG GOALS at once for one person's own concurrent subagents, one worktree+PR each |
 | `backlog_check: {"enabled": true}` | off | pre-work cross-check: parks a picked goal that duplicates / is obsoleted-by / is blocked-by other backlog items, before any token spend |

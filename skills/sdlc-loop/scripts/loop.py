@@ -372,6 +372,74 @@ def session_active(sdlc_dir, config):
         return True                          # can't even stat it — fail toward "still active"
 
 
+def _agent_marker_path(sdlc_dir, goal, thread="main"):
+    return pathlib.Path(sdlc_dir) / "state" / "agents" / work.stem(goal) / f"{thread}.active"
+
+
+def agent_start(sdlc_dir, goal, agent_pid, config, thread="main"):
+    """Register `agent_pid` — the CALLER's own long-lived process id, the identical $PPID-capture
+    contract `--session-pid` already documents, NOT any individual `loop.py` invocation's own —
+    as the process driving (goal, thread) right now. Gate lives INSIDE the call (mirrors
+    ledger.append's "no per-call-site conditional needed" shape): a no-op unless
+    `agent_watch.enabled is True`. Fail-open: a marker this call cannot write must never stop the
+    run — agent_alive() just reports "unknown" instead of "alive" for this (goal, thread)."""
+    if (config.get("agent_watch") or {}).get("enabled") is not True:
+        return
+    try:
+        path = _agent_marker_path(sdlc_dir, goal, thread)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{int(agent_pid)}\n")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def agent_alive(sdlc_dir, goal, config, thread="main"):
+    """(state, pid) — state in "alive" | "dead" | "unknown"; pid is the recorded int if the
+    marker parsed, else None. "unknown" (no marker at all) is NOT "dead": nobody registered a
+    pid for this (goal, thread) on THIS machine — a claim held by a different actor, a different
+    machine (pid_alive() is single-machine-only), or a session that predates this feature. Only a
+    marker whose pid resolves DEFINITIVELY dead, or whose file is past the lease TTL despite a
+    resolvable pid (reuse risk, same reasoning session_active already applies), is "dead" — the
+    same fail-toward-inaction bias pid_alive()'s own docstring argues for."""
+    path = _agent_marker_path(sdlc_dir, goal, thread)
+    try:
+        pid = int(path.read_text().strip())
+    except (OSError, ValueError):
+        return "unknown", None
+    if not ledger.pid_alive(pid):
+        return "dead", pid
+    ttl = ledger.lease_ttl_seconds(config)
+    if ttl is not None:
+        try:
+            if (time.time() - path.stat().st_mtime) >= ttl:
+                return "dead", pid
+        except OSError:
+            pass
+    return "alive", pid
+
+
+def agent_threads(sdlc_dir, goal):
+    """Every thread name with a currently-registered marker for `goal` — ["main"] is the common
+    case; more than one entry means genuine intra-goal (slice) parallelism registered
+    independently-tracked pids (see SKILL.md wiring, item 6)."""
+    d = _agent_marker_path(sdlc_dir, goal).parent
+    return sorted(p.stem for p in d.glob("*.active")) if d.is_dir() else []
+
+
+def agent_end(sdlc_dir, goal):
+    """Clear every thread's marker for `goal` — called automatically from _record() (item 7), not
+    the agent, so a cleanly-finished goal never lingers in agent_watch's candidate set. No gate:
+    cleanup always attempts, even if agent_watch was later turned off — a stale marker directory
+    left over from when it was on is exactly what this prevents. Safe no-op if nothing to clear."""
+    try:
+        d = _agent_marker_path(sdlc_dir, goal).parent
+        if d.is_dir():
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+    except Exception:                # noqa: BLE001 - fail-open by design
+        pass
+
+
 def _surface_inbox(sdlc_dir):
     """Print anything a teammate needs from you BEFORE handing over the next goal.
 
@@ -486,6 +554,9 @@ def _record(sdlc_dir, source, goal, result, detail=""):
                            reason_class=_reason_class(detail), why=detail or None)
     # One call regardless of outcome — the local action-log counterpart of the ledger calls above.
     actionlog.safe_append(sdlc_dir, goal, "recorded", result=outcome, detail=(detail or None))
+    # A goal's terminal outcome, however it ended, always clears every thread's death-watch
+    # marker — a cleanly-finished goal must never linger in agent_watch's candidate set.
+    agent_end(sdlc_dir, goal)
 
 
 def precheck(sdlc_dir, goal, config, source, run=None, now=None):
@@ -792,6 +863,22 @@ def _dispatch(argv):
         config = state.load_config(argv[2])
         print("ACTIVE" if session_active(argv[2], config) else "FREE")
         return 0
+    if len(argv) >= 4 and argv[1] == "agent-start":           # background-agent-death watch marker
+        config = state.load_config(argv[2])
+        flags = _flags(argv[4:])
+        pid = flags.get("pid")
+        if pid is None or pid == "true":
+            print("loop.py agent-start: --pid is required", file=sys.stderr)
+            return 2
+        try:
+            pid = int(pid)
+        except ValueError:
+            print(f"loop.py agent-start: --pid {pid!r} is not an integer", file=sys.stderr)
+            return 2
+        agent_start(argv[2], argv[3], pid, config, thread=flags.get("thread") or "main")
+        return 0
+    if len(argv) >= 4 and argv[1] == "agent-end":             # manual escape hatch; _record() already calls this
+        agent_end(argv[2], argv[3]); return 0
     if len(argv) >= 3 and argv[1] == "next":
         config = state.load_config(argv[2])
         _ensure_watcher(argv[2], config)            # every loop trigger keeps the watcher (and the ledger) alive
@@ -930,6 +1017,7 @@ def _dispatch(argv):
         return verify_goal(argv[2], argv[3])
     print("usage: loop.py start <dir> [--session-pid PID] | next <dir> [--skip a,b] | "
           "next-batch <dir> [--skip a,b] | session-active <dir> | session-end <dir> | "
+          "agent-start <dir> <goal> --pid PID [--thread T] | agent-end <dir> <goal> | "
           "qc <dir> <goal> | note <dir> <goal> <text> | "
           "record <dir> <goal> done|parked|failed [reason] | "
           "spend <dir> <tokens> [goal] [--k v ...] | emit <dir> <goal> <kind> [--k v ...] | "
