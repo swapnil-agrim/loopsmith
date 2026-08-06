@@ -34,13 +34,15 @@ def test_tracking_issue_table_matches_expectations():
     assert _TRACKING_ISSUE == _EXPECTED_TRACKING_ISSUE
 
 
-def test_help_exits_zero_and_lists_all_three_subcommands(capsys):
+def test_help_exits_zero_and_lists_all_four_subcommands(capsys):
+    """Renamed from "...three subcommands" (issue #306 [E18.S1] added `users`, the fourth) so
+    the name itself doesn't go stale -- .sdlc/plans/306.md Task F step 20."""
     parser = build_parser()
     with pytest.raises(SystemExit) as exc:
         parser.parse_args(["--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    for name in ("ingest", "dash", "gaps"):
+    for name in ("ingest", "dash", "gaps", "users"):
         assert name in out
 
 
@@ -74,7 +76,9 @@ def test_unknown_subcommand_is_a_usage_error():
 
 
 def test_python_dash_m_insight_help_lists_subcommands_and_exits_zero():
-    """The literal done_when wording, run for real rather than only in-process."""
+    """The literal done_when wording, run for real rather than only in-process. Renamed away
+    from "...three subcommands" is not needed here (the function name never said "three"), but
+    the assertion set is extended with "users" (issue #306 [E18.S1]) to match."""
     result = subprocess.run(
         [sys.executable, "-m", "insight", "--help"],
         cwd=str(REPO_ROOT),
@@ -83,7 +87,7 @@ def test_python_dash_m_insight_help_lists_subcommands_and_exits_zero():
         timeout=30,
     )
     assert result.returncode == 0, result.stderr
-    for name in ("ingest", "dash", "gaps"):
+    for name in ("ingest", "dash", "gaps", "users"):
         assert name in result.stdout
 
 
@@ -193,7 +197,25 @@ def test_main_module_does_not_import_duckdb_at_top_level():
               "insight.ingest.analytics_reader",
               "insight.ingest.repo_scan", "insight.ingest.ledger_writer",
               "insight.gaps.report", "insight.gaps.compare",
-              "insight.dash.render", "insight.dash.serve", "insight"}
+              "insight.dash.render", "insight.dash.serve", "insight",
+              # issue #306 [E18.S1]: keeps --help (and ingest/gaps/dash) usable without
+              # argon2-cffi installed, the same contract this guard already enforces for
+              # duckdb -- see .sdlc/plans/306.md Task F step 19.
+              #
+              # PR #461 review, SHOULD-FIX 3: the real code (insight/__main__.py's `users add`
+              # branch) writes `from insight.accounts import hashing, store` -- ONE ImportFrom
+              # node with module == "insight.accounts" (the PACKAGE, not either submodule) and
+              # names == ["hashing", "store"]. That AST shape matches neither
+              # "insight.accounts.store"/"insight.accounts.hashing" (both leaf-submodule strings,
+              # which would only match `from insight.accounts.store import add_user`-style
+              # imports, a shape this code does not use) nor the bare "insight" entry above (exact
+              # string equality only -- "insight.accounts" != "insight"). "insight.accounts" is
+              # the entry that actually catches the real import statement; the two leaf-submodule
+              # strings are kept alongside it as a defensive floor in case a future refactor
+              # imports either submodule directly instead of via the package. Verified by actually
+              # hoisting this import to module level and watching this test go RED before adding
+              # "insight.accounts" here (see the review notes) -- not merely reasoned about.
+              "argon2", "insight.accounts", "insight.accounts.store", "insight.accounts.hashing"}
     top_level_targets = set()
     for node in tree.body:
         if isinstance(node, ast.Import):

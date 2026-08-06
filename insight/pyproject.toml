@@ -34,6 +34,15 @@ dependencies = [
     # (issue #300 [E16.S2]) -- declared explicitly rather than resting on fastapi's own
     # transitive pin, which it could loosen later without this repo noticing.
     "pydantic~=2.11",
+    # TWO-component pin, not three (issue #306 [E18.S1], .sdlc/plans/306.md Decision 2) --
+    # deliberately NOT the same shape as fastapi's three-component pin above. argon2-cffi is not
+    # semver: its own changelog states the versioning is calendar-based (the first number is the
+    # release year), and year-to-year bumps have historically dropped old-Python support rather
+    # than broken PasswordHasher's API. ~=25.1 -> >=25.1,<26.0 caps the dependency to the 2025
+    # release train and forces a deliberate, once-a-year review before adopting a new calendar
+    # year's release, rather than silently floating onto whatever Python-version support that
+    # release drops.
+    "argon2-cffi~=25.1",
 ]
 
 [project.scripts]
@@ -45,7 +54,7 @@ insight = "insight.__main__:main"
 # "insight" package (and everything under it) to ".", i.e. this directory, so
 # insight/ingest/ resolves as insight.ingest instead of a stray top-level "ingest".
 packages = ["insight", "insight.ingest", "insight.metrics", "insight.gaps", "insight.dash",
-            "insight.contract", "insight.api"]
+            "insight.contract", "insight.api", "insight.accounts"]
 package-dir = { "insight" = "." }
 
 [tool.setuptools.dynamic]

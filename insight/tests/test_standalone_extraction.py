@@ -145,6 +145,15 @@ ALLOWED_SKIP_REASONS = (
     # actually exercised the skip path -- pydantic is declared in pyproject.toml and present on
     # this dev machine and in CI, so this file actually runs rather than skips here.
     "could not import 'pydantic'",
+    # issue #306 [E18.S1]: insight/accounts/'s first argon2-cffi-touching test files
+    # (test_accounts_hashing.py, test_accounts_store.py, test_accounts_symmetry.py,
+    # test_accounts_no_leak.py, and the gated tests in test_cli_users.py) guard with
+    # pytest.importorskip("argon2") -- argon2-cffi is declared in pyproject.toml but NOT
+    # installed on this dev machine, so this child copy actually exercises this skip here (see
+    # .sdlc/plans/306.md Decision 2, point 3). The KDF-unavailable seam test
+    # (test_accounts_hashing_kdf_unavailable.py) and the CLI's ungated tests are deliberately NOT
+    # gated on this string -- they must PASS, not skip, on this exact machine.
+    "could not import 'argon2'",
 )
 
 #: The exact node id the child must report PASSED for `test_child_planted_self_check_ran_and_passed`
