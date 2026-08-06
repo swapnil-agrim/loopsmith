@@ -249,6 +249,21 @@ def test_render_neutralizes_a_newline_in_to_so_it_cannot_inject_a_markdown_line(
     assert "rae ## INJECTED HEADER" in out                 # flattened into the one cell instead
 
 
+def test_render_neutralizes_a_bare_carriage_return_in_to_so_it_cannot_inject_a_markdown_line():
+    """#454: independent review of PR #449 (watch_classify.py's sibling `_cell()`, #427) found
+    that ledger.py's ORIGINAL `_cell()` -- the one #449's copy was duplicated from -- only ever
+    replaced a literal `\\n`, so a bare `\\r` sails through untouched and reopens the identical
+    F19/#346 injected-heading symptom via a one-character delimiter swap in the payload:
+    CommonMark -- and Python's own `str.splitlines()`, used here to reveal it, matching
+    test_watch.py's own #427 `\\r` regression test -- treats a bare CR as a line terminator
+    identical to LF. Same repro as the `\\n` test above with the delimiter swapped for `\\r`;
+    must be neutralized exactly the same way."""
+    out = ledger.render([{"ts": "t", "actor": "amy", "kind": "handoff", "goal": "g",
+                          "to": "rae\r## INJECTED HEADER", "why": "w"}])
+    assert not any(line.startswith("## INJECTED") for line in out.splitlines())  # no line of its own
+    assert "rae ## INJECTED HEADER" in out                 # flattened into the one cell instead
+
+
 def test_render_escapes_a_pipe_in_actor_and_kind_in_the_activity_table():
     """Same F19 gap in the second table -- `actor`/`kind` reached the row unescaped."""
     out = ledger.render([{"ts": "t", "actor": "amy | INJECT", "kind": "note | X", "goal": "g",
