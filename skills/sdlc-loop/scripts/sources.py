@@ -165,6 +165,25 @@ class GitHubSource:
                 pass
         self._labels_ready = True
 
+    # F447: `_next()` trusts a `next_pending` result of "nothing pending" as FINAL — one bad read
+    # here ends the whole run (`("DONE", None)`, zero claims). But the `issue list` call below
+    # resolves through GitHub's asynchronously-indexed GraphQL search backend regardless of whether
+    # `--search` is passed — confirmed with `GH_DEBUG=api`: even the PLAIN, non-`--search` call
+    # (as run by hand to "verify" a missed goal) routes through the identical `search(type:
+    # ISSUE_ADVANCED, ...)` GraphQL field, not a direct/consistent repo read — so it is only
+    # EVENTUALLY consistent. Measured empirically (isolated scratch repo, zero other load): a
+    # freshly created-and-labelled issue routinely took 1-5s to become visible to this exact
+    # query. A transient `gh`/API error collapses into the identical "nothing pending" signal in
+    # the branch below. Both look, from `_next()`'s side, exactly like a drained backlog — #447's
+    # repro was a same-second-old goal invisible to three FRESH `next-batch` invocations in a row,
+    # each a bare DONE with zero claims, while a manual re-run of this exact query moments later
+    # (after the index had more time to catch up) found it fine. Retrying a short, bounded number
+    # of times before trusting an empty/failed read costs nothing on the (overwhelmingly common)
+    # genuinely-drained path — it only ever spends the extra time on the one read it exists to
+    # double-check.
+    _BACKLOG_READ_RETRIES = 3       # total attempts before trusting "nothing pending"
+    _BACKLOG_READ_RETRY_BASE = 1.0  # backoff seconds: base * 2**attempt (override to 0 in tests)
+
     def next_pending(self, skip=()):
         # F12: plain `gh issue list` defaults to created-DESC (newest first) with no way to ask it for
         # ASC — so a bare `--limit 200` on a backlog > 200 fetched the 200 NEWEST, and sorting THOSE
@@ -180,23 +199,44 @@ class GitHubSource:
         if self.assignee:
             args += ["--assignee", self.assignee]     # scope the queue to one owner so parallel loops
                                                        # on a shared board don't pick the same issue
-        try:
-            out = self._run(args)
-        except Exception as exc:
-            # F4: this is called first, every iteration — an unguarded raise here crashed run_loop's
-            # while-loop before a single goal could even be picked. A read we can't trust must not be
-            # silently mistaken for "nothing left" either, so this is loud (stderr) even though it
-            # degrades the same way an exhausted backlog would (the safest false: under-report, don't
-            # mis-report or crash).
-            print(f"sources.py: could not read the backlog ({exc}) — stopping", file=sys.stderr)
-            return None
-        issues = json.loads(out or "[]")
         skip = {str(s) for s in skip}                 # goals a claim lease says belong to someone else
-        pending = [i for i in issues
-                   if self.parked_label not in {l.get("name") for l in (i.get("labels") or [])}
-                   and str(i["number"]) not in skip]
-        pending.sort(key=lambda i: i["number"])     # oldest-first, mirrors local filename order
-        return str(pending[0]["number"]) if pending else None
+        for attempt in range(self._BACKLOG_READ_RETRIES):
+            last_attempt = attempt == self._BACKLOG_READ_RETRIES - 1
+            try:
+                out = self._run(args)
+            except Exception as exc:
+                # F4/F447: this is called first, every iteration — an unguarded raise here crashed
+                # run_loop's while-loop before a single goal could even be picked. A read we can't
+                # trust must not be silently mistaken for "nothing left" either, so this is loud
+                # (stderr) either way — but a TRANSIENT error (network blip, rate limit — the same
+                # vocabulary `_is_transient` already uses for the `project` retry below) gets a
+                # few chances to clear before this pick gives up on the whole backlog. A
+                # non-transient error (bad repo, no auth) still fails on the first try, same as
+                # before this retry existed.
+                if last_attempt or not self._is_transient(exc):
+                    print(f"sources.py: could not read the backlog ({exc}) — stopping", file=sys.stderr)
+                    return None
+                print(f"sources.py: could not read the backlog ({exc}) — retrying (attempt "
+                      f"{attempt + 1}/{self._BACKLOG_READ_RETRIES})", file=sys.stderr)
+                time.sleep(self._BACKLOG_READ_RETRY_BASE * (2 ** attempt))
+                continue
+            issues = json.loads(out or "[]")
+            pending = [i for i in issues
+                       if self.parked_label not in {l.get("name") for l in (i.get("labels") or [])}
+                       and str(i["number"]) not in skip]
+            if pending:
+                pending.sort(key=lambda i: i["number"])     # oldest-first, mirrors local filename order
+                return str(pending[0]["number"])
+            if last_attempt:
+                return None
+            # Loud even on the happy path's empty case — an operator watching stderr sees WHY a
+            # pick took a few extra seconds instead of silently wondering later why a goal that
+            # "should" have been there wasn't, the exact blind spot #447 fell into.
+            print(f"sources.py: backlog query came back empty on attempt {attempt + 1}/"
+                  f"{self._BACKLOG_READ_RETRIES} — retrying before trusting it (GitHub's search "
+                  "index is only eventually consistent)", file=sys.stderr)
+            time.sleep(self._BACKLOG_READ_RETRY_BASE * (2 ** attempt))
+        return None   # unreachable — the loop above always returns by its last attempt
 
     def mark_in_progress(self, goal):
         self._ensure_labels()
