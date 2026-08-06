@@ -159,6 +159,11 @@ def _resume_blocked_by_a_live_sibling(sdlc_dir, config, goal):
     for when `start()` is reached directly (an explicit target, bypassing `next`) or a stale local
     record outlives the claim that created it.
 
+    Called from BOTH of start()'s resume paths — the `already started` fast-path AND the narrower
+    `branch outlived its record` fallback (local state record lost/missing while the branch and
+    worktree survive on disk) — the second path proves nothing more about liveness than the first,
+    it only notices the worktree exists a different way (#388).
+
     Fail-open on anything unreadable (ledger off, unparseable state, etc.) — this guard NARROWS an
     already-idempotent resume, it must never become a new way for `start()` to break when the
     ledger itself is fine but reading it hiccups."""
@@ -183,9 +188,11 @@ def _resume_blocked_by_a_live_sibling(sdlc_dir, config, goal):
 def start(sdlc_dir, config, goal, run=None):
     """Cut a fresh worktree + branch from the tip of the integration branch. Idempotent, and
     resumable: the record lives in gitignored state, so a supervisor relaunch re-attaches instead of
-    starting a second worktree for the same goal — but ONLY once `_resume_blocked_by_a_live_sibling`
-    confirms that goal's ledger claim (if the ledger is on) is genuinely safe to treat as mine to
-    resume, not another still-live process of my own actor's in-flight work (F10.5/#374)."""
+    starting a second worktree for the same goal — whether the record is still there (`already
+    started`) or was lost while the branch/worktree survived (`branch outlived its record`, below)
+    — but ONLY once `_resume_blocked_by_a_live_sibling` confirms that goal's ledger claim (if the
+    ledger is on) is genuinely safe to treat as mine to resume, not another still-live process of my
+    own actor's in-flight work (F10.5/#374; the fallback path closed by #388)."""
     run = run or _run
     s, base_root = settings(config), project_root(sdlc_dir)
     rec = _record(sdlc_dir, goal)
@@ -204,6 +211,12 @@ def start(sdlc_dir, config, goal, run=None):
     try:
         run(base_root, ["git", "worktree", "add", "-b", branch, str(path), f"{s['remote']}/{base}"])
     except Exception:                       # noqa: BLE001 - the branch outliving its record is a resume, not an error
+        # Same "mine to resume?" question as the `already started` path above, just noticed a
+        # different way (record missing, branch/worktree already on disk) — must not skip the
+        # liveness gate just because it got here via a failed `-b` instead of a found record (#388).
+        blocker = _resume_blocked_by_a_live_sibling(sdlc_dir, config, goal)
+        if blocker:
+            return blocker
         run(base_root, ["git", "worktree", "add", str(path), branch])
     _save(sdlc_dir, goal, {"worktree": str(path), "branch": branch, "base": base,
                            "remote": s["remote"], "pr": ""})
