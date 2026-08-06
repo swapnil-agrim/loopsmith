@@ -18,12 +18,30 @@ here -- mirrors tests/test_ci_workflow.py's own reasoning and job-block-extracti
 text/regex, not a YAML parser, to avoid adding a PyYAML dependency for one test).
 
 Does not pass by skipping when ci.yml is missing -- reading a nonexistent file raises, which fails
-the test rather than silently passing it."""
+the test rather than silently passing it.
+
+ANCHORING, issue #303 [E17.S2] review fix 2 (BLOCKING 2): a plain `"npm run prove:fonts" in block`
+substring check also matches inside the step's OWN `name:` parenthetical (`- name: prove fonts
+actually apply (npm run prove:fonts)`) -- so a mutation that deletes the step's `run:` and
+`working-directory:` lines, leaving only that bare name header (a step that invokes NOTHING),
+still satisfied the old assertion. Verified by actually performing that mutation and re-running
+this file: it stayed green. Both assertions below are now anchored to an actual `run:` line via
+regex, never a bare substring search, so a gutted step (name kept, invocation removed) trips them."""
 import pathlib
 import re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CI_YML = ROOT / ".github" / "workflows" / "ci.yml"
+
+#: A `run:` line invoking `npm run prove:fonts` -- NOT a bare substring match, so this cannot be
+#: satisfied by the step's own `name:` parenthetical (`(npm run prove:fonts)`) once the `run:`
+#: line itself has been deleted.
+_PROVE_FONTS_RUN_RE = re.compile(r"^[ \t]*run:[ \t]*npm run prove:fonts[ \t]*$", re.M)
+#: Same anchoring for the verify_web.py step, for the ordering check below -- kept regex-anchored
+#: for symmetry even though its plain-substring form was not ambiguous against any `name:` line
+#: in the current file (belt-and-suspenders against a future `name:` that does happen to embed
+#: the same words).
+_VERIFY_WEB_RUN_RE = re.compile(r"^[ \t]*run:[ \t]*python3 insight/verify_web\.py[ \t]*$", re.M)
 
 
 def _web_job_block():
@@ -38,13 +56,15 @@ def _web_job_block():
 
 def test_ci_web_job_runs_npm_run_prove_fonts():
     block = _web_job_block()
-    assert "npm run prove:fonts" in block, (
-        "the `web` job in .github/workflows/ci.yml no longer runs `npm run prove:fonts` -- the "
-        "browser-dependent font-applied proof (insight/web/scripts/prove-fonts-actually-apply.mjs) "
-        "is deliberately NOT part of `npm run test` / verify_web.py's CHECKS (see verify_web.py's "
-        "module docstring), so if this step goes missing the proof runs NOWHERE, ever, again -- "
-        "add a step running `npm run prove:fonts` (working-directory: insight/web) to the `web` "
-        "job, after the `python3 insight/verify_web.py` step"
+    assert _PROVE_FONTS_RUN_RE.search(block), (
+        "the `web` job in .github/workflows/ci.yml no longer has a `run: npm run prove:fonts` "
+        "line -- the browser-dependent font-applied proof (insight/web/scripts/"
+        "prove-fonts-actually-apply.mjs) is deliberately NOT part of `npm run test` / "
+        "verify_web.py's CHECKS (see verify_web.py's module docstring), so if this step's actual "
+        "invocation goes missing (even if a `- name: ... (npm run prove:fonts)` header survives) "
+        "the proof runs NOWHERE, ever, again -- add a step running `npm run prove:fonts` "
+        "(working-directory: insight/web) to the `web` job, after the "
+        "`python3 insight/verify_web.py` step"
     )
 
 
@@ -54,11 +74,11 @@ def test_ci_web_job_prove_fonts_step_runs_after_verify_web_py():
     step placed BEFORE the verify_web.py step would fail on a fresh checkout with no
     node_modules/ installed yet."""
     block = _web_job_block()
-    verify_idx = block.find("python3 insight/verify_web.py")
-    prove_idx = block.find("npm run prove:fonts")
-    assert verify_idx != -1, "could not find the `python3 insight/verify_web.py` step"
-    assert prove_idx != -1, "could not find the `npm run prove:fonts` step"
-    assert verify_idx < prove_idx, (
+    verify_match = _VERIFY_WEB_RUN_RE.search(block)
+    prove_match = _PROVE_FONTS_RUN_RE.search(block)
+    assert verify_match, "could not find a `run: python3 insight/verify_web.py` line"
+    assert prove_match, "could not find a `run: npm run prove:fonts` line"
+    assert verify_match.start() < prove_match.start(), (
         "the `npm run prove:fonts` step in .github/workflows/ci.yml's `web` job runs BEFORE "
         "`python3 insight/verify_web.py` -- it needs insight/web/node_modules/, which only exists "
         "once verify_web.py's own `npm ci` has run; move it to after that step"
