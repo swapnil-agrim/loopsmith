@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
+// issue #304 [E17.S3], .sdlc/plans/304.md Decision (b) / Step 4.
+//
+// `.tsx.fixture`, not `.tsx` -- see unnarrowed-value-access-component.tsx.fixture's header for
+// why the suffix matters.
+//
+// The positive control for the new JSX-capable scratch path (mirrors the top-level `control()`
+// scenario's role for the original three scenarios): a component that DOES narrow `state` to
+// `"measured"` before reading `.value` must compile clean. Proves the new
+// mkScratchInWeb()/`jsx: "react-jsx"` machinery is not simply broken/always-red -- without this,
+// "the unnarrowed fixture fails" would be indistinguishable from "the scratch dir can't resolve
+// react types at all and everything fails".
+import type { Metric } from "./metric.ts";
+
+export function NarrowedValueComponent({ metric }: { metric: Metric }) {
+  if (metric.state !== "measured") {
+    return <div>no value</div>;
+  }
+  return <div>{metric.value}</div>;
+}

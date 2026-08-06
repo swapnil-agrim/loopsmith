@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
+// issue #304 [E17.S3], .sdlc/plans/304.md Decision (b) / Step 4.
+//
+// `.tsx.fixture`, not `.tsx`: kept outside tsconfig.json's `include` glob (so it never breaks
+// the real `npm run typecheck`) and outside the BUSL `.ts`/`.tsx` marker glob
+// (tests/test_licence_boundary.py::_owned_ts_files only matches `*.ts`/`*.tsx` basenames).
+//
+// scripts/prove-metric-contract-safety.mjs copies this into a scratch tsconfig'd directory
+// NESTED UNDER insight/web/ itself (mkScratchInWeb(), not mkScratch()/os.tmpdir()) alongside a
+// REAL metric.ts/schema.d.ts and compiles it: this is done-when 2's literal wording -- "A
+// component reaching metric.value" (not a plain function -- unnarrowed-value-access.ts.fixture
+// already covers that) "fails tsc", proven by a compile-failure fixture. No `state` narrowing
+// at all before reading `props.metric.value` must fail `tsc --noEmit` with TS2339, the same
+// diagnostic as the plain-function case (two of the union's three members carry no `value`
+// field at all -- the compiler does not care whether a function or a component asks).
+import type { Metric } from "./metric.ts";
+
+export function UnnarrowedValueComponent({ metric }: { metric: Metric }) {
+  return <div>{metric.value}</div>;
+}

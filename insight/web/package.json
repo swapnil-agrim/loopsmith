@@ -6,8 +6,9 @@
     "pretypecheck": "node scripts/check-schema-fresh.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "node scripts/prove-metric-contract-safety.mjs",
+    "test": "node scripts/prove-metric-contract-safety.mjs && node scripts/prove-metric-view-behavior.mjs",
     "prove:fonts": "node scripts/prove-fonts-actually-apply.mjs",
+    "prove:absence-states": "node scripts/prove-absence-primitives-render.mjs",
     "build": "next build"
   },
   "dependencies": {
