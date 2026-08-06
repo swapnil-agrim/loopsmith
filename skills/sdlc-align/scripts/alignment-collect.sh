@@ -406,7 +406,7 @@ fi
 HOTSPOTS_JSON="$(
   if [ "${#HOTSPOT_FILES[@]}" -gt 0 ]; then
     printf '%s\n' "${HOTSPOT_FILES[@]}" | LC_ALL=C sort | uniq -c | sort -rn \
-      | awk '{ c=$1; $1=""; sub(/^ /,""); path=$0;
+      | awk '{ match($0,/^ *[0-9]+ /); c=substr($0,1,RLENGTH)+0; path=substr($0,RLENGTH+1);
                gsub(/\\/,"\\\\",path); gsub(/"/,"\\\"",path);
                printf "%s{\"file\":\"%s\",\"changes\":%d}", (NR>1?",":""), path, c }'
   fi

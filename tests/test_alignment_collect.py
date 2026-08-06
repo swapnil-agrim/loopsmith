@@ -54,6 +54,18 @@ def test_gathers_window_facts_and_classifies_paths(tmp_path):
     assert d["d4"]["net_lines_added_window"] > 0
 
 
+def test_churn_hotspots_preserve_internal_whitespace_in_path(tmp_path):
+    # F27: the churn_hotspots awk step used `$1=""` to strip the `uniq -c` count, which rebuilds
+    # the record with a single-space OFS and collapses consecutive internal spaces/tabs in the
+    # path. Pin that a path with a double space survives verbatim (not collapsed to one space).
+    repo = _repo(tmp_path)
+    path = "a  b.py"   # two consecutive spaces
+    _commit(repo, path, "x = 1\n", "add path with double space")
+    out = _run(repo)
+    files = [h["file"] for h in out["dimensions"]["d3"]["churn_hotspots"]]
+    assert path in files, f"expected verbatim {path!r} in churn_hotspots, got {files!r}"
+
+
 def test_secret_in_a_committed_diff_is_location_only(tmp_path):
     repo = _repo(tmp_path)
     _commit(repo, "cfg.py", 'password = "hunter2SUPERSECRET"\napi_key = "AKIA00001111EXAMPLE"\n', "add cfg")

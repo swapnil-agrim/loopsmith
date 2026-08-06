@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### fix(collectors): `churn_hotspots` no longer collapses internal whitespace in a path (F27/#353)
+`alignment-collect.sh`'s `HOTSPOTS_JSON` step stripped the `uniq -c` count via awk's `$1=""`, which
+rebuilds `$0` using a single-space `OFS` — so a path with consecutive spaces or tabs (e.g. `"a  b.py"`)
+collapsed to a single space (`"a b.py"`) in the emitted `churn_hotspots[].file`, and two distinct such
+paths could collapse to the same key. The sibling `json_file_array`/`OUTSIDE_JSON` steps use `p=$0`
+(the whole record) and were never affected. The awk step now locates the `uniq -c` count prefix
+directly (`match($0,/^ *[0-9]+ /)`) and takes everything after it as the path verbatim
+(`substr($0,RLENGTH+1)`), parsing the count from the matched prefix instead of `$1`. A new test commits
+a path with a double space and confirms it survives verbatim in `churn_hotspots`, proven to fail
+against the pre-fix awk with the exact collapsed-path symptom before passing with the fix.
+
 ### fix(model): bare "story" no longer mis-tiers agile goals to the fable (creative) tier (F16/#350)
 `predict.py`'s fable pattern included a bare `story` alternative alongside `storytell`, so any goal
 merely containing the word — "Story: add pagination", "Implement the user story for checkout", "Add a
