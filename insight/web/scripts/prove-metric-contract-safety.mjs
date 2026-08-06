@@ -20,17 +20,13 @@
 //
 // Network-free: all three scenarios use only the already-`npm ci`'d local `openapi-typescript`/
 // `tsc` binaries and the committed openapi.json -- 3 `tsc` subprocess calls total, sub-second.
-import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, copyFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync, readFileSync, copyFileSync } from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
 
 import { generate } from "./generate-schema.mjs";
+import { WEB, runTsc, runScenario, runScenarioInWeb } from "./lib/tsc-scratch.mjs";
 
-const WEB = path.resolve(fileURLToPath(import.meta.url), "..", "..");
-const TSC_BIN = path.join(WEB, "node_modules", ".bin", "tsc");
 const SRC_API = path.join(WEB, "src", "lib", "api");
 const OPENAPI_JSON = path.join(WEB, "openapi.json");
 const FIXTURES = path.join(WEB, "fixtures");
@@ -63,59 +59,22 @@ function scratchTsconfig() {
   };
 }
 
-/** Runs `tsc -p dir`, returning { ok, output } -- never throws on a nonzero exit. */
-function runTsc(dir) {
-  try {
-    const output = execFileSync(TSC_BIN, ["-p", dir], { encoding: "utf-8" });
-    return { ok: true, output };
-  } catch (err) {
-    // tsc writes diagnostics to stdout and exits nonzero; execFileSync throws with both
-    // captured on the error object.
-    return { ok: false, output: (err.stdout || "") + (err.stderr || "") };
-  }
-}
-
-function mkScratch() {
-  return mkdtempSync(path.join(tmpdir(), "insight-web-contract-proof-"));
-}
-
-// issue #304 [E17.S3], .sdlc/plans/304.md Decision (b). Rooted under insight/web/ itself
-// (gitignored -- insight/web/.gitignore), NOT os.tmpdir(): a .tsx fixture importing @types/react
-// needs TypeScript's ordinary upward node_modules walk to find the real
-// insight/web/node_modules/@types/react -- exactly the same resolution path the real
-// src/**/*.tsx files already use under the real tsconfig.json. mkScratch()/os.tmpdir() above is
-// UNCHANGED and still used by the three original scenarios -- zero risk to code that already
-// works; only the two new JSX scenarios use this one.
-function mkScratchInWeb() {
-  return mkdtempSync(path.join(WEB, ".contract-proof-scratch-"));
-}
+// runTsc/runScenario/runScenarioInWeb now live in ./lib/tsc-scratch.mjs -- issue #304 [E17.S3],
+// factored out so prove-metric-view-behavior.mjs can reuse the same "compile a scratch dir with
+// the local tsc" machinery instead of Node's unflagged TypeScript type-stripping. Behaviour is
+// unchanged: runScenario()/runScenarioInWeb() below still tear down their dir in a `finally`,
+// and mkScratchInWeb()'s dirs are still rooted under insight/web/ (gitignored -- see
+// insight/web/.gitignore's `.contract-proof-scratch-*/` entry) for the same @types/react
+// upward-node_modules-walk reason the comment above used to explain here.
 
 function writeTsconfig(dir) {
   writeFileSync(path.join(dir, "tsconfig.json"), JSON.stringify(scratchTsconfig(), null, 2));
 }
 
-function runScenario(fn) {
-  const dir = mkScratch();
-  try {
-    return fn(dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-function runScenarioInWeb(fn) {
-  const dir = mkScratchInWeb();
-  try {
-    return fn(dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 // --------------------------------------------------------------------------------- control
 
 function control() {
-  return runScenario((dir) => {
+  return runScenario("insight-web-contract-proof-", (dir) => {
     writeTsconfig(dir);
     copyFileSync(path.join(SRC_API, "schema.d.ts"), path.join(dir, "schema.d.ts"));
     copyFileSync(path.join(SRC_API, "metric.ts"), path.join(dir, "metric.ts"));
@@ -129,7 +88,7 @@ function control() {
 // --------------------------------------------------------------------------------- criterion 3
 
 function criterionThreeUnnarrowedValueFails() {
-  return runScenario((dir) => {
+  return runScenario("insight-web-contract-proof-", (dir) => {
     writeTsconfig(dir);
     copyFileSync(path.join(SRC_API, "schema.d.ts"), path.join(dir, "schema.d.ts"));
     copyFileSync(path.join(SRC_API, "metric.ts"), path.join(dir, "metric.ts"));
@@ -164,7 +123,7 @@ function renameLabelToTitleInSchema(openapiDoc) {
 }
 
 function criterionTwoRenameBreaksMetricLabel() {
-  return runScenario((dir) => {
+  return runScenario("insight-web-contract-proof-", (dir) => {
     writeTsconfig(dir);
 
     const mutated = renameLabelToTitleInSchema(JSON.parse(readFileSync(OPENAPI_JSON, "utf-8")));
@@ -197,7 +156,7 @@ function criterionTwoRenameBreaksMetricLabel() {
  * literal missing `coverage` (a required, non-optional member for every reliability class) must
  * fail `tsc`: "cannot be rendered" reduces to "cannot be constructed". */
 function measuredMetricMissingCoverageFails() {
-  return runScenario((dir) => {
+  return runScenario("insight-web-contract-proof-", (dir) => {
     writeTsconfig(dir);
     copyFileSync(path.join(SRC_API, "schema.d.ts"), path.join(dir, "schema.d.ts"));
     copyFileSync(path.join(SRC_API, "metric.ts"), path.join(dir, "metric.ts"));
@@ -222,7 +181,7 @@ function measuredMetricMissingCoverageFails() {
  * "fails tsc" without `state` narrowing. Uses the new JSX-capable scratch path
  * (mkScratchInWeb()/scratchTsconfig()'s `jsx`/`*.tsx` additions, Decision (b)). */
 function componentUnnarrowedValueAccessFails() {
-  return runScenarioInWeb((dir) => {
+  return runScenarioInWeb(".contract-proof-scratch-", (dir) => {
     writeTsconfig(dir);
     copyFileSync(path.join(SRC_API, "schema.d.ts"), path.join(dir, "schema.d.ts"));
     copyFileSync(path.join(SRC_API, "metric.ts"), path.join(dir, "metric.ts"));
@@ -246,7 +205,7 @@ function componentUnnarrowedValueAccessFails() {
  * Without this, "the unnarrowed fixture fails" would be indistinguishable from "the scratch dir
  * can't resolve react types at all and everything fails" -- see .sdlc/plans/304.md Step 4. */
 function componentNarrowedValueAccessCompiles() {
-  return runScenarioInWeb((dir) => {
+  return runScenarioInWeb(".contract-proof-scratch-", (dir) => {
     writeTsconfig(dir);
     copyFileSync(path.join(SRC_API, "schema.d.ts"), path.join(dir, "schema.d.ts"));
     copyFileSync(path.join(SRC_API, "metric.ts"), path.join(dir, "metric.ts"));
