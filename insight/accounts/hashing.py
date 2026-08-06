@@ -196,7 +196,19 @@ def _require_matching_cost_params(encoded_hash, params):
     (test_accounts_hashing.py's `test_verify_uses_librarys_constant_time_compare_not_bare_equality`)
     for exactly this operator, as a blunt guard against the PASSWORD/HASH comparison ever
     regressing to a bare `==`/`!=`; keeping this unrelated, cleartext parameter comparison in its
-    own function avoids that guard flagging a comparison it was never meant to catch."""
+    own function avoids that guard flagging a comparison it was never meant to catch.
+
+    KNOWN LIMITATION -- upgrading PRODUCTION_PARAMS locks out existing accounts. Because ANY
+    embedded-parameter mismatch is treated as a corrupt record, raising the cost parameters (the
+    normal response to hardware getting faster) would make every account hashed under the old
+    parameters fail to verify -- as InvalidCredentials, indistinguishable from a wrong password,
+    which is correct for an attacker and actively unhelpful for the operator whose users all
+    suddenly cannot log in. There is deliberately NO rehash-on-successful-login path here: it
+    would have to run AFTER a successful verify, and a demo-grade store seeded by `insight users
+    add` (no signup, no self-service reset) can simply be re-seeded instead. Stated rather than
+    silently accepted, matching how this module documents its other limitations (concurrent
+    writes, the ancestor-directory trust boundary). Revisit when accounts outlive a parameter
+    bump -- i.e. when there is a real migration to run, not before."""
     embedded = _embedded_cost_params(encoded_hash)
     if embedded != params:
         raise CorruptHashError(

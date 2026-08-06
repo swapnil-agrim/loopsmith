@@ -24,13 +24,22 @@ from insight.accounts import hashing
 def test_hash_then_verify_roundtrip_succeeds():
     pytest.importorskip("argon2")
     encoded = hashing.hash_password("correct horse battery staple", params=hashing.TEST_PARAMS)
-    assert hashing.verify_password("correct horse battery staple", encoded) is True
+    # `params=` is not optional here: verify_password defaults to PRODUCTION_PARAMS, and since the
+    # cost-parameter check landed, verifying a TEST_PARAMS hash against those defaults is a genuine
+    # mismatch -- CorruptHashError, not a boolean. Omitting it made this test fail only where
+    # argon2-cffi is installed, i.e. in CI and nowhere the author could see (PR #461, review 4).
+    assert hashing.verify_password(
+        "correct horse battery staple", encoded, params=hashing.TEST_PARAMS
+    ) is True
 
 
 def test_wrong_password_fails_verify():
     pytest.importorskip("argon2")
     encoded = hashing.hash_password("correct horse battery staple", params=hashing.TEST_PARAMS)
-    assert hashing.verify_password("not the right password", encoded) is False
+    # `params=` for the same reason as the round-trip test above.
+    assert hashing.verify_password(
+        "not the right password", encoded, params=hashing.TEST_PARAMS
+    ) is False
 
 
 def test_hash_output_never_contains_the_plaintext_password():

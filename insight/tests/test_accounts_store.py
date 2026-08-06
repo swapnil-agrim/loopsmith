@@ -701,9 +701,17 @@ def test_well_formed_hash_under_different_kdf_params_raises_identical_invalid_cr
         "different-than-expected parameters -- this is exactly the 262x timing oracle the fix "
         "closes"
     )
-    assert calls == [hash_under_different_params, hashing.dummy_hash_for(hashing.TEST_PARAMS)], (
-        "expected exactly two verify_password calls -- first against the mismatched-parameter "
-        "hash (which must raise), second against the dummy hash (which pays the real cost)"
+    # THREE calls, not two: the spy is shared across BOTH verify_user calls above. Alice's
+    # mismatched-parameter record contributes two (the hash that must raise, then the dummy that
+    # pays the real cost), and the unknown-user lookup contributes its own dummy verification.
+    # Asserting two made this fail wherever argon2-cffi is installed -- CI, and nowhere the author
+    # could see (PR #461, review 4). The unknown-user entry is part of the point: both callers end
+    # up having paid exactly one real KDF operation.
+    dummy = hashing.dummy_hash_for(hashing.TEST_PARAMS)
+    assert calls == [hash_under_different_params, dummy, dummy], (
+        "expected three verify_password calls -- for alice, the mismatched-parameter hash (which "
+        "must raise) then the dummy hash (which pays the real cost); then the unknown user's own "
+        "dummy-hash verification"
     )
 
 
