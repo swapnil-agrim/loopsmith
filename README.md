@@ -180,6 +180,7 @@ Every option LoopSmith provides, at a glance:
 | **Cross-area hand-off** | Blocked on someone else's code? It resolves the owner from CODEOWNERS, opens an issue **assigned to them** (so their loop picks it up), and records it — instead of parking into silence | `handoff.py open` / `ack` |
 | **Ledger watcher** | Pulls the ledger's own ops branch on an interval — never your working tree — and surfaces what needs you between goals, deduped | `watch.sh`, `sync.py` |
 | **Slice parallelism (opt-in)** | Declare a goal's slices and the files each touches; independent ones run as concurrent subagents in **waves** (own worktree each), instead of burning one session's context in sequence | `slices.py plan`, `parallel.enabled` |
+| **Goal-level parallelism (opt-in)** | One level up from slices: run MULTIPLE backlog goals concurrently in one session — each its own subagent, worktree, and PR — for one person draining a stack of their own assigned issues | `loop.py next-batch`, `parallel.goals.enabled` |
 | **Per-goal worktree (opt-in)** | Each goal gets its own worktree + branch + PR, so the loop never moves your checkout and never rewrites `.sdlc/goals/` under itself; cutting fresh from the base **is** the goal-start rebase, so it can't conflict | `work.py start`, `work.enabled` |
 | **Clean-AND-safe auto-merge (opt-in)** | A PR merges only on THIS run's passing verify evidence **plus** GitHub's `mergeable` + `mergeStateStatus CLEAN`, then via GitHub's own `--auto` so the last check is atomic; anything else parks with the reason | `work.py merge`, `work.auto_merge` |
 | **Open-source safe by default** | A fork PR, or a repo you only have read access to, is never merge-attempted — the loop opens the PR, says why it stopped, and records `done`. `auto_merge: "protected"` further limits merging to branches that genuinely require checks or reviews | `work.py merge_rights` / `protection` |
@@ -203,7 +204,7 @@ Every option LoopSmith provides, at a glance:
 | **Retrospective / learning loop** | After each goal: structural + product debt, intent-vs-shipped, lessons routed to the right store (advisory) | `/sdlc-retro` |
 | **Cursor adapter** *(experimental)* | Scaffolds the SDLC discipline as an always-applied Cursor rule — *not yet verified in a live Cursor session* | `/sdlc-init --cursor` |
 | **Status at a glance** | Backlog counts, whether the review queue needs you, and when an alignment check comes due — counted from the live board in github mode, so `parked` is every parked issue, not just this run's | `/sdlc-status` |
-| **Setup check-up** | Audits the setup and hands you the exact fix for anything missing — no silent failures: a work-off loop, a verify trap, an unmapped board field, a **duplicate-board risk** (mirroring on with no `project.number` pinned), standing-doc references that no longer resolve | `/sdlc-doctor` |
+| **Setup check-up** | Audits the setup and hands you the exact fix for anything missing — no silent failures: a work-off loop, a verify trap, an unmapped board field, a **duplicate-board risk** (mirroring on with no `project.number` pinned), a stale plugin install (compares your installed version against the marketplace's current one; silent unless both sides actually resolve), standing-doc references that no longer resolve | `/sdlc-doctor` |
 | **Board-adoption safety** | Won't silently create a duplicate board when the config is under-specified; a board write that fails for a missing `project` scope says so loudly once, instead of just not moving cards | `sources.py` board layer |
 | **Portable output** | The plugin's own non-ASCII output (arrows, em-dashes) forces UTF-8, so it doesn't garble to `?` or crash on a non-UTF-8 (Windows cp1252) console | `loop`/`work`/`doctor`/`ledger`/`sync` |
 
@@ -446,7 +447,7 @@ Projects v2 board**: on first run it finds-or-creates a board titled `<repo> —
 **fail-open**: no scope, or any API error, and the loop simply continues on issues + labels (nothing
 breaks). Tune it under `discovery.github.project` — `owner`/`title` (default `<repo> — SDLC`), `number`
 (reuse an existing board), `status_field` (the field's name), and `columns` (override the column names
-to match an existing board). A `gh`-aware `/sdlc-status` for github mode is still on the roadmap.
+to match an existing board).
 
 > **No manual "group by" step.** The loop drives GitHub's **built-in `Status` field** — it sets that
 > field's options to Backlog → In Progress → QC → Done → Blocked via the API (`updateProjectV2Field`),
@@ -500,6 +501,16 @@ can never stop a run.
 conflict again in git. Owning exactly one file each removes both by construction, and the team view
 is simply their union, computed on read. Your handle comes from `ledger.actor`, else the
 authenticated account (`gh api user`), else the shell user.
+
+**Why two sessions can't both grab the same goal.** With the ledger on, picking a goal skips anything
+another actor — or a still-live process of your OWN actor, e.g. two of your own concurrent sessions —
+already holds an open claim on; a claim whose process has since died is reclaimed rather than waited
+out. That check needs a durable claim to compare against, so it has no answer for two picks landing at
+the exact same instant with nothing claimed yet — a local, kernel-mediated file lock (`flock`,
+POSIX-only, fails open elsewhere) closes that narrower gap, held only for the moment between deciding
+on a goal and the ledger claim landing. The lock runs unconditionally, ledger on or off; the
+broader "is this claim still live" check needs the ledger on to have anything to check against — with
+the ledger off, only the same-instant, same-machine case is covered.
 
 Read it:
 
