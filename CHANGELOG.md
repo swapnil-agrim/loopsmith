@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+### fix(loop): `watch_classify.classify()` no longer drops a deliberate self-addressed ledger note (#477)
+`classify()`'s own-write filter (`if actor == me or entry.get("to") != me: continue`) fired on ANY
+entry with `actor == me`, not just an un-addressed self-write, so it silently dropped a DELIBERATE
+self-addressed note (`to == me`, written by `me`) before it ever reached the signature/delivery
+logic -- exactly the shape a normal solo/single-watcher deployment produces, not an edge case. That
+broke two already-shipped features outright:
+- `handoff.py`'s same-area hand-off note (`handoff.py:230`, `to=ledger.actor(config, run)`),
+  documented as self-addressed so a LATER session by the same actor is reminded the tracked issue
+  exists -- that documented behavior never actually delivered.
+- `agent_watch.py`'s dead-agent ledger fallback (`agent_watch.py:124`, `to=<the claim holder>`,
+  usually yourself in a solo deployment) -- only the separately-configured, much rarer email path
+  ever surfaced a dead-agent notification; the ledger fallback silently reached nobody in the
+  common no-email-configured case.
+
+Also blocked #385 (comment-to-ledger claimant notification) from landing: #385's design assumed
+this delivery path already worked ("reusing the existing `to`-addressed note + inbox mechanism...
+no new channel"), and #385's own plan-review is what traced far enough to prove it did not, for the
+exact deployment shape (solo, self-claimed, self-watched) #385 is mainly for. Filed and fixed here
+first since the fix's blast radius (shared `classify()` infrastructure, two other existing callers)
+is broader than #385's own scope.
+
+Fix: split the single condition into two, so "not addressed to me at all" and "my own un-addressed
+write" are checked independently:
+```python
+if entry.get("to") != me:                    # not for me at all
+    continue
+if actor == me and not entry.get("to"):       # my own un-addressed write -- don't wake myself
+    continue
+```
+Checked every `to=`-setting call site in the plugin (`handoff.py:225`, `handoff.py:230`,
+`agent_watch.py:124`): all three are deliberate addressed notes, and no un-addressed self-write
+(`claimed`/`done`/`parked`/`failed`/`ack`/`merge-armed`/`release`) ever sets `to`, so the second
+clause is provably redundant with the first for every existing caller -- cheap insurance, not
+guesswork.
+
+Tests in `tests/test_watch.py`: a self-addressed note (`actor=me, to=me`) is confirmed dropped on
+pre-fix code and confirmed to surface after the fix (`test_a_self_addressed_note_still_wakes_me`);
+an un-addressed self-write (`actor=me`, no `to`) is confirmed still suppressed both before and
+after -- the filter's actual original purpose, so the existing test covering it was renamed from
+`test_my_own_entries_never_wake_me` to `test_my_own_unaddressed_writes_never_wake_me` now that "my
+own entries" is no longer uniformly true; a note addressed to someone else, including one written
+by `me`, is confirmed still excluded both before and after
+(`test_only_entries_addressed_to_me_surface`). Plus an end-to-end test through agent_watch.py's
+real `_notify()` ledger-fallback write (not a hand-built ledger entry) proving the dead-agent
+fallback now actually reaches the solo watcher's own inbox via `watch.tick()`
+(`test_agent_watch_dead_agent_ledger_fallback_note_reaches_the_solo_watchers_inbox`).
+
 ### fix(ledger): `_cell()` now escapes `\r` too, matching #427's fix in `watch_classify.py` (#454)
 Independent review of PR #449 (#427, `watch_classify.py`'s sibling `_cell()`) found that
 `ledger.py`'s ORIGINAL `_cell()` -- the one #449's copy was duplicated from -- was never actually

@@ -42,15 +42,32 @@ def _entry(actor, seq, **kw):
 
 
 def test_only_entries_addressed_to_me_surface():
-    entries = [_entry("amy", 1, to=ME), _entry("amy", 2, to="someone-else"), _entry("amy", 3)]
+    entries = [_entry("amy", 1, to=ME), _entry("amy", 2, to="someone-else"), _entry("amy", 3),
+               _entry(ME, 4, to="someone-else")]            # mine, but addressed to someone else
     items, _ = classify.classify(entries, dict(classify.EMPTY_CURSOR), ME)
     assert [e["id"] for e in items] == ["amy:1"]
 
 
-def test_my_own_entries_never_wake_me():
-    entries = [_entry(ME, 1, to=ME)]
+def test_my_own_unaddressed_writes_never_wake_me():
+    """#477: an UN-ADDRESSED self-write (no `to` at all -- `claimed`/`done`/`parked`/etc.) is the
+    own-write filter's actual original purpose and must never wake me. Must not regress now that
+    the DELIBERATE self-addressed case below (`to == me`, e.g. handoff.py's same-area reminder or
+    agent_watch.py's dead-agent ledger fallback) surfaces instead of being dropped."""
+    entries = [_entry(ME, 1)]
     items, _ = classify.classify(entries, dict(classify.EMPTY_CURSOR), ME)
     assert items == []
+
+
+def test_a_self_addressed_note_still_wakes_me():
+    """#477: `classify()`'s own-write filter used to fire on ANY entry with `actor == me`,
+    including a DELIBERATE self-addressed note (`to == me`, written by `me`) -- exactly what
+    handoff.py's same-area hand-off note (handoff.py:230) and agent_watch.py's dead-agent ledger
+    fallback (agent_watch.py:124) write in the normal solo/self-claimed deployment. Before the fix
+    this collided with the unaddressed-write suppression above and was silently dropped; it must
+    now surface like any other note addressed to me."""
+    entries = [_entry(ME, 1, to=ME, issue=61)]
+    items, _ = classify.classify(entries, dict(classify.EMPTY_CURSOR), ME)
+    assert [e["id"] for e in items] == [f"{ME}:1"]
 
 
 def test_a_second_tick_over_the_same_ledger_is_silent():
@@ -336,6 +353,26 @@ def test_tick_appends_rather_than_dropping_an_unread_item(tmp_path):
     watch.tick(d)
     inbox = watch.read_inbox(d)
     assert "first" in inbox and "second" in inbox        # the unread first item was not lost
+
+
+def test_agent_watch_dead_agent_ledger_fallback_note_reaches_the_solo_watchers_inbox(tmp_path):
+    """#477 end-to-end, via agent_watch.py's REAL note-writing path (not a hand-built ledger
+    entry): in the common solo/self-claimed deployment the watcher's own configured actor IS the
+    dead claim holder, so `_notify()`'s ledger fallback (agent_watch.py:124, `to=actor`) writes a
+    note with `actor == to == <the solo actor>` -- exactly the self-addressed shape #477 fixes.
+    Before the fix this note was written but never delivered to that actor's own later
+    `watch.tick()` -- only the separately-configured, much rarer email path worked."""
+    agent_watch = _mod("agent_watch")
+    solo = "solo"
+    cfg = {"ledger": {"enabled": True, "actor": solo}, "agent_watch": {"enabled": True}}
+    d = _sdlc(tmp_path, cfg)
+    agent_watch._notify(d, cfg, "158.md", "thread-1", 999999, solo)   # the real ledger fallback
+
+    notes = [e for e in ledger.read_all(d) if e["kind"] == "note"]
+    assert len(notes) == 1 and notes[0]["actor"] == solo and notes[0]["to"] == solo
+
+    assert "need you" in watch.tick(d)                                 # #477: now delivered
+    assert "reclaim or re-open" in watch.read_inbox(d)
 
 
 def test_clear_inbox(tmp_path):

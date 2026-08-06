@@ -117,8 +117,11 @@ def _as_int(value):
 
 def classify(entries, cursor, me, stream=ENTRIES):
     """-> (items needing me, updated cursor). `stream` says which stream `entries` came from, so
-    the cursor's high-water mark is tracked per (writer, stream) — see `_writer()`. Never returns
-    my own entries: a loop must not be woken by its own writes."""
+    the cursor's high-water mark is tracked per (writer, stream) — see `_writer()`. Suppresses my
+    own UN-ADDRESSED writes (no `to` at all — a loop must not be woken by its own claimed/done/
+    parked/etc.), but NOT a deliberate self-addressed note (`to == me`, written by `me` — e.g.
+    handoff.py's same-area reminder or agent_watch.py's dead-agent ledger fallback): that must
+    still surface (#477)."""
     raw = cursor.get("seen") or {}
     # frozen, independent per-writer dicts: seen[writer] must never alias baseline[writer], or
     # seen[writer][stream] = ... would mutate the "already processed" baseline mid-loop, wrongly
@@ -132,7 +135,9 @@ def classify(entries, cursor, me, stream=ENTRIES):
         actor, writer, seq = entry.get("actor", ""), _writer(entry), _seq(entry)
         writer_seen = seen.setdefault(writer, {})
         writer_seen[stream] = max(_as_int(writer_seen.get(stream)), seq)
-        if actor == me or entry.get("to") != me:
+        if entry.get("to") != me:                    # not for me at all
+            continue
+        if actor == me and not entry.get("to"):       # my own un-addressed write -- don't wake myself
             continue
         if seq <= _as_int((baseline.get(writer) or {}).get(stream)):
             continue                                # an earlier tick already surfaced this
