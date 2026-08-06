@@ -126,8 +126,9 @@ class FakeSource:
     def issue_url(self, goal):
         return f"https://example.invalid/issues/{goal}"
 
-    def create_dependency(self, title, body, assignee, labels=()):
-        self.created = {"title": title, "body": body, "assignee": assignee, "labels": list(labels)}
+    def create_dependency(self, title, body, assignee, labels=(), goal_label=True):
+        self.created = {"title": title, "body": body, "assignee": assignee, "labels": list(labels),
+                        "goal_label": goal_label}
         return self.number
 
     def note(self, goal, text):
@@ -278,6 +279,99 @@ def test_dependency_label_is_configurable(tmp_path):
     assert "needs:dep" in src.created["labels"]
 
 
+def test_hand_off_degrades_when_source_resolution_itself_raises(tmp_path, monkeypatch):
+    """hand_off()'s own source=None fallback: sources.get_source() raising must not raise up through
+    hand_off -- create_tracked_issue's identical fallback then also can't open the issue, and reports
+    why, exactly as if a source with no create_dependency had been passed."""
+    sdlc = _project(tmp_path)
+
+    def boom(*a, **k):
+        raise RuntimeError("bad discovery config")
+
+    monkeypatch.setattr(handoff.sources, "get_source", boom)
+    report = handoff.hand_off(sdlc, ON, "g.md", "engine", "needs a flag")
+    assert report["issue"] is None
+    assert any("no backlog source" in w for w in report["warnings"])
+    assert ledger.read_all(sdlc)                                # the park is never blocked
+
+
+# ------------------------------------------------------------------ create_tracked_issue (#462)
+
+
+def test_create_tracked_issue_same_area_assigns_to_self_and_never_becomes_a_stuck_handoff(tmp_path):
+    """#462: same_area=True is the self-assigned-follow-up case -- assigned to ledger.actor() (never
+    CODEOWNERS), carries area:/priority: labels, carries the goal label iff immediately_actionable,
+    and is recorded as kind="note" (never "handoff") addressed to the filer's own login -- so it can
+    NEVER get stuck as a permanently-unanswered hand-off nobody was ever meant to ack."""
+    sdlc = _project(tmp_path)
+    src = FakeSource(number="61")
+    report = handoff.create_tracked_issue(
+        sdlc, ON, "0007-x.md", "engine", "found a flaky retry while working this goal",
+        same_area=True, immediately_actionable=True, blocks_goal=False, source=src)
+
+    assert report["owner"] == "amy" and report["issue"] == "61" and not report["warnings"]
+    assert src.created["assignee"] == "amy"
+    assert "area:engine" in src.created["labels"] and "priority:P1" in src.created["labels"]
+    assert src.created["goal_label"] is True                     # immediately_actionable=True
+
+    entries = ledger.read_all(sdlc)
+    entry = entries[0]
+    assert entry["kind"] == "note" and entry["to"] == "amy" and "state" not in entry
+    assert ledger.outstanding(entries) == []                     # never a stuck, unanswerable hand-off
+
+    # blocks_goal=False in this call -- no body marker (the false-blocking regression, unit-proven
+    # again here at the FakeSource level for the same_area=True path specifically).
+    assert src.body_appends == []
+
+
+def test_create_tracked_issue_queued_does_not_carry_the_goal_label(tmp_path):
+    """immediately_actionable=False -> queued: filed, but NOT auto-picked -- goal_label=False must
+    reach create_dependency explicitly (unlike the True case, which relies on create_dependency's own
+    default)."""
+    sdlc = _project(tmp_path)
+    src = FakeSource(number="62")
+    handoff.create_tracked_issue(
+        sdlc, ON, "0008-x.md", "engine", "a non-urgent follow-up, not worth jumping the backlog",
+        same_area=True, immediately_actionable=False, blocks_goal=False, source=src)
+    assert src.created["goal_label"] is False
+
+
+def test_create_tracked_issue_degrades_when_no_backlog_source_is_configured(tmp_path, monkeypatch):
+    """create_tracked_issue's own source=None fallback: sources.get_source() raising must not raise
+    up through it -- the tracked issue is never opened, the ledger entry still lands, and the warning
+    says why."""
+    sdlc = _project(tmp_path)
+
+    def boom(*a, **k):
+        raise RuntimeError("bad discovery config")
+
+    monkeypatch.setattr(handoff.sources, "get_source", boom)
+    report = handoff.create_tracked_issue(
+        sdlc, ON, "g.md", "engine", "why", same_area=False, immediately_actionable=True,
+        blocks_goal=True)
+    assert report["issue"] is None
+    assert any("no backlog source" in w for w in report["warnings"])
+    assert ledger.read_all(sdlc)                                # the park is never blocked
+
+
+def test_create_tracked_issue_survives_note_failing(tmp_path):
+    """The human-visible note() comment and the machine-readable body marker are two independent
+    channels for create_tracked_issue too (not just hand_off's blocks_goal=True case) -- one failing
+    must not lose the other."""
+    class NoteBroken(FakeSource):
+        def note(self, goal, text):
+            raise RuntimeError("gh: comment failed")
+
+    sdlc = _project(tmp_path)
+    src = NoteBroken()
+    report = handoff.create_tracked_issue(
+        sdlc, ON, "g.md", "engine", "why", same_area=False, immediately_actionable=True,
+        blocks_goal=True, source=src)
+    assert report["issue"] == "61"
+    assert any("could not comment on the issue" in w for w in report["warnings"])
+    assert src.body_appends                                     # the body-marker channel still landed
+
+
 # ------------------------------------------------------------------ ack
 
 
@@ -312,6 +406,44 @@ def test_cli_open_reports_what_it_did(tmp_path, capsys, monkeypatch):
                          "--why", "needs a flag", "--priority", "P0"]) == 0
     out = capsys.readouterr().out
     assert "eng-owner" in out and "#61" in out and f"ledger amy:{os.getpid()}:1" in out
+
+
+def test_cli_track_requires_the_three_value_flags(tmp_path, capsys):
+    """#462: --queue/--assignee/--blocks are REQUIRED value flags, never a bare boolean and never a
+    default -- missing any one, or a bare `--flag` with no value (which _flags() would read as the
+    string "true", not a valid enum member), is the same hard usage error as a misspelled value."""
+    sdlc = _project(tmp_path)
+    # missing all three
+    assert handoff.main(["handoff.py", "track", str(sdlc), "g.md", "--area", "engine",
+                         "--why", "found something mid-goal"]) == 2
+    err = capsys.readouterr().err
+    assert "--queue" in err and "--assignee" in err and "--blocks" in err
+
+    # a misspelled value on just one of the three still refuses, exit 2, nothing written
+    assert handoff.main(["handoff.py", "track", str(sdlc), "g.md", "--area", "engine",
+                         "--why", "found something mid-goal", "--queue", "actionable",
+                         "--assignee", "same-area", "--blocks", "maybe"]) == 2
+    assert ledger.read_all(sdlc) == []
+
+    # a bare --queue with no value is read as the string "true" by _flags() -- not a valid member
+    assert handoff.main(["handoff.py", "track", str(sdlc), "g.md", "--area", "engine",
+                         "--why", "x", "--queue", "--assignee", "same-area", "--blocks", "yes"]) == 2
+
+
+def test_cli_track_reports_what_it_did(tmp_path, capsys, monkeypatch):
+    """#462: a successful `track` invocation -- also exercises create_tracked_issue's own source=None
+    resolution fallback (no explicit source= reaches create_tracked_issue from the CLI dispatcher, so
+    this covers the same sources.get_source() call path open's CLI test covers for hand_off)."""
+    sdlc = _project(tmp_path)
+    monkeypatch.setattr(handoff.sources, "get_source", lambda *a, **k: FakeSource())
+    assert handoff.main(["handoff.py", "track", str(sdlc), "g.md", "--area", "engine",
+                         "--why", "found something mid-goal", "--queue", "queued",
+                         "--assignee", "same-area", "--blocks", "no"]) == 0
+    out = capsys.readouterr().out
+    assert "amy" in out and "#61" in out and f"ledger amy:{os.getpid()}:1" in out
+
+    entry = ledger.read_all(sdlc)[0]
+    assert entry["kind"] == "note" and entry["to"] == "amy"
 
 
 def test_cli_ack_validates_the_state(tmp_path, capsys):

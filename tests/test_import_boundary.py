@@ -65,8 +65,12 @@ both halves first — reserved-or-unimportable, AND gitignored.
 
 This logic is reimplemented here (`_is_virtualenv`, `_owned_py_files`) rather than imported from
 tests/test_licence_boundary.py, and the real reason is narrower than "every guard file defines its
-own helpers": this repo has no shared test-helper module to import from (no conftest.py, and no
-test file imports another's functions — checked directly, not assumed). tests/test_licence_boundary.py
+own helpers": this repo has no shared test-helper MODULE to import from (no conftest.py). The one
+exception, as of #462, is tests/test_backlog_check.py importing test_handoff.py's `FakeSource` for a
+single behavioral proof (reusing one specific, already-tested double rather than a second, divergent
+copy — the same hardened-sibling-divergence argument this file makes elsewhere) — not a shared helper
+library, and not a reason for THIS guard to import its own directory-skip logic from a sibling
+either. tests/test_licence_boundary.py
 factors its scan into named helpers the same way this file does; tests/test_self_contained.py does
 NOT — it inlines its scan directly in the test bodies and deliberately shares a module-level
 SKIP_DIRS constant instead, precisely so its own pinning test reads the SAME object the scan uses

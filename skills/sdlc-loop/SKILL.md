@@ -162,6 +162,23 @@ Then repeat until the helper says stop:
    this goal as normal. Degrades honestly: with no owner, no `gh`, or a local backlog it still
    records the ledger entry.
 
+   **Found something worth tracking that isn't a cross-area blocker? Never call `gh issue create`
+   directly.** A same-area follow-up, a review finding, anything worth its own issue but not a
+   decision for the user right now, still needs a label and an assignee or it is orphaned — the
+   majority-real-world shape of this bug, worse than the cross-area case above because nothing
+   documented the right command for it until now. Use `handoff.py track` the same way a cross-area
+   blocker already goes through `handoff.py open`:
+   `python3 "${CLAUDE_SKILL_DIR}/scripts/handoff.py" track .sdlc "$goal" --area <area> --why "<what
+   you found>" --queue actionable|queued --assignee same-area|cross-area --blocks yes|no [--priority
+   P0|P1|P2] [--label sdlc:followup]`. All three value-flags are required, with no default, on
+   purpose. Choose `--queue queued` for anything not urgent enough to jump the backlog (the usual
+   case); reserve `--queue actionable` for something that genuinely should be picked up next. Choose
+   `--assignee same-area` to file it to yourself — you're already working this area; `--assignee
+   cross-area` routes it through CODEOWNERS like `open` does. Choose `--blocks yes` ONLY when the
+   *current* goal truly cannot proceed until the new issue lands — getting this wrong incorrectly
+   parks unrelated work; a merely-related finding is `--blocks no`. Recommend `--label sdlc:followup`
+   on a non-blocking review finding so it is greppable as a class, distinct from `sdlc:dependency`.
+
    As you complete each phase, **record it** so the issue timeline is the audit trail:
    `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" note .sdlc "$goal" "<phase>: <key findings / decisions>"`.
    Mark phase boundaries too (optional, `telemetry.enabled`):
