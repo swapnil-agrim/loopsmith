@@ -129,7 +129,11 @@ Then repeat until the helper says stop:
    **3a. Cut this goal's worktree BEFORE you edit anything.** With `config.work.enabled` on:
    `python3 "${CLAUDE_SKILL_DIR}/scripts/work.py" start .sdlc "$goal"`. It cuts a fresh worktree and
    branch from `<remote>/<base>` — which **is** the goal-start rebase: nothing to replay, so it
-   cannot conflict or strand a half-applied tree in an unattended run. Do **every edit for this goal
+   cannot conflict or strand a half-applied tree in an unattended run. Then register that you're the
+   one driving this goal right now: `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" agent-start .sdlc
+   "$goal" --pid $PPID` — `$PPID` is YOUR OWN stable process id, captured once (same contract
+   `--session-pid` already documents), not any individual command's own. Best-effort and always safe
+   to call — a no-op unless `agent_watch.enabled`. Do **every edit for this goal
    inside that worktree**; the human's checkout must never move, and never change branch (it would
    rewrite `.sdlc/goals/` underneath you). Bookkeeping is the exception and stays in the MAIN
    checkout — keep passing `loop.py`/`ledger.py` the same `.sdlc` path as always, never the
@@ -141,10 +145,13 @@ Then repeat until the helper says stop:
    `python3 "${CLAUDE_SKILL_DIR}/scripts/slices.py" plan .sdlc "$goal"`. It groups the runnable slices
    into **waves** — each wave mutually non-conflicting by declared files, capped at
    `parallel.max_concurrent`. Do ONE wave at a time: dispatch each of its slices as a **subagent**
-   (fresh context), with **`isolation: worktree`** for every slice the plan marks that way (log each
-   dispatch: `python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" log .sdlc "$goal" agent_dispatch --thread
-   <slice-id> --role slice --phase implement`), so two of
-   them cannot fight over one checkout. Land the wave — logging each landed slice first (`agent_done
+   (fresh context), with **`isolation: worktree`** for every slice the plan marks that way, so two of
+   them cannot fight over one checkout. For each dispatched slice: log the dispatch
+   (`python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" log .sdlc "$goal" agent_dispatch --thread
+   <slice-id> --role slice --phase implement`) and register it for the death-watch the same way 3a
+   does, one level down (`python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" agent-start .sdlc "$goal"
+   --pid $PPID --thread <slice-id>` — giving intra-goal slice parallelism its own
+   independently-tracked pid per thread). Land the wave — logging each landed slice first (`agent_done
    --thread <slice-id> --role slice --result <...>`) — then re-run `plan` for the next. **Never**
    dispatch a slice with an unattended `claude -p` — uncapped spend, and a second worker on one
    `.sdlc` breaks every state file here. A slice the plan marks `dispatch: session` will not fit one
