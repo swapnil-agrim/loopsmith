@@ -1,7 +1,7 @@
 """Flat goal-frontmatter parsing (zero-dep). Frontmatter = a leading ---\n key: value ... \n--- block."""
 import re
 
-_FENCE = re.compile(r"^---\n(.*?)\n---\n?", re.DOTALL)
+_FENCE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
 
 
 def parse(text):

@@ -13,6 +13,18 @@ a whitespace-only `status:` ahead of a real `pending` one and asserts the `pendi
 confirmed to fail against the pre-fix code with the exact symptom described (the blank-status goal
 returned instead).
 
+### fix(coordination): `frontmatter` parser now tolerates `\r\n` line endings (F31/#356)
+`frontmatter.py`'s `_FENCE` regex anchored the fence delimiters on a bare `\n`
+(`^---\n(.*?)\n---\n?`), so any caller passing raw `\r\n`-terminated text (e.g. subprocess
+output or a hand-built string, as opposed to `Path.read_text()` which normalizes newlines)
+never matched the fence at all — `parse()` silently returned `{}` as if no frontmatter were
+present. The regex now allows an optional `\r` before each `\n`
+(`^---\r?\n(.*?)\r?\n---\r?\n?`); `str.splitlines()` on the captured body already handles
+`\r\n` per line, so no further change was needed. A new test parses a `\r\n`-delimited goal
+string and confirms the fields come back correctly, proven to fail with a `KeyError` (the
+empty-dict symptom described in the issue) against the pre-fix regex before passing with
+the fix.
+
 ### fix(collectors): `churn_hotspots` no longer collapses internal whitespace in a path (F27/#353)
 `alignment-collect.sh`'s `HOTSPOTS_JSON` step stripped the `uniq -c` count via awk's `$1=""`, which
 rebuilds `$0` using a single-space `OFS` — so a path with consecutive spaces or tabs (e.g. `"a  b.py"`)

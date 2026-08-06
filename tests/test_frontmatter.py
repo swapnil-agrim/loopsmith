@@ -20,6 +20,14 @@ def test_parse_no_frontmatter_returns_empty():
     assert _mod("frontmatter").parse("just text, no fences") == {}
 
 
+def test_parse_handles_crlf_line_endings():
+    # F31/#356: a raw \r\n string (e.g. subprocess output) must not silently
+    # parse as empty just because the fence regex was anchored on bare \n.
+    crlf_goal = "---\r\nid: 0001\r\nstatus: pending\r\nlane: auto\r\n---\r\n\r\nbody text\r\n"
+    d = _mod("frontmatter").parse(crlf_goal)
+    assert d["id"] == "0001" and d["status"] == "pending" and d["lane"] == "auto"
+
+
 def test_get_field():
     fm = _mod("frontmatter")
     assert fm.get(GOAL, "status") == "pending" and fm.get(GOAL, "missing") is None
