@@ -73,6 +73,13 @@ def test_configure_preserves_existing_settings(tmp_path):
     assert cfg["work"]["auto_merge"] == "always"                # a human's explicit choice is kept
 
 
+def test_configure_preserves_an_explicit_assignee_on_rerun(tmp_path):
+    d = _sdlc(tmp_path, {"discovery": {"github": {"assignee": "specific-user"}}})
+    cfg, notes = setup.configure(d, repo="a/b")
+    assert cfg["discovery"]["github"]["assignee"] == "specific-user"   # a human's explicit choice is kept
+    assert any("assignee=specific-user" in n for n in notes)
+
+
 def test_configure_local_goals_source(tmp_path):
     d = _sdlc(tmp_path)
     cfg, _ = setup.configure(d, source="local-goals")
