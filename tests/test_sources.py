@@ -55,7 +55,20 @@ def test_github_next_pending_none_when_empty():
     src = _mod("sources")
     run = _recording_runner({"list": "[]"})
     gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0    # hermetic: no real backoff sleeps
     assert gh.next_pending() is None
+
+
+def test_github_next_pending_none_when_empty_retries_before_giving_up():
+    """F447: a genuinely empty read must still be retried a bounded number of times before
+    `next_pending` trusts it — an empty result on attempt 1 is indistinguishable, from here,
+    from GitHub's search index not having caught up yet on a just-labelled issue."""
+    src = _mod("sources")
+    run = _recording_runner({"list": "[]"})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0
+    assert gh.next_pending() is None
+    assert len(run.calls) == gh._BACKLOG_READ_RETRIES     # exhausted every attempt, not just one
 
 
 def test_github_next_pending_skips_leased_issues():
@@ -66,6 +79,7 @@ def test_github_next_pending_skips_leased_issues():
               {"number": 7, "labels": [{"name": "sdlc:goal"}]}]
     run = _recording_runner({"list": json.dumps(issues)})
     gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0    # hermetic: no real backoff sleeps
     assert gh.next_pending(skip={"5"}) == "7"          # 5 leased elsewhere -> next free is 7
     assert gh.next_pending(skip={"5", "7"}) is None     # both taken -> nothing free
 
@@ -77,6 +91,7 @@ def test_github_next_pending_requests_oldest_first_sort():
     src = _mod("sources")
     run = _recording_runner({"list": "[]"})
     gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0    # hermetic: no real backoff sleeps
     gh.next_pending()
     assert any("--search sort:created-asc" in " ".join(c) for c in run.calls)
 
@@ -129,6 +144,7 @@ def test_github_custom_labels_respected():
     run = _recording_runner({"list": "[]"})
     cfg = {"discovery": {"source": "github", "github": {"goal_label": "goal", "parked_label": "blocked"}}}
     gh = src.GitHubSource(cfg, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0    # hermetic: no real backoff sleeps
     gh.next_pending()
     assert any("--label goal" in " ".join(c) for c in run.calls)      # custom goal label used in the query
 
@@ -137,6 +153,7 @@ def test_github_next_pending_no_assignee_filter_by_default():
     src = _mod("sources")
     run = _recording_runner({"list": "[]"})
     gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0    # hermetic: no real backoff sleeps
     gh.next_pending()
     assert not any("--assignee" in " ".join(c) for c in run.calls)   # absent config -> no filter (byte-compatible)
 
@@ -146,6 +163,7 @@ def test_github_next_pending_assignee_filter_when_configured():
     run = _recording_runner({"list": "[]"})
     cfg = {"discovery": {"source": "github", "github": {"assignee": "@me"}}}
     gh = src.GitHubSource(cfg, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0    # hermetic: no real backoff sleeps
     gh.next_pending()
     assert any("--assignee @me" in " ".join(c) for c in run.calls)   # scopes the discovery queue to one owner
 
@@ -180,6 +198,7 @@ def test_park_excludes_issue_even_if_parked_label_cannot_be_applied():
         return ""
 
     gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0    # hermetic: no real backoff sleeps
     assert gh.next_pending() == "5"
     gh.park("5", "deploy gate")
     assert gh.next_pending() is None         # goal label removed -> excluded despite the parked-label failure
@@ -206,6 +225,7 @@ def test_park_excludes_issue_even_if_the_comment_raises():
         return ""
 
     gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0    # hermetic: no real backoff sleeps
     assert gh.next_pending() == "5"
     gh.park("5", "deploy gate")               # must not raise, despite the comment call failing
     assert gh.next_pending() is None          # goal label removed -> excluded despite the comment failure
@@ -230,15 +250,88 @@ def test_next_pending_survives_a_raising_list_call():
     """F4: `next_pending` is called first, every iteration of run_loop's while-loop — an unguarded
     raise here crashed the ENTIRE drain before a single goal could be picked, not just one goal."""
     src = _mod("sources")
+    calls = []
 
     def run(a):
+        calls.append(list(a))
         verb = a[1] if len(a) > 1 else a[0]
         if verb == "list":
             raise RuntimeError("gh: HTTP 502 Bad Gateway")
         return ""
 
     gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0    # hermetic: no real backoff sleeps
     assert gh.next_pending() is None          # degrades to "nothing pending", never a traceback
+    assert len(calls) == gh._BACKLOG_READ_RETRIES     # transient (502) -> retried every attempt
+
+
+def test_next_pending_fails_fast_on_a_non_transient_list_error():
+    """A permanent error (bad repo, no auth) must not pay the full retry+backoff cost — it can
+    never succeed on a later attempt, so `next_pending` gives up on the first try, exactly as
+    before the F447 retry existed."""
+    src = _mod("sources")
+    calls = []
+
+    def run(a):
+        calls.append(list(a))
+        verb = a[1] if len(a) > 1 else a[0]
+        if verb == "list":
+            raise RuntimeError("gh: HTTP 404 Not Found (repo does not exist)")
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0
+    assert gh.next_pending() is None
+    assert len(calls) == 1     # not transient -> no retry
+
+
+def test_next_pending_recovers_from_a_transient_error_on_retry():
+    """F447: the failure mode this pins — a transient read error on the first attempt must not be
+    the final word when a later attempt would have succeeded. Before this fix, ANY exception on
+    this call (transient or not) immediately returned None, byte-identical to a drained backlog."""
+    src = _mod("sources")
+    issues = [{"number": 9, "labels": [{"name": "sdlc:goal"}]}]
+    attempts = {"n": 0}
+
+    def run(a):
+        verb = a[1] if len(a) > 1 else a[0]
+        if verb == "list":
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise RuntimeError("gh: HTTP 502 Bad Gateway")     # one transient blip...
+            return json.dumps(issues)                              # ...then the read succeeds
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0    # hermetic: no real backoff sleeps
+    assert gh.next_pending() == "9"    # recovered on retry, not falsely reported as "nothing pending"
+    assert attempts["n"] == 2
+
+
+def test_next_pending_recovers_from_a_stale_empty_read_on_retry():
+    """F447's actual root cause, pinned directly: `gh issue list` (this query, confirmed via
+    GH_DEBUG=api) resolves through GitHub's asynchronously-indexed search backend, so a
+    just-labelled goal can legitimately come back EMPTY (no exception, a clean successful read of
+    zero matches) on the first read and then appear moments later with no other state change at
+    all — exactly what an isolated repro against a real scratch repo measured (1-5s of lag with
+    zero concurrent load). Before this fix, `next_pending` trusted the FIRST empty read as final
+    and `_next()` reported a bare DONE despite the goal genuinely existing and being unparked."""
+    src = _mod("sources")
+    issues = [{"number": 446, "labels": [{"name": "sdlc:goal"}]}]
+    attempts = {"n": 0}
+
+    def run(a):
+        verb = a[1] if len(a) > 1 else a[0]
+        if verb == "list":
+            attempts["n"] += 1
+            # first read: the search index hasn't caught up yet -> a clean, successful, EMPTY page
+            return "[]" if attempts["n"] == 1 else json.dumps(issues)
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh._BACKLOG_READ_RETRY_BASE = 0    # hermetic: no real backoff sleeps
+    assert gh.next_pending() == "446"      # found on the retry, not silently reported as "nothing pending"
+    assert attempts["n"] == 2
 
 
 def test_github_note_comments_on_the_issue():

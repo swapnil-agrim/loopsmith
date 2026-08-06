@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### fix(loop): `next_pending` no longer trusts a single empty/failed backlog read as "nothing pending" (#447)
+Two prior investigations reproduced but did not root-cause a freshly-created, correctly
+`sdlc:goal`-labelled, non-parked issue being invisible to `next-batch`/`next` — repeated calls
+returned a bare `DONE` with zero claims, not a one-off race. Root-caused this time by tracing the
+exact `gh issue list` call `GitHubSource.next_pending()` runs with `GH_DEBUG=api`: it resolves
+through GitHub's asynchronously-indexed GraphQL search backend (`search(type: ISSUE_ADVANCED,
+...)`) regardless of whether `--search` is passed — even the PLAIN, non-`--search` listing (the
+form used to "manually verify" a missed goal) routes through the identical search field, not a
+direct/consistent repo read — so the read is only EVENTUALLY consistent. Reproduced in an isolated
+scratch repo with zero other load: a freshly created-and-labelled issue routinely took 1-5s to
+become visible to this exact query; a transient `gh`/API error collapses into the identical
+"nothing pending" signal one branch over. Both looked, from `_next()`'s side, exactly like a
+drained backlog. Fix: `next_pending` now retries a bounded number of times
+(`_BACKLOG_READ_RETRIES`, default 3, short backoff) before trusting an empty result OR a transient
+read error as final — a non-transient error (bad repo, no auth) still fails on the first try,
+unchanged from before this fix. Each retry is loud on stderr, so the failure mode is debuggable
+even on the (now narrower) remaining tail-latency window. New tests in `tests/test_sources.py` pin
+both mechanisms directly (a stale-then-found empty read using the same issue number as the
+original repro, and a transient-error-then-recovers case), confirmed to fail with the exact
+"returns None where a goal exists" symptom against the pre-fix code before passing with the fix.
+
 ### fix(coordination): `watch_classify.render_inbox()` now escapes every interpolated field (#427)
 F19/#346 fixed this same class of bug in `ledger.render()`'s markdown tables (only `why`/`goal` went
 through `_cell()`); independent review of that fix found the identical gap in a different function,
