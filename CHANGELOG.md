@@ -26,6 +26,17 @@ exact pre-fix symptom (absent key tripping at 20) before the fix and pass after;
 that relied on `max_iterations: 0` as an "already spent" sentinel now use a genuinely-reached nonzero
 cap instead.
 
+### fix(doctor): worktree-dep check now flags `./`/`../`-prefixed relative paths (F23/#351)
+The `verify.command resolves in the goal worktree` check's `_WORKTREE_DEP` regex used a lookbehind
+that excluded any preceding `/` or `.` so an absolute path like `/x/.venv/…` reads as exempt — but
+that same exclusion also swallowed an explicit relative prefix: `./node_modules/.bin/eslint` and
+`../venv/bin/python` were never flagged, only a bare leading `node_modules/…` was, even though both
+are exactly the worktree footgun this check exists to catch (a fresh goal worktree has none of the
+caller's installed deps, so the command fails exit=127 on the first real run). The regex now consumes
+an optional, repeatable `./` or `../` prefix (`(?:\.\.?/)*`) before the dep name while keeping the
+same lookbehind, so `./node_modules/…`, `../venv/…`, and `../../node_modules/…` are all flagged, and
+a true absolute path is still exempt exactly as before.
+
 ### fix(handoff): a local/issue-less hand-off can now actually be acknowledged (F22/#347)
 `handoff.py`'s `ack` CLI unconditionally required `--issue <n>`, with no `--goal` flag at all — but
 `hand_off()` writes `issue=None` whenever its source can't open issues (no `gh`, or a local backlog),
