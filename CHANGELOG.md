@@ -30,6 +30,35 @@ leak into it) and a real two-process concurrency test (matching this repo's own 
 OS subprocesses, not threads) that 2 processes appending 40 lines each to the same goal's log file
 produce exactly 80 valid, uncorrupted JSON lines.
 
+### fix(loop): generalize `hand_off()`'s labeling/assignee/dependency discipline to every LoopSmith-created issue (#462)
+The one real `gh issue create` call site (`GitHubSource.create_dependency`) was only ever reached
+through `hand_off()`, so a formal cross-area hand-off always got a label and an assignee — but the
+majority-real-world case, a same-area follow-up finding (a review comment, a mid-goal discovery) had
+no disciplined path at all: it got filed by hand via a bare `gh issue create`, orphaned, easy to lose
+in a long session. Fix: `hand_off()`'s own machinery is generalized into
+`handoff.create_tracked_issue(sdlc_dir, config, goal, area, why, *, same_area, immediately_actionable,
+blocks_goal, ...)` — three required, keyword-only booleans (no default, so a caller can never
+silently get the wrong routing) — and `hand_off()` becomes a thin wrapper around it
+(`same_area=False, immediately_actionable=True, blocks_goal=True`), reproducing its exact existing
+behavior plus one new `area:<area>` label. `blocks_goal` is a third axis the original draft didn't
+name: without it, a non-blocking follow-up finding would incorrectly write the `**Blocked by:** #N`
+body marker and get `backlog_check._explicit_blockers()` to auto-park the *current* goal behind an
+issue that was never meant to gate it — a real correctness bug, not a style choice, proven by a
+non-vacuous test on both sides of the axis. `GitHubSource.create_dependency` gains a `goal_label=`
+parameter (default `True`, backward-compatible) so a queued (not immediately-actionable) issue can
+omit the goal label instead of being auto-picked. New `handoff.py track` CLI verb (`--queue
+actionable|queued --assignee same-area|cross-area --blocks yes|no`, every axis a required value
+flag) plus `SKILL.md` prose telling the agent to use it instead of a bare `gh issue create` for any
+mid-goal finding. New `tests/test_issue_creation_boundary.py` (AST-based, mirroring
+`test_import_boundary.py`/`test_vocabulary_coverage.py`'s own guard style) pins
+`GitHubSource.create_dependency` as the one and only real issue-creation call site under `skills/`
+and `hooks/`. `tests/test_backlog_check.py` gained a non-vacuous "dependency actually honored" test:
+a `create_tracked_issue`-produced body marker is fed into a realistic `backlog_check.cross_check()`
+run, which parks the goal while the tracked issue is open and releases it once closed — proven in
+both directions, not just that the marker was written. All 12 pre-existing `hand_off()`-specific
+tests in `tests/test_handoff.py` pass unmodified (`FakeSource.create_dependency` gained the new
+`goal_label=` parameter, the one sanctioned test-double fix).
+
 ## 1.0.2 — the second-pass release
 
 ### fix(loop): `next_pending` no longer trusts a single empty/failed backlog read as "nothing pending" (#447)

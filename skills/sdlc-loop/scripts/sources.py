@@ -306,14 +306,17 @@ class GitHubSource:
     def issue_url(self, goal):
         return self._issue_url(goal)
 
-    def create_dependency(self, title, body, assignee, labels=()):
+    def create_dependency(self, title, body, assignee, labels=(), goal_label=True):
         """Open an issue carrying a cross-area dependency and hand it to its owner. Returns the new
         issue number, or None when `gh` did not hand one back.
 
-        It carries the GOAL label deliberately: an assigned goal issue is picked up by that person's
-        OWN loop through the `assignee` filter, so a hand-off routes itself over the backlog the team
-        already shares — no new transport and no daemon. This is the only place the kit ever SETS an
-        assignee, and it is the point: parking told nobody, this tells exactly one person.
+        It carries the GOAL label deliberately (unless `goal_label=False`): an assigned goal issue is
+        picked up by that person's OWN loop through the `assignee` filter, so a hand-off routes itself
+        over the backlog the team already shares — no new transport and no daemon. This is the only
+        place the kit ever SETS an assignee, and it is the point: parking told nobody, this tells
+        exactly one person. `goal_label=False` is for a queued (not immediately-actionable) issue
+        created via `handoff.create_tracked_issue` — it must NOT be auto-picked by anyone's loop until
+        a human promotes it, so it deliberately does not carry the label `next_pending()` filters on.
 
         It also stamps the adopter's configured custom board fields (project.custom_fields) on the new
         issue, so an issue the loop creates isn't blank on Priority/Section/… while every human-made
@@ -341,8 +344,9 @@ class GitHubSource:
                            "--color", "d4c5f9", "--force"])
             except Exception:
                 pass                       # a missing label must not stop the hand-off
-        args = ["issue", "create", *self._repo_args(), "--title", title, "--body", body,
-                "--label", self.goal_label]
+        args = ["issue", "create", *self._repo_args(), "--title", title, "--body", body]
+        if goal_label:
+            args += ["--label", self.goal_label]
         for label in labels:
             args += ["--label", label]
 

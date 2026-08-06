@@ -10,6 +10,12 @@ def _mod(name):
     m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
 
 
+# #462: reuse test_handoff.py's own FakeSource double (pytest's no-__init__.py "rootdir" import mode
+# makes every tests/*.py module importable by its bare filename) rather than a second, divergent copy
+# -- the same hardened-sibling-divergence this whole plan item exists to avoid one layer up.
+from test_handoff import FakeSource
+
+
 def _epoch(iso):  # "2026-08-03T00:00:00Z" -> epoch seconds
     return calendar.timegm(time.strptime(iso.replace("Z", "GMT"), "%Y-%m-%dT%H:%M:%S%Z"))
 
@@ -438,3 +444,68 @@ def test_crosscheck_cli_in_process(capsys):
         assert bc.main(["backlog_check.py", base, "1"]) == 0
         assert bc.main(["backlog_check.py", base]) == 2       # missing goal -> usage error
         capsys.readouterr()
+
+
+# --------------------------------------------------------------------------- #462: create_tracked_issue's
+# blocks_goal axis -- "dependency actually honored", not just recorded, proven in BOTH directions
+
+
+def test_create_tracked_issue_dependency_is_honored_by_backlog_check_in_both_directions():
+    """#462: create_tracked_issue's blocks_goal=True body marker isn't just WRITTEN -- a separate,
+    realistic backlog_check run actually HONORS it (parks goal "10" while the tracked issue "11" is
+    open) and correctly RELEASES it once "11" closes. Feeds the marker handoff.create_tracked_issue
+    itself produced into the mirror fixture -- not a hand-typed guess at the format -- so this test
+    would break if the two ever drifted (test_handoff.py's own
+    test_handoff_narrative_wording_actually_matches_the_auto_skip_regex "import the real thing, don't
+    hand-copy it" discipline, applied here to the fixture data instead of a regex)."""
+    handoff = _mod("handoff")
+    bc = _mod("backlog_check")
+
+    # step 1: the real helper produces the marker + the new issue number -- captured, not guessed.
+    with tempfile.TemporaryDirectory() as scratch:
+        src = FakeSource(number="11")
+        report = handoff.create_tracked_issue(
+            scratch, {}, "10", "engine", "needs the widget cache migrated first",
+            same_area=False, immediately_actionable=True, blocks_goal=True, source=src)
+        assert report["issue"] == "11"
+        body_goal, marker = src.body_appends[0]
+        assert body_goal == "10" and marker == "**Blocked by:** #11"
+
+    # step 2+3: feed the ACTUAL captured marker into the mirror fixture for goal "10", while "11" is
+    # open -- a separate, realistic backlog-check run concludes "10" is blocked.
+    with tempfile.TemporaryDirectory() as d1:
+        base = _gh_base(d1, [
+            _rec(10, _GOAL, body="do the migration\n\n" + marker),
+            _rec(11, "the tracked issue", state="open"),
+        ], **_LOOSE)
+        pack = bc.cross_check(base, "10")
+        blocked = [f for f in pack["findings"] if f["kind"] == "blocked-by" and f["ref"] == "11"]
+        assert blocked and blocked[0]["confident"] is True
+        assert bc.decide(pack, {})["action"] == "park"
+
+    # step 4: flip "11" to closed, same goal body unchanged -- the block is correctly released, closing
+    # the loop in the other direction too.
+    with tempfile.TemporaryDirectory() as d2:
+        base2 = _gh_base(d2, [
+            _rec(10, _GOAL, body="do the migration\n\n" + marker),
+            _rec(11, "the tracked issue", state="closed"),
+        ], **_LOOSE)
+        pack2 = bc.cross_check(base2, "10")
+        assert not [f for f in pack2["findings"] if f["kind"] == "blocked-by" and f["ref"] == "11"]
+        assert bc.decide(pack2, {})["action"] == "proceed"
+
+
+def test_create_tracked_issue_with_blocks_goal_false_never_writes_a_body_marker():
+    """#462, step 5, unit-level (not through the mirror fixture): the regression test for the
+    false-blocking bug the blocks_goal axis exists to prevent. A non-blocking, merely-related finding
+    (blocks_goal=False) must NEVER write the **Blocked by:** marker onto the current goal's body --
+    otherwise backlog_check would incorrectly park unrelated work behind a finding that was never
+    meant to gate it."""
+    handoff = _mod("handoff")
+    with tempfile.TemporaryDirectory() as scratch:
+        src = FakeSource(number="12")
+        report = handoff.create_tracked_issue(
+            scratch, {}, "10", "engine", "just a related finding, not a blocker",
+            same_area=False, immediately_actionable=False, blocks_goal=False, source=src)
+        assert report["issue"] == "12"
+        assert src.body_appends == []
