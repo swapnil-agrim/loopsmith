@@ -98,6 +98,19 @@ async function withPage(browser, tokensCssText, fn) {
     await cdp.send("DOM.enable");
     await cdp.send("CSS.enable");
     await page.goto(`http://127.0.0.1:${port}/fixture.html`);
+    // Wait for font loading to SETTLE before measuring. `page.goto` resolves on `load`, but
+    // web fonts are fetched asynchronously and may not be applied yet -- so the measurement
+    // below was racing the font load. It won on a warm cache (every local run) and lost
+    // intermittently on a cold CI runner, where the same commit passed at 08:36 and failed at
+    // 09:07 and 09:19, reporting the fallback face ("Liberation Sans") as if the embedded font
+    // had genuinely not applied. A required check that fails on cache temperature blocks real
+    // work and, worse, teaches everyone to re-run it -- which is how a guard stops being read.
+    //
+    // `document.fonts.ready` is the right barrier and deliberately name-agnostic: it awaits
+    // whatever faces THIS page actually requested, so the negative-control page (which declares
+    // the historical wrong name) is handled by the same line without hardcoding either name and
+    // without the barrier ever manufacturing a face the page did not ask for.
+    await page.evaluate(() => document.fonts.ready);
     return await fn(cdp);
   } finally {
     await page.close();
