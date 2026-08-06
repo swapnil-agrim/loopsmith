@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### fix(ledger): `_cell()` now escapes `\r` too, matching #427's fix in `watch_classify.py` (#454)
+Independent review of PR #449 (#427, `watch_classify.py`'s sibling `_cell()`) found that
+`ledger.py`'s ORIGINAL `_cell()` -- the one #449's copy was duplicated from -- was never actually
+fixed for the bare-`\r` gap: it still only escaped `|` and replaced a literal `\n`
+(`.replace("\n", " ")`), so a `to`/`priority`/`issue`/`why`/`goal` value carrying a bare `\r` (or
+`\r\n`/`\v`/`\f`/the rest of CommonMark's line-terminator set) sailed through untouched and reopened
+the exact F19/#346 table-row-splitting / fake-heading-injection symptom via a one-character
+delimiter swap in the payload -- CommonMark (and Python's own `str.splitlines()`) treats a bare CR
+as a line terminator identical to LF. Filed separately from #427 rather than folded into that PR:
+`ledger.py`'s `_cell()` is a different function, in already-merged F19/#346's territory, protecting
+a different (lower-severity, human-facing TEAM.md rather than agent-facing LEDGER INBOX) surface --
+but flagged there as a "hardened-sibling-divergence" risk regardless, since two independent copies
+of the same-named, same-purpose helper should carry the same guarantee. Fix: the identical,
+already-proven one-liner from #449 -- `" ".join(str(text).replace("|",
+"\\|").splitlines()).strip()` -- dropped in verbatim, no design work needed. New test in
+`tests/test_ledger.py`, mirroring both the existing F19 `\n`-injection test in this file and
+`test_watch.py`'s own #427 `\r` regression test: a hand-off's `to` field carrying a bare `\r` plus a
+fake `## INJECTED HEADER`, confirmed to render it as its own line (the exact injected-line symptom)
+against the pre-fix code, then confirmed flattened into inert cell content after the fix.
+
 ## 1.0.3 — the observability release
 
 ### feat(loop): local-only action log + `sdlc-log` status command (#463)

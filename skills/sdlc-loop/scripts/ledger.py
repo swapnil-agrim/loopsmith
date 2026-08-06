@@ -1087,8 +1087,13 @@ def render(entries, recent=25):
 
 
 def _cell(text):
-    """Keep a free-text value from breaking the markdown table it lands in."""
-    return str(text).replace("|", "\\|").replace("\n", " ").strip()
+    """Keep a free-text value from breaking the markdown table it lands in. Splits on
+    `str.splitlines()` rather than replacing a literal `"\\n"` -- a bare `\\r` (or `\\r\\n`/`\\v`/
+    `\\f`/the rest of CommonMark's line-terminator set) sailed through a `\\n`-only replace
+    untouched and reopened the exact F19/#346 injected-heading symptom (#454), the identical gap
+    watch_classify.py's own independent `_cell()` copy had and fixed in #427/#449 -- mirrored here
+    verbatim so the two copies do not silently diverge on what they guarantee."""
+    return " ".join(str(text).replace("|", "\\|").splitlines()).strip()
 
 
 # --------------------------------------------------------------------------- CLI
