@@ -27,7 +27,8 @@ def test_trivial_goals_get_haiku():
 
 def test_creative_goals_get_fable():
     p = _mod().predict
-    for g in ("draft the product vision", "write the launch blog narrative"):
+    for g in ("draft the product vision", "write the launch blog narrative",
+              "write the storytelling for the launch"):
         assert p(g) == "fable", g
 
 
@@ -46,6 +47,16 @@ def test_no_false_trigger_on_substrings():
     p = _mod().predict
     assert p("update the revision history") == "sonnet"   # 'vision'/'story' are substrings — must not fire
     assert p("improve the provision logic") == "sonnet"
+
+
+def test_agile_story_phrasing_is_not_fable():
+    # bare 'story' is agile jargon (user story / story point / 'Story:' label), not creative
+    # writing — must not route to the fable (creative) tier. Genuine storytelling still does,
+    # via the 'storytell' pattern (see test_creative_goals_get_fable).
+    p = _mod().predict
+    for g in ("Story: add pagination", "Implement the user story for checkout",
+              "Add a story point field"):
+        assert p(g) != "fable", g
 
 
 def test_main_reads_text_and_file(tmp_path):
