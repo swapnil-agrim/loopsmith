@@ -755,6 +755,22 @@ def _validate_event(kind, flags, kind_allowlist=None):
 
 
 def main(argv):
+    """Thin wrapper around `_dispatch` — the ONE place a never-`/sdlc-init`'d `.sdlc` dir (no
+    config.json at all) turns into a clear one-line stderr message instead of a raw traceback
+    (#403). Every verb below calls `state.load_config` at some point before its own logic runs;
+    rather than guard each call site separately, `state.load_config` itself raises the distinctly-
+    typed `state.ConfigMissing` on a missing file (see its docstring), and this is the single
+    catch — so `next`/`next-batch`/`start`/`session-active`, and every other verb that reads
+    config, all get the same graceful handling for free, not just whichever one a bug report
+    happened to name."""
+    try:
+        return _dispatch(argv)
+    except state.ConfigMissing as exc:
+        print(f"loop.py: {exc}", file=sys.stderr)
+        return 2
+
+
+def _dispatch(argv):
     if len(argv) >= 3 and argv[1] == "start":
         state.start_run(argv[2])
         for warning in _config_warnings(state.load_config(argv[2])):

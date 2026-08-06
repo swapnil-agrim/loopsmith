@@ -6,8 +6,32 @@ _spec = importlib.util.spec_from_file_location("frontmatter", _HERE / "frontmatt
 frontmatter = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(frontmatter)
 
 
+class ConfigMissing(Exception):
+    """Raised by load_config() when `.sdlc/config.json` itself does not exist — this directory was
+    never `/sdlc-init`'d (or `/sdlc-setup`'d), as opposed to `_state_file()`'s per-run runtime state
+    (gitignored by design, so ABSENT is the normal fresh-clone case and safe to scaffold on demand —
+    see its own docstring). config.json is different: it is the one file that is never safe to
+    default, because it carries the actual project choices (discovery source, ledger, verify
+    command...) — silently inventing one would run the loop in a mode nobody chose, and could even
+    misreport a genuinely never-set-up repo as an empty-but-configured backlog (`next` -> `DONE`)
+    instead of surfacing the real problem. This is a distinct type (not a bare FileNotFoundError) so
+    a CLI boundary can catch exactly THIS case — a directory needing /sdlc-init — without also
+    swallowing an unrelated FileNotFoundError raised elsewhere in the same call graph and misreporting
+    it with the same "run /sdlc-init" advice. See loop.py `main()`'s dispatch wrapper, the ONE place
+    this is caught and turned into a clear one-line message instead of a raw traceback — every CLI
+    verb here funnels through this same load_config(), so guarding it once covers all of them, not
+    just whichever verb a bug report happens to name (#403)."""
+
+
 def load_config(sdlc_dir):
-    return json.loads((pathlib.Path(sdlc_dir) / "config.json").read_text())
+    try:
+        text = (pathlib.Path(sdlc_dir) / "config.json").read_text()
+    except FileNotFoundError:
+        raise ConfigMissing(
+            f"no config.json under {sdlc_dir} — this .sdlc directory was never initialized. "
+            "Run /sdlc-init to scaffold it (or /sdlc-setup to adopt LoopSmith into an existing repo)."
+        ) from None
+    return json.loads(text)
 
 
 _STATE_TEMPLATE = """# Loop State
