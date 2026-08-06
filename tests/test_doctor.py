@@ -485,6 +485,33 @@ def test_an_absolute_interpreter_path_is_not_flagged():
         assert _by_name(d.check(base, run=_runner()))["verify.command resolves in the goal worktree"]["ok"]
 
 
+def test_flags_a_dot_slash_prefixed_relative_dep_when_work_on():
+    """F23/#351: `./node_modules/…` is still relative to the goal worktree — the lookbehind that
+    exempts absolute paths must not also swallow an explicit `./` prefix."""
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t:
+        base = _sdlc(t, {"work": {"enabled": True},
+                         "verify": {"command": "./node_modules/.bin/eslint ."}})
+        c = _by_name(d.check(base, run=_runner()))["verify.command resolves in the goal worktree"]
+        assert c["ok"] is False and "exit=127" in c["fix"]
+
+
+def test_flags_a_dot_dot_slash_prefixed_relative_dep_when_work_on():
+    """F23/#351: same footgun for `../venv/…` (and repeated `../../…`) — a parent-relative dep path
+    is still relative to the goal worktree, not an absolute path, so it must be flagged too."""
+    d = _doc()
+    with tempfile.TemporaryDirectory() as t1, tempfile.TemporaryDirectory() as t2:
+        base = _sdlc(t1, {"work": {"enabled": True},
+                          "verify": {"command": "../venv/bin/python -m pytest -q"}})
+        c = _by_name(d.check(base, run=_runner()))["verify.command resolves in the goal worktree"]
+        assert c["ok"] is False and "exit=127" in c["fix"]
+
+        base2 = _sdlc(t2, {"work": {"enabled": True},
+                           "verify": {"command": "../../node_modules/.bin/eslint ."}})
+        c2 = _by_name(d.check(base2, run=_runner()))["verify.command resolves in the goal worktree"]
+        assert c2["ok"] is False and "exit=127" in c2["fix"]
+
+
 def test_no_worktree_dep_check_when_work_is_off():
     d = _doc()
     with tempfile.TemporaryDirectory() as t:

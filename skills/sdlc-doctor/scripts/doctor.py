@@ -290,8 +290,10 @@ _CITED = re.compile(r"`([^`\s]*/[^`\s]*)`")
 _MDLINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 _ABSTRACT = re.compile(r"[*?<>{}\[\]]|NNNN|YYYY|\.\.\.")
 #: A RELATIVE .venv/venv/node_modules path in verify.command — a worktree footgun once work.enabled.
-#: The lookbehind excludes a preceding `/` or `.` so an ABSOLUTE path (/x/.venv/…) is never flagged.
-_WORKTREE_DEP = re.compile(r"(?<![\w./])(?:\.venv|venv|node_modules)/")
+#: An explicit `./` or `../` (repeatable) relative prefix is consumed before the dep name so
+#: `./node_modules/…` and `../venv/…` are flagged too. The lookbehind still excludes a preceding
+#: `/` or `.` so an ABSOLUTE path (/x/.venv/…) is never flagged.
+_WORKTREE_DEP = re.compile(r"(?<![\w./])(?:\.\.?/)*(?:\.venv|venv|node_modules)/")
 
 
 def _standing_docs(base):
