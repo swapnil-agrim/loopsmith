@@ -36,6 +36,26 @@ sites inside `_matches`; the already-correct `**`-crosses-`/` behavior (used by 
 `engine/a.py` but not `engine/a/b/c.py`, confirmed to fail with the exact over-match symptom against
 the pre-fix code before passing with the fix.
 
+### fix(collectors): `json_string`/`jesc` now escape `\r` and the rest of the C0 control-byte range (F28/#354)
+`json_string` (duplicated verbatim across `discovery-scan.sh`, `risk-detect.sh`,
+`alignment-collect.sh`, and `completion_gate.sh`) escaped only `\ " \n \t`; its awk-side counterpart
+`jesc` (duplicated across `risk-detect.sh` and `alignment-collect.sh`, used inside the diff-body
+scanners) escaped even less — only `\` and `"`. A value carrying any other C0 control byte (`\r`,
+backspace, form feed, ...) went out raw, producing invalid JSON per RFC 8259, which requires every
+byte U+0000-U+001F to be escaped. Latent in practice (git C-quotes control bytes in the `file` field
+most call sites carry) but genuinely reachable — e.g. alignment-collect.sh's `subject` field is a raw
+commit message. All six copies now escape `\r` (plus `\b`/`\f` for `json_string`) via dedicated
+short-form escapes and fall back to a generic `\uXXXX` for any other byte in the 1-31 range, kept in
+lockstep across every call site (parity-tested). `jesc` (awk) does the fallback with `gsub`/`sprintf`,
+in-process, no forking. `json_string` (bash) does it as ~30 static `${s//$'\NNN'/\uXXXX}` replacements
+resolved at parse time — NOT a runtime loop over `$(printf ...)`, which was tried first and forked up
+to 52 subshells per call regardless of whether the input needed escaping at all (caught in independent
+review: ~700x slower in isolation, ~4-9x slower on real `alignment-collect.sh`/`discovery-scan.sh`
+runs over this repo's own history — both back to within ~2x of pre-fix baseline after the rewrite, with
+byte-identical output proven old vs. new). New `tests/test_json_string_escaping.py` feeds each copy a
+probe covering `\r`, backspace, form feed, a generic C0 byte, and the pre-existing `\ " \n \t`; proven
+to fail with the exact "Invalid control character" symptom against the pre-fix code and pass after.
+
 ### fix(collectors): `churn_hotspots` no longer collapses internal whitespace in a path (F27/#353)
 `alignment-collect.sh`'s `HOTSPOTS_JSON` step stripped the `uniq -c` count via awk's `$1=""`, which
 rebuilds `$0` using a single-space `OFS` — so a path with consecutive spaces or tabs (e.g. `"a  b.py"`)
