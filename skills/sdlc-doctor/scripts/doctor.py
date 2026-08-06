@@ -175,6 +175,18 @@ def _plugin_versions(run):
     return installed, latest
 
 
+#: One placeholder per north-star tier, from the scaffolded template (sdlc_init.py's `_NORTH_STAR`) —
+#: short, distinctive prefixes (not the full strings) so a later wording tweak to the trailing text
+#: doesn't silently break the check. "filled" must clear EVERY tier (F33/#358): a north-star with only
+#: Vision written up used to read as done while Strategy/Design/Architecture still held placeholder text.
+_NORTH_STAR_TIERS = (
+    ("Vision", "<the change you want"),
+    ("Strategy", "<the few things that matter"),
+    ("Design", "<the experience + the principles"),
+    ("Architecture", "<the shape of the system"),
+)
+
+
 def check(sdlc_dir=".sdlc", run=None):
     """Return the setup checks relevant to this project's config; each is {name, ok, fix}."""
     run = run or _real_run
@@ -210,8 +222,10 @@ def check(sdlc_dir=".sdlc", run=None):
 
     ns = base / "context" / "north-star.md"
     if ns.exists():
-        filled = "<the change you want" not in ns.read_text(encoding="utf-8")
-        out.append(_chk("north-star filled", filled, "run /sdlc-vision to fill the tiers"))
+        text = ns.read_text(encoding="utf-8")
+        unfilled = next((tier for tier, placeholder in _NORTH_STAR_TIERS if placeholder in text), None)
+        out.append(_chk("north-star filled", unfilled is None,
+                        f"{unfilled} tier still has placeholder text — run /sdlc-vision to fill the tiers"))
 
     # The ledger is switched on in config but the ops branch has to be created + pushed once per
     # clone; before that a teammate's `init` finds nothing to fetch. Flag it as a real setup gap with
