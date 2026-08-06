@@ -1,11 +1,12 @@
 """Park-&-continue loop driver. run_loop ties the backlog source + run_goal + state; start/next/record are
 the agent's CLI hooks into the same primitives. Budgets (all per-run, reset each invocation):
-max_iterations always enforces; max_minutes enforces by wall-clock from the run's start; max_tokens
-enforces against the host-REPORTED spend counter (`loop.py spend <dir> <n>` — the loop never measures
-spend itself; no reports == no enforcement). An absent/zero key enforces nothing, so a config without
-it behaves exactly as before. The irreversible-action gate is enforced by /sdlc-loop SKILL.md prose.
-Claim and outcome are mirrored to the team ledger (ledger.py) when `ledger.enabled` is on — every
-such call is fail-open, so a ledger problem can never stop a run."""
+max_iterations counts goals completed this run; max_minutes enforces by wall-clock from the run's
+start; max_tokens enforces against the host-REPORTED spend counter (`loop.py spend <dir> <n>` — the
+loop never measures spend itself; no reports == no enforcement). An absent/zero key enforces nothing
+for any of the three, so a config without it behaves exactly as before. The irreversible-action gate
+is enforced by /sdlc-loop SKILL.md prose. Claim and outcome are mirrored to the team ledger
+(ledger.py) when `ledger.enabled` is on — every such call is fail-open, so a ledger problem can never
+stop a run."""
 import os, sys, pathlib, importlib.util, time, subprocess
 
 try:
@@ -58,7 +59,8 @@ def _ensure_watcher(sdlc_dir, config, spawn=None):
 def _budget_spent(cursor, budget):
     """True when ANY configured ceiling is reached. Absent/zero keys never enforce —
     a config without them behaves exactly as before this check existed."""
-    if cursor["run_iteration"] >= budget.get("max_iterations", 20):
+    max_iterations = budget.get("max_iterations")
+    if max_iterations and cursor["run_iteration"] >= max_iterations:
         return True
     minutes = budget.get("max_minutes")
     if minutes and cursor["run_started_at"]:

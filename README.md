@@ -45,10 +45,11 @@ it does not force. It parks on:
 - a hard failure it cannot resolve — recorded as **`failed`** (needs a fix), distinct from
   parked (needs a decision), so the review queue separates the two.
 
-It halts on the **per-run budgets** (`config.json` → `budget`): `max_iterations` always, plus —
-when set — `max_minutes` (wall-clock from the run's start) and `max_tokens` (against spend the host
-reports via `loop.py spend`; no reports means no token enforcement). All reset each invocation and
-are resume-safe (a budget stop, re-run, picks up where it left off). Run
+It halts on the **per-run budgets** (`config.json` → `budget`) — `max_iterations`, `max_minutes`
+(wall-clock from the run's start), and `max_tokens` (against spend the host reports via `loop.py
+spend`; no reports means no token enforcement) — each enforced only when set; an absent/zero key
+enforces nothing. All reset each invocation and are resume-safe (a budget stop, re-run, picks up
+where it left off). Run
 **Overnight without babysitting:** `bash skills/sdlc-loop/scripts/supervise.sh .sdlc` wraps the
 loop in a zero-polling supervisor — blocked while a session runs, and on exit it classifies the
 tail: loop finished → stop; per-run budget → relaunch; **usage-limit exhaustion → sleeps until the

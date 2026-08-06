@@ -239,6 +239,20 @@ def test_absent_optional_budget_keys_enforce_nothing():
         assert kind == "goal"
 
 
+def test_budget_spent_max_iterations_absent_or_zero_enforces_nothing():
+    """F18/#349: the header promises "an absent/zero key enforces nothing" for every budget, but
+    _budget_spent special-cased max_iterations with a `20` default and a plain `>=` -- absent
+    silently capped a run at 20 goals, and an explicit 0 halted it immediately. Both contradicted
+    the docstring one line above the code. max_iterations now follows the same falsy-guard already
+    used here for max_minutes/max_tokens (and already used by next_batch's own remaining-budget cap
+    a few functions down)."""
+    lp = _loop()
+    cursor = {"run_iteration": 37, "run_started_at": 0, "run_tokens": 0}   # 37 > the old 20 default
+    assert lp._budget_spent(cursor, {}) is False                     # absent -- no 20-goal ceiling
+    assert lp._budget_spent(cursor, {"max_iterations": 0}) is False   # explicit zero -- not "spent"
+    assert lp._budget_spent(cursor, {"max_iterations": 37}) is True   # a real cap still enforces
+
+
 def test_start_run_resets_all_run_counters():
     with tempfile.TemporaryDirectory() as d:
         base = _backlog(d, 1)
@@ -529,7 +543,11 @@ def test_next_batch_reports_budget_immediately_when_it_is_already_fully_spent():
         base = _lease_base(d, actor="me", claims=[])
         (pathlib.Path(base) / "config.json").write_text(json.dumps(
             {"ledger": {"enabled": True, "actor": "me", "lease": {"ttl_hours": 0}},
-             "budget": {"max_iterations": 0}}))            # already spent before this batch starts
+             "budget": {"max_iterations": 2}}))
+        (pathlib.Path(base) / "state" / "STATE.md").write_text(
+            "iteration: 0\nrun_iteration: 2\nlast_run: none\n")
+        # cursor already at the 2-goal cap -- genuinely spent (F18/#349: 0 now means "unlimited",
+        # not "already spent", so this fixture can no longer use 0 to fake exhaustion)
         lp = _loop(); src = _Queue(["a", "b", "c", "d"])
         picks = lp.next_batch(base, src, lp.state.load_config(base), max_concurrent=5)
         assert picks == [("BUDGET", None)]                  # not even the first slot fills
@@ -939,7 +957,9 @@ def test_next_releases_the_lock_even_when_budget_is_already_spent():
         base = _lease_base(d, actor="me", claims=[])
         (pathlib.Path(base) / "config.json").write_text(json.dumps(
             {"ledger": {"enabled": True, "actor": "me", "lease": {"ttl_hours": 0}},
-             "budget": {"max_iterations": 0}}))              # already spent
+             "budget": {"max_iterations": 1}}))
+        (pathlib.Path(base) / "state" / "STATE.md").write_text(
+            "iteration: 0\nrun_iteration: 1\nlast_run: none\n")   # already at the cap
         lp = _loop()
         src = _Queue(["a"])
         kind, goal = lp._next(base, src, lp.state.load_config(base))
