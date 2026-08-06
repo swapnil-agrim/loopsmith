@@ -509,3 +509,36 @@ def test_create_tracked_issue_with_blocks_goal_false_never_writes_a_body_marker(
             same_area=False, immediately_actionable=False, blocks_goal=False, source=src)
         assert report["issue"] == "12"
         assert src.body_appends == []
+
+
+def test_create_tracked_issue_non_blocking_cross_area_finding_never_parks_the_filing_goal_via_the_ledger():
+    """PR #466 independent review: backlog_check._ledger_signals() is a SECOND, independent blocking
+    mechanism from the body-marker/_explicit_blockers() channel the test above covers.
+    _ledger_signals() treats any ledger.outstanding() entry (kind="handoff", not yet acked) as a
+    confident block against whatever ledger.handoff_key() resolves to -- and handoff_key() falls back
+    to the FILING goal's own ref whenever no real issue number was recorded (the default outcome for
+    any source without create_dependency, e.g. LocalSource -- discovery.source: local-goals is the
+    kit's own default). same_area=False, blocks_goal=False is a fully sanctioned "cross-area FYI, not
+    a blocker" combination; before the fix it still wrote kind="handoff", so a degraded/local source
+    let the ledger confident-block the FILING goal against its own unresolved entry -- exactly the
+    false-blocking bug blocks_goal exists to prevent, reproduced here end-to-end with the real ledger
+    and real backlog_check (not mocked), mirroring the reviewer's own repro."""
+    handoff = _mod("handoff")
+    bc = _mod("backlog_check")
+
+    class Degraded:
+        """No create_dependency at all -- mirrors LocalSource, the kit's actual default source,
+        which can never return a real issue number."""
+
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(10, _GOAL, state="open")], **_LOOSE)
+        cfg = {"ledger": {"enabled": True, "actor": "amy"}}
+        report = handoff.create_tracked_issue(
+            base, cfg, "10", "engine", "spotted while working this goal, not a blocker",
+            same_area=False, immediately_actionable=True, blocks_goal=False, source=Degraded())
+        assert report["issue"] is None            # the repro precondition: no real issue number
+
+        pack = bc.cross_check(base, "10")
+        blocked = [f for f in pack["findings"] if f["kind"] == "blocked-by"]
+        assert blocked == [], f"the filing goal was incorrectly blocked by its own entry: {blocked}"
+        assert bc.decide(pack, {})["action"] == "proceed"

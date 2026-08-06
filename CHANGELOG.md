@@ -44,7 +44,19 @@ behavior plus one new `area:<area>` label. `blocks_goal` is a third axis the ori
 name: without it, a non-blocking follow-up finding would incorrectly write the `**Blocked by:** #N`
 body marker and get `backlog_check._explicit_blockers()` to auto-park the *current* goal behind an
 issue that was never meant to gate it — a real correctness bug, not a style choice, proven by a
-non-vacuous test on both sides of the axis. `GitHubSource.create_dependency` gains a `goal_label=`
+non-vacuous test on both sides of the axis. Independent PR review then found a SECOND, independent
+route to the same false-blocking bug: `backlog_check._ledger_signals()` treats any
+`ledger.outstanding()` `kind="handoff"` entry as a confident block, and `ledger.handoff_key()` falls
+back to the FILING goal's own ref whenever no real issue number was recorded (the default outcome
+for any source without `create_dependency`, e.g. `LocalSource`) — so a `same_area=False,
+blocks_goal=False` call (a sanctioned "cross-area FYI, not a blocker") still wrote `kind="handoff"`,
+letting a degraded/local source's unresolved entry confident-block the filing goal against itself.
+Fixed by gating the ledger `kind` on `blocks_goal` too: only `(not same_area) and blocks_goal` (a
+genuine cross-area blocking dependency, `hand_off()`'s own always-pinned case) writes
+`kind="handoff"`; everything else writes `kind="note"` (to the resolved owner for the cross-area
+case, to self otherwise) — structurally outside `outstanding()`'s reach either way. New non-vacuous
+test reproduces the bug end-to-end with the real ledger and real `backlog_check` (not mocked).
+`GitHubSource.create_dependency` gains a `goal_label=`
 parameter (default `True`, backward-compatible) so a queued (not immediately-actionable) issue can
 omit the goal label instead of being auto-picked. New `handoff.py track` CLI verb (`--queue
 actionable|queued --assignee same-area|cross-area --blocks yes|no`, every axis a required value
