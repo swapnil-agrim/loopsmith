@@ -110,6 +110,44 @@ def test_load_config_still_raises_normally_on_malformed_json(tmp_path):
         s.load_config(str(d))
 
 
+def test_load_config_raises_clear_error_when_config_json_contains_literal_null(tmp_path):
+    """Regression (#453): config.json containing the valid JSON value `null` parses successfully
+    but produces a NoneType object. Calling .get() on it crashes with a raw AttributeError. This
+    must be caught and reported as ConfigMissing (same as an absent file) — a config.json that
+    parses to non-dict is as unusable as one that doesn't exist, and needs the same /sdlc-init
+    advice."""
+    s = _state()
+    d = tmp_path / ".sdlc"
+    d.mkdir()
+    (d / "config.json").write_text("null")
+    with pytest.raises(s.ConfigMissing) as exc:
+        s.load_config(str(d))
+    assert "config.json" in str(exc.value) and "/sdlc-init" in str(exc.value)
+
+
+def test_load_config_raises_clear_error_when_config_json_is_valid_json_but_not_dict(tmp_path):
+    """Extended regression (#453): not just `null`, but ANY valid JSON that isn't a dict (a list,
+    string, number) should trigger ConfigMissing with the same /sdlc-init advice."""
+    s = _state()
+    d = tmp_path / ".sdlc"
+    d.mkdir()
+
+    # Test with a list
+    (d / "config.json").write_text("[1, 2, 3]")
+    with pytest.raises(s.ConfigMissing):
+        s.load_config(str(d))
+
+    # Test with a string
+    (d / "config.json").write_text('"just a string"')
+    with pytest.raises(s.ConfigMissing):
+        s.load_config(str(d))
+
+    # Test with a number
+    (d / "config.json").write_text("42")
+    with pytest.raises(s.ConfigMissing):
+        s.load_config(str(d))
+
+
 # --- F11/#341: the whole-second staleness hole in done_refusal ---------------------------------
 # `run_started_at` and evidence `at` used to both be `int(time.time())` -- a verify from a PRIOR
 # run at T-0.4s and a run starting at T+0.3s both floor to the same integer second, so the stale

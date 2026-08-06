@@ -22,6 +22,28 @@ already-proven one-liner from #449 -- `" ".join(str(text).replace("|",
 fake `## INJECTED HEADER`, confirmed to render it as its own line (the exact injected-line symptom)
 against the pre-fix code, then confirmed flattened into inert cell content after the fix.
 
+### fix(loop): config.json containing literal `null` crashes with raw AttributeError, not a clear message (#453)
+`config.json` containing the valid JSON value `null` (or any valid JSON non-dict: a list, string,
+or number) parses successfully but produces a non-dict type. The loop verbs (`next`, `start`,
+`next-batch`, etc.) then crash with a raw `AttributeError: 'NoneType' object has no attribute 'get'`
+the first time they call `.get()` on the config they assumed was a dict. Regression: the original
+fix for #403 (guarding absent config.json and surfacing a clear "run /sdlc-init" message) never
+checked whether the parsed JSON was a dict. The contract for config.json is that it must be a JSON
+object — anything else is as unusable as an absent file.
+
+Fix: `state.load_config()` now checks `isinstance(parsed, dict)` after `json.loads()` succeeds. If
+the parsed value is not a dict, it raises `ConfigMissing` with a clear message that includes what
+type was found instead (e.g. "NoneType", "list", "str"), reusing the same catch point in `loop.py`'s
+`main()` (introduced for #403) that already turns `ConfigMissing` into a graceful one-liner stderr
+message. The fix covers all verbs uniformly without needing separate guards — every verb imports
+`loop.py::main()`, which is the single entry point for all CLI verbs and catches the exception once
+for all.
+
+Verified with a non-vacuous regression test that reproduces the bug (confirm it crashes with a raw
+AttributeError before the fix), then confirms the same test now raises `ConfigMissing` after the
+fix, plus an extended test that verifies the fix also handles other valid-JSON non-dicts (lists,
+strings, numbers). Full test suite (1483 tests, 93% coverage) passes; no existing behavior changed.
+
 ## 1.0.3 — the observability release
 
 ### feat(loop): local-only action log + `sdlc-log` status command (#463)
