@@ -42,3 +42,10 @@ def test_skip_passes_over_a_leased_goal():
         _goal(d, "0001", "pending"); _goal(d, "0002", "pending")
         first = str(pathlib.Path(d) / "0001.md")
         assert _disc().next_pending(d, skip={first}).endswith("0002.md")   # 0001 leased -> next is 0002
+
+
+def test_skips_blank_status():
+    # F32: `status:` present but empty (or whitespace-only) must not be treated as runnable.
+    with tempfile.TemporaryDirectory() as d:
+        _goal(d, "0001", ""); _goal(d, "0002", "   "); _goal(d, "0003", "pending")
+        assert _disc().next_pending(d).endswith("0003.md")
