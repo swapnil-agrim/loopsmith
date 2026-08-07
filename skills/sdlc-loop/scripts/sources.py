@@ -28,6 +28,7 @@ def _load(name):
 
 discovery = _load("discovery")
 state = _load("state")
+frontmatter = _load("frontmatter")   # LocalSource.fetch_title_body's title/body split (#519)
 
 
 class LocalSource:
@@ -62,6 +63,23 @@ class LocalSource:
         # Path(goal).stem extracts only the filename component, stripping both directories and extensions, so no traversal is possible (#486).
         with (jdir / (pathlib.Path(goal).stem + ".md")).open("a", encoding="utf-8") as f:
             f.write(f"\n## {ts}\n{text}\n")
+
+    def fetch_title_body(self, goal):
+        """Local-mode counterpart to GitHubSource.fetch_title_body (#519): `goal` is a path to a
+        goal .md file, not an issue number. Title prefers the file's own frontmatter `title:`
+        field (the convention every goal file already carries — see discovery.py's status/lane
+        reads); body is the markdown AFTER the frontmatter fence (`frontmatter.strip`), so a
+        reader like goal_size.classify never counts YAML keys as goal content. Falls back to the
+        bare filename stem when there is no frontmatter title, and to the raw text when the file
+        has no frontmatter fence at all. A missing/unreadable file degrades to `("", "")` rather
+        than raising — the same read-only, never-mutating contract as the GitHub counterpart."""
+        path = pathlib.Path(goal)
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return {"title": "", "body": ""}
+        title = frontmatter.get(text, "title") or path.stem
+        return {"title": title, "body": frontmatter.strip(text)}
 
 
 def _run_gh(args, binary="gh"):
@@ -378,6 +396,23 @@ class GitHubSource:
     def note(self, goal, text):
         # record on the issue timeline (the audit trail): a journey-log / critical-insight comment
         self._run(["issue", "comment", goal, *self._repo_args(), "--body", text])
+
+    def fetch_title_body(self, goal):
+        """Direct, read-only issue title+body — `gh issue view --json title,body` through THIS
+        source's own `_run` chokepoint (never a bare module-level shell-out), so any caller
+        reading through this method (decompose_check, #519) is fully exercised by the same
+        recording-fake tests as every mutating call in this file — a module-level shell-out would
+        bypass the fake and make a zero-mutation test over it vacuous. Returns
+        `{"title": str, "body": str}`; a malformed/empty/non-object response degrades to `""` for
+        either half rather than raising."""
+        raw = self._run(["issue", "view", str(goal), *self._repo_args(), "--json", "title,body"])
+        try:
+            data = json.loads(raw or "{}")
+        except ValueError:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        return {"title": data.get("title") or "", "body": data.get("body") or ""}
 
     def append_to_body(self, goal, marker):
         """Append `marker` to the issue's CURRENT body — never overwrite it — read then write, not

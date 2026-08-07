@@ -672,3 +672,76 @@ def test_complete_removes_in_progress_label_even_when_already_closed():
     assert any(c[0:2] == ["issue", "edit"] and "42" in c and "--remove-label" in c and
                "sdlc:in-progress" in c for c in run.calls), \
         "in-progress label removal missing on the already-closed branch"
+
+
+# --- #519: fetch_title_body() -- the read-only title+body primitive goal_decompose's decompose_check
+# verb drives, routed through each source's own chokepoint (GitHubSource._run / a plain file read) so
+# a test can prove the verb never bypasses it with a module-level shell-out.
+
+def test_github_fetch_title_body_reads_via_run_chokepoint():
+    src = _mod("sources")
+    run = _recording_runner({"view": json.dumps({"title": "an epic issue", "body": "line one\nline two"})})
+    gh = src.GitHubSource({"discovery": {"source": "github", "github": {"repo": "o/r"}}}, run=run)
+    result = gh.fetch_title_body("42")
+    assert result == {"title": "an epic issue", "body": "line one\nline two"}
+    flat = [" ".join(c) for c in run.calls]
+    assert any("issue view 42" in c and "--json title,body" in c and "--repo o/r" in c for c in flat)
+
+
+def test_github_fetch_title_body_degrades_on_malformed_json():
+    src = _mod("sources")
+    run = _recording_runner({"view": "not json"})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    assert gh.fetch_title_body("42") == {"title": "", "body": ""}
+
+
+def test_github_fetch_title_body_degrades_on_a_non_object_payload():
+    src = _mod("sources")
+    run = _recording_runner({"view": json.dumps(["not", "an", "object"])})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    assert gh.fetch_title_body("42") == {"title": "", "body": ""}
+
+
+def test_local_fetch_title_body_prefers_frontmatter_title_and_strips_the_fence():
+    src = _mod("sources")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True)
+        g = base / "goals" / "0001-x.md"
+        g.write_text("---\nid: 0001\nstatus: pending\ntitle: Add an exclaim\n---\n\nMake greet() louder.\n")
+        local = src.get_source(str(base), {})
+        result = local.fetch_title_body(str(g))
+        assert result["title"] == "Add an exclaim"
+        assert result["body"].strip() == "Make greet() louder."
+        assert "title:" not in result["body"]           # frontmatter keys never leak into "body"
+
+
+def test_local_fetch_title_body_falls_back_to_filename_stem_without_a_title():
+    src = _mod("sources")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True)
+        g = base / "goals" / "0002-no-title.md"
+        g.write_text("---\nid: 0002\nstatus: pending\n---\n\nbody only\n")
+        local = src.get_source(str(base), {})
+        result = local.fetch_title_body(str(g))
+        assert result["title"] == "0002-no-title"
+        assert result["body"].strip() == "body only"
+
+
+def test_local_fetch_title_body_with_no_frontmatter_fence_returns_the_raw_text_as_body():
+    src = _mod("sources")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True)
+        g = base / "goals" / "0003.md"
+        g.write_text("just plain text, no fences\n")
+        local = src.get_source(str(base), {})
+        result = local.fetch_title_body(str(g))
+        assert result["title"] == "0003"
+        assert result["body"] == "just plain text, no fences\n"
+
+
+def test_local_fetch_title_body_missing_file_returns_empty_strings():
+    src = _mod("sources")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"
+        local = src.get_source(str(base), {})
+        assert local.fetch_title_body(str(base / "goals" / "nope.md")) == {"title": "", "body": ""}

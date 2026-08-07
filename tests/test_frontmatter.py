@@ -47,3 +47,23 @@ def test_set_field_value_with_backslash_is_literal():
     fm = _mod("frontmatter")
     out = fm.set_field("---\nstatus: pending\n---\n", "status", r"a\1b")
     assert fm.get(out, "status") == r"a\1b"
+
+
+# --- #519: strip() -- the plain-text-after-the-fence half, for a reader (goal_size.classify via
+# sources.LocalSource.fetch_title_body) that wants the goal's own markdown, never its YAML keys.
+
+def test_strip_removes_the_leading_frontmatter_fence():
+    fm = _mod("frontmatter")
+    assert fm.strip(GOAL) == "\nbody text\n"
+
+
+def test_strip_returns_text_unchanged_when_there_is_no_fence():
+    fm = _mod("frontmatter")
+    assert fm.strip("just text, no fences") == "just text, no fences"
+
+
+def test_strip_handles_crlf_line_endings():
+    crlf_goal = "---\r\nid: 0001\r\nstatus: pending\r\n---\r\n\r\nbody text\r\n"
+    fm = _mod("frontmatter")
+    stripped = fm.strip(crlf_goal)
+    assert "id:" not in stripped and "body text" in stripped

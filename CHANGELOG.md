@@ -42,6 +42,16 @@ end-to-end exercise of `action_log`/`agent_watch` against live goals in this rep
 kinds, clean structure, zero anomalies once the two real completion-path bugs above were found and
 fixed.
 
+### feat(loop): deterministic `goal_size` classifier + `decompose-check` verb (#519)
+New opt-in `goal_decompose` config (off by default): a zero-LLM classifier flags a goal whose body
+reads like an epic — oversized word/line count, 3+ independent `##` sections, 4+ top-level
+checkboxes, or explicit multi-phase structure — before the loop spends a token on it. `mode: "log"`
+(default once enabled) only annotates via the local action log; `mode: "park"` parks it for a human
+to split; `mode: "file"` degrades to `park` until the meta-goal-filing branch ships in a follow-up
+slice. A goal already marked as a decomposition child or meta-goal is exempt by construction. Ships
+in `/sdlc-loop`'s step 3 right after the duplicate cross-check, so a duplicate parks as a duplicate
+before decomposition is ever considered.
+
 ## 1.0.6 — the sandbox release
 
 ### fix(loop): six chokepoints across the plugin now reject a path-traversal `goal` (#486)

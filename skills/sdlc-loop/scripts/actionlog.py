@@ -90,7 +90,8 @@ def enabled(config):
 
 #: Mechanically-guaranteed, Python-layer-only kinds — reachable ONLY via `safe_append()`'s
 #: in-process call, never the CLI (see module docstring).
-INTERNAL_KINDS = ("claimed", "worktree_start", "verify_run", "recorded", "gate", "merge_armed")
+INTERNAL_KINDS = ("claimed", "worktree_start", "verify_run", "recorded", "gate", "merge_armed",
+                  "decompose_check")
 INTERNAL_FIELDS = {
     "claimed": (),
     "worktree_start": ("worktree", "branch"),
@@ -98,6 +99,9 @@ INTERNAL_FIELDS = {
     "recorded": ("result", "detail"),
     "gate": ("gate", "verdict", "why"),
     "merge_armed": ("pr",),
+    # loop.py's decompose_check verb (#519), `log` mode only — a classify-and-annotate record,
+    # never an overload of `note` (a free-text field would hide the structured verdict/mode).
+    "decompose_check": ("verdict", "reason", "mode"),
 }
 #: `gate.gate` restricted to these three for INTERNAL writes — the only gates this log records
 #: (work.py's merge/code_review/post_review call sites); mirrors ledger.py's own GATE_KINDS being
