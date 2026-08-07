@@ -242,6 +242,7 @@ def test_read_goal_skips_a_malformed_and_a_blank_line(tmp_path):
 def test_epoch_returns_none_for_unparseable_timestamps():
     assert log._epoch("not a timestamp") is None
     assert log._epoch(None) is None
+    assert log._epoch("2026-08-06T16:34:02Z") is None    # missing the .mmm milliseconds part
 
 
 # --- #486/PR #487 independent review: read_goal() had zero validation on `goal`, unlike
@@ -275,7 +276,6 @@ def test_read_goal_never_discloses_a_real_file_outside_the_sandbox_for_a_travers
 
     assert entries == []
     assert secret.exists() and "TOP-SECRET-PAYLOAD" in secret.read_text()   # untouched, not deleted either
-    assert log._epoch("2026-08-06T16:34:02Z") is None    # missing the .mmm milliseconds part
 
 
 def test_epoch_returns_none_for_a_regex_matching_but_semantically_invalid_date():

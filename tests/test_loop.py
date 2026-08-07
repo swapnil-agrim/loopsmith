@@ -150,6 +150,24 @@ def test_record_done_warns_loudly_when_work_is_off(capsys):
         assert "work.enabled is off" in err and "no branch/commit/PR" in err   # the silent no-PR is now loud
 
 
+def test_record_done_with_verify_enforce_refuses_an_unsafe_goal_cleanly_instead_of_a_raw_traceback():
+    """#487 independent review (B1): `record ... done` under `verify.enforce` reaches
+    `_done_refusal` -> `_evidence_path`, which raises ValueError for an unsafe goal (see
+    state.unsafe_goal_reason) -- but `main`'s dispatch only ever caught `state.ConfigMissing`
+    (#403's docstring), so a traversal goal on this specific path fell through as an uncaught
+    exception: `sys.exit(main(...))` on an uncaught ValueError prints a full traceback and exits 1,
+    unlike every other unsafe-goal site in this same PR, which refuses cleanly with exit 2."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 0)
+        (pathlib.Path(base) / "config.json").write_text(json.dumps(
+            {"verify": {"enforce": True, "command": ""}}))
+        r = subprocess.run([sys.executable, str(S / "loop.py"), "record", base,
+                             "../../../evil-goal", "done"], capture_output=True, text=True)
+        assert r.returncode == 2
+        assert "Traceback" not in r.stderr
+        assert "unsafe goal" in r.stderr
+
+
 def test_start_surfaces_the_work_off_and_verify_traps(capsys):
     with tempfile.TemporaryDirectory() as d:
         base = _backlog(d, 0); lp = _loop()

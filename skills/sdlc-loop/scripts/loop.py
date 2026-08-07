@@ -987,7 +987,14 @@ def _dispatch(argv):
         # _enforce_enabled (not a strict `is True`): F17/#342 — `enforce: 1` / `"true"` must not
         # silently skip this gate just because they aren't the literal bool `True`.
         if argv[4] == "done" and _enforce_enabled(config.get("verify") or {}):
-            refusal = _done_refusal(argv[2], argv[3])
+            # unsafe goal -> ValueError from _evidence_path (see state.unsafe_goal_reason);
+            # caught here (exit 2, matching verify_goal's own unsafe-goal convention) instead of
+            # letting it reach `main`'s ConfigMissing-only catch as a raw traceback.
+            try:
+                refusal = _done_refusal(argv[2], argv[3])
+            except ValueError as exc:
+                print(f"loop.py record: {exc}", file=sys.stderr)
+                return 2
             if refusal:
                 print(f"REFUSED: {refusal} — run `loop.py verify {argv[2]} <goal>` first "
                       "(config verify.enforce is on)", file=sys.stderr)
