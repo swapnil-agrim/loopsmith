@@ -82,6 +82,21 @@ count `+` bullets and a 1-3-space (was: exactly one) gap before `[`. Corpus-vali
 directions: 9/9 real epics still flag (all via checkboxes), 8/8 label-exempted tracking stubs
 (#287-#294) and 12/12 real small/conventionally-shaped goals stay unflagged.
 
+### feat(loop): `goal_decompose`'s `file` mode files an idempotency-guarded "Decompose #N" meta-issue (#522)
+`decompose-check`'s `file` mode no longer just degrades to `park` — it now attempts to file exactly
+ONE tracked meta-issue via `handoff.create_tracked_issue` first, so a flagged goal's split has its
+own tracked home instead of only a park comment. A new strict read
+(`GitHubSource.fetch_comments_strict`, deliberately the opposite of `fetch_title_body`'s degrade-
+to-empty) checks the parent's own comments for a prior `loopsmith:decompose-filed` marker and fails
+CLOSED on any read error — never treating an unreadable timeline as "no marker", never falling
+through to a bare `PROCEED` — so a re-run (this loop, or a concurrent one) can never double-file. A
+backlog source with no issue-creation seam at all (`LocalSource`) degrades honestly to the same
+visible `park` action. The filed meta-issue is itself a normal SDLC goal — the actual decomposition
+(drafting child goals) runs there later, protected by the same plan-review/budget/claims machinery
+every goal already gets, creating children via `handoff.py track`'s new `--body-file` flag (reads a
+file verbatim as the body, for a body too long for a CLI arg). `max_children` (config
+`goal_decompose`) is now read and interpolated into the filed meta-goal's own instructions.
+
 ## 1.0.6 — the sandbox release
 
 ### fix(loop): six chokepoints across the plugin now reject a path-traversal `goal` (#486)

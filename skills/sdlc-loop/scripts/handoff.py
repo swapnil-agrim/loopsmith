@@ -349,15 +349,30 @@ def main(argv):
         if (not goal or not area or not why or queue not in queue_map
                 or assignee not in assignee_map or blocks not in blocks_map):
             print("handoff.py track needs <goal> --area <area> --why <text> "
-                  "--queue actionable|queued --assignee same-area|cross-area --blocks yes|no",
+                  "--queue actionable|queued --assignee same-area|cross-area --blocks yes|no "
+                  "[--priority P --title T --label L --body-file F]",
                   file=sys.stderr)
             return 2
+        # #522: --body-file reads a file verbatim as the new issue's body -- the way the
+        # `goal_decompose` file-mode meta-goal (and any other multi-paragraph tracked issue) hands
+        # `track` a body too long for a CLI arg. Read BEFORE any create so a missing file can never
+        # half-file an issue (ledger._flags parses it to the key "body-file", hyphen kept as-is).
+        body = None
+        body_file = flags.get("body-file")
+        if body_file:
+            try:
+                body = pathlib.Path(body_file).read_text(encoding="utf-8")
+            except OSError as exc:
+                print(f"handoff.py track: could not read --body-file {body_file!r}: {exc}",
+                      file=sys.stderr)
+                return 2
         config = ledger._config(sdlc_dir)
         report = create_tracked_issue(
             sdlc_dir, config, goal, area, why,
             same_area=assignee_map[assignee], immediately_actionable=queue_map[queue],
             blocks_goal=blocks_map[blocks], priority=flags.get("priority", DEFAULT_PRIORITY),
-            title=flags.get("title"), extra_labels=[flags["label"]] if flags.get("label") else ())
+            title=flags.get("title"), body=body,
+            extra_labels=[flags["label"]] if flags.get("label") else ())
         for warning in report["warnings"]:
             print(f"handoff: {warning}", file=sys.stderr)
         print(f"tracked to {report['owner'] or '(unowned)'}"
@@ -381,7 +396,8 @@ def main(argv):
         return 0
     print("usage: handoff.py open <dir> <goal> --area A --why TEXT [--priority P --title T] | "
           "track <dir> <goal> --area A --why TEXT --queue actionable|queued "
-          "--assignee same-area|cross-area --blocks yes|no [--priority P --title T --label L] | "
+          "--assignee same-area|cross-area --blocks yes|no "
+          "[--priority P --title T --label L --body-file F] | "
           f"ack <dir> --issue N | --goal G --state {'|'.join(ledger.STATES)} [--why TEXT]",
           file=sys.stderr)
     return 2

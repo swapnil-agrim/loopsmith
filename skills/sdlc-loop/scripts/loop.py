@@ -550,13 +550,16 @@ def _config_warnings(config):
 
 
 # Ordered, first match wins, case-insensitive, matched against a lowercased `detail`. Every needle
-# below (other than "irreversible" and "needs manual decomposition") is a verbatim substring of
-# real work.py PARK: text, verified against the live source — see .sdlc/plans/139.md Design
-# decision 4 for the file:line each one comes from. "needs manual decomposition" is instead a
-# verbatim substring of loop.py's OWN decompose_check park detail (#519), not work.py's. Unmatched
-# text (including every agent-supplied `loop.py record ... parked "<free text>"`) maps to
-# "unknown", never guessed. None of these needles is currently a substring of another, so the
-# ordering is defensive rather than load-bearing.
+# below (other than "irreversible" and the decompose_check-owned group starting at "needs manual
+# decomposition") is a verbatim substring of real work.py PARK: text, verified against the live
+# source — see .sdlc/plans/139.md Design decision 4 for the file:line each one comes from. The
+# decompose_check group is instead verbatim substrings of loop.py's OWN decompose_check park
+# details, not work.py's: "needs manual decomposition" from #519's `park`/`file`-degrade path, plus
+# five more from #522's real `file`-mode filing. Unmatched text (including every agent-supplied
+# `loop.py record ... parked "<free text>"`) maps to "unknown", never guessed. None of these
+# needles is currently a substring of another EXCEPT "needs manual decomposition" also appearing
+# inside the `file`-mode-with-no-create-seam detail below (both map to the same class, so the
+# overlap is harmless) — the ordering is otherwise defensive rather than load-bearing.
 _REASON_CLASS_RULES = (
     ("irreversible", "irreversible"),                       # SKILL.md's own park-for-irreversible
                                                               # prose — best-effort only, see _reason_class's docstring
@@ -573,6 +576,14 @@ _REASON_CLASS_RULES = (
     ("loopsmith:block", "needs_decision"),
     ("did not converge", "review_cap"),
     ("needs manual decomposition", "needs_decision"),       # loop.py's own decompose_check (#519)
+    # #522: goal_decompose's `file` mode -- five more decompose_check park details, each its own
+    # needle so none of them falls through to the "unknown" default the way relying solely on the
+    # rule above would otherwise leave them.
+    ("file mode needs an issue tracker", "needs_decision"),               # no create seam (local mode)
+    ("could not confirm whether a decomposition was already filed", "no_evidence"),  # idempotency read raised
+    ("decomposition already filed", "dependency"),                        # idempotency hit (marker found)
+    ("failed to file decomposition goal", "needs_decision"),              # create_tracked_issue came back empty
+    ("decomposition filed as #", "dependency"),                           # happy path (assigned or not)
 )
 
 
@@ -650,6 +661,24 @@ def precheck(sdlc_dir, goal, config, source, run=None, now=None):
         return "PROCEED"
 
 
+def _num(cfg, key, default):
+    """Coerce a config value to the default's numeric type, falling back to the default on anything
+    bad (a hand-edited `max_children: "many"` must degrade to the default, not crash the `file`-mode
+    branch). `bool` (an int subclass) is treated as unset. Local copy of `backlog_check.py`'s own
+    `_num` idiom (#522) — this repo's modules deliberately don't share private helpers (see
+    `_flags`'s own docstring one screen up)."""
+    v = cfg.get(key, default)
+    if isinstance(v, bool):
+        return default
+    try:
+        return type(default)(v)
+    except (TypeError, ValueError):
+        return default
+
+
+_DEFAULT_MAX_CHILDREN = 8   # matches config.json.tmpl's own `goal_decompose.max_children` default
+
+
 def decompose_check(sdlc_dir, goal, config, source):
     """Pre-work oversized-goal classifier (OPT-IN via `goal_decompose.enabled is True`), mirroring
     `precheck`'s own shape one section up. Before a picked goal spends a token: read its own title
@@ -657,24 +686,32 @@ def decompose_check(sdlc_dir, goal, config, source):
     `sources.GitHubSource.fetch_title_body`'s own docstring for why that matters for testability),
     skip a goal that is ITSELF a decomposition child or meta-goal (first line of the BODY only —
     see the anchoring note below), then classify what is left with `goal_size.classify` — a
-    deterministic, zero-LLM heuristic. This verb never files anything: the actual decomposition
-    (drafting child goals) runs later as its own normal SDLC goal, protected by the same
-    plan-review/budget/claims machinery every goal already gets — this is detection only.
+    deterministic, zero-LLM heuristic. `log`/`park` never file anything; `file` additionally opens
+    ONE idempotency-guarded "Decompose #N" meta-issue (#522) — even so, the actual decomposition
+    (drafting child goals) always runs LATER as its own normal SDLC goal, protected by the same
+    plan-review/budget/claims machinery every goal already gets. This verb only ever detects, and
+    in `file` mode also files a tracking issue for that later goal to act on — it never decomposes
+    anything itself.
 
     Returns a one-line result the SKILL reads by its first word: 'OFF' (disabled) | 'PARKED
-    <reason>' (parked for a human to split; do not research it, take the next goal) | 'PROCEED'
-    (unflagged, or a decomposition child/meta-goal) | 'PROCEED (flagged: <reason>)' (`log` mode —
-    annotated only, the goal still runs). FAIL-OPEN: any error BEFORE a park decision is made,
-    INCLUDING a config value so malformed the guard itself cannot evaluate it (e.g.
-    `goal_decompose: "on"` instead of a dict — `.get` on a non-dict raises), returns 'PROCEED' with
-    one stderr line — this check must never block or crash the loop, matching `precheck`'s own
-    "gate inside the guard" idiom: disabled / absent / falsy-malformed short-circuits to 'OFF' with
-    no warning, only a genuinely ill-typed value reaches the outer catch. Once a park decision IS
-    made, that guarantee flips: `_record`'s own bookkeeping (cursor/ledger/actionlog) is wrapped in
-    its OWN try/except, separate from the outer one, so a failure there — AFTER `source.park` has
-    already gone out — still reports 'PARKED', never downgrades to 'PROCEED' (a caller reading
-    PROCEED would go implement the very epic-shaped goal this feature exists to catch, stacked on
-    top of it now also being parked on GitHub).
+    <reason>' (parked for a human to split — or, in `file` mode, for the filed meta-goal to pick up
+    later; do not research it, take the next goal) | 'PROCEED' (unflagged, or a decomposition
+    child/meta-goal) | 'PROCEED (flagged: <reason>)' (`log` mode — annotated only, the goal still
+    runs). FAIL-OPEN: any error BEFORE a park decision is made, INCLUDING a config value so
+    malformed the guard itself cannot evaluate it (e.g. `goal_decompose: "on"` instead of a dict —
+    `.get` on a non-dict raises), returns 'PROCEED' with one stderr line — this check must never
+    block or crash the loop, matching `precheck`'s own "gate inside the guard" idiom: disabled /
+    absent / falsy-malformed short-circuits to 'OFF' with no warning, only a genuinely ill-typed
+    value reaches the outer catch. Once a park decision IS made, that guarantee flips: `_record`'s
+    own bookkeeping (cursor/ledger/actionlog) is wrapped in its OWN try/except (the `_park` helper
+    below, R9/#522 — the ONE place every `park`-mode and `file`-mode exit routes through), separate
+    from the outer one, so a failure there — AFTER `source.park` has already gone out — still
+    reports 'PARKED', never downgrades to 'PROCEED'. `file` mode's own multi-step sequence (steps
+    1-4 below) carries the identical guarantee one level up: it runs inside its OWN inner
+    try/except, so ANY failure partway through — even `create_tracked_issue` unexpectedly raising,
+    breaking its own documented "never raises" contract — still reaches `_park`, never the outer
+    catch (a caller reading PROCEED would go implement the very epic-shaped goal this feature
+    exists to catch, possibly on top of a real GitHub issue this run already filed against it).
 
     Anchoring: the refusal guards match ONLY the first line of the BODY (`.splitlines()[:1]`,
     CRLF-tolerant) — never the title, and never a marker that only appears further down the body —
@@ -690,16 +727,22 @@ def decompose_check(sdlc_dir, goal, config, source):
 
     mode: 'log' (default once enabled) classifies + annotates via the local action log, zero
     mutation ever. 'park' parks a flagged goal (`_record`, the same chokepoint every other outcome
-    goes through) for a human to split. 'file' behaves as 'park' in this slice — the meta-goal-
-    filing branch ships later; degrading a deliberate opt-in to the safe VISIBLE action is correct
-    (a hard OFF here would silently implement an oversized goal, inverting the operator's intent).
-    An unrecognized mode string warns once to stderr and falls back to 'log' — the printed result
+    goes through) for a human to split. 'file' (#522) parks too, but FIRST attempts to file ONE
+    idempotency-guarded "Decompose #N" meta-issue via `handoff.create_tracked_issue`: a strict read
+    (`source.fetch_comments_strict`) checks the parent's own comments for a prior
+    `loopsmith:decompose-filed` marker first, so a re-run (this loop, or a concurrent one) can never
+    double-file — that read failing (or the source not offering it at all) fails CLOSED to a park,
+    never silently treated as "no marker". A backlog source with no issue-creation seam at all
+    (`hasattr(source, "create_dependency")` false — e.g. `LocalSource`) degrades honestly to the
+    same visible `park` action, never a false "failed to file" park with nothing behind it. An
+    unrecognized mode string warns once to stderr and falls back to 'log' — the printed result
     always stays inside the OFF | PARKED | PROCEED vocabulary above, never `None`."""
     try:
         gd = config.get("goal_decompose") or {}
         if gd.get("enabled") is not True:
             return "OFF"                                                  # gate inside the guard: a
-        body = (source.fetch_title_body(goal) or {}).get("body") or ""    # malformed config -> PROCEED
+        title_body = source.fetch_title_body(goal) or {}                  # malformed config -> PROCEED
+        body = title_body.get("body") or ""
         gs = _load("goal_size")                     # single load, reused below for classify() too
         first_line = body.splitlines()[:1]
         first_line = first_line[0] if first_line else ""
@@ -717,22 +760,109 @@ def decompose_check(sdlc_dir, goal, config, source):
             actionlog.safe_append(sdlc_dir, goal, "decompose_check",
                                    verdict="flagged", reason=reason, mode=mode)
             return f"PROCEED (flagged: {reason})"
-        # park (and file, until its own filing branch ships): visible, human-actionable, never a
-        # silently-implemented epic.
-        detail = f"too large per goal_size ({reason}) — needs manual decomposition"
-        # `detail` is built BEFORE calling `_record`, and `_record` gets its OWN try/except here,
-        # separate from the outer one below: `_record` calls `source.park` FIRST, then cursor /
-        # ledger / actionlog bookkeeping — once that park mutation has actually gone out, a LATER
-        # bookkeeping failure must never downgrade this to PROCEED (a caller reading PROCEED would
-        # go implement the very epic-shaped goal this feature exists to catch, on top of it now
-        # ALSO being parked on GitHub). So a park decision, once made, is reported as PARKED no
-        # matter what happens next — only the read/classify path above is allowed to fail open.
+
+        def _park(detail):
+            # R9/#522: the one guarded park exit every `park`-mode AND `file`-mode branch below
+            # routes through — `detail` is built BEFORE calling `_record`, which gets its OWN
+            # try/except here, separate from the outer one further down: `_record` calls
+            # `source.park` FIRST, then cursor/ledger/actionlog bookkeeping — once that park
+            # mutation has actually gone out, a LATER bookkeeping failure must never downgrade this
+            # to PROCEED (a caller reading PROCEED would go implement the very epic-shaped goal this
+            # feature exists to catch, on top of it now ALSO being parked on GitHub). So a park
+            # decision, once made, is reported as PARKED no matter what happens next.
+            try:
+                _record(sdlc_dir, source, goal, "parked", detail)
+            except Exception as e:
+                print(f"loop.py decompose-check: park record failed after park — "
+                      f"treating as PARKED anyway: {e}", file=sys.stderr)
+            return "PARKED " + detail
+
+        base_detail = f"too large per goal_size ({reason}) — needs manual decomposition"
+        if mode == "park":
+            return _park(base_detail)
+
+        # mode == "file" (#522): park AND file one idempotency-guarded "Decompose #N" meta-issue --
+        # the actual decomposition (drafting children) runs LATER as its own normal SDLC goal.
+        if not hasattr(source, "create_dependency"):
+            # no issue-creation seam at all (e.g. LocalSource) -- degrade to the visible park action
+            # rather than a false "failed to file" park with nothing behind it.
+            return _park(base_detail + " (file mode needs an issue tracker)")
         try:
-            _record(sdlc_dir, source, goal, "parked", detail)
+            # step 1: idempotency read -- direct read of the PARENT's own timeline, never a search
+            # (search-API results are only eventually consistent, #447). Fails CLOSED on both "no
+            # such method" and "the method raised": either way we cannot confirm there is no marker,
+            # so the only safe answer is the same park a genuine hit would give.
+            fetch_strict = getattr(source, "fetch_comments_strict", None)
+            if fetch_strict is None:
+                return _park("could not confirm whether a decomposition was already filed — "
+                             "check comments")
+            try:
+                strict = fetch_strict(goal)
+            except Exception:
+                # NEVER treat an unreadable timeline as "no marker" -- that could double-file the
+                # meta-issue -- and never fall through to the outer catch's PROCEED either.
+                return _park("could not confirm whether a decomposition was already filed — "
+                             "check comments")
+            dg = _load("decompose_goal")
+            comments = (strict or {}).get("comments") or []
+            if any(dg.DECOMPOSE_FILED_MARKER in (c.get("body") or "")
+                   for c in comments if isinstance(c, dict)):
+                return _park("decomposition already filed — see comments")
+
+            # step 2: create exactly ONE meta-issue. area/priority ride the parent's own labels
+            # (fetched in the same strict read above) so the filed issue lands in the right area
+            # instead of a made-up default, wherever the parent itself was already triaged.
+            names = {(l.get("name") or "") for l in ((strict or {}).get("labels") or [])
+                     if isinstance(l, dict)}
+            area = next((n[len("area:"):] for n in names if n.startswith("area:")), "unknown")
+            parent_priority = next((n[len("priority:"):] for n in names
+                                    if n.startswith("priority:")), None)
+
+            hf = _load("handoff")
+            meta_title = f"Decompose #{goal}: {title_body.get('title') or ''}"[:256]
+            meta_body = dg.render_meta_body(goal, _num(gd, "max_children", _DEFAULT_MAX_CHILDREN))
+            report = hf.create_tracked_issue(
+                sdlc_dir, config, goal=goal, area=area,
+                why="oversized goal — needs decomposition before implementation",
+                same_area=True, immediately_actionable=True, blocks_goal=False,
+                priority=parent_priority or hf.DEFAULT_PRIORITY,
+                title=meta_title, body=meta_body,
+                extra_labels=["sdlc:decompose", "model:daily"], source=source)
+
+            warnings = list(report["warnings"])
+            m = report.get("issue")
+            if not m:
+                detail = "too large — failed to file decomposition goal"
+                if warnings:
+                    detail += ": " + "; ".join(warnings)
+                return _park(detail + " — needs a human")
+
+            # step 3: marker comment on the parent -- source.note() is UNGUARDED by
+            # create_tracked_issue itself for this specific call (it already posted its OWN
+            # narrative note above), so this call needs its own try/except here.
+            try:
+                source.note(str(goal), dg.filed_marker_comment(m))
+            except Exception as e:
+                # the marker only matters if the park below then ALSO somehow fails to record --
+                # fold it into the eventual park detail and keep going, never abort the park itself.
+                warnings.append(f"could not post the decompose-filed marker: {e}")
+
+            # step 4: park the parent.
+            assignee_applied = getattr(source, "last_assignee_applied", True)
+            if assignee_applied:
+                detail = f"too large per goal_size ({reason}) — decomposition filed as #{m}"
+            else:
+                detail = (f"too large per goal_size ({reason}) — decomposition filed as #{m} but "
+                          "unassigned — a human must assign it before any loop can see it")
+            if warnings:
+                detail += " (" + "; ".join(warnings) + ")"
+            return _park(detail)
         except Exception as e:
-            print(f"loop.py decompose-check: park record failed after park — "
-                  f"treating as PARKED anyway: {e}", file=sys.stderr)
-        return "PARKED " + detail
+            # R8/#522: anything above raising unexpectedly -- including create_tracked_issue's own
+            # documented "never raises" contract somehow breaking -- must still park, never bubble
+            # to the OUTER catch below (which would answer PROCEED for a goal that may already have
+            # a real GitHub issue filed against it this run).
+            return _park(base_detail + f" — file-mode filing hit an unexpected error ({e})")
     except Exception as e:
         print(f"loop.py decompose-check: non-fatal ({e}) — proceeding", file=sys.stderr)
         return "PROCEED"

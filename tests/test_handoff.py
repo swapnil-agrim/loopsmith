@@ -446,6 +446,58 @@ def test_cli_track_reports_what_it_did(tmp_path, capsys, monkeypatch):
     assert entry["kind"] == "note" and entry["to"] == "amy"
 
 
+def test_cli_track_body_file_round_trips_the_file_contents(tmp_path, monkeypatch):
+    """#522: `--body-file` reads a file verbatim as the new issue's body -- the one way
+    decompose_check's `file` mode (and the meta-goal it files) hands `track` a body longer than a
+    CLI arg should carry."""
+    sdlc = _project(tmp_path)
+    captured = {}
+
+    class CapturingSource(FakeSource):
+        def create_dependency(self, title, body, assignee, labels=(), goal_label=True):
+            captured["body"] = body
+            return super().create_dependency(title, body, assignee, labels=labels, goal_label=goal_label)
+
+    monkeypatch.setattr(handoff.sources, "get_source", lambda *a, **k: CapturingSource())
+    body_path = tmp_path / "child-body.md"
+    body_path.write_text("<!-- loopsmith:decomposed-from=#7 -->\nchild body content\nwith multiple lines\n")
+
+    assert handoff.main(["handoff.py", "track", str(sdlc), "7", "--area", "engine",
+                         "--why", "child issue", "--queue", "actionable",
+                         "--assignee", "same-area", "--blocks", "no",
+                         "--body-file", str(body_path)]) == 0
+    assert captured["body"] == body_path.read_text()
+
+
+def test_cli_track_body_file_missing_file_refuses_before_creating_anything(tmp_path, capsys, monkeypatch):
+    """Read BEFORE any create, per the CLI convention (stderr + exit 2, precedent
+    tests/test_handoff.py::test_cli_track_requires_the_three_value_flags) -- a missing --body-file
+    must never half-file an issue with an empty/wrong body."""
+    sdlc = _project(tmp_path)
+
+    def boom(*a, **k):
+        raise AssertionError("must never resolve a backlog source before the body file is read")
+
+    monkeypatch.setattr(handoff.sources, "get_source", boom)
+    missing = tmp_path / "does-not-exist.md"
+
+    rc = handoff.main(["handoff.py", "track", str(sdlc), "g.md", "--area", "engine",
+                       "--why", "x", "--queue", "actionable", "--assignee", "same-area",
+                       "--blocks", "no", "--body-file", str(missing)])
+
+    assert rc == 2
+    assert "body-file" in capsys.readouterr().err.lower()
+    assert ledger.read_all(sdlc) == []
+
+
+def test_cli_track_usage_strings_mention_body_file(capsys):
+    sdlc_missing_area = "irrelevant"
+    assert handoff.main(["handoff.py", "track", sdlc_missing_area, "g.md"]) == 2
+    assert "--body-file" in capsys.readouterr().err
+    assert handoff.main(["handoff.py"]) == 2
+    assert "--body-file" in capsys.readouterr().err
+
+
 def test_cli_ack_validates_the_state(tmp_path, capsys):
     sdlc = _project(tmp_path)
     assert handoff.main(["handoff.py", "ack", str(sdlc), "--issue", "61", "--state", "maybe"]) == 2
@@ -642,3 +694,18 @@ def test_run_gh_attaches_the_short_hint_separately_from_the_full_message(monkeyp
         assert exc.hint == "could not add assignees to issue: 'x' is not an assignable user"
         assert "a very long body" in str(exc)            # the full message is unchanged, still useful
         assert "a very long body" not in exc.hint         # but .hint alone stays short
+
+
+# ------------------------------------------------------------------ #522: docs mention --body-file
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def test_readme_documents_track_body_file():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "--body-file" in readme
+
+
+def test_skill_documents_track_body_file():
+    skill = (ROOT / "skills" / "sdlc-loop" / "SKILL.md").read_text(encoding="utf-8")
+    assert "--body-file" in skill

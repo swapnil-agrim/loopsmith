@@ -254,7 +254,7 @@ Everything optional ships OFF — `/sdlc-doctor` prints this dashboard live (`do
 | `parallel: {"enabled": true}` | off | a goal's independent slices run concurrently in waves (`max_concurrent`, default 3) from `.sdlc/plans/<goal>.slices.json` |
 | `parallel: {"goals": {"enabled": true}}` | off | `next-batch` returns up to `max_concurrent` (default 3) BACKLOG GOALS at once for one person's own concurrent subagents, one worktree+PR each |
 | `backlog_check: {"enabled": true}` | off | pre-work cross-check: parks a picked goal that duplicates / is obsoleted-by / is blocked-by other backlog items, before any token spend — includes a bounded comment-read fallback for a human-authored, comment-only dependency marker; a goal marked as a decomposition child/meta-goal (first-line `loopsmith:decomposed-from=`/`decompose-of=`) is exempt from the duplicate/obsolete/in-flight-similarity signals, never from an explicit blocker or a recorded hand-off; `/sdlc-doctor` flags one that's still silently ignored |
-| `goal_decompose: {"enabled": true}` | off | pre-work oversized-goal classifier: a zero-LLM check flags (`mode: "log"`, default) or parks (`mode: "park"`) a picked goal whose body reads like an epic, before any token spend; thresholds are PROVISIONAL (fixture-tested, not yet fit to a real corpus) — prefer `log` until a follow-up slice retunes them; a decomposition child/meta-goal is exempt by construction |
+| `goal_decompose: {"enabled": true}` | off | pre-work oversized-goal classifier: a zero-LLM check flags (`mode: "log"`, default) or parks (`mode: "park"`) a picked goal whose body reads like an epic, before any token spend; `mode: "file"` additionally files one idempotency-guarded "Decompose #N" meta-issue before parking (`max_children` caps its own later split); thresholds are corpus-calibrated against this repo's own issue history (see `goal_size.py`); a decomposition child/meta-goal is exempt by construction |
 | `work: {"enabled": true}` | off | one worktree + branch + PR per goal; your checkout never moves, and `verify_command` runs in the goal's own tree |
 | `work.auto_merge` | `"off"` | `"protected"` merges only where the base *requires* checks/reviews; `"always"` merges any clean+safe PR. A fork or read-only repo never merges — it opens the PR and records `done` |
 | `work.require_review` | `"off"` | a real PR-review gate, independent of branch protection: `"changes"` parks on a Request-changes / unresolved thread; `"approval"` also requires an APPROVED PR before merging |
@@ -630,6 +630,11 @@ machine-readable `**Blocked by:** #N` marker `handoff.py open` does; `--blocks n
 the issue without parking anything — a related finding should never auto-park unrelated work.
 `handoff.py open` is a thin wrapper over this same machinery (`--assignee cross-area --blocks yes`,
 always), so both commands share one label/assignee/ledger discipline instead of two.
+
+`--title T` sets the new issue's title; `--body-file F` reads a file **verbatim** as its body — for
+a body too long or too structured for a CLI arg (the `goal_decompose` `file`-mode meta-issue is the
+first caller). The file is read *before* anything is created, so a missing path is a hard usage
+error (exit 2, nothing written) rather than a half-filed issue.
 
 ### Sharing it — an ops branch that never touches your working tree
 

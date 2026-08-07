@@ -77,8 +77,10 @@ Then repeat until the helper says stop:
    body at **zero LLM cost** (a goal already marked as a decomposition child or meta-goal is exempt
    by construction), then either:
    - prints **`PARKED <reason>`** — the goal reads like an epic (oversized per the classifier) and
-     has already been parked for a human to split it. **Do not research it: loop back to step 1**
-     and take the next goal. (The park counts as one iteration.)
+     has already been parked for a human to split it (`mode: "file"` also files one
+     idempotency-guarded "Decompose #N" meta-issue before parking, so the split has its own tracked
+     home). **Do not research it: loop back to step 1** and take the next goal. (The park counts as
+     one iteration.)
    - prints **`PROCEED`** (optionally `(flagged: <reason>)`, `log` mode having only annotated) →
      carry on below.
 
@@ -193,9 +195,10 @@ Then repeat until the helper says stop:
    blocker already goes through `handoff.py open`:
    `python3 "${CLAUDE_SKILL_DIR}/scripts/handoff.py" track .sdlc "$goal" --area <area> --why "<what
    you found>" --queue actionable|queued --assignee same-area|cross-area --blocks yes|no [--priority
-   P0|P1|P2] [--label sdlc:followup]`. All three value-flags are required, with no default, on
-   purpose. Choose `--queue queued` for anything not urgent enough to jump the backlog (the usual
-   case); reserve `--queue actionable` for something that genuinely should be picked up next. Choose
+   P0|P1|P2] [--label sdlc:followup] [--title T] [--body-file F]`. All three value-flags are
+   required, with no default, on purpose. Choose `--queue queued` for anything not urgent enough to
+   jump the backlog (the usual case); reserve `--queue actionable` for something that genuinely
+   should be picked up next. Choose
    `--assignee same-area` to file it to yourself — you're already working this area; `--assignee
    cross-area` routes it through CODEOWNERS like `open` does. Choose `--blocks yes` ONLY when the
    *current* goal truly cannot proceed until the new issue lands — getting this wrong incorrectly
