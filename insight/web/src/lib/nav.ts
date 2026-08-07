@@ -1,30 +1,45 @@
 // SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
-// issue #305 [E17.S4], .sdlc/plans/305.md Decision 3.
+// issue #305 [E17.S4], .sdlc/plans/305.md Decision 3 (the original, placeholder-list shape).
+// issue #311 [E19.S3], .sdlc/plans/311.md Decision 2 (this file's full rewrite: NAV_ITEMS ->
+// navItemsFor(), role-aware, derived from route-policy.ts's own table).
 //
-// Plain, browser-free nav data -- deliberately kept OUT of Shell.tsx (no React import here) so
-// scripts/prove-nav-items.mjs can compile and assert on it without a JSX-capable scratch dir. No
-// auth/session/role import anywhere in this file -- done-when 3 says the nav is "a placeholder
-// list" until E19.S3 makes it role-aware; inventing an auth model here would be scope creep this
-// story explicitly rejects.
+// Plain, browser-free nav derivation -- deliberately kept OUT of Shell.tsx (no React import here)
+// so scripts/prove-nav-items.mjs can compile and assert on it without a JSX-capable scratch dir.
+// The only import is route-policy.ts (also framework-free -- no next/react/next-auth import
+// anywhere in it), so navItemsFor() stays callable from a plain `tsc`-compiled scratch dir with
+// zero DOM, exactly as NAV_ITEMS was before this story.
+import {
+  SHARED_AUTHENTICATED_ROUTES, ROLE_ROUTES, isKnownRole, representativePath,
+} from "./auth/route-policy";
+
 export interface NavItem {
   readonly label: string;
-  /** Present only for routes that exist today. Absent -> rendered as an inert placeholder. */
-  readonly href?: string;
+  readonly href: string; // ALWAYS present -- see navItemsFor()'s own comment for why.
 }
 
-// Only "Home" carries an href -- "/" is the only production route that exists. The other five
-// labels are copied verbatim from spec §8's own E20 ("Dashboards") story list (Delivery panel ·
-// Manager · Leadership · IC · Cross-functional), not invented, so the shell composes the real,
-// already-approved product shape. /dev/absence-states is deliberately never listed here, in
-// either linked or placeholder form -- it's env-gated out of every production build
-// (INSIGHT_DEV_ROUTES), so a nav entry pointing at it would 404 for every real user. See that
-// page's own header comment for the permanent decision, and the dev-route guard below in
-// prove-nav-items.mjs for the mechanical enforcement.
-export const NAV_ITEMS: readonly NavItem[] = [
-  { label: "Home", href: "/" },
-  { label: "Delivery panel" },
-  { label: "Manager" },
-  { label: "Leadership" },
-  { label: "IC" },
-  { label: "Cross-functional" },
-];
+/** The nav a session with `role` (possibly unknown/absent) and `hasSession` may see. Mirrors
+ *  decide()'s own three-gate shape on purpose (route-policy.ts's decide()) -- session gate first
+ *  (no session -> nothing, not even Home: the shared carve-out never applies without a session
+ *  either), then the SAME unconditional shared-route allowance decide() gives every session
+ *  regardless of role, then the SAME per-role gate. An item is included ONLY when its table entry
+ *  both HAS a navLabel and IS implemented -- an entry allowed by policy but not yet built (e.g.
+ *  ROLE_ROUTES.manager today) is never emitted, which is what keeps nav free of dead links to E20
+ *  routes that don't exist yet. Every item this function returns therefore always has an `href` --
+ *  there is no "placeholder" case left; an item nav cannot yet link to is simply never returned,
+ *  not returned hrefless. */
+export function navItemsFor(hasSession: boolean, role: string | undefined): readonly NavItem[] {
+  if (!hasSession) return [];
+  const items: NavItem[] = [];
+  for (const entry of SHARED_AUTHENTICATED_ROUTES) {
+    if (entry.navLabel && entry.implemented) {
+      items.push({ label: entry.navLabel, href: representativePath(entry) });
+    }
+  }
+  if (isKnownRole(role)) {
+    const entry = ROLE_ROUTES[role];
+    if (entry.navLabel && entry.implemented) {
+      items.push({ label: entry.navLabel, href: representativePath(entry) });
+    }
+  }
+  return items;
+}

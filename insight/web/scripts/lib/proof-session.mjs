@@ -145,10 +145,41 @@ export async function mintSessionToken(role = "admin", actor = "proof-user") {
   return mintTokenForCookieName(SESSION_COOKIE_NAME, role, actor);
 }
 
-/** A Playwright context carrying a valid Auth.js session for `baseUrl`. */
-export async function authenticatedContext(browser, baseUrl) {
-  const token = await mintSessionToken("admin");
+/** A Playwright context carrying a valid Auth.js session for `baseUrl`. `role` defaults to
+ * "admin" (matching mintSessionToken's own default, issue #311 [E19.S3]) so both pre-existing call
+ * sites (prove-absence-primitives-render.mjs, prove-session-revocation-and-expiry.mjs) keep
+ * compiling and behaving identically when the parameter is omitted -- prove-shell-responsive-
+ * frame.mjs is the only caller that now passes a real role, to render nav per-role.
+ *
+ * issue #311 [E19.S3]: found live, not anticipated -- sets BOTH cookie names (SECURE_SESSION_
+ * COOKIE_NAME's own comment above, and sessionCookieHeader()'s same reasoning), not just the plain
+ * one. Before this story no Playwright proof's ASSERTIONS depended on what a Server Component's
+ * own no-argument auth() call saw (proxy.ts's separate, request-carrying auth() call -- the one
+ * that gates access -- always found the plain cookie fine); nav is the first thing a Playwright
+ * proof checks that is COMPUTED from Shell.tsx's own `await auth()` result, and that call always
+ * looks for the __Secure- prefixed name regardless of scheme (same quirk /ic's page.tsx already
+ * hit, per #310). A context carrying only the plain cookie makes Shell.tsx see `session === null`
+ * and render an EMPTY nav even on an otherwise-successful, non-redirected page load -- reproduced
+ * live via `npm run prove:shell-responsive` before this fix, not merely reasoned about. */
+export async function authenticatedContext(browser, baseUrl, role = "admin") {
+  const actor = "proof-user";
+  const [plain, secure] = await Promise.all([
+    mintTokenForCookieName(SESSION_COOKIE_NAME, role, actor),
+    mintTokenForCookieName(SECURE_SESSION_COOKIE_NAME, role, actor),
+  ]);
   const context = await browser.newContext();
-  await context.addCookies([{ name: SESSION_COOKIE_NAME, value: token, url: baseUrl }]);
+  await context.addCookies([
+    { name: SESSION_COOKIE_NAME, value: plain, url: baseUrl },
+    // Chrome enforces the "__Secure-" cookie-name PREFIX itself (RFC 6265bis), independent of and
+    // in addition to auth.ts's own useSecureCookies logic: a cookie named "__Secure-*" must carry
+    // `secure: true`, AND (found live, empirically, after `secure: true` alone still failed) CDP's
+    // Storage.setCookies rejects a Secure cookie specified via `url` on a plain-http origin --
+    // `domain`/`path` must be given explicitly instead of `url` for this one. Chrome still SENDS a
+    // Secure cookie over this proof's plain http://127.0.0.1 origin once set: loopback addresses
+    // are a "potentially trustworthy origin" per the Secure Contexts spec, the same carve-out
+    // secure.ts's own LOOPBACK_HOSTS constant relies on for the opposite (server-side) half of this
+    // story.
+    { name: SECURE_SESSION_COOKIE_NAME, value: secure, domain: new URL(baseUrl).hostname, path: "/", secure: true },
+  ]);
   return context;
 }

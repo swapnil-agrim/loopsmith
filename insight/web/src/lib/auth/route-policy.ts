@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
 // issue #307 [E18.S2], .sdlc/plans/307.md Decisions 2/3/7 (public-vs-private, the original shape).
 // issue #309 [E19.S1], .sdlc/plans/309.md Decisions 1-4 (the role matrix, the "forbid" verdict).
+// issue #311 [E19.S3], .sdlc/plans/311.md Decision 1 (navLabel/implemented added to every entry so
+// nav.ts and the proofs read reachability off the SAME table decide() reads -- no second copy).
 //
 // THE single source of truth for "which app routes are public, which need a role, and which
 // role." Imported by BOTH proxy.ts (to decide a real request) and this repo's route-privacy proof
@@ -57,13 +59,43 @@ export function isKnownRole(role: string | undefined): role is Role {
   return typeof role === "string" && (KNOWN_ROLES as readonly string[]).includes(role);
 }
 
-interface RoutePattern {
+export interface RoutePattern {
   readonly exact?: readonly string[];
   readonly prefix?: readonly string[];
 }
 
+// issue #311 [E19.S3] Decision 1: nav-only metadata, riding along on the SAME table entries
+// decide() reads, instead of a second `Record<Role, ...>` that could drift on shape. `implemented`
+// is read ONLY by src/lib/nav.ts's navItemsFor() -- decide() and proxy.ts never look at it, so
+// enforcement is byte-for-byte unchanged by this story; a nav-only flag that gated enforcement
+// would be a security regression.
+interface RouteMeta {
+  /** Nav label. Absent -> this entry never appears in nav, for any role, ever -- independent of
+   *  `implemented`. The one entry this is used for today: /dev/absence-states (shared + implemented,
+   *  but env-gated out of every production build, exactly the reason nav.ts's OLD header comment
+   *  already recorded before this story). */
+  readonly navLabel?: string;
+  /** True iff a real page/route handler exists on disk for this pattern TODAY. Independent of
+   *  policy: decide() governs a reserved-but-unbuilt route the moment it is listed here regardless
+   *  of this flag (this file's own ROLE_ROUTES comment, unchanged by this story) -- ONLY nav
+   *  reachability consults `implemented`. An E20 story flips one `false` to `true` in place, in
+   *  this same file, when its page lands -- no second file to remember to edit. */
+  readonly implemented: boolean;
+}
+
 function matchesPattern(pathname: string, pattern: RoutePattern): boolean {
   return matchesRoutes(pathname, pattern.exact ?? [], pattern.prefix ?? []);
+}
+
+/** One representative path per table entry -- `exact[0]` if present, else `prefix[0]`. For a
+ *  prefix-matched pattern this is what "the full cross product" means (issue #311's own resolution):
+ *  one path per TABLE ENTRY, not an enumeration of infinite children. Exported so nav.ts and every
+ *  proof read the identical derivation, never retype a route string -- the exact defect issue #311
+ *  fixes (prove-role-route-matrix.mjs's old hand-typed `OWN_ROUTE` map). */
+export function representativePath(pattern: RoutePattern): string {
+  const [first] = pattern.exact ?? pattern.prefix ?? [];
+  if (!first) throw new Error("route pattern has neither exact nor prefix entries");
+  return first;
 }
 
 // issue #309 Decision 3: routes any AUTHENTICATED session may reach regardless of role -- the
@@ -76,7 +108,18 @@ function matchesPattern(pathname: string, pattern: RoutePattern): boolean {
 // EXPLICIT list -- a route lands here only by a deliberate edit, same discipline as every other
 // list in this file. /dev/absence-states's OWN env gate (INSIGHT_DEV_ROUTES, checked inside the
 // page itself) still removes it from real production, unrelated to and unchanged by this list.
-const SHARED_AUTHENTICATED_ROUTES: RoutePattern = { exact: ["/", "/dev/absence-states"] };
+//
+// issue #311 [E19.S3]: exported (was module-private) so nav.ts and the rewritten proofs can read
+// it, and widened from one RoutePattern with a two-element `exact` array to an array of
+// one-route-each entries so each route can carry its own navLabel/implemented independently --
+// "/" is a real, linked nav item; "/dev/absence-states" is implemented but has no navLabel, so it
+// never appears in nav (env-gated out of production regardless). decide()'s shared-route check
+// below becomes `.some(...)` over this array -- the same matched set as before, `"/"` and
+// `"/dev/absence-states"` both still `allow`.
+export const SHARED_AUTHENTICATED_ROUTES: readonly (RoutePattern & RouteMeta)[] = [
+  { exact: ["/"], navLabel: "Home", implemented: true },
+  { exact: ["/dev/absence-states"], implemented: true }, // no navLabel -> never in nav
+];
 
 // issue #309 [E19.S1] done-when 1: THE role -> route matrix, the ONE declarative place. E20's
 // dashboard pages do not exist yet -- entries here are route PATTERNS (prefix-matched, so
@@ -85,11 +128,17 @@ const SHARED_AUTHENTICATED_ROUTES: RoutePattern = { exact: ["/", "/dev/absence-s
 // public/private axis. String literals match src/lib/nav.ts's own placeholder labels
 // (Manager/Leadership/IC/Cross-functional) as the best available guess at E20's eventual paths --
 // see .sdlc/plans/309.md Decision 4's own note if E20 lands different paths later.
-export const ROLE_ROUTES: Readonly<Record<Role, RoutePattern>> = {
-  manager: { prefix: ["/manager"] },
-  leadership: { prefix: ["/leadership"] },
-  ic: { prefix: ["/ic"] },
-  "cross-functional": { prefix: ["/cross-functional"] },
+//
+// issue #311 [E19.S3]: `navLabel`/`implemented` added per entry (Decision 1). `implemented: false`
+// on manager/leadership/cross-functional records, honestly, that policy already governs these
+// routes today even though no page exists at any of them yet -- nav.ts's navItemsFor() is the ONLY
+// reader of `implemented`; decide() below is unchanged. `ic` is `implemented: true` since #310
+// shipped its real page.
+export const ROLE_ROUTES: Readonly<Record<Role, RoutePattern & RouteMeta>> = {
+  manager: { prefix: ["/manager"], navLabel: "Manager", implemented: false },
+  leadership: { prefix: ["/leadership"], navLabel: "Leadership", implemented: false },
+  ic: { prefix: ["/ic"], navLabel: "IC", implemented: true },
+  "cross-functional": { prefix: ["/cross-functional"], navLabel: "Cross-functional", implemented: false },
 };
 
 function isRouteAllowedForRole(pathname: string, role: string | undefined): boolean {
@@ -114,7 +163,7 @@ export type RouteDecision = "allow" | "redirect" | "forbid";
 export function decide(pathname: string, hasSession: boolean, role?: string): RouteDecision {
   if (isPublicRoute(pathname)) return "allow";
   if (!hasSession) return "redirect";
-  if (matchesPattern(pathname, SHARED_AUTHENTICATED_ROUTES)) return "allow";
+  if (SHARED_AUTHENTICATED_ROUTES.some((entry) => matchesPattern(pathname, entry))) return "allow";
   if (isRouteAllowedForRole(pathname, role)) return "allow";
   return "forbid";
 }
