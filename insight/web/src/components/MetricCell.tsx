@@ -9,6 +9,7 @@
 // file's header comment for why the numeral testid and border-style rules are load-bearing, not
 // incidental; the same two rules apply here.
 import type { Metric as MetricType } from "@/lib/api/metric";
+import { hatchBackgroundImage } from "@/lib/absence-hatch";
 import { describeMetric } from "@/lib/metric-view";
 
 const BORDER_CLASS: Record<MetricType["state"], string> = {
@@ -24,6 +25,9 @@ const BORDER_CLASS: Record<MetricType["state"], string> = {
 // just an added hatch layer, and text colour switches to `--panel-void-ink` (matching
 // `.cell.dark .nm`/`.cell.dark .n`) -- `absent_unbuilt` additionally dims to `opacity:.72`
 // (`.cell.unbuilt`). BORDER_CLASS above is unchanged.
+//
+// #312 retrospective gap closure: the gradient formula is typed exactly once, in
+// `@/lib/absence-hatch`'s `hatchBackgroundImage()` -- see Metric.tsx's header for the full story.
 const SURFACE_CLASS: Record<MetricType["state"], string> = {
   measured: "bg-panel-raised text-panel-bone",
   absent_no_data: "bg-panel-void text-panel-void-ink",
@@ -31,8 +35,8 @@ const SURFACE_CLASS: Record<MetricType["state"], string> = {
 };
 const HATCH: Record<MetricType["state"], string | undefined> = {
   measured: undefined,
-  absent_no_data: "repeating-linear-gradient(45deg, var(--panel-hatch) 0 3px, transparent 3px 7px)",
-  absent_unbuilt: "repeating-linear-gradient(45deg, var(--panel-hatch) 0 3px, transparent 3px 7px)",
+  absent_no_data: hatchBackgroundImage("--panel-hatch"),
+  absent_unbuilt: hatchBackgroundImage("--panel-hatch"),
 };
 
 export function MetricCell({ metric }: { metric: MetricType }) {

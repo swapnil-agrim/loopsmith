@@ -26,8 +26,16 @@
 //
 // The absence block below reuses the SAME hatch token (`--panel-hatch`) Task B1 just ported onto
 // MetricCell.tsx -- one absence material across the product, not a third local treatment.
-const HATCH_BACKGROUND_IMAGE =
-  "repeating-linear-gradient(45deg, var(--panel-hatch) 0 3px, transparent 3px 7px)";
+//
+// #312 retrospective gap closure: this used to hand-type its own copy of the gradient formula --
+// a THIRD independently-typed copy, after Metric.tsx's and MetricCell.tsx's, exactly the "second
+// absence vocabulary" the issue's own decision comment forbids ("Do not build a local hatched
+// treatment inside the delivery panel -- one absence material across the product is the entire
+// point"). It now calls the same `hatchBackgroundImage()` those two call, with the same token this
+// file already used -- see `@/lib/absence-hatch`'s header for the full story.
+import { hatchBackgroundImage } from "@/lib/absence-hatch";
+
+const HATCH_BACKGROUND_IMAGE = hatchBackgroundImage("--panel-hatch");
 
 function NoSensor({ reason }: { reason: string }) {
   return (

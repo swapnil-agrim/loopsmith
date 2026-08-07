@@ -19,12 +19,17 @@
 // defect (decision (b) on the issue), not #304's: "hatched, achromatic" was written into every
 // E20 story's done-when without the primitive ever painting with `--panel-hatch`/
 // `--panel-hatch-soft` (both already defined, tokens.generated.css:9, unreferenced until now).
-// This is the ONLY place this treatment is added -- no local/forked hatch anywhere under
-// app/delivery/. The base fill (`bg-panel-panel`) and BORDER_CLASS are UNCHANGED: hatch is a
-// second background LAYER (an inline `backgroundImage`, matching this file's own existing
-// convention of mixing Tailwind classes with `style={{ fontSize: "var(--panel-text-*)" }}` for
-// CSS-var-driven values), not a replacement for the dashed/dotted border distinction.
+// The base fill (`bg-panel-panel`) and BORDER_CLASS are UNCHANGED: hatch is a second background
+// LAYER (an inline `backgroundImage`, matching this file's own existing convention of mixing
+// Tailwind classes with `style={{ fontSize: "var(--panel-text-*)" }}` for CSS-var-driven values),
+// not a replacement for the dashed/dotted border distinction.
+//
+// #312 retrospective gap closure: the gradient formula itself is typed exactly once now, in
+// `@/lib/absence-hatch`'s `hatchBackgroundImage()` -- MetricCell.tsx and delivery/charts.tsx's
+// NoSensor both call the same function (with the token each already used) instead of each hand-
+// typing their own copy of this string. See that module's header for the full story.
 import type { Metric as MetricType } from "@/lib/api/metric";
+import { hatchBackgroundImage } from "@/lib/absence-hatch";
 import { describeMetric } from "@/lib/metric-view";
 
 const BORDER_CLASS: Record<MetricType["state"], string> = {
@@ -39,8 +44,8 @@ const BORDER_CLASS: Record<MetricType["state"], string> = {
 // state-gated, not always-on).
 const HATCH: Record<MetricType["state"], string | undefined> = {
   measured: undefined,
-  absent_no_data: "repeating-linear-gradient(45deg, var(--panel-hatch-soft) 0 3px, transparent 3px 7px)",
-  absent_unbuilt: "repeating-linear-gradient(45deg, var(--panel-hatch-soft) 0 3px, transparent 3px 7px)",
+  absent_no_data: hatchBackgroundImage("--panel-hatch-soft"),
+  absent_unbuilt: hatchBackgroundImage("--panel-hatch-soft"),
 };
 
 export function Metric({ metric }: { metric: MetricType }) {
