@@ -649,3 +649,26 @@ def test_complete_falls_back_to_combined_call_when_state_probe_fails():
     assert len(close_calls) == 1, "combined issue close call missing on probe failure"
     assert "--comment" in close_calls[0]
     assert comment_calls == [], "no standalone issue comment call should be attempted when the probe itself failed"
+
+
+# --- #505 + #506 combined: the already-closed fallback branch (#505) must still remove the
+# in-progress label (#506) -- these two fixes landed independently and were reconciled by hand at
+# a rebase conflict in complete(); neither original PR's own tests cover this specific combined
+# path (the #506 tests never mock the state-probe read #505 added, so they only exercise the
+# not-already-closed branch; the #505 tests never assert on label removal), so it needed its own
+# test rather than trusting that two independently-correct diffs compose correctly by construction.
+
+def test_complete_removes_in_progress_label_even_when_already_closed():
+    """The in-progress label removal (#506) must run in EITHER branch of the already-closed check
+    (#505) -- not just the not-already-closed/combined-call path. Non-vacuous: this genuinely
+    exercises the already-closed branch (unlike #506's own tests) and asserts on label removal
+    (unlike #505's own tests) -- the two existing test suites' blind spots don't overlap, so this
+    combined case was previously untested by either."""
+    src = _mod("sources")
+    run = _recording_runner({"view": "CLOSED\n"})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh.complete("42")
+
+    assert any(c[0:2] == ["issue", "edit"] and "42" in c and "--remove-label" in c and
+               "sdlc:in-progress" in c for c in run.calls), \
+        "in-progress label removal missing on the already-closed branch"
