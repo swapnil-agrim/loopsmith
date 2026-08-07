@@ -16,6 +16,8 @@ def load_config(sdlc_dir):
         cfg = json.loads((pathlib.Path(sdlc_dir) / "config.json").read_text())
     except Exception:
         cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
     kg = {**_DEFAULTS, **(cfg.get("knowledge_graph") or {})}
     kg["enabled"] = kg.get("enabled") is True       # strict: only explicit boolean true opts in
     return kg

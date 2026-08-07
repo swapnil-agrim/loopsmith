@@ -197,3 +197,42 @@ def test_load_config_tolerates_missing_or_garbage_config():
     with tempfile.TemporaryDirectory() as d:
         # no .sdlc/config.json at all -> safe defaults, disabled
         assert kg.load_config(str(pathlib.Path(d) / ".sdlc"))["enabled"] is False
+
+
+def test_load_config_handles_literal_null_json():
+    """Regression (#475): config.json containing the valid JSON value `null` parses successfully
+    but produces a NoneType object. Without a guard, the next line's cfg.get() would crash with
+    a raw AttributeError. This test verifies that null config -> safe defaults (disabled), not
+    a crash."""
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+        # Overwrite the config with literal null
+        (pathlib.Path(base) / "config.json").write_text("null")
+        result = kg.load_config(base)
+        assert result["enabled"] is False  # null config -> defaults, disabled
+        assert result["scope"] == "full"   # all defaults apply
+        assert result["builder"] == "graphify"
+
+
+def test_load_config_handles_valid_json_non_dict():
+    """Extended regression (#475): not just `null`, but ANY valid JSON that isn't a dict
+    (a list, string, number) should be treated the same way: defaults apply, disabled."""
+    kg = _kg()
+    with tempfile.TemporaryDirectory() as d:
+        base = _sdlc(d, None)
+
+        # Test with a list
+        (pathlib.Path(base) / "config.json").write_text("[]")
+        result = kg.load_config(base)
+        assert result["enabled"] is False
+
+        # Test with a string
+        (pathlib.Path(base) / "config.json").write_text('"not a dict"')
+        result = kg.load_config(base)
+        assert result["enabled"] is False
+
+        # Test with a number
+        (pathlib.Path(base) / "config.json").write_text("42")
+        result = kg.load_config(base)
+        assert result["enabled"] is False
