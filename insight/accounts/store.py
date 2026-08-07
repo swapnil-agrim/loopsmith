@@ -154,6 +154,7 @@ import os
 import pathlib
 import secrets
 import sys
+import time
 
 from insight.accounts import hashing
 
@@ -179,6 +180,19 @@ DEFAULT_ACCOUNTS_PATH = pathlib.Path(".sdlc") / "insight-accounts.json"
 _INVALID_CREDENTIALS_MESSAGE = "invalid username or password"
 
 _FORMAT_VERSION = 1
+
+#: issue #308 [E18.S3], PR #485 code-review finding -- the longest a caller will wait for the
+#: store-global lock before giving up with AccountsLockUnavailableError. See
+#: `_locked_accounts`'s docstring for the full reasoning. Sized well above a contended
+#: single-operator CLI or a handful of simultaneous logins (the critical section is one ~23ms
+#: KDF plus a small JSON rewrite) and well below the point where waiters pile up as pinned
+#: `python3` processes. A module constant, not a literal, so a test can monkeypatch it tiny and
+#: prove the timeout deterministically instead of waiting seconds.
+_LOCK_TIMEOUT_SECONDS = 5.0
+
+#: How often `_flock_bounded` retries while waiting. Short enough that an uncontended-by-the-
+#: time-we-look lock is picked up promptly, long enough not to spin a CPU.
+_LOCK_POLL_SECONDS = 0.005
 
 #: issue #308 [E18.S3], .sdlc/plans/308.md Decision 5 -- 5 consecutive failed attempts locks the
 #: account. "Consecutive" per Decision 5's own definition: any verify_user call for a known
@@ -335,7 +349,36 @@ def _locked_accounts(path):
     Raises `AccountsLockUnavailableError` immediately, before opening or creating anything, if
     `fcntl` could not be imported -- see that exception's own docstring for why this is a loud
     failure rather than a silent no-op, and note it now fires for EVERY `verify_user` call
-    (success included), not merely the rarely-invoked `add_user`."""
+    (success included), not merely the rarely-invoked `add_user`.
+
+    The wait for the lock is BOUNDED (`_LOCK_TIMEOUT_SECONDS`), not the indefinite block a plain
+    `flock(LOCK_EX)` would give -- issue #308 [E18.S3], PR #485 code-review finding. This lock is
+    store-GLOBAL and, because `verify_user` must keep the unknown-user branch cost-identical to
+    every known-user branch (Decision 6.2), it is held across the full ~23ms argon2id KDF on
+    EVERY login attempt, valid or not. An unauthenticated flood of garbage login POSTs therefore
+    queues behind one critical section. An indefinite block turns that queue into unbounded
+    process pileup: each waiter is a live `python3` spawned by `pythonBridge.ts`, pinned for the
+    whole queue depth. Timing out instead caps the pileup at (arrival rate x timeout) and returns
+    a loud, actionable `AccountsLockUnavailableError` -- which `insight/__main__.py` maps to the
+    "check could not run" exit code, NEVER to `InvalidCredentials`, so a contended login can
+    never be mistaken for a wrong password and never silently authenticates.
+
+    No enumeration signal: contention is not credential-correlated, so the timeout fires
+    identically for a real username, an unknown one, and any password.
+
+    Two alternatives were considered and REJECTED, recorded so a later reader does not "fix" this
+    into one of them. (a) Moving the KDF outside the lock would shrink the critical section but
+    reopens the lost-increment race on the throttle counters that Decision 4 exists to close, and
+    swaps this bounded serialisation for unbounded CONCURRENT 64MiB argon2 allocations -- a worse
+    exhaustion vector, not a better one. (b) A per-account lock is not sound over a single-JSON-
+    document store: every writer rewrites the whole document, so per-account locks reintroduce
+    lost cross-account updates.
+
+    ponytail: bounding the wait narrows the blast radius; it does not remove it. The real
+    mitigation for an unauthenticated login flood is network-layer rate limiting, which #308
+    puts explicitly out of scope. Upgrade path if this store ever outgrows one operator: per-
+    account records in a store that supports row-level writes, so the lock can be per-account
+    without the whole-document rewrite -- never a relaxation of the lock itself."""
     if fcntl is None:
         raise AccountsLockUnavailableError(
             "file locking (fcntl) is required for concurrent-safe writes to the accounts "
@@ -355,13 +398,37 @@ def _locked_accounts(path):
         str(lock_path), os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600
     )
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        _flock_bounded(fd, lock_path)
         try:
             yield
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
+
+
+def _flock_bounded(fd, lock_path):
+    """Acquire `fd`'s exclusive flock, waiting at most `_LOCK_TIMEOUT_SECONDS` -- see
+    `_locked_accounts`'s docstring for why the wait is bounded rather than indefinite.
+
+    `LOCK_NB` plus a poll, not a `SIGALRM` timeout: signals only fire on the main thread, and
+    this module is called from test threads and from a `python3` subprocess per login alike.
+    `time.monotonic`, never `_now()` -- `_now` is the injectable WALL clock a test moves by
+    15 minutes to prove lockout expiry, and a lock timeout must not move with it."""
+    deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as e:
+            if e.errno not in (errno.EACCES, errno.EAGAIN):
+                raise
+            if time.monotonic() >= deadline:
+                raise AccountsLockUnavailableError(
+                    "timed out after %ss waiting for the accounts-store lock at %s"
+                    % (_LOCK_TIMEOUT_SECONDS, lock_path)
+                )
+            time.sleep(_LOCK_POLL_SECONDS)
 
 
 def _now():

@@ -16,6 +16,7 @@ once), so most are gated; the ones that are not are called out individually.
 """
 import datetime
 import json
+import threading
 
 import pytest
 
@@ -329,6 +330,60 @@ def test_verify_user_raises_loud_error_when_fcntl_unavailable_even_for_a_success
     record = _read_record(accounts_path, "alice")
     assert record.get("failed_attempts", 0) == 0
     assert record.get("locked_until") is None
+
+
+# =================================================================================== PR #485 code-review finding: the wait for the store-global lock is BOUNDED, not indefinite
+
+
+def test_verify_user_times_out_loudly_instead_of_blocking_forever_on_a_held_lock(
+    tmp_path, monkeypatch
+):
+    """issue #308 [E18.S3], PR #485 code-review finding. The lock is store-GLOBAL and is held
+    across the full argon2id KDF on every login attempt (Decision 6.2 requires the unknown-user
+    branch to pay the same cost), so a flood of garbage login POSTs queues behind one critical
+    section. An INDEFINITE block would turn that queue into unbounded process pileup -- every
+    waiter is a live python3 spawned by pythonBridge.ts, pinned for the whole queue depth.
+
+    Proven here by holding the lock in a background thread and asserting the waiter gives up
+    with AccountsLockUnavailableError -- crucially NOT InvalidCredentials, so a contended login
+    can never be mistaken for a wrong password (and __main__.py maps it to the "check could not
+    run" exit code, never to an auth failure). The timeout is monkeypatched tiny so this asserts
+    the mechanism in milliseconds rather than sleeping for the real 5s default."""
+    pytest.importorskip("argon2")
+    if store.fcntl is None:  # pragma: no cover - POSIX-only, like the module's other lock tests
+        pytest.skip("fcntl is unavailable on this platform")
+
+    accounts_path = tmp_path / "accounts.json"
+    store.add_user("alice", "correct-password", "manager", accounts_path=accounts_path)
+
+    monkeypatch.setattr(store, "_LOCK_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(store, "_LOCK_POLL_SECONDS", 0.005)
+
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold_the_lock():
+        with store._locked_accounts(accounts_path):
+            holding.set()
+            release.wait(timeout=10)
+
+    holder = threading.Thread(target=hold_the_lock)
+    holder.start()
+    try:
+        assert holding.wait(timeout=10), "the holder thread never acquired the lock"
+        # The CORRECT password, so this can only fail because of the lock -- never because the
+        # credentials were wrong.
+        with pytest.raises(store.AccountsLockUnavailableError):
+            store.verify_user("alice", "correct-password", accounts_path=accounts_path)
+    finally:
+        release.set()
+        holder.join(timeout=10)
+
+    # And once the lock is free again the very same call succeeds -- the timeout is a bounded
+    # wait, not a latch that leaves the store permanently unusable.
+    assert (
+        store.verify_user("alice", "correct-password", accounts_path=accounts_path) == "manager"
+    )
 
 
 # =================================================================================== issue #308 Task 3: concurrency-race test for the throttle counter (Risk B, proven not just asserted)
