@@ -692,11 +692,12 @@ def decompose_check(sdlc_dir, goal, config, source):
         if gd.get("enabled") is not True:
             return "OFF"                                                  # gate inside the guard: a
         body = (source.fetch_title_body(goal) or {}).get("body") or ""    # malformed config -> PROCEED
+        gs = _load("goal_size")                     # single load, reused below for classify() too
         first_line = body.splitlines()[:1]
         first_line = first_line[0] if first_line else ""
-        if "loopsmith:decomposed-from=" in first_line or "loopsmith:decompose-of=" in first_line:
+        if gs.DECOMPOSED_FROM_MARKER in first_line or gs.DECOMPOSE_OF_MARKER in first_line:
             return "PROCEED"                        # a child (depth-limited to 1) or a meta-goal itself
-        flagged, reason = _load("goal_size").classify(body)
+        flagged, reason = gs.classify(body)
         if not flagged:
             return "PROCEED"
         mode = gd.get("mode") or "log"               # absent -> 'log', silently — see docstring

@@ -20,6 +20,18 @@ ponytail: same as predict.py's — a known-coarse heuristic with an explicit, ve
 which must stay zero-latency, zero-cost, and hermetically testable."""
 import re
 
+# --- decomposition markers -----------------------------------------------------------------------
+# Single source of truth for the two first-line body markers a decomposition child / meta-goal
+# carries. Read by THIS module's own caller, loop.py's `decompose_check` guard (a marked goal is
+# exempt from goal-size classification entirely -- it was deliberately authored, not accidentally
+# oversized), AND by backlog_check.py's dedup exemption (#521: a marked goal is exempt from the
+# confident duplicate/obsoleted-by/in-flight-similarity findings -- never from an explicit blocker or
+# a recorded hand-off). Both read these constants instead of retyping the literal, so the two checks
+# can never silently drift apart (doctor.py importing `backlog_check._BLOCK_RE` verbatim, rather than
+# retyping the pattern, is the existing precedent for this "one definition, several readers" shape).
+DECOMPOSED_FROM_MARKER = "loopsmith:decomposed-from="    # this goal IS a decomposition child of #N
+DECOMPOSE_OF_MARKER = "loopsmith:decompose-of="          # this goal IS the meta-goal decomposing #N
+
 # --- signal 1: body length ----------------------------------------------------------------------
 WORD_THRESHOLD = 800     # body word count strictly above this alone flags the goal
 LINE_THRESHOLD = 150     # body line count strictly above this alone flags the goal (a dense

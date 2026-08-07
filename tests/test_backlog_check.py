@@ -301,6 +301,205 @@ def test_ledger_outstanding_handoff_is_a_blocker():
         assert any(f["kind"] == "blocked-by" for f in bc.cross_check(base, "1")["findings"])
 
 
+# --- #521: decomposition-marker dedup exemption -------------------------------------------------
+# A goal whose BODY's first line carries `loopsmith:decomposed-from=`/`loopsmith:decompose-of=` (the
+# same markers loop.py's decompose_check already exempts, single-sourced in goal_size.py) is a
+# deliberately authored decomposition child/meta-goal. The duplicate path's _earlier() rule always
+# parks the NEWER of a similar pair, and a freshly created child is always the newest -- so it would
+# always park against its own parent/siblings; obsoleted-by and in-flight-elsewhere-similarity share
+# the same false-positive shape. Exemption downgrades `confident` only: the finding is still EMITTED
+# (module contract: evidence, never a verdict) -- every test below asserts PRESENT + confident False,
+# never absent. Explicit blockers and recorded hand-offs are NEVER exempt.
+#
+# Non-vacuity device (matching :75-85/:107-119 above): identical-title records score ~0.94-0.98 with
+# park_threshold=0.8, so each "exempts" case is genuinely confident=True on today's (pre-fix) code --
+# a realistic ~0.77 paraphrase would already be non-confident and prove nothing.
+
+def test_duplicate_exemption_for_decomposition_child_marked_first_line():
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL),
+                            _rec(2, _GOAL, body="loopsmith:decomposed-from=1\n\nchild details")],
+                        dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
+        f = next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")
+        assert f["kind"] == "duplicate"
+        assert f["score"] >= 0.8                # confirms this pair clears park_threshold at all
+        assert f["confident"] is False           # PRESENT, downgraded -- on unfixed code this is True
+
+
+def test_obsoleted_by_exemption_for_decomposition_child_marked_first_line():
+    bc = _mod("backlog_check")
+    now = _epoch("2026-08-03T00:00:00Z")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL, state="closed", closed_at="2026-08-01T00:00:00Z"),
+                            _rec(2, _GOAL, body="loopsmith:decomposed-from=1\n\nchild details")],
+                        dup_threshold=0.4, obsolete_threshold=0.4, park_threshold=0.8,
+                        closed_window_days=30)
+        f = next(f for f in bc.cross_check(base, "2", now=now)["findings"] if f["ref"] == "1")
+        assert f["kind"] == "obsoleted-by"
+        assert f["score"] >= 0.8
+        assert f["confident"] is False           # PRESENT, downgraded -- on unfixed code this is True
+
+
+def test_in_flight_elsewhere_exemption_for_decomposition_child_marked_first_line():
+    # the child being checked (#2) is marked; a teammate is claiming its SIBLING (#3) -- parallel
+    # sibling execution is exactly what decomposition creates, so this is the same false-positive
+    # family as duplicate/obsoleted-by, just at ledger similarity's lower (unconditional) bar.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL),
+                            _rec(2, _GOAL, body="loopsmith:decomposed-from=1"),
+                            _rec(3, _GOAL)],
+                        dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
+        _write_claim(base, "bob", "3")
+        f = next(f for f in bc.cross_check(base, "2")["findings"]
+                 if f["kind"] == "in-flight-elsewhere" and f["ref"] == "3")
+        assert f["score"] >= 0.4
+        assert f["confident"] is False           # PRESENT, downgraded -- on unfixed code this is True
+
+
+def test_ledger_handoff_blocker_stays_confident_for_a_marked_child():
+    # the never-exempt pin: a RECORDED hand-off targeting the marked child itself is a real,
+    # explicit blocker -- must stay confident True regardless of the child's own marker.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(2, _GOAL, body="loopsmith:decomposed-from=1")], **_LOOSE)
+        _write_claim(base, "amy", "2", kind="handoff", state="open", issue=2, to="amy")
+        f = next(f for f in bc.cross_check(base, "2")["findings"] if f["kind"] == "blocked-by")
+        assert f["confident"] is True
+
+
+def test_explicit_blocker_stays_confident_and_named_for_a_marked_child():
+    # a marked child with an explicit "Blocked by #N" in its own body: the blocker finding stays
+    # confident True, and decide()'s park reason actually NAMES the blocker (#7).
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [
+            _rec(1, _GOAL, body="loopsmith:decomposed-from=99\n\nblocked by #7 until the base lands"),
+            _rec(7, "freeze the base contract"),
+        ], dup_threshold=0.72, obsolete_threshold=0.72, park_threshold=0.80, closed_window_days=3650)
+        pack = bc.cross_check(base, "1")
+        blocked = [f for f in pack["findings"] if f["kind"] == "blocked-by"]
+        assert any(f["ref"] == "7" and f["confident"] is True for f in blocked)
+        decision = bc.decide(pack, {})
+        assert decision["action"] == "park"
+        assert "#7" in decision["reason"]
+
+
+def test_duplicate_not_exempt_without_a_marker_matched_pair():
+    # dedup-not-weakened pin: the SAME shape as the marked test above (identical title, similar body
+    # length) but with no marker at all -- must stay confident True, proving `exempt` is correctly
+    # False by default and never accidentally suppresses a genuine duplicate.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL),
+                            _rec(2, _GOAL, body="child details, no marker here")],
+                        dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
+        f = next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")
+        assert f["confident"] is True
+
+
+def test_marker_in_title_only_does_not_exempt():
+    # the one negative a sloppy `raw.splitlines()[0]` implementation would pass without: raw's own
+    # first line IS the title, so a title-only marker must NOT exempt -- only a first-line BODY marker
+    # does. Lower park_threshold (0.75, still well above the 0.4 dup_threshold) because the extra
+    # marker tokens IN the title (3x title weight) drag the score down to ~0.80 -- still confident at
+    # a realistic threshold, so this stays non-vacuous instead of failing on score alone.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _GOAL + " loopsmith:decomposed-from=1")],
+                        dup_threshold=0.4, park_threshold=0.75, closed_window_days=3650)
+        f = next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")
+        assert f["confident"] is True
+
+
+def test_marker_mid_body_does_not_exempt():
+    # first-line anchoring: a marker that shows up later in the body (not the first line) must not
+    # exempt -- a goal merely discussing decomposition in passing isn't exempted by accident.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        body = "some preamble text here.\nloopsmith:decomposed-from=1\nmore text"
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _GOAL, body=body)],
+                        dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
+        f = next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")
+        assert f["confident"] is True
+
+
+def test_crlf_body_first_line_does_exempt():
+    # CRLF-tolerant, matching loop.py's own guard: a `\r\n`-terminated first line still exempts.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        body = "loopsmith:decomposed-from=1\r\n\r\nchild details"
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _GOAL, body=body)],
+                        dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
+        f = next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")
+        assert f["confident"] is False           # on unfixed code this is True
+
+
+def test_decompose_of_marker_also_exempts_duplicate_path():
+    # symmetry: `loopsmith:decompose-of=` (a meta-goal decomposing #N) exempts exactly like
+    # `loopsmith:decomposed-from=` does.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL),
+                            _rec(2, _GOAL, body="loopsmith:decompose-of=1\n\nmeta goal details")],
+                        dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
+        f = next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")
+        assert f["confident"] is False           # on unfixed code this is True
+
+
+def test_local_mode_lstrip_pin_marker_after_leading_blank_line_exempts():
+    # local-mode bodies always start with "\n" right after the frontmatter delimiter (_local_base
+    # below reproduces this exactly, matching _build_corpus's real local branch) -- without lstrip(),
+    # the "first line" would be "" and this marker would never be seen. local-mode ref ordering is by
+    # filename ("0001.md" < "0002.md"), so the LATER goal (0002) is the one that would park.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _local_base(d, [
+            ("0001.md", "pending", _GOAL, "already shipped equivalent"),
+            ("0002.md", "pending", _GOAL, "loopsmith:decomposed-from=0001\n\nchild details"),
+        ], dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
+        goal = str(pathlib.Path(base) / "goals" / "0002.md")
+        f = next(f for f in bc.cross_check(base, goal)["findings"]
+                 if pathlib.Path(f["ref"]).name == "0001.md")
+        assert f["confident"] is False           # on unfixed code this is True
+
+
+def test_marker_constants_identical_across_modules():
+    # #521 change 4: single source of truth in goal_size.py -- both backlog_check's own module-level
+    # `goal_size` reference and loop.py's own `_load("goal_size")` call resolve to the SAME constant
+    # values, not independently-typed literals that could silently drift apart.
+    gs = _mod("goal_size")
+    bc = _mod("backlog_check")
+    lp = _mod("loop")
+    assert gs.DECOMPOSED_FROM_MARKER == "loopsmith:decomposed-from="
+    assert gs.DECOMPOSE_OF_MARKER == "loopsmith:decompose-of="
+    assert bc.goal_size.DECOMPOSED_FROM_MARKER == gs.DECOMPOSED_FROM_MARKER
+    assert bc.goal_size.DECOMPOSE_OF_MARKER == gs.DECOMPOSE_OF_MARKER
+    assert lp._load("goal_size").DECOMPOSED_FROM_MARKER == gs.DECOMPOSED_FROM_MARKER
+    assert lp._load("goal_size").DECOMPOSE_OF_MARKER == gs.DECOMPOSE_OF_MARKER
+
+
+def test_backlog_check_exempt_reads_the_constant_live_not_a_hardcoded_copy():
+    # stronger than value-equality: mutate the ACTUAL module object backlog_check.py holds and prove
+    # cross_check's exemption follows it -- this fails if backlog_check ever hardcodes its own copy
+    # of the marker string instead of reading goal_size.DECOMPOSED_FROM_MARKER live.
+    bc = _mod("backlog_check")
+    original = bc.goal_size.DECOMPOSED_FROM_MARKER
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL),
+                            _rec(2, _GOAL, body="totally-renamed-marker=1\n\nchild details")],
+                        dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
+        before = next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")
+        assert before["confident"] is True       # an unrecognized marker string doesn't exempt yet
+        bc.goal_size.DECOMPOSED_FROM_MARKER = "totally-renamed-marker="
+        try:
+            after = next(f for f in bc.cross_check(base, "2")["findings"] if f["ref"] == "1")
+            assert after["confident"] is False   # now exempt, purely from the constant changing
+        finally:
+            bc.goal_size.DECOMPOSED_FROM_MARKER = original
+
+
 # --- secret-safety, fail-open, determinism ---
 
 def test_secret_shaped_token_never_reaches_the_pack():

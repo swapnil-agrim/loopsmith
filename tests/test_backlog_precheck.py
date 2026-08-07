@@ -22,8 +22,8 @@ _GOAL = "migrate the widget cache onto the acme storage backend"
 _DUP = "move the widget cache to acme storage"
 
 
-def _rec(n, title, state="open", closed_at=None):
-    return {"number": n, "title": title, "body_excerpt": "", "labels": [], "state": state,
+def _rec(n, title, state="open", closed_at=None, body=""):
+    return {"number": n, "title": title, "body_excerpt": body, "labels": [], "state": state,
             "closed_at": closed_at, "updated_at": "2026-08-01T00:00:00Z", "content_hash": "x"}
 
 
@@ -82,6 +82,21 @@ def test_precheck_flag_mode_annotates_a_confident_hit_never_parks():
         # goal #2's match #1 WOULD be park-confident; flag mode annotates it instead of parking
         assert lp.precheck(base, "2", cfg, src, now=1000.0) == "PROCEED (advisory)"
         assert any(c[0] == "note" for c in src.calls) and not any(c[0] == "park" for c in src.calls)
+
+
+def test_precheck_does_not_park_a_marked_decomposition_child():
+    # #521 end-to-end: a marked child's duplicate finding is downgraded to advisory, not parked --
+    # the loop actually proceeds to implement the child instead of parking it against its own parent.
+    lp = _mod("loop")
+    with tempfile.TemporaryDirectory() as d:
+        base, cfg = _sdlc(d, [_rec(1, _GOAL),
+                              _rec(2, _GOAL, body="loopsmith:decomposed-from=1\n\nchild details")],
+                          {"enabled": True, "dup_threshold": 0.4, "park_threshold": 0.8})
+        src = _FakeSource()
+        result = lp.precheck(base, "2", cfg, src, now=1000.0)
+        assert result == "PROCEED (advisory)"                     # on unfixed code this is PARKED
+        assert any(c[0] == "note" and "advisory" in c[2] for c in src.calls)
+        assert not any(c[0] == "park" for c in src.calls)
 
 
 def test_precheck_proceeds_cleanly_when_nothing_matches():

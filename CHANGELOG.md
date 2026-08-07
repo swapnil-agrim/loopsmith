@@ -52,6 +52,18 @@ slice. A goal already marked as a decomposition child or meta-goal is exempt by 
 in `/sdlc-loop`'s step 3 right after the duplicate cross-check, so a duplicate parks as a duplicate
 before decomposition is ever considered.
 
+### fix(loop): `backlog_check` no longer dedup-parks a decomposition child against its own family (#521)
+The duplicate path's `_earlier()` rule always parks the NEWER of a similar pair, and a freshly
+created decomposition child is always the newest — so it would always park against its own parent or
+siblings; the obsoleted-by and in-flight-elsewhere-similarity paths share the same false-positive
+shape (against closed work and an in-flight sibling claim, respectively). A goal whose body's first
+line carries `loopsmith:decomposed-from=`/`loopsmith:decompose-of=` (now a single source of truth in
+`goal_size.py`, shared with `loop.py`'s `decompose_check` guard) downgrades those three findings to
+advisory instead of dropping them — the accepted consequence is that any first-line marker disables
+dup/obsolete/in-flight-similarity parking for that issue; an explicit blocker or a recorded team
+hand-off still fully applies. Slice 4/4 of the reviewed section-8 decomposition design; inert in this
+repo today (`backlog_check.enabled: false`).
+
 ## 1.0.6 — the sandbox release
 
 ### fix(loop): six chokepoints across the plugin now reject a path-traversal `goal` (#486)
