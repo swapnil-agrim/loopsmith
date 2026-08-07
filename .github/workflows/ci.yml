@@ -144,16 +144,6 @@ jobs:
       - name: prove shell reflows at 1440/1024/768 with no page-level horizontal scroll (npm run prove:shell-responsive)
         run: npm run prove:shell-responsive
         working-directory: insight/web
-      # issue #309 [E19.S1], .sdlc/plans/309.md item (b) (independent plan-review gap). Reuses the
-      # SAME .next build the checks above already produced -- no rebuild. Deliberately NOT part of
-      # verify_web.py's CHECKS/the always-on local gate, same reasoning as the three proofs above
-      # (a booted `next start` server has no place in a repo-wide gate that must run in a fresh
-      # worktree for every goal) -- but unlike those three, this one needs no browser at all (plain
-      # fetch + a real Auth.js-minted session cookie is enough to observe a real HTTP 403), so it
-      # does not depend on the Playwright install step above.
-      - name: prove role survives Auth.js's real JWT pipeline at the proxy layer (npm run prove:role-forbidden)
-        run: npm run prove:role-forbidden
-        working-directory: insight/web
       # issue #310 [E19.S2], .sdlc/plans/310.md Decision 7. `insight web ic`'s query path imports
       # duckdb (via insight.dash.ic/insight.ingest.store) -- the first thing this job's python3
       # invocations have ever needed that isn't already satisfiable from the repo's own source
@@ -161,15 +151,35 @@ jobs:
       # insight.accounts.store has no third-party dependency). Mirrors the `insight` job's own two
       # install steps verbatim, so there is one source of truth for "what insight/ needs
       # installed," not a second, independently-drifting duckdb~=1.4 pip line.
+      #
+      # issue #312 [E20.S1] Goal B: MOVED earlier in this job (was positioned just before
+      # prove:ic-bridge) to run BEFORE prove:role-forbidden instead. Task B3 landed a real
+      # app/delivery/page.tsx, and prove:role-forbidden's own script now fetches that page for a
+      # granted role -- which spawns `python3 -m insight web delivery`
+      # (src/lib/delivery/pythonBridge.ts), whose query path imports duckdb the same way `web ic`
+      # already does. Reusing this SAME install (not a second one) is why it moves rather than
+      # duplicates -- see prove-role-forbidden-real-server.mjs's own header comment for the full
+      # "why this script gained a duckdb dependency" story.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: install insight/ and its own deps (duckdb) -- prove:ic-no-leak's seed-ic-fixture.py needs it
+      - name: install insight/ and its own deps (duckdb) -- prove:role-forbidden's /delivery checks and prove:ic-no-leak's seed-ic-fixture.py both need it
         run: python -m pip install -e insight/
+      # issue #309 [E19.S1], .sdlc/plans/309.md item (b) (independent plan-review gap). Reuses the
+      # SAME .next build the checks above already produced -- no rebuild. Deliberately NOT part of
+      # verify_web.py's CHECKS/the always-on local gate, same reasoning as the three browser proofs
+      # above (a booted `next start` server has no place in a repo-wide gate that must run in a
+      # fresh worktree for every goal) -- this one needs no browser at all (plain fetch + a real
+      # Auth.js-minted session cookie is enough to observe a real HTTP 403/200), so it does not
+      # depend on the Playwright install step above; it DOES now depend on the duckdb install step
+      # just above (issue #312 [E20.S1] Goal B -- see that step's own comment).
+      - name: prove role survives Auth.js's real JWT pipeline at the proxy layer, and the real /delivery board renders for a granted role (npm run prove:role-forbidden)
+        run: npm run prove:role-forbidden
+        working-directory: insight/web
       # CI-only, same family as prove:fonts/prove:role-forbidden above (a booted-server proof has
       # no place in the always-on offline local gate -- see insight/verify_web.py's own docstring
       # and .sdlc/config.json's own no-pip-install invariant). Placed after prove:role-forbidden,
-      # the same "no browser needed" family, and after the two install steps just above since its
+      # the same "no browser needed" family, and after the two install steps above since its
       # own seed-ic-fixture.py needs a real duckdb.
       # Same duckdb dependency, same reason it cannot live in verify_web.py's CHECKS: this proof
       # drives the REAL `python3 -m insight web ic`, whose query path imports duckdb. It was in
@@ -182,6 +192,22 @@ jobs:
         working-directory: insight/web
       - name: prove no cross-actor leak on /ic, server-side, across two real identities (npm run prove:ic-no-leak)
         run: npm run prove:ic-no-leak
+        working-directory: insight/web
+      # issue #312 [E20.S1] Goal B, Task B2. Same family/reasoning as prove:ic-bridge immediately
+      # above -- compiles and drives the real delivery bridge against the real
+      # `python3 -m insight web delivery`, needs the same already-installed duckdb.
+      - name: prove the /delivery python bridge maps exit codes to typed errors (npm run prove:delivery-bridge)
+        run: npm run prove:delivery-bridge
+        working-directory: insight/web
+      # issue #312 [E20.S1] Goal B, Task B4 (done-when 4): the mandatory cold-start proof, CI-only
+      # for the same reason prove:ic-no-leak is -- needs a real, schema-only DuckDB store, which
+      # `npm run test`'s offline chain (run before any pip install, in a fresh worktree) cannot
+      # provide (the exact #310 scar this job's own comments elsewhere already document). Seeds a
+      # zero-row store, boots a real server against it, and asserts no numeral renders anywhere on
+      # /delivery -- plus its own MANDATORY executed negative control (reseed with metric_12
+      # populated, confirm the same check now finds a digit) proving the check has real teeth.
+      - name: prove the delivery panel's cold start renders no numerals anywhere (npm run prove:delivery-cold-start)
+        run: npm run prove:delivery-cold-start
         working-directory: insight/web
       - name: docker build (Dockerfile.web) -- the Dockerfile is proven to build, not just present
         run: docker build -f insight/Dockerfile.web -t insight-web-scaffold:ci insight/

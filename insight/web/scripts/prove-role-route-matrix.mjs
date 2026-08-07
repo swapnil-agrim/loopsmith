@@ -353,16 +353,33 @@ function matchesRepresentative(route, entry, representativePath) {
 /** Both directions of the drift check. `routes` is the real (or synthetic) filesystem inventory;
  *  `reachabilityEntries` is every SHARED_AUTHENTICATED_ROUTES/ROLE_ROUTES entry. */
 function assertRoutesCovered(routes, reachabilityEntries, isPublicRoute, representativePath) {
-  // Direction 1: every real, non-public route must be claimed by some table entry, and that
-  // entry must say the page is actually built.
+  // Direction 1: every real, non-public route must be claimed by some table entry, and EVERY
+  // matching entry must say the page is actually built.
+  //
+  // issue #312 [E20.S1] Goal B (plan-review carry-over from Goal A's own PR #509 review): this
+  // USED to be `reachabilityEntries.find(...)` -- picking the FIRST matching entry only. That was
+  // silently correct pre-#312, when every route had exactly one grantee. Now that /delivery has
+  // THREE grantee entries for one path (manager/leadership/ic), `.find()` would validate only
+  // whichever entry happens to come first in object-iteration order: if manager's /delivery entry
+  // were flipped to `implemented:true` while leadership's or ic's stayed `false`, `.find()` would
+  // return manager's (already true) entry and this direction would pass -- while Direction 2 below
+  // SKIPS any entry with `implemented:false`, so it says nothing about leadership/ic either. Net
+  // result: leadership/ic would silently lose their nav link to a page decide() genuinely allows
+  // them, and NEITHER direction would catch it. Fixed by requiring ALL matching entries to agree,
+  // not just the first found.
   for (const route of routes) {
     if (isPublicRoute(route)) continue; // already proven by the sibling public/private proof
-    const owner = reachabilityEntries.find((e) => matchesRepresentative(route, e, representativePath));
-    assert.ok(owner, `real route ${route} is not public and matches NO entry in ` +
+    const matching = reachabilityEntries.filter((e) => matchesRepresentative(route, e, representativePath));
+    assert.ok(matching.length > 0, `real route ${route} is not public and matches NO entry in ` +
       `SHARED_AUTHENTICATED_ROUTES or ROLE_ROUTES -- decide() would forbid it for every role, ` +
       `silently, because nothing in the table claims it`);
-    assert.ok(owner.implemented, `real route ${route} exists on disk but its table entry has ` +
-      `implemented:false -- flip it to true now that the page exists`);
+    assert.ok(
+      matching.every((e) => e.implemented),
+      `real route ${route} exists on disk but at least one of its ${matching.length} matching ` +
+      `table entries has implemented:false -- flip EVERY entry claiming this route to true now ` +
+      `that the page exists (a shared route with one grantee left false silently loses its nav ` +
+      `link for that role, undetected by either drift direction)`,
+    );
   }
   // Direction 2: every table entry marked implemented:true must have a real page on disk.
   for (const entry of reachabilityEntries) {
@@ -418,6 +435,31 @@ function partC(mod) {
     "negative control 2 failed to fire: an implemented:true entry with no real page must be caught",
   );
   console.log("OK: negative control 2 -- an implemented:true entry with no real page is correctly caught (table says live, page doesn't exist)");
+
+  // 3. issue #312 [E20.S1] Goal B: the .find() -> .filter()+.every() fix above, proven with teeth.
+  // TWO entries share one real, on-disk route; the FIRST (in array order) is already
+  // implemented:true, the SECOND is still implemented:false. A `.find()`-based Direction 1 would
+  // stop at the first match and pass vacuously; this must still fail, because the second grantee's
+  // page-existence claim disagrees.
+  assert.throws(
+    () => assertRoutesCovered(
+      ["/shared-page"],
+      [
+        { exact: ["/shared-page"], implemented: true },
+        { exact: ["/shared-page"], implemented: false },
+      ],
+      () => false,
+      representativePath,
+    ),
+    /implemented:false/,
+    "negative control 3 failed to fire: a real route with TWO grantee entries, only the FIRST " +
+    "implemented:true, must still be caught -- a .find()-based check would stop at the first " +
+    "match and pass vacuously",
+  );
+  console.log(
+    "OK: negative control 3 -- a multi-grantee route with one entry left implemented:false is " +
+    "correctly caught even though another matching entry is already implemented:true",
+  );
 }
 
 async function main() {

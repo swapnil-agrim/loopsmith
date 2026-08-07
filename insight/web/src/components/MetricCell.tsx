@@ -17,6 +17,24 @@ const BORDER_CLASS: Record<MetricType["state"], string> = {
   absent_unbuilt: "border-2 border-dotted border-panel-void-edge",
 };
 
+// issue #312 [E20.S1] Goal B, Task B1: ported VERBATIM from instrument.py's `.cell.dark`/
+// `.cell.unbuilt` rules (instrument.py:130-135) -- see Metric.tsx's own header comment for the
+// full "why this extends the shared primitive" story, unrepeated here. Unlike Metric.tsx's `.ro`
+// analogue, the FILL itself changes for absent states (`--panel-raised` -> `--panel-void`), not
+// just an added hatch layer, and text colour switches to `--panel-void-ink` (matching
+// `.cell.dark .nm`/`.cell.dark .n`) -- `absent_unbuilt` additionally dims to `opacity:.72`
+// (`.cell.unbuilt`). BORDER_CLASS above is unchanged.
+const SURFACE_CLASS: Record<MetricType["state"], string> = {
+  measured: "bg-panel-raised text-panel-bone",
+  absent_no_data: "bg-panel-void text-panel-void-ink",
+  absent_unbuilt: "bg-panel-void text-panel-void-ink opacity-[.72]",
+};
+const HATCH: Record<MetricType["state"], string | undefined> = {
+  measured: undefined,
+  absent_no_data: "repeating-linear-gradient(45deg, var(--panel-hatch) 0 3px, transparent 3px 7px)",
+  absent_unbuilt: "repeating-linear-gradient(45deg, var(--panel-hatch) 0 3px, transparent 3px 7px)",
+};
+
 export function MetricCell({ metric }: { metric: MetricType }) {
   const d = describeMetric(metric);
   return (
@@ -24,9 +42,10 @@ export function MetricCell({ metric }: { metric: MetricType }) {
       data-testid="metric-root"
       data-metric-state={metric.state}
       className={
-        "inline-flex w-28 flex-col items-start gap-0.5 rounded bg-panel-raised px-2 py-1.5 text-panel-bone " +
-        BORDER_CLASS[metric.state]
+        "inline-flex w-28 flex-col items-start gap-0.5 rounded px-2 py-1.5 " +
+        SURFACE_CLASS[metric.state] + " " + BORDER_CLASS[metric.state]
       }
+      style={{ backgroundImage: HATCH[metric.state] }}
     >
       <span
         className="w-full truncate text-panel-dim"

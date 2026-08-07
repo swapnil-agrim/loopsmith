@@ -13,6 +13,17 @@
 //      that always matches something is what makes that assertion mean anything.
 //   2. Absent-state markup carries a STRUCTURAL (border-style), not opacity-only, distinction:
 //      `border-dashed` for absent_no_data, `border-dotted` for absent_unbuilt (Decision (d)).
+//
+// issue #312 [E20.S1] Goal B, Task B1: the hatch fill, ported VERBATIM from
+// insight/dash/instrument.py's `.ro.absent` rule (instrument.py:84-85) -- the author's own spec
+// defect (decision (b) on the issue), not #304's: "hatched, achromatic" was written into every
+// E20 story's done-when without the primitive ever painting with `--panel-hatch`/
+// `--panel-hatch-soft` (both already defined, tokens.generated.css:9, unreferenced until now).
+// This is the ONLY place this treatment is added -- no local/forked hatch anywhere under
+// app/delivery/. The base fill (`bg-panel-panel`) and BORDER_CLASS are UNCHANGED: hatch is a
+// second background LAYER (an inline `backgroundImage`, matching this file's own existing
+// convention of mixing Tailwind classes with `style={{ fontSize: "var(--panel-text-*)" }}` for
+// CSS-var-driven values), not a replacement for the dashed/dotted border distinction.
 import type { Metric as MetricType } from "@/lib/api/metric";
 import { describeMetric } from "@/lib/metric-view";
 
@@ -20,6 +31,16 @@ const BORDER_CLASS: Record<MetricType["state"], string> = {
   measured: "border-2 border-solid border-panel-rule-hard",
   absent_no_data: "border-2 border-dashed border-panel-void-edge",
   absent_unbuilt: "border-2 border-dotted border-panel-void-edge",
+};
+
+// `undefined` for `measured` -- React omits a `backgroundImage` style property entirely when its
+// value is `undefined`, so `getComputedStyle(root).backgroundImage` reads "none" for a measured
+// readout, the exact negative control prove-absence-primitives-render.mjs asserts (hatch is
+// state-gated, not always-on).
+const HATCH: Record<MetricType["state"], string | undefined> = {
+  measured: undefined,
+  absent_no_data: "repeating-linear-gradient(45deg, var(--panel-hatch-soft) 0 3px, transparent 3px 7px)",
+  absent_unbuilt: "repeating-linear-gradient(45deg, var(--panel-hatch-soft) 0 3px, transparent 3px 7px)",
 };
 
 export function Metric({ metric }: { metric: MetricType }) {
@@ -31,6 +52,7 @@ export function Metric({ metric }: { metric: MetricType }) {
       className={
         "inline-block rounded bg-panel-panel px-4 py-3 text-panel-bone " + BORDER_CLASS[metric.state]
       }
+      style={{ backgroundImage: HATCH[metric.state] }}
     >
       <div className="text-panel-dim" style={{ fontSize: "var(--panel-text-caption)" }}>
         {metric.label}
