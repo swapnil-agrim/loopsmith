@@ -94,10 +94,9 @@ def _strip_fences(text):
     closes only on a delimiter of the same character (and at least the same length; length isn't
     modeled here, only the character is, since every delimiter this regex matches is exactly three
     chars). A ~~~ line inside an open ``` fence is ordinary fenced CONTENT, not a close, and vice
-    versa — the earlier version toggled on ANY fence-look-alike regardless of character, which
-    means a mismatched delimiter closed the fence early and exposed whatever followed (up to the
-    real closing delimiter) as live, uncounted... except it WAS counted — that bug failed TOWARD
-    flagging a body it shouldn't have, never away from one (pinned by
+    versa — the earlier version toggled on ANY fence-look-alike regardless of character: a
+    mismatched delimiter closed the fence early, so the lines that followed were counted as real
+    structure — a bug that failed TOWARD flagging, never away from it (pinned by
     test_classify_mismatched_fence_delimiter_does_not_close_the_fence).
 
     An UNTERMINATED fence (opened, never closed) blanks everything from the opening delimiter to
@@ -106,7 +105,7 @@ def _strip_fences(text):
     test_classify_unterminated_fence_blanks_to_eof)."""
     out = []
     open_delim = None                      # the delimiter ('```' or '~~~') that opened the
-                                            # current fence, or None when not inside one
+                                           # current fence, or None when not inside one
     for line in text.split("\n"):
         m = _FENCE_RE.match(line)
         if m:

@@ -116,9 +116,11 @@ def test_classify_flags_six_or_more_independent_h2_sections():
 
 
 def test_classify_does_not_flag_five_h2_sections():
-    """Boundary pin one below the new threshold: 5 is the fence-stripped corpus's own observed
-    max (see goal_size.py's module docstring), so this is also the tightest real-world case the
-    corpus itself validates precision against."""
+    """Boundary pin one below the new threshold. 5 is the fence-stripped max across the FULL
+    269-issue measured corpus (see goal_size.py's module docstring) — not literally represented in
+    any of the 29 fixtures checked into tests/fixtures/goal_size/, which top out at 4 (goal-519.md,
+    goal-464.md). This synthetic body is what actually pins the real-world ceiling; the checked-in
+    corpus alone would leave 5 untested."""
     gs = _mod("goal_size")
     body = ("## A\nshort\n\n## B\nshort\n\n## C\nshort\n\n"
             "## D\nshort\n\n## E\nshort\n")
@@ -419,7 +421,7 @@ def test_decompose_check_verb_reads_the_marker_constant_live_not_a_hardcoded_cop
     proves backlog_check reads goal_size's constant live, by mutating the ACTUAL goal_size module
     object backlog_check holds. But loop.py's own `_load("goal_size")` call resolves a FRESH module
     instance on every invocation (never cached), so that same trick doesn't reach it -- nothing
-    previously proved decompose_check's guard (loop.py:698) actually reads `gs.DECOMPOSED_FROM_MARKER`
+    previously proved decompose_check's marker guard actually reads `gs.DECOMPOSED_FROM_MARKER`
     at runtime rather than a hand-typed literal that merely happens to match today.
 
     Monkeypatch loop.py's OWN `_load` (the name decompose_check's `gs = _load("goal_size")` resolves
