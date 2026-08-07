@@ -109,7 +109,8 @@ async function main() {
   // (e.g. /manager for role:"manager", where decide() allows it) is correctly ABSENT from nav --
   // if navItemsFor's `implemented` filter were ever dropped, this is what turns red.
   const rolesUnderTest = [...Object.keys(ROLE_ROUTES), undefined, "owner"];
-  const allEntries = [...SHARED_AUTHENTICATED_ROUTES, ...Object.values(ROLE_ROUTES)];
+  // issue #312 [E20.S1] Goal A: ROLE_ROUTES[role] is now an array of entries per role -- flatten.
+  const allEntries = [...SHARED_AUTHENTICATED_ROUTES, ...Object.values(ROLE_ROUTES).flat()];
   let assertions = 0;
   for (const role of rolesUnderTest) {
     for (const hasSession of [true, false]) {
@@ -153,10 +154,13 @@ async function main() {
   // `Object.assign` below throws TypeError under strict-mode ESM -- a false-alarm breakage
   // unrelated to drift. Fix the probe (e.g. mutate a shallow clone and pass IT through a
   // freeze-tolerant seam) rather than deleting it if that day comes.
-  const before = { ...ROLE_ROUTES.manager };
-  Object.assign(ROLE_ROUTES.manager, { navLabel: "MUTATED-PROBE", implemented: true });
+  // issue #312 [E20.S1] Goal A: ROLE_ROUTES.manager is now an array -- target its FIRST element
+  // (ROLE_ROUTES.manager[0]) instead of the (formerly single) entry object itself. Still proves
+  // the same thing (nav reads the live object graph, not a copy); only the addressing changes.
+  const before = { ...ROLE_ROUTES.manager[0] };
+  Object.assign(ROLE_ROUTES.manager[0], { navLabel: "MUTATED-PROBE", implemented: true });
   const probed = navItemsFor(true, "manager").some((item) => item.label === "MUTATED-PROBE");
-  Object.assign(ROLE_ROUTES.manager, before); // restore before any later assertion depends on it
+  Object.assign(ROLE_ROUTES.manager[0], before); // restore before any later assertion depends on it
   assert.ok(
     probed,
     "navItemsFor did not observe a live mutation of the real ROLE_ROUTES.manager entry -- this " +
