@@ -128,11 +128,12 @@ async function main() {
     await assert.rejects(
       verifyCredentials("alice", "whatever"),
       (e) =>
-        e instanceof CredentialCheckUnavailableError && /KDF unavailable/.test(e.message),
-      "exit 2 must reject with CredentialCheckUnavailableError naming the KDF",
+        e instanceof CredentialCheckUnavailableError &&
+        /credential check could not run/.test(e.message),
+      "exit 2 must reject with CredentialCheckUnavailableError",
     );
   });
-  console.log("OK: a stub python3 exiting 2 surfaces as CredentialCheckUnavailableError naming the KDF");
+  console.log("OK: a stub python3 exiting 2 surfaces as CredentialCheckUnavailableError");
 
   // Scenario 3: THE SILENT-LOCKOUT REGRESSION (independent security review of #307). Exit 1 is
   // CPython's status for ANY uncaught exception -- the ModuleNotFoundError from a wrong CWD above
@@ -178,7 +179,10 @@ async function main() {
     await verifyCredentials("nobody", "whatever");
     assert.fail("expected a rejection for an unknown user");
   } catch (e) {
-    if (e instanceof CredentialCheckUnavailableError && /KDF unavailable/.test(e.message)) {
+    if (
+      e instanceof CredentialCheckUnavailableError &&
+      /credential check could not run/.test(e.message)
+    ) {
       console.log("SKIP: argon2-cffi absent, so the real CLI cannot reach its invalid-credentials path");
     } else {
       assert.ok(

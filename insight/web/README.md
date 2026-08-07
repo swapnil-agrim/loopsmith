@@ -241,3 +241,14 @@ code) so this Node app needs no changes to consume it — `src/lib/auth/pythonBr
 `InvalidCredentialsError` handling already covers it unchanged. See
 `insight/accounts/store.py`'s own module docstring and `_locked_accounts`/`verify_user`
 docstrings for the throttle policy's full reasoning (`.sdlc/plans/308.md` Decision 3/4/5/6).
+
+**One operational failure mode this adds, so it is not a surprise under load.** The accounts-store
+lock is store-*global* and is held across a full argon2id hash on every login attempt — including
+attempts for usernames that do not exist, which must pay an identical cost or they become an
+enumeration oracle. So logins queue through one critical section. A login that waits more than
+`store._LOCK_TIMEOUT_SECONDS` (5s) fails with `AccountsLockUnavailableError`, which reaches this
+app as `CredentialCheckUnavailableError` (exit 2), *never* as `InvalidCredentialsError` — a
+contended login can never be mistaken for a wrong password. If you see exit-2 failures under load,
+that is lock contention, not a missing argon2 install: the two share exit 2 deliberately, and the
+Python stderr in the message says which. The residual (a login flood can still fail legitimate
+logins) is out of scope here — it needs network-layer rate limiting — and is tracked in issue #490.

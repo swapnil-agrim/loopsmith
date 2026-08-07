@@ -235,8 +235,21 @@ class UsernameExistsError(Exception):
 
 
 class AccountsLockUnavailableError(Exception):
-    """Raised by `_locked_accounts` when `fcntl` could not be imported -- this process is not
-    running on a POSIX platform (issue #308 [E18.S3], .sdlc/plans/308.md Decision 4). A SILENT
+    """Raised for the TWO distinct reasons the accounts-store lock can be unusable (issue #308
+    [E18.S3]). Both mean the same thing to a caller -- the credential check could not run, which
+    is never "invalid credentials" -- so they share one exception type and one exit code, but an
+    operator triaging them needs to know which fired, and the message says so.
+
+    CAUSE 1, `fcntl` could not be imported -- this process is not running on a POSIX platform
+    (.sdlc/plans/308.md Decision 4). Never fires on this repo's POSIX CI and dev; see below.
+
+    CAUSE 2, the wait for the lock TIMED OUT (`_LOCK_TIMEOUT_SECONDS`, PR #485 code review). This
+    one CAN fire in practice, under ordinary contention on a healthy POSIX host: the lock is
+    store-global and held across a full KDF on every login attempt, so a flood of login POSTs
+    queues behind it. See `_locked_accounts`'s docstring for why the wait is bounded, and issue
+    #490 for the residual this does not remove.
+
+    Cause 1's reasoning, unchanged. A SILENT
     no-op lock would make the throttle counter (and add_user's own concurrency-safety) APPEAR
     present and tested while providing zero actual protection against the exact concurrent
     read-modify-write race this lock exists to close, on any platform lacking `fcntl` -- so this
