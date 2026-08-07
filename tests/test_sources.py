@@ -485,3 +485,81 @@ def test_local_note_safe_from_traversal_via_stem_extraction():
         assert "traversal attempt" in jlog.read_text()
         # confirm the escape directory DOES NOT exist (proof the traversal failed)
         assert not (pathlib.Path(d) / "etc" / "passwd.md").exists(), "traversal must not create files outside .sdlc/journey/"
+
+
+# --- #506: in_progress label removal on completion and parking ---
+
+def test_complete_removes_in_progress_label():
+    """#506: `complete()` must remove the in-progress label when closing an issue. The label is a
+    best-effort visibility tag — a transient gh error must not fail the goal completion."""
+    src = _mod("sources")
+    calls = []
+
+    def run(a):
+        calls.append(list(a))
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh.complete("42")
+
+    # Verify that issue close and in-progress label removal both happened
+    assert any(c[0:2] == ["issue", "close"] and "42" in c for c in calls), "issue close call missing"
+    assert any(c[0:2] == ["issue", "edit"] and "42" in c and "--remove-label" in c and
+               "sdlc:in-progress" in c for c in calls), "in-progress label removal missing"
+
+
+def test_complete_survives_in_progress_label_removal_failure():
+    """#506: if the in-progress label cannot be removed (transient gh error), the goal completion
+    must still succeed — the label removal is best-effort."""
+    src = _mod("sources")
+    
+    def run(a):
+        verb = a[1] if len(a) > 1 else a[0]
+        if verb == "edit" and "--remove-label" in a and "sdlc:in-progress" in " ".join(a):
+            raise RuntimeError("gh: HTTP 502 Bad Gateway")
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh.complete("42")  # must not raise
+
+
+def test_offboard_removes_in_progress_label():
+    """#506: `_offboard()` (called by park() and fail()) must remove the in-progress label along with
+    the goal label. The in-progress label removal happens after goal-label removal (de-list first)."""
+    src = _mod("sources")
+    calls = []
+
+    def run(a):
+        calls.append(list(a))
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh.park("42", "needs review")
+
+    # Verify goal label and in-progress label removal both happened
+    assert any(c[0:2] == ["issue", "edit"] and "42" in c and "--remove-label" in c and
+               "sdlc:goal" in c for c in calls), "goal label removal missing"
+    assert any(c[0:2] == ["issue", "edit"] and "42" in c and "--remove-label" in c and
+               "sdlc:in-progress" in c for c in calls), "in-progress label removal missing"
+
+    # Verify goal label removal happens before in-progress label removal
+    goal_label_idx = next(i for i, c in enumerate(calls) if c[0:2] == ["issue", "edit"] and
+                          "42" in c and "--remove-label" in c and "sdlc:goal" in c)
+    in_progress_idx = next(i for i, c in enumerate(calls) if c[0:2] == ["issue", "edit"] and
+                           "42" in c and "--remove-label" in c and "sdlc:in-progress" in c)
+    assert goal_label_idx < in_progress_idx, "goal label removal must happen before in-progress removal"
+
+
+def test_offboard_survives_in_progress_label_removal_failure():
+    """#506: if the in-progress label cannot be removed (transient gh error), the park/fail operation
+    must still succeed — the label removal is best-effort like the parked label addition."""
+    src = _mod("sources")
+    
+    def run(a):
+        verb = a[1] if len(a) > 1 else a[0]
+        if verb == "edit" and "--remove-label" in a and "sdlc:in-progress" in " ".join(a):
+            raise RuntimeError("gh: HTTP 502 Bad Gateway")
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh.park("42", "deploy gate")  # must not raise

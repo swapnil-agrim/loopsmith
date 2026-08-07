@@ -306,6 +306,10 @@ class GitHubSource:
     def complete(self, goal):
         self._run(["issue", "close", goal, *self._repo_args(),
                    "--comment", "Completed by the LoopSmith SDLC loop."])
+        try:
+            self._run(["issue", "edit", goal, *self._repo_args(), "--remove-label", self.in_progress_label])
+        except Exception:
+            pass   # best-effort visibility label; a transient gh error must not fail the goal completion
         self._set_board_status(goal, self.col["done"])
 
     def park(self, goal, reason):
@@ -327,6 +331,10 @@ class GitHubSource:
             self._run(["issue", "edit", goal, *self._repo_args(), "--remove-label", self.goal_label])
         except Exception:
             pass
+        try:
+            self._run(["issue", "edit", goal, *self._repo_args(), "--remove-label", self.in_progress_label])
+        except Exception:
+            pass   # best-effort visibility label; a transient gh error must not abort the drain
         try:
             self._run(["issue", "edit", goal, *self._repo_args(), "--add-label", self.parked_label])
         except Exception:
