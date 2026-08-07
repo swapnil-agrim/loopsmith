@@ -304,8 +304,38 @@ class GitHubSource:
         self._set_board_status(goal, self.col["qc"])     # board-only: the Review / QC quality stage
 
     def complete(self, goal):
-        self._run(["issue", "close", goal, *self._repo_args(),
-                   "--comment", "Completed by the LoopSmith SDLC loop."])
+        # #505: when the merged PR's "Fixes #N"/"Closes #N" auto-closes this issue before this call
+        # runs (the norm for this repo's own PRs), `gh issue close --comment` on an ALREADY-closed
+        # issue exits 0 but silently drops the --comment text (verified live against the real gh
+        # CLI: stdout empty, stderr "! Issue ... is already closed", comment never posted) -- and
+        # `_run_gh` only returns stdout, discarding stderr on success, so that signal is invisible
+        # through the normal `_run()` return value. Probe the state first (mirrors the
+        # read-then-write idiom `append_to_body()` already uses below) so the comment always goes
+        # out through whichever call will actually post it. Best-effort: any probe failure falls
+        # through to today's combined call, unchanged -- a new read must not make this any more
+        # fragile than it was before this fix.
+        already_closed = False
+        try:
+            state_now = self._run(["issue", "view", goal, *self._repo_args(),
+                                    "--json", "state", "--jq", ".state"]).strip()
+            already_closed = state_now == "CLOSED"
+        except Exception:
+            pass
+        if already_closed:
+            # The close already happened (via GitHub's auto-close) -- only the audit-trail comment
+            # is still missing, so post it standalone. Best-effort, unlike the branch below: failing
+            # to leave a comment on an issue that is already genuinely done must never make
+            # complete() raise -- run_loop downgrades ANY exception here into a park(), which would
+            # misleadingly park/block an already-closed issue over a mere transient gh error, worse
+            # than the silent-comment bug this fix closes.
+            try:
+                self._run(["issue", "comment", goal, *self._repo_args(),
+                           "--body", "Completed by the LoopSmith SDLC loop."])
+            except Exception:
+                pass
+        else:
+            self._run(["issue", "close", goal, *self._repo_args(),
+                       "--comment", "Completed by the LoopSmith SDLC loop."])
         try:
             self._run(["issue", "edit", goal, *self._repo_args(), "--remove-label", self.in_progress_label])
         except Exception:
