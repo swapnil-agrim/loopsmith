@@ -29,6 +29,10 @@
 // its absence of a 403 AND a concrete 404 -- proving the proxy passed it through to Next's own
 // routing, which then correctly finds no page there, rather than by assuming "not 403" alone means
 // "worked as intended."
+//
+// issue #312 [E20.S1] Goal A: the same pattern is reused verbatim, unchanged, for "/delivery" --
+// granted to manager/leadership/ic, denied to cross-functional, no page shipped in Goal A either
+// (Task A3 -- the page -- was dropped from Goal A by plan amendment; only the route grant landed).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import net from "node:net";
@@ -159,6 +163,42 @@ async function main() {
     const shared = await fetchAs(baseUrl, "/", "ic");
     assert.equal(shared.status, 200, `a real session must still reach the shared "/" route, got ${shared.status}`);
     console.log('OK: real session (role "ic") on shared route "/" -> 200, unaffected by the matrix');
+
+    // 6-7. issue #312 [E20.S1] Goal A: the delivery route's role grants, proven against the REAL
+    // Auth.js pipeline + REAL proxy.ts -- prove-role-route-matrix.mjs Parts A/B only prove this
+    // against decide() directly and a STUBBED proxy.ts. proxy.ts denies BEFORE Next resolves any
+    // page, so a denied cross-functional request never reaches app/delivery/page.tsx (or, once
+    // Goal B lands, its data bridge) at all -- this is a structural guarantee about denial timing,
+    // not merely a tested one, and this is the one place that guarantee is exercised against the
+    // real, compiled proxy.ts. Mirrors exactly how /manager is proven above (steps 2-3): a real
+    // 403 for the denied role, and a real, concrete 404 (not a 403) for a granted role -- Goal A
+    // ships no page at /delivery, so "granted" is proven by absence of a 403 plus the same
+    // past-the-proxy 404 signal used for /manager.
+    const deliveryForbidden = await fetchAs(baseUrl, "/delivery", "cross-functional");
+    assert.equal(
+      deliveryForbidden.status, 403,
+      `cross-functional on /delivery must get 403, got ${deliveryForbidden.status}`,
+    );
+    const deliveryForbiddenBody = await deliveryForbidden.json();
+    assert.deepEqual(
+      deliveryForbiddenBody, { error: "forbidden" },
+      `the delivery forbidden body must carry no route name, no role name, no underlying data, got: ${JSON.stringify(deliveryForbiddenBody)}`,
+    );
+    console.log('OK: cross-functional on /delivery -> real HTTP 403, body exactly {"error":"forbidden"}');
+
+    for (const role of ["manager", "leadership", "ic"]) {
+      const deliveryAllowed = await fetchAs(baseUrl, "/delivery", role);
+      assert.notEqual(
+        deliveryAllowed.status, 403,
+        `a real "${role}" session must not be forbidden on /delivery`,
+      );
+      assert.equal(
+        deliveryAllowed.status, 404,
+        `a real "${role}" session on /delivery (no page exists yet) must reach Next's own 404, got ${deliveryAllowed.status} -- ` +
+        "a non-404 here would mean this assertion needs updating once an actual /delivery page ships",
+      );
+      console.log(`OK: real session (role "${role}") on /delivery -> past the proxy (404, no page yet), not forbidden`);
+    }
   } finally {
     proc.kill();
   }
