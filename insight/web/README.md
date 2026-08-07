@@ -123,6 +123,17 @@ sibling `package-lock.json` and declare every `CHECKS` name — continues to enf
   request time if unset; **not** required for `next build`/`next lint`/`next typecheck`, since
   Auth.js only validates config lazily, per request — verified against `@auth/core@0.41.3`'s own
   `assertConfig`, called from `Auth()`, never from `NextAuth()`'s own module-scope call).
+- `AUTH_URL` **or** `AUTH_TRUST_HOST` — one of these is **required in any self-hosted production
+  deployment**, and getting it wrong does not produce an error. `@auth/core`'s `setEnvDefaults`
+  (`lib/utils/env.js:40-44`) defaults `trustHost` to
+  `!!(AUTH_URL ?? AUTH_TRUST_HOST ?? VERCEL ?? CF_PAGES ?? NODE_ENV !== "production")`. `next start`
+  sets `NODE_ENV=production`, so on a plain self-hosted server with none of these set `trustHost` is
+  **false**, every session lookup returns `UntrustedHost`, and next-auth's `parseSessionResponse`
+  turns that non-OK response into "no session" — deliberately fail-closed. The symptom is therefore
+  not a crash or a log line: it is a **silent, permanent redirect to `/login` for every user**,
+  including one who just signed in with correct credentials. Found by #307's CI browser proofs,
+  which hit exactly this against `next start`; `scripts/lib/proof-session.mjs` sets
+  `AUTH_TRUST_HOST=1` for the same reason.
 - `INSIGHT_ACCOUNTS_PATH` — absolute path to `insight-accounts.json`, read by
   `src/lib/auth/pythonBridge.ts`. Required in any deployment where the Node process's CWD does not
   happen to be two directories below the repo root (i.e. always required outside plain local dev)

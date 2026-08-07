@@ -34,7 +34,21 @@ export const SESSION_COOKIE_NAME = "authjs.session-token";
 
 /** The env a proof's `next start` must be spawned with for the minted cookie to validate. */
 export function proofServerEnv() {
-  return { ...process.env, AUTH_SECRET: PROOF_AUTH_SECRET };
+  return {
+    ...process.env,
+    AUTH_SECRET: PROOF_AUTH_SECRET,
+    // AUTH_TRUST_HOST is NOT optional here, and the reason is a real operational trap worth
+    // stating rather than a test detail. `next start` sets NODE_ENV=production, and @auth/core's
+    // setEnvDefaults (lib/utils/env.js:40-44) defaults `trustHost` to
+    // `!!(AUTH_URL ?? AUTH_TRUST_HOST ?? VERCEL ?? CF_PAGES ?? NODE_ENV !== "production")` --
+    // so on a self-hosted production server with none of those set, trustHost is FALSE, every
+    // session lookup comes back UntrustedHost, and next-auth's parseSessionResponse turns that
+    // non-OK response into "no session" (deliberately fail-closed). The visible symptom is not an
+    // error: it is a silent, permanent redirect to /login for everyone, including users who just
+    // signed in successfully. Any real deployment of this app must set AUTH_URL or
+    // AUTH_TRUST_HOST for the same reason -- see insight/web/README.md.
+    AUTH_TRUST_HOST: "1",
+  };
 }
 
 /** A Playwright context carrying a valid Auth.js session for `baseUrl`. */
