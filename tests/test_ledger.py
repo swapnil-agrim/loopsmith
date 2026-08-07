@@ -160,10 +160,10 @@ def test_files_for_finds_a_file_written_under_a_different_case(tmp_path):
     d = _sdlc(tmp_path, ON)
     entries = ledger.entries_dir(d)
     entries.mkdir(parents=True, exist_ok=True)
-    on_disk = entries / "mstomar-ag-111.jsonl"
-    on_disk.write_text(json.dumps({"id": "mstomar-ag:111:1", "ts": "2026-01-01T00:00:00Z",
-                                    "actor": "mstomar-ag", "kind": "note", "goal": "g"}) + "\n")
-    assert ledger.files_for(entries, "Mstomar-Ag") == [on_disk]
+    on_disk = entries / "dana-111.jsonl"
+    on_disk.write_text(json.dumps({"id": "dana:111:1", "ts": "2026-01-01T00:00:00Z",
+                                    "actor": "dana", "kind": "note", "goal": "g"}) + "\n")
+    assert ledger.files_for(entries, "Dana") == [on_disk]
 
 
 def test_files_for_is_symmetric_the_other_casing_direction_also_works(tmp_path):
@@ -174,10 +174,10 @@ def test_files_for_is_symmetric_the_other_casing_direction_also_works(tmp_path):
     d = _sdlc(tmp_path, ON)
     entries = ledger.entries_dir(d)
     entries.mkdir(parents=True, exist_ok=True)
-    on_disk = entries / "Mstomar-Ag-222.jsonl"
-    on_disk.write_text(json.dumps({"id": "Mstomar-Ag:222:1", "ts": "2026-01-01T00:00:00Z",
-                                    "actor": "Mstomar-Ag", "kind": "note", "goal": "g"}) + "\n")
-    assert ledger.files_for(entries, "mstomar-ag") == [on_disk]
+    on_disk = entries / "Dana-222.jsonl"
+    on_disk.write_text(json.dumps({"id": "Dana:222:1", "ts": "2026-01-01T00:00:00Z",
+                                    "actor": "Dana", "kind": "note", "goal": "g"}) + "\n")
+    assert ledger.files_for(entries, "dana") == [on_disk]
 
 
 def test_files_for_still_never_matches_a_different_actor_as_a_prefix(tmp_path):
