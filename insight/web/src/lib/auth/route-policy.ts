@@ -144,18 +144,24 @@ export const SHARED_AUTHENTICATED_ROUTES: readonly (RoutePattern & RouteMeta)[] 
 // independent routes need independent navLabel/implemented metadata. `cross-functional` gets NO
 // `/delivery` entry -- its denial is structural (decide()'s fall-through-deny, same as every other
 // unlisted route), never a special case or an explicit deny marker.
+//
+// issue #312 [E20.S1] Goal B, Task B3: the three `/delivery` entries flip `implemented: false` ->
+// `true` HERE, in the SAME change that lands app/delivery/page.tsx -- required by
+// prove-role-route-matrix.mjs Part C's filesystem<->table drift check (both directions), and
+// exactly why that check now requires ALL matching entries to agree, not just one (the Direction-1
+// `.find()` -> `.filter()`+`.every()` fix in that script, same change).
 export const ROLE_ROUTES: Readonly<Record<Role, readonly (RoutePattern & RouteMeta)[]>> = {
   manager: [
     { prefix: ["/manager"], navLabel: "Manager", implemented: false },
-    { prefix: ["/delivery"], navLabel: "Delivery panel", implemented: false },
+    { prefix: ["/delivery"], navLabel: "Delivery panel", implemented: true },
   ],
   leadership: [
     { prefix: ["/leadership"], navLabel: "Leadership", implemented: false },
-    { prefix: ["/delivery"], navLabel: "Delivery panel", implemented: false },
+    { prefix: ["/delivery"], navLabel: "Delivery panel", implemented: true },
   ],
   ic: [
     { prefix: ["/ic"], navLabel: "IC", implemented: true },
-    { prefix: ["/delivery"], navLabel: "Delivery panel", implemented: false },
+    { prefix: ["/delivery"], navLabel: "Delivery panel", implemented: true },
   ],
   "cross-functional": [
     { prefix: ["/cross-functional"], navLabel: "Cross-functional", implemented: false },

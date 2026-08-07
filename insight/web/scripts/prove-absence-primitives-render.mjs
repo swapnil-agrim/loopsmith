@@ -15,7 +15,9 @@
 //   measured        -- FIRST asserts the numeral slot (data-testid="metric-numeral") EXISTS
 //                       (count() === 1), THEN asserts its text/coverage. Existence-first: a
 //                       typo'd selector matching zero elements must not make the "no digit"
-//                       assertions below pass vacuously.
+//                       assertions below pass vacuously. ALSO asserts the rendered
+//                       `background-image` is exactly "none" -- issue #312 [E20.S1] Goal B, Task
+//                       B1's own negative control: hatch must be state-gated, not always-on.
 //   absent_no_data /
 //   absent_unbuilt  -- re-asserts the SAME selector still resolves to exactly one element (the
 //                       slot renders empty for absent states, never omitted), THEN asserts NO
@@ -26,6 +28,12 @@
 //                       Decision (d)) is the pinned structural value (dashed / dotted) and that
 //                       the two absent states differ from each other. Also re-asserts fixText
 //                       differs at the DOM level (Step 1's logic proof, re-checked here).
+//                       issue #312 [E20.S1] Goal B, Task B1: ALSO asserts the rendered
+//                       `background-image` (getComputedStyle, same never-a-className-comparison
+//                       discipline as border-style) contains "repeating-linear-gradient" -- the
+//                       hatch ported verbatim from insight/dash/instrument.py onto Metric.tsx/
+//                       MetricCell.tsx (done-when 3's "absent panels use shared absence material:
+//                       achromatic, hatched").
 //
 // Negative control: compares the SAME state's border-style across <Metric> and <MetricCell> (both
 // use the identical BORDER_CLASS mapping) and asserts EQUAL -- proves the comparator can actually
@@ -138,6 +146,9 @@ async function assertCase(page, component, state) {
   );
 
   const numeralText = (await numeralLocator.textContent()) ?? "";
+  const rootLocator = page.locator(`${containerSelector} [data-testid="metric-root"]`);
+  assert.equal(await rootLocator.count(), 1, `${component.name}/${state.id}: expected exactly one metric-root element`);
+  const backgroundImage = await rootLocator.evaluate((el) => getComputedStyle(el).backgroundImage);
 
   if (state.id === "measured") {
     assert.equal(
@@ -157,7 +168,19 @@ async function assertCase(page, component, state) {
       `${component.name}/measured: coverage text must include both the numerator (41) and ` +
       `denominator (50), got "${coverageText}"`,
     );
-    console.log(`OK: ${component.name}/measured -- numeral "${numeralText.trim()}", coverage "${coverageText.trim()}"`);
+    // issue #312 [E20.S1] Goal B, Task B1's own MANDATORY negative control: a measured readout
+    // must carry NO hatch at all -- proves the hatch is gated on absence state, not painted
+    // unconditionally (which would make the "absent states are hatched" assertion below vacuous).
+    assert.equal(
+      backgroundImage,
+      "none",
+      `${component.name}/measured: expected NO background-image (hatch must be state-gated, not ` +
+      `always-on), got "${backgroundImage}"`,
+    );
+    console.log(
+      `OK: ${component.name}/measured -- numeral "${numeralText.trim()}", coverage ` +
+      `"${coverageText.trim()}", background-image "none" (negative control)`,
+    );
     return;
   }
 
@@ -167,13 +190,20 @@ async function assertCase(page, component, state) {
     `${component.name}/${state.id}: numeral slot must carry no digit character, got "${numeralText}"`,
   );
 
-  const rootLocator = page.locator(`${containerSelector} [data-testid="metric-root"]`);
-  assert.equal(await rootLocator.count(), 1, `${component.name}/${state.id}: expected exactly one metric-root element`);
   const borderStyle = await rootLocator.evaluate((el) => getComputedStyle(el).borderStyle);
   assert.equal(
     borderStyle,
     state.expectedBorderStyle,
     `${component.name}/${state.id}: expected computed border-style "${state.expectedBorderStyle}", got "${borderStyle}"`,
+  );
+
+  // issue #312 [E20.S1] Goal B, Task B1: done-when 3's "hatched" requirement, ported verbatim
+  // from instrument.py onto the shared primitive -- asserted via getComputedStyle, same
+  // never-a-className-comparison discipline as border-style above.
+  assert.ok(
+    backgroundImage.includes("repeating-linear-gradient"),
+    `${component.name}/${state.id}: expected computed background-image to contain ` +
+    `"repeating-linear-gradient" (the ported hatch), got "${backgroundImage}"`,
   );
 
   const fixLocator = page.locator(`${containerSelector} [data-testid="metric-fix"]`);
@@ -183,9 +213,9 @@ async function assertCase(page, component, state) {
 
   console.log(
     `OK: ${component.name}/${state.id} -- no digit in numeral, border-style "${borderStyle}", ` +
-    `fixText "${fixText}"`,
+    `background-image hatched, fixText "${fixText}"`,
   );
-  return { borderStyle, fixText };
+  return { borderStyle, backgroundImage, fixText };
 }
 
 async function main() {

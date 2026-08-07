@@ -13,6 +13,8 @@
     "prove:role-forbidden": "node scripts/prove-role-forbidden-real-server.mjs",
     "prove:ic-bridge": "node scripts/prove-ic-python-bridge-exit-codes.mjs",
     "prove:ic-no-leak": "node scripts/prove-ic-no-cross-actor-leak.mjs",
+    "prove:delivery-bridge": "node scripts/prove-delivery-python-bridge-exit-codes.mjs",
+    "prove:delivery-cold-start": "node scripts/prove-delivery-cold-start-no-numerals.mjs",
     "build": "next build"
   },
   "dependencies": {

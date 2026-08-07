@@ -226,6 +226,28 @@ def build_parser():
              "semantics as dash's own --db)",
     )
 
+    # `web delivery` (issue #312 [E20.S1] Goal B, Task B2, .sdlc/plans/312.md §3a/§7): the
+    # /delivery Server Component's own server-to-server bridge, mirroring `web ic`'s shape
+    # (spawn/JSON-on-stdout) but resolving through `insight.api.metrics.collect_metrics()` --
+    # the SAME resolver GET /metrics already calls (insight/api/app.py:74) -- rather than
+    # `insight.dash.panel.collect()`'s HTML-oriented query set. Deliberately NOT identical to
+    # `web ic` in two ways, both named in the plan: (1) no `--actor` flag at all -- delivery data
+    # is aggregate-only, there is no actor to scope by, and the ABSENCE of a parameter a leak
+    # could ride on is itself part of the "denied request sees no data" structural guarantee (2)
+    # a missing store is NOT an error (unlike `web ic`'s exit-2 store_unavailable) -- see the
+    # dispatch branch below for why.
+    web_delivery_parser = web_subparsers.add_parser(
+        "delivery",
+        help="print every catalog metric (insight.api.metrics.collect_metrics) as a JSON array "
+             "on stdout, for the /delivery Server Component's Node bridge -- aggregate-only, no "
+             "--actor flag (issue #312, E20.S1)",
+    )
+    web_delivery_parser.add_argument(
+        "--db", dest="db", default=None,
+        help="path to the DuckDB store file (default: .sdlc/insight.duckdb under CWD; same "
+             "semantics as dash's/web ic's own --db)",
+    )
+
     # the stub loop now has nothing left in it -- kept as an empty tuple rather than deleted, so
     # a FUTURE new stub subcommand has an obvious place to land, mirroring how this loop already
     # shrank from {"gaps", "dash"} to {"dash"} in #122 without changing shape
@@ -719,6 +741,32 @@ def main(argv=None):
         # HTML-escapes for <script>-tag embedding, the wrong transform for a stdout JSON bridge
         # (Decision 2).
         print(_json.dumps(payload, default=json_default))
+        return 0
+    if args.command == "web" and args.action == "delivery":
+        # Lazy, mirroring `web ic`'s own branch above -- keeps duckdb out of the import graph for
+        # --help and every other subcommand. issue #312 [E20.S1] Goal B, Task B2.
+        import json as _json
+        from insight.ingest.store import open_store_read_only
+        from insight.api.metrics import collect_metrics
+
+        try:
+            conn = open_store_read_only(args.db)
+        except FileNotFoundError:
+            # issue #312 [E20.S1] §3a point 2: deliberately NOT `web ic`'s exit-2
+            # store_unavailable convention. Mirrors insight/api/app.py's GET /metrics route
+            # (app.py:69-72) instead -- the SAME resolver, the SAME missing-store handling:
+            # aggregate delivery data has no actor to fail closed on, and collect_metrics(None)
+            # already degrades every one of the 42 catalog entries to an honest, individually-
+            # reasoned absence (never a fabricated value) -- so a missing store is a normal,
+            # successful response, not an error a caller must branch on.
+            print(_json.dumps([m.model_dump(by_alias=True) for m in collect_metrics(None)]))
+            return 0
+
+        try:
+            metrics = collect_metrics(conn)
+        finally:
+            conn.close()
+        print(_json.dumps([m.model_dump(by_alias=True) for m in metrics]))
         return 0
     issue = _TRACKING_ISSUE[args.command]
     print(

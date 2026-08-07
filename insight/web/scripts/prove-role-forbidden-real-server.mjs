@@ -33,6 +33,27 @@
 // issue #312 [E20.S1] Goal A: the same pattern is reused verbatim, unchanged, for "/delivery" --
 // granted to manager/leadership/ic, denied to cross-functional, no page shipped in Goal A either
 // (Task A3 -- the page -- was dropped from Goal A by plan amendment; only the route grant landed).
+//
+// issue #312 [E20.S1] Goal B, Task B5: now that app/delivery/page.tsx is real (Task B3), the
+// manager/leadership/ic assertions below are UPDATED from "past the proxy, 404, no page yet" to a
+// real 200 PLUS a content-level positive control -- restating Goal A's structural guarantee (the
+// proxy denies before the page or its data bridge ever run) against REAL board content, closing
+// the gap Task A4's own note named: "sees none of the underlying metric data" is only meaningful
+// once a real board exists to leak. Mirrors prove-ic-no-cross-actor-leak.mjs's own step 1 (a
+// positive control against a vacuous/empty page) and its whole-body denial assertion (already
+// proven above via `deepEqual(forbiddenBody, {error:"forbidden"})` -- a stronger guarantee than a
+// needle scan, since exact equality of the ENTIRE body structurally forbids any metric content at
+// all, not merely the specific strings this script happens to look for).
+//
+// NEW DEPENDENCY THIS TASK ADDS: rendering the real /delivery page calls fetchDeliveryMetrics()
+// (src/lib/delivery/pythonBridge.ts), which spawns `python3 -m insight web delivery` --
+// `insight.ingest.store` imports `duckdb` at module level even on the missing-store path (it is
+// caught as FileNotFoundError, not avoided). This script therefore now needs duckdb installed
+// BEFORE it runs, unlike its pre-Goal-B self -- ci.yml's `web` job moves the existing
+// `actions/setup-python` + `pip install -e insight/` steps (Decision 7, previously positioned
+// just before prove:ic-bridge) to run BEFORE this step instead, reusing the exact same install
+// rather than adding a second one. The /manager assertions above this comment are unaffected --
+// no page exists at /manager, so they never touch python3 at all.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import net from "node:net";
@@ -164,16 +185,13 @@ async function main() {
     assert.equal(shared.status, 200, `a real session must still reach the shared "/" route, got ${shared.status}`);
     console.log('OK: real session (role "ic") on shared route "/" -> 200, unaffected by the matrix');
 
-    // 6-7. issue #312 [E20.S1] Goal A: the delivery route's role grants, proven against the REAL
-    // Auth.js pipeline + REAL proxy.ts -- prove-role-route-matrix.mjs Parts A/B only prove this
-    // against decide() directly and a STUBBED proxy.ts. proxy.ts denies BEFORE Next resolves any
-    // page, so a denied cross-functional request never reaches app/delivery/page.tsx (or, once
-    // Goal B lands, its data bridge) at all -- this is a structural guarantee about denial timing,
-    // not merely a tested one, and this is the one place that guarantee is exercised against the
-    // real, compiled proxy.ts. Mirrors exactly how /manager is proven above (steps 2-3): a real
-    // 403 for the denied role, and a real, concrete 404 (not a 403) for a granted role -- Goal A
-    // ships no page at /delivery, so "granted" is proven by absence of a 403 plus the same
-    // past-the-proxy 404 signal used for /manager.
+    // 6-7. issue #312 [E20.S1] Goal A/B: the delivery route's role grants, proven against the REAL
+    // Auth.js pipeline + REAL proxy.ts + (Goal B) the REAL board -- prove-role-route-matrix.mjs
+    // Parts A/B only prove this against decide() directly and a STUBBED proxy.ts. proxy.ts denies
+    // BEFORE Next resolves any page, so a denied cross-functional request never reaches
+    // app/delivery/page.tsx or its data bridge at all -- this is a structural guarantee about
+    // denial timing, not merely a tested one, and this is the one place that guarantee is
+    // exercised against the real, compiled proxy.ts.
     const deliveryForbidden = await fetchAs(baseUrl, "/delivery", "cross-functional");
     assert.equal(
       deliveryForbidden.status, 403,
@@ -185,7 +203,26 @@ async function main() {
       `the delivery forbidden body must carry no route name, no role name, no underlying data, got: ${JSON.stringify(deliveryForbiddenBody)}`,
     );
     console.log('OK: cross-functional on /delivery -> real HTTP 403, body exactly {"error":"forbidden"}');
+    // Belt-and-suspenders content check, restating the same guarantee the exact-equality assert
+    // above already gives structurally: the 403 body (a bare JSON error object, not the rendered
+    // page) contains none of the catalog labels a granted role's page legitimately shows below.
+    const deliveryForbiddenText = JSON.stringify(deliveryForbiddenBody);
+    for (const needle of ["Throughput", "Cycle time", "Autonomy rate", "Park rate", "metric-root"]) {
+      assert.ok(
+        !deliveryForbiddenText.includes(needle),
+        `cross-functional's /delivery denial must carry no metric content, leaked via ${JSON.stringify(needle)}`,
+      );
+    }
 
+    // issue #312 [E20.S1] Goal B, Task B5: POSITIVE CONTROL, mirroring
+    // prove-ic-no-cross-actor-leak.mjs's own step 1 -- a granted role must not merely avoid a
+    // 403, it must receive a REAL, populated board, not an empty or broken page (which would make
+    // the denial assertions above vacuous: "not the same as a leak" is meaningless if nobody ever
+    // legitimately sees anything either). The four primary-readout labels and at least 46
+    // `metric-root` elements (4 readouts + 42 board cells, Task B4's own "not vacuous" count) are
+    // checked textually -- same "raw response body, not just parsed JSON" discipline
+    // prove-ic-no-cross-actor-leak.mjs uses, since Next inlines the full RSC payload into the HTML
+    // document a plain res.text() already captures.
     for (const role of ["manager", "leadership", "ic"]) {
       const deliveryAllowed = await fetchAs(baseUrl, "/delivery", role);
       assert.notEqual(
@@ -193,11 +230,26 @@ async function main() {
         `a real "${role}" session must not be forbidden on /delivery`,
       );
       assert.equal(
-        deliveryAllowed.status, 404,
-        `a real "${role}" session on /delivery (no page exists yet) must reach Next's own 404, got ${deliveryAllowed.status} -- ` +
-        "a non-404 here would mean this assertion needs updating once an actual /delivery page ships",
+        deliveryAllowed.status, 200,
+        `a real "${role}" session on /delivery must reach the real board (200), got ${deliveryAllowed.status}`,
       );
-      console.log(`OK: real session (role "${role}") on /delivery -> past the proxy (404, no page yet), not forbidden`);
+      const body = await deliveryAllowed.text();
+      for (const label of ["Throughput", "Cycle time", "Autonomy rate", "Park rate"]) {
+        assert.ok(
+          body.includes(label),
+          `${role}'s /delivery page must contain the primary readout label ${JSON.stringify(label)}`,
+        );
+      }
+      const metricRootCount = (body.match(/data-testid="metric-root"/g) ?? []).length;
+      assert.ok(
+        metricRootCount >= 46,
+        `${role}'s /delivery page must render at least 46 metric-root elements (4 primary ` +
+        `readouts + 42 board cells), found ${metricRootCount}`,
+      );
+      console.log(
+        `OK: real session (role "${role}") on /delivery -> real HTTP 200, all four primary ` +
+        `readout labels present, ${metricRootCount} metric-root elements rendered`,
+      );
     }
   } finally {
     proc.kill();
