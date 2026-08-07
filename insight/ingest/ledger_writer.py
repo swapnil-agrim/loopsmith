@@ -230,10 +230,12 @@ def _load_cursor(conn, project_id):
 
     `max(last_seq)` rather than a bare column read: `actor_id` is part of the stored PRIMARY KEY
     but not of the in-memory key (it is a readable dimension, redundant with the writer_id that
-    embeds it), so a ledger whose `id` prefix and `actor` field disagree -- a hand-edited line --
-    can legitimately leave two rows for one (writer, stream). Taking the max makes the load
-    deterministic AND keeps it on the safe side of that disagreement: the same reasoning as the
-    GREATEST upsert below, applied on read. Picking an arbitrary row could take the lower value
+    embeds it), so two rows can legitimately land for one (writer, stream) -- reachable with no
+    hand-editing at all, via a plain missing/`null` `actor` field: `_actor_key`'s own `""` sentinel
+    above already treats that as a normal degraded record, not a malformed one, and a record whose
+    id parses fine but whose actor is blank/absent produces exactly that split. Taking the max
+    makes the load deterministic AND keeps it on the safe side of that split: the same reasoning as
+    the GREATEST upsert below, applied on read. Picking an arbitrary row could take the lower value
     and re-ingest an already-landed record as a duplicate."""
     rows = conn.execute(
         "SELECT writer_id, stream, max(last_seq) FROM ingest_ledger_cursor "
