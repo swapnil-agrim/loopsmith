@@ -664,12 +664,17 @@ def decompose_check(sdlc_dir, goal, config, source):
     Returns a one-line result the SKILL reads by its first word: 'OFF' (disabled) | 'PARKED
     <reason>' (parked for a human to split; do not research it, take the next goal) | 'PROCEED'
     (unflagged, or a decomposition child/meta-goal) | 'PROCEED (flagged: <reason>)' (`log` mode —
-    annotated only, the goal still runs). FAIL-OPEN: any error, INCLUDING a config value so
-    malformed the guard itself cannot evaluate it (e.g. `goal_decompose: "on"` instead of a dict —
-    `.get` on a non-dict raises), returns 'PROCEED' with one stderr line — this check must never
-    block or crash the loop, matching `precheck`'s own "gate inside the guard" idiom: disabled /
-    absent / falsy-malformed short-circuits to 'OFF' with no warning, only a genuinely
-    ill-typed value reaches the outer catch.
+    annotated only, the goal still runs). FAIL-OPEN: any error BEFORE a park decision is made,
+    INCLUDING a config value so malformed the guard itself cannot evaluate it (e.g.
+    `goal_decompose: "on"` instead of a dict — `.get` on a non-dict raises), returns 'PROCEED' with
+    one stderr line — this check must never block or crash the loop, matching `precheck`'s own
+    "gate inside the guard" idiom: disabled / absent / falsy-malformed short-circuits to 'OFF' with
+    no warning, only a genuinely ill-typed value reaches the outer catch. Once a park decision IS
+    made, that guarantee flips: `_record`'s own bookkeeping (cursor/ledger/actionlog) is wrapped in
+    its OWN try/except, separate from the outer one, so a failure there — AFTER `source.park` has
+    already gone out — still reports 'PARKED', never downgrades to 'PROCEED' (a caller reading
+    PROCEED would go implement the very epic-shaped goal this feature exists to catch, stacked on
+    top of it now also being parked on GitHub).
 
     Anchoring: the refusal guards match ONLY the first line of the BODY (`.splitlines()[:1]`,
     CRLF-tolerant) — never the title, and never a marker that only appears further down the body —
@@ -706,7 +711,18 @@ def decompose_check(sdlc_dir, goal, config, source):
         # park (and file, until its own filing branch ships): visible, human-actionable, never a
         # silently-implemented epic.
         detail = f"too large per goal_size ({reason}) — needs manual decomposition"
-        _record(sdlc_dir, source, goal, "parked", detail)
+        # `detail` is built BEFORE calling `_record`, and `_record` gets its OWN try/except here,
+        # separate from the outer one below: `_record` calls `source.park` FIRST, then cursor /
+        # ledger / actionlog bookkeeping — once that park mutation has actually gone out, a LATER
+        # bookkeeping failure must never downgrade this to PROCEED (a caller reading PROCEED would
+        # go implement the very epic-shaped goal this feature exists to catch, on top of it now
+        # ALSO being parked on GitHub). So a park decision, once made, is reported as PARKED no
+        # matter what happens next — only the read/classify path above is allowed to fail open.
+        try:
+            _record(sdlc_dir, source, goal, "parked", detail)
+        except Exception as e:
+            print(f"loop.py decompose-check: park record failed after park — "
+                  f"treating as PARKED anyway: {e}", file=sys.stderr)
         return "PARKED " + detail
     except Exception as e:
         print(f"loop.py decompose-check: non-fatal ({e}) — proceeding", file=sys.stderr)

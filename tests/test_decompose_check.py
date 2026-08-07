@@ -396,6 +396,32 @@ def test_file_mode_behaves_as_park_in_this_slice(tmp_path):
     assert len([c for c in src.calls if c[0] == "park"]) == 1
 
 
+def test_park_survives_a_failure_after_source_park_has_already_landed(tmp_path, monkeypatch):
+    """A flagged park path must NEVER report PROCEED once the actual park mutation
+    (`source.park`) has already gone out — a caller reading PROCEED would go implement the very
+    epic-shaped goal this feature exists to catch, on top of it now ALSO being parked on GitHub.
+    `_record` calls `source.park` first, then cursor/ledger/actionlog bookkeeping; this monkeypatches
+    `ledger.safe_append` (loop.py's own module-level reference, called from inside `_record` strictly
+    AFTER `source.park`) to raise, simulating exactly that "mutation landed, bookkeeping blew up"
+    ordering — a bare `_record(...)` call with no try/except of its own lets that exception fall
+    through to decompose_check's outer catch, which used to answer PROCEED."""
+    lp = _mod("loop")
+    base = _sdlc(tmp_path, {"goal_decompose": {"enabled": True, "mode": "park"}})
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY)
+
+    def _boom(*a, **kw):
+        raise RuntimeError("ledger boom")
+    monkeypatch.setattr(lp.ledger, "safe_append", _boom)
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result.split()[0] == "PARKED", \
+        f"a flagged park path must never downgrade to PROCEED after the mutation landed, got: {result!r}"
+    park_calls = [c for c in src.calls if c[0] == "park"]
+    assert len(park_calls) == 1, "the park mutation itself must still be attempted exactly once"
+
+
 # --------------------------------------------------------------------- unrecognized mode
 
 
@@ -413,6 +439,21 @@ def test_unrecognized_mode_falls_back_to_log_behavior_with_a_stderr_warning(tmp_
     assert not any(c[0] == "park" for c in src.calls)
     err = capsys.readouterr().err
     assert "bogus-mode" in err
+
+
+def test_absent_mode_key_behaves_as_log_silently(tmp_path, capsys):
+    """Plan-review change 3: an ABSENT `mode` key (not just an unrecognized string) must default to
+    `log` behavior with NO stderr warning at all — the unrecognized-mode fallback above is for a
+    genuinely unrecognized non-empty string only, never for the common "I didn't set mode" case."""
+    lp = _mod("loop")
+    base = _sdlc(tmp_path, {"goal_decompose": {"enabled": True}})   # enabled, no "mode" key
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY)
+
+    result = lp.decompose_check(base, "1", cfg, src)
+
+    assert result.startswith("PROCEED (flagged:")
+    assert capsys.readouterr().err == ""
 
 
 # --------------------------------------------------------------------- CLI dispatch (local mode)
