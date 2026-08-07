@@ -103,11 +103,29 @@ def test_classify_flags_a_body_over_the_line_threshold_but_under_the_word_thresh
     assert flagged is True and "lines" in reason
 
 
-def test_classify_flags_three_or_more_independent_h2_sections():
+def test_classify_flags_six_or_more_independent_h2_sections():
+    """Retuned for #520's corpus-calibrated SECTION_THRESHOLD (3 -> 6, see goal_size.py's module
+    docstring): the old value of 3 flagged every conventionally-shaped Context/Scope/AC/Verification
+    goal in this repo's own issue history with zero true positives. Body has exactly 6 H2 sections —
+    the new threshold's own boundary."""
     gs = _mod("goal_size")
-    body = "## Context\nshort\n\n## Scope\nshort\n\n## Verification\nshort\n"
+    body = ("## Context\nshort\n\n## Scope\nshort\n\n## Approach\nshort\n\n"
+            "## Risks\nshort\n\n## Testing\nshort\n\n## Verification\nshort\n")
     flagged, reason = gs.classify(body)
     assert flagged is True and "sections" in reason
+
+
+def test_classify_does_not_flag_five_h2_sections():
+    """Boundary pin one below the new threshold. 5 is the fence-stripped max across the FULL
+    269-issue measured corpus (see goal_size.py's module docstring) — not literally represented in
+    any of the 29 fixtures checked into tests/fixtures/goal_size/, which top out at 4 (goal-519.md,
+    goal-464.md). This synthetic body is what actually pins the real-world ceiling; the checked-in
+    corpus alone would leave 5 untested."""
+    gs = _mod("goal_size")
+    body = ("## A\nshort\n\n## B\nshort\n\n## C\nshort\n\n"
+            "## D\nshort\n\n## E\nshort\n")
+    flagged, reason = gs.classify(body)
+    assert flagged is False
 
 
 def test_classify_does_not_flag_only_two_h2_sections():
@@ -118,8 +136,16 @@ def test_classify_does_not_flag_only_two_h2_sections():
 
 
 def test_classify_h3_subsections_never_count_toward_the_h2_section_signal():
+    """Re-armed for #520's SECTION_THRESHOLD=6 (was 3): with only 3 H3 subsections, even a
+    regression that started counting H3 as a section would total just 1+3=4, still under the new
+    threshold, so that body could no longer catch anything — silently vacuous at the new
+    threshold, not just weak. Widened to 1 H2 + 6 H3 (total 7 if H3 wrongly counted) so the
+    threshold itself is what keeps this test load-bearing; proof: a scratch copy of goal_size.py
+    with `_SECTION_RE` widened to `^###?[ \\t]+\\S.*$` (H2 or H3 both match) classifies this exact
+    body as flagged=True, reason='7 independent ## sections (>= 6)' — confirming this body WOULD
+    fail against that regression, while the real (H2-only) regex classifies it as flagged=False."""
     gs = _mod("goal_size")
-    body = "## Context\n### a\nx\n### b\nx\n### c\nx\n"     # 1 H2 + 3 H3 -> still just 1 independent section
+    body = "## Context\n### a\nx\n### b\nx\n### c\nx\n### d\nx\n### e\nx\n### f\nx\n"   # 1 H2 + 6 H3
     flagged, reason = gs.classify(body)
     assert flagged is False
 
@@ -162,16 +188,106 @@ def test_classify_does_not_flag_a_single_phase_mention():
 def test_classify_reason_is_always_single_line():
     """`reason` lands verbatim in a park detail / action-log field — both reject raw newlines
     (state.py's `_offboard`/actionlog's `reject_newline`) — so a multi-line reason would corrupt
-    either channel, not just look ugly."""
+    either channel, not just look ugly. The sections body below is bumped to 6 (#520's new
+    SECTION_THRESHOLD) — at the old 3-section body this arm no longer flags at all, so `reason`
+    was always "" (trivially single-line) and this stopped actually exercising the sections-signal
+    reason string; 6 makes it produce a real, non-empty reason again."""
     gs = _mod("goal_size")
     bodies = ["word " * (gs.WORD_THRESHOLD + 5),
               "\n".join(f"x {i}" for i in range(gs.LINE_THRESHOLD + 5)),
-              "## a\nx\n\n## b\nx\n\n## c\nx\n",
+              "## a\nx\n\n## b\nx\n\n## c\nx\n\n## d\nx\n\n## e\nx\n\n## f\nx\n",
               "- [ ] a\n- [ ] b\n- [ ] c\n- [ ] d\n",
               "## Phase 1\nx\n\n## Phase 2\nx\n"]
     for body in bodies:
         _, reason = gs.classify(body)
         assert "\n" not in reason
+
+
+# --------------------------------------------------------------------- #520: negative-precision synthetics
+#
+# Synthetic (not corpus) cases for _strip_fences / the anchored _PHASE_RE / the widened checkbox
+# dialect — pinned here beside the other classifier units rather than as tests/fixtures/goal_size/
+# corpus fixtures (per #520's adopted spec: these are constructed edge cases, not real issue bodies).
+
+
+def test_classify_fenced_code_hash_lines_do_not_count_as_sections():
+    """Without _strip_fences, the 5 fenced '## fake N' lines below would join the 2 real sections
+    for a raw total of 7 (>= SECTION_THRESHOLD) — this proves they're excluded, not just
+    coincidentally under threshold."""
+    gs = _mod("goal_size")
+    body = ("## Context\nshort\n\n"
+            "```\n## fake 1\n## fake 2\n## fake 3\n## fake 4\n## fake 5\n```\n\n"
+            "## Scope\nshort\n")
+    flagged, reason = gs.classify(body)
+    assert flagged is False, reason
+
+
+def test_classify_shell_style_hash_comments_inside_fences_do_not_count():
+    """A fenced shell snippet's `## Banner` comment lines are visually identical to a markdown H2
+    to a naive regex; only fencing (not comment-syntax detection) keeps them out. Same 2-real+5-fake
+    shape as the fenced-code case above, so it would also raw-total 7 without stripping."""
+    gs = _mod("goal_size")
+    body = ("## Context\nshort\n\n"
+            "```bash\n## Section one\n## Section two\n## Section three\n## Section four\n"
+            "## Section five\necho hi\n```\n\n"
+            "## Scope\nshort\n")
+    flagged, reason = gs.classify(body)
+    assert flagged is False, reason
+
+
+def test_classify_prose_phase_accident_does_not_flag():
+    """The old unanchored `_PHASE_RE` flagged this exact sentence shape as a genuine two-phase body
+    (reproduced live against this repo's own #519, whose prose mentions 'Phase-1/Phase-2' without
+    describing an actual multi-phase goal). The new line-start-anchored regex requires 'phase' to
+    open the line (optionally after a heading/bullet/number marker), never mid-sentence."""
+    gs = _mod("goal_size")
+    body = "This is the phase-2 follow-up to the phase-1 work in #500.\n"
+    flagged, reason = gs.classify(body)
+    assert flagged is False, reason
+
+
+def test_classify_plus_bullet_checkboxes_count_now():
+    """Dialect pin: `+` is a valid GFM bullet marker the old regex (`[-*]` only) missed."""
+    gs = _mod("goal_size")
+    body = "+ [ ] one\n+ [ ] two\n+ [ ] three\n+ [ ] four\n"
+    flagged, reason = gs.classify(body)
+    assert flagged is True and "checkboxes" in reason
+
+
+def test_classify_two_space_gap_checkboxes_count_now():
+    """Dialect pin: a two-space gap between the bullet and `[` is valid GFM the old regex (exactly
+    one `[ \\t]`) missed."""
+    gs = _mod("goal_size")
+    body = "-  [ ] one\n-  [ ] two\n-  [ ] three\n-  [ ] four\n"
+    flagged, reason = gs.classify(body)
+    assert flagged is True and "checkboxes" in reason
+
+
+def test_classify_unterminated_fence_blanks_to_eof():
+    """An opened-but-never-closed fence blanks EVERYTHING after it, to EOF — not just some
+    heuristic extent — conservative, failing TOWARD not-flagging a malformed body. Without that,
+    the 2 real sections before the fence plus the 4 '## ' lines after the (never-closed) fence would
+    raw-total 6 (>= SECTION_THRESHOLD); properly blanked, only the 2 real sections before the fence
+    count."""
+    gs = _mod("goal_size")
+    body = ("## Context\nshort\n\n## Scope\nshort\n\n"
+            "```\nsome code\n"
+            "## D\n## E\n## F\n## G\n")
+    flagged, reason = gs.classify(body)
+    assert flagged is False, reason
+
+
+def test_classify_mismatched_fence_delimiter_does_not_close_the_fence():
+    """CommonMark: a fence closes only on a matching delimiter CHARACTER — a ~~~ line inside an
+    open ``` fence is ordinary fenced content, not a close. Without that rule, the ~~~ below would
+    have closed the ``` fence early, exposing the 5 '## ' lines that follow it as real sections (1
+    real section before the fence + those 5 = 6, >= SECTION_THRESHOLD) — this bug failed TOWARD
+    flagging, never away from it."""
+    gs = _mod("goal_size")
+    body = ("## Context\nshort\n\n"
+            "```\nsome code\n~~~\n## D\n## E\n## F\n## G\n## H\n```\n")
+    flagged, reason = gs.classify(body)
+    assert flagged is False, reason
 
 
 # --------------------------------------------------------------------- config gate (OFF / fail-open)
@@ -305,7 +421,7 @@ def test_decompose_check_verb_reads_the_marker_constant_live_not_a_hardcoded_cop
     proves backlog_check reads goal_size's constant live, by mutating the ACTUAL goal_size module
     object backlog_check holds. But loop.py's own `_load("goal_size")` call resolves a FRESH module
     instance on every invocation (never cached), so that same trick doesn't reach it -- nothing
-    previously proved decompose_check's guard (loop.py:698) actually reads `gs.DECOMPOSED_FROM_MARKER`
+    previously proved decompose_check's marker guard actually reads `gs.DECOMPOSED_FROM_MARKER`
     at runtime rather than a hand-typed literal that merely happens to match today.
 
     Monkeypatch loop.py's OWN `_load` (the name decompose_check's `gs = _load("goal_size")` resolves

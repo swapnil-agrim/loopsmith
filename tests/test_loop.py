@@ -1511,7 +1511,7 @@ def test_reason_class_table_matches_every_documented_park_source():
         ("PR #1 is not approved yet (reviewDecision=none)", "needs_decision"),
         ("a `loopsmith:block` comment is on PR #1 — address it", "needs_decision"),
         ("post-PR review did not converge after 3 cycles on PR #1", "review_cap"),
-        ("too large per goal_size (12 independent ## sections (>= 3)) — needs manual decomposition",
+        ("too large per goal_size (12 independent ## sections (>= 6)) — needs manual decomposition",
          "needs_decision"),
         ("something totally unrelated to any known park reason", "unknown"),
     ]
