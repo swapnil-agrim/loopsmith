@@ -49,6 +49,61 @@ real `_notify()` ledger-fallback write (not a hand-built ledger entry) proving t
 fallback now actually reaches the solo watcher's own inbox via `watch.tick()`
 (`test_agent_watch_dead_agent_ledger_fallback_note_reaches_the_solo_watchers_inbox`).
 
+### feat(loop): bounded comment-reading fallback + doctor check for dependency markers (#389)
+#376 shipped the PREVENTION half of dependency-marker handling: `handoff.hand_off()` now writes a
+machine-readable `**Blocked by:** #N` marker to the issue's BODY, not just a comment. #389 is that
+issue's deferred, secondary-safety-net half: a human commenting a dependency directly via the
+GitHub UI (bypassing `hand_off()` entirely) previously left an invisible marker -- `mirror.py`'s own
+corpus fetch is title+body only, by design (cost + secret-surface reasons), so `backlog_check`'s
+auto-skip never saw a comment-only marker, however clearly a human would read it on the issue page.
+
+**New shared helper**, `sources.fetch_comments(config, goal, run=None, limit=20)`: ONE `gh issue
+view --json comments` call, returning `[{"id", "author", "body", "created_at"}, ...]` sorted
+oldest-first (`created_at`, since `gh`'s own comment `id` is an opaque GraphQL node id, not a
+sortable integer), `limit` keeping the most recent. Fail-open on any error (not `gh`, no auth, bad
+ref, network blip, malformed JSON, a non-dict payload) -> `[]`, never raises. This is the ONE new
+piece of shared comment-reading infrastructure in the codebase; it is deliberately generic enough
+that a later claimant-notification feature (#385, not built here -- its own delivery mechanism has a
+separate, unresolved blocker) can consume it unchanged, without a helper-contract change.
+
+**`backlog_check.py`** gains an optional `extra_text` parameter on `_explicit_blockers()`, and a new
+`_goal_comment_text()` that fetches + scrubs comments for the ONE goal actually being considered
+(never corpus-wide) right before `cross_check()` would spend a real token -- reusing the exact same
+`scrub()` call and the exact same open-ref precision guard the existing body path already applies,
+not a second, looser copy. A no-op in local-goals mode (comments aren't a concept for local goal
+files); fails open independently of `cross_check()`'s own outer catch, so a comment-fetch failure
+degrades only the comment evidence, never the whole precheck. `precheck()` already threaded `run`
+into `cross_check()` -- no signature change was needed on either.
+
+**New `/sdlc-doctor` check**: an issue with a comment matching `backlog_check._BLOCK_RE` but no
+matching marker in its own body is flagged as likely-intended-but-silently-ignored. Advisory only
+(nothing auto-parks from it), github-mode only, and deliberately NOT gated on
+`backlog_check.enabled` -- the blind spot exists (and arguably matters more) whether or not auto-skip
+is currently turned on. Cross-loads `sources.fetch_comments` and `backlog_check._BLOCK_RE` verbatim
+(a narrow, documented exception to `doctor.py`'s usual no-cross-skill-import convention) rather than
+a doctor-local reimplementation of either, which would itself be the hardened-sibling-divergence bug
+class this plugin already tracks elsewhere.
+
+Cost-bounded, and the bound is ALWAYS visibly reported in the check's own `name` string (e.g.
+"5/50 open goal(s)"), pass or fail, never silently applied. Default
+`backlog_check.doctor_scan.max_issues` is **10**, tuned down from a 30 considered during design:
+`gh issue view --json comments` measured ~0.62s/call against a real repo, and since candidates are
+issues WITHOUT a body marker -- nearly every open goal issue in practice -- the cap is hit on
+essentially any real backlog, making it the TYPICAL added cost, not a rare worst case. A default of
+30 would have added ~18.5s to a routine `/sdlc-doctor` run (a 4-7x regression in a "one-command setup
+check-up"); 10 keeps the typical added cost to ~6s, while `backlog_check.doctor_scan.max_issues` /
+`max_comments` (default 20, matching `sources.DEFAULT_COMMENT_LIMIT`) stay configurable for a repo
+that wants a wider scan and is willing to pay the extra time for it. Config is documentation-only --
+no `sdlc_init.py` template change, matching every other opt-in feature's absent-until-set convention.
+
+New tests: `tests/test_sources.py` (`fetch_comments`'s field mapping, sort/limit behavior, three
+fail-open sub-cases, the `--repo` flag, and an id-less-comment edge case for #385's future benefit),
+`tests/test_backlog_check.py` (comment-only marker auto-skips non-vacuously, the closed-ref precision
+guard, the local-mode no-op, fail-open on a `gh` error, and the comment-text scrub boundary itself --
+not an unrelated JSON dump, which would never have been able to fail either way), and
+`tests/test_doctor.py` (the check flags/stays silent correctly, caps at `max_issues` while visibly
+reporting the bound, is skipped in local mode, and survives a malformed `doctor_scan` config block).
+
 ### fix(ledger): `_cell()` now escapes `\r` too, matching #427's fix in `watch_classify.py` (#454)
 Independent review of PR #449 (#427, `watch_classify.py`'s sibling `_cell()`) found that
 `ledger.py`'s ORIGINAL `_cell()` -- the one #449's copy was duplicated from -- was never actually

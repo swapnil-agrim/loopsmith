@@ -38,6 +38,7 @@ def _load_velocity():
 
 scrub = _load("scrub").scrub
 mirror = _load("mirror")
+sources = _load("sources")
 
 SCHEMA = "backlog-check/v1"
 _DEFAULTS = {"dup_threshold": 0.72, "obsolete_threshold": 0.72, "park_threshold": 0.80, "top_k": 8}
@@ -228,16 +229,49 @@ def _within_window(doc, window_days, now):
         return True                                     # unparseable date → don't drop the candidate
 
 
-def _explicit_blockers(goal_doc, docs):
+def _explicit_blockers(goal_doc, docs, extra_text=""):
     """Regex the goal's own text for explicit `blocked by/depends on … #N` edges. High precision: a
-    blocker is asserted ONLY when N is a real OPEN issue in the corpus (a closed ref isn't a blocker)."""
+    blocker is asserted ONLY when N is a real OPEN issue in the corpus (a closed ref isn't a blocker).
+
+    `extra_text` is scrubbed comment text from `_goal_comment_text()` below — kept as a SEPARATE
+    parameter rather than mutated into `goal_doc["raw"]` itself, because `raw` also feeds the
+    embedding channel (`_dense_channel`) for EVERY doc in the corpus, not just the goal being
+    checked; folding comment text into it would silently change dedup/embedding scoring too, which
+    is out of scope here (#389 is about the explicit-blocker fallback only)."""
     open_refs = {d["ref"] for d in docs if d["open"]}
+    haystack = goal_doc.get("raw", "") + ("\n" + extra_text if extra_text else "")
     out = []
-    for m in _BLOCK_RE.finditer(goal_doc.get("raw", "")):
+    for m in _BLOCK_RE.finditer(haystack):
         n = m.group(2)
         if n != goal_doc["ref"] and n in open_refs:
             out.append(_finding("blocked-by", n, 1.0, "explicit", [scrub(m.group(1).lower())], True))
     return out
+
+
+def _goal_comment_text(sdlc_dir, config, goal_doc, run=None):
+    """Comments for ONLY `goal_doc["ref"]` — the one issue actually being considered, right before
+    `precheck()` would spend a real token (never corpus-wide; `mirror.py`'s own bulk fetch stays
+    title+body only, unchanged — see its module docstring). A human commenting a dependency directly
+    via the GitHub UI, bypassing `handoff.hand_off()` entirely, only ever leaves that marker on ONE
+    issue at a time, so a bounded, single-issue fetch is enough to catch it.
+
+    Scrubbed identically to how title/body already are (`scrub.scrub()`, the same call
+    `_build_corpus` already makes) and capped the same way the mirror caps a body excerpt
+    (`mirror._EXCERPT_CHARS`) — comment text reaching local state gets no weaker treatment than the
+    board mirror gives issue bodies.
+
+    A no-op outside github mode: comments aren't a concept for local goal files at all, so this never
+    attempts a network call it has no way to satisfy. FAIL-OPEN, independently of `cross_check()`'s
+    own outer try/except: a comment-fetch failure degrades to "no extra blocker evidence from
+    comments this run", never to an empty pack (`sources.fetch_comments` already fails open to `[]`
+    on its own; this second try/except is defense in depth around the scrub/join step too)."""
+    if not mirror.is_github_mode(config):
+        return ""
+    try:
+        comments = sources.fetch_comments(config, goal_doc["ref"], run=run)
+        return "\n".join(scrub(c["body"])[:mirror._EXCERPT_CHARS] for c in comments)
+    except Exception:
+        return ""
 
 
 def _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now):
@@ -402,7 +436,8 @@ def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measur
                 confident = s >= park_th and _earlier(d["ref"], goal_ref)
                 findings.append(_finding("duplicate", d["ref"], s, d["source"], ev, confident))
 
-        findings += _explicit_blockers(goal_doc, docs)
+        comment_text = _goal_comment_text(sdlc_dir, config, goal_doc, run=run)
+        findings += _explicit_blockers(goal_doc, docs, comment_text)
         doc_by_ref = {d["ref"]: d for d in docs}
         findings += _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now)
         return _pack(goal_ref, _dedup_sort(findings), degraded)

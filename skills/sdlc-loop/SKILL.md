@@ -63,7 +63,9 @@ Then repeat until the helper says stop:
 3. Otherwise: first **cross-check the pick** (opt-in, `backlog_check.enabled`) — before spending a
    token, run `result=$(python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" precheck .sdlc "$goal")`. It
    prints `OFF` (a no-op — feature disabled) or, when on, refreshes the board mirror and cross-checks the
-   goal against the rest of the backlog + the team ledger at **zero LLM cost**, then either:
+   goal against the rest of the backlog + the team ledger at **zero LLM cost** (also checking the
+   goal's own recent comments for a human-authored dependency marker your loop never wrote), then
+   either:
    - prints **`PARKED <reason>`** — the goal was a confident DUPLICATE / OBSOLETED-BY-completed-work /
      BLOCKED-BY item and has already been parked-with-proof (the evidence is on the issue). **Do not
      research it: loop back to step 1** and take the next goal. (The park counts as one iteration.)

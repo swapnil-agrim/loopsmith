@@ -160,6 +160,121 @@ def test_explicit_blocked_by_open_ref_only():
         assert not [x for x in bc.cross_check(base, "1")["findings"] if x["kind"] == "blocked-by"]  # closed ref: not a blocker
 
 
+# --- #389: bounded, scrubbed comment-reading fallback -- a human-authored dependency marker left
+# ONLY as a GitHub comment (never the body, so mirror.py's title+body-only fetch never sees it) still
+# auto-skips, via a fetch scoped to the ONE goal being considered (never corpus-wide).
+
+def _comment_runner(comments_by_issue):
+    """Fake gh runner keyed by the issue number in `issue view <n> ...`: answers with the canned
+    comments for that issue (default: none). Records every call, mirroring test_sources.py's own
+    _recording_runner shape, scoped to this file's single-goal comment-fetch call."""
+    calls = []
+
+    def run(args):
+        calls.append(list(args))
+        n = args[2] if len(args) > 2 else None
+        return json.dumps({"comments": comments_by_issue.get(n, [])})
+
+    run.calls = calls
+    return run
+
+
+def _raising_runner():
+    calls = []
+
+    def run(args):
+        calls.append(list(args))
+        raise RuntimeError("gh: HTTP 502 Bad Gateway")
+
+    run.calls = calls
+    return run
+
+
+def _gh_comment(body, author="someone", cid="IC_1", created="2026-08-01T00:00:00Z"):
+    return {"id": cid, "author": {"login": author}, "body": body, "createdAt": created}
+
+
+def test_explicit_blocked_by_comment_only_no_body_marker():
+    # the acceptance criterion, non-vacuous: NO blocker phrase anywhere in the goal's body -- only in
+    # a comment `precheck()` would otherwise never see (mirror.py's own corpus fetch is title+body
+    # only, by design).
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, "wire the surface"), _rec(7, "freeze the contract")], **_LOOSE)
+        run = _comment_runner({"1": [_gh_comment("blocked by #7 until the contract lands")]})
+        f = [x for x in bc.cross_check(base, "1", run=run)["findings"] if x["kind"] == "blocked-by"]
+        assert any(x["ref"] == "7" and x["confident"] for x in f)
+        # the comment-fetch actually ran this call -- fails on today's code, which never calls `run`
+        # for comments at all, so this would be an empty list before the fix.
+        assert any("comments" in " ".join(c) for c in run.calls)
+
+
+def test_explicit_blocked_by_comment_closed_ref_is_not_a_blocker():
+    # same shape, but #7 is closed -- proves the comment path reuses the SAME open-ref precision
+    # guard _explicit_blockers already applies to the body path, not a looser one.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, "wire the surface"), _rec(7, "freeze the contract", state="closed")], **_LOOSE)
+        run = _comment_runner({"1": [_gh_comment("blocked by #7 until the contract lands")]})
+        f = [x for x in bc.cross_check(base, "1", run=run)["findings"] if x["kind"] == "blocked-by"]
+        assert not any(x["ref"] == "7" for x in f)
+
+
+def test_comment_fallback_is_a_noop_in_local_mode():
+    # no discovery.source: github -> comments aren't a concept at all for local goal files; the
+    # fallback must not attempt a network call it has no way to satisfy.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _local_base(d, [("0001.md", "pending", _GOAL, "do it")], **_LOOSE)
+        config = json.loads((pathlib.Path(base) / "config.json").read_text())
+        calls = []
+
+        def run(args):
+            calls.append(list(args))
+            return ""
+
+        goal_doc = {"ref": str(pathlib.Path(base) / "goals" / "0001.md")}
+        assert bc._goal_comment_text(base, config, goal_doc, run=run) == ""
+        assert calls == []
+
+
+def test_comment_fallback_fails_open_on_gh_error():
+    # a comment-fetch failure must degrade ONLY the comment evidence, never the whole precheck --
+    # distinct from cross_check's own outer `except Exception: return _pack(..., ["error"])`, which
+    # must never fire for a comment-only failure.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, "wire the surface", body="blocked by #7 until the contract lands"),
+                            _rec(7, "freeze the contract")], **_LOOSE)
+        run = _raising_runner()
+        pack = bc.cross_check(base, "1", run=run)
+        # the BODY-derived finding survives a comment-fetch failure...
+        assert any(f["kind"] == "blocked-by" and f["ref"] == "7" for f in pack["findings"])
+        # ...and the failure never trips cross_check's own top-level catch-all...
+        assert "error" not in pack["degraded"]
+        # ...but the comment-fetch was genuinely attempted (and did fail) this run -- 0 calls on
+        # today's code, since nothing reads comments yet.
+        assert len(run.calls) >= 1
+
+
+def test_goal_comment_text_scrubs_a_secret_before_returning_it():
+    """R5 (plan-review): the plan's original draft of this test asserted a planted secret never
+    appears in json.dumps(cross_check(...)) -- but a finding's evidence is only the scrubbed
+    *blocking phrase* ("blocked by"), never the comment body itself, so the comment text has no path
+    into the pack at all and that assertion would pass identically on UNSCRUBBED code (vacuous:
+    cannot fail before, cannot prove anything after). Retargeted at the actual scrub boundary:
+    _goal_comment_text's own return value, which is where scrub() is actually called."""
+    bc = _mod("backlog_check")
+    secret = "AKIAABCDEFGHIJKLMNOP"
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, "wire the surface"), _rec(7, "freeze the contract")], **_LOOSE)
+        config = json.loads((pathlib.Path(base) / "config.json").read_text())
+        run = _comment_runner({"1": [_gh_comment("rotate " + secret + " then close #7")]})
+        text = bc._goal_comment_text(base, config, {"ref": "1"}, run=run)
+        assert secret not in text
+        assert "[REDACTED:" in text
+
+
 # --- ledger team-wide signals ---
 
 def _write_claim(base, actor, goal, kind="claimed", ts="2026-08-02T00:00:00Z", **extra):

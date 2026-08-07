@@ -3,13 +3,15 @@
 -> gh auth + project scope; KG enabled -> the builder; vision-first -> the north-star; always -> the
 .sdlc layer — and report each check with the exact one-line fix. The command runner is injectable so
 the logic is hermetically testable. Zero-dep."""
-import sys, json, pathlib, re
+import sys, json, pathlib, re, importlib.util
 
 try:                    # portable output: force UTF-8 so the plugin's own non-ASCII (arrows, em-dashes)
     sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")   # doesn't garble to '?' or
     sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")   # crash on a non-UTF-8 console
 except Exception:       # (the Windows cp1252 default); a stream without reconfigure is left as-is
     pass
+
+_HERE = pathlib.Path(__file__).resolve().parent
 
 
 def _real_run(args):
@@ -129,6 +131,125 @@ def _unmapped_board_fields(gh_cfg, run):
             and f.get("name") not in mapped]
 
 
+_DEFAULT_DOCTOR_MAX_ISSUES = 10            # backlog_check.doctor_scan.max_issues (R6, see docstring below)
+_DEFAULT_DOCTOR_MAX_COMMENTS = 20          # backlog_check.doctor_scan.max_comments (= sources.DEFAULT_COMMENT_LIMIT)
+
+
+def _int_cfg(block, key, default):
+    """doctor.py has no shared numeric-coercion helper today (backlog_check.py's own `_num` is
+    private to that module, and doctor.py's existing convention -- see the dup/park threshold check
+    further down in check() -- is a local try/except per call site, not a shared utility). A garbage
+    value (a hand-edited `max_issues: "all"`) falls back to the default rather than crashing the
+    whole doctor run, matching that existing convention exactly."""
+    try:
+        return int(block.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_loop_script(name):
+    """Cross-load a script from the sibling sdlc-loop skill (skills/sdlc-doctor/scripts/doctor.py ->
+    skills/sdlc-loop/scripts/<name>.py, mirroring backlog_check.py's own `_load_velocity()` cross-skill
+    idiom -- two `.parent`s up from this file's own scripts/ dir, then back down into sdlc-loop/scripts).
+
+    A DELIBERATE, narrow exception to this file's usual no-cross-skill-import convention (see
+    `_enforce_enabled`'s docstring above for that convention stated in full): `_dependency_marker_scan`
+    below reuses `sources.fetch_comments` (the shared, already-tested comment-read primitive) and
+    `backlog_check._BLOCK_RE` (the exact pattern `_explicit_blockers()` itself gates auto-skip on)
+    VERBATIM, rather than a doctor-local reimplementation of either. A doctor-local copy of `_BLOCK_RE`
+    would itself be the hardened-sibling-divergence bug class this plugin already tracks (scrub.py's
+    docstring flags an existing, accepted instance) -- flagging something `precheck()` would never
+    have honored, or missing something it would, as the two patterns drifted apart over time.
+
+    Never raises -- the caller (`_dependency_marker_scan`) treats a load failure exactly like any
+    other hard failure (no gh, network down): "could not run this check", reported as silent/ok
+    rather than a false alarm."""
+    path = _HERE.parent.parent / "sdlc-loop" / "scripts" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def _gh_runner(doctor_run):
+    """Adapts doctor.py's own `run(full_argv_incl_binary)` convention (`_real_run`:
+    `subprocess.run(args, ...)`; every call site in this file passes the binary, e.g.
+    `_board_dup_risk`'s `run(["gh", "project", "list", ...])`) to `sources.fetch_comments`'s
+    `run(args_excluding_binary)` convention (matching `sources._run_gh`/`ledger._run_gh`'s own shared
+    convention, which prepends `"gh"` internally). The two are NOT interchangeable -- handing one
+    directly to the other would double-prefix or mis-invoke `gh` -- confirmed by reading both
+    conventions side by side, not assumed."""
+    return lambda args: doctor_run(["gh", *args])
+
+
+def _dependency_marker_scan(gh_cfg, bchk_cfg, run):
+    """An issue with a comment matching `backlog_check._BLOCK_RE` ("blocked by #N" / "depends on #N"
+    / ...) but NO matching marker in its own body is likely a human-authored dependency, left via the
+    GitHub UI (bypassing `handoff.hand_off()` entirely), that `precheck()`'s auto-skip silently never
+    sees -- mirror.py's own corpus fetch is title+body only, by design (comments are never fetched
+    corpus-wide, for cost + secret-surface reasons). This is the doctor-side nudge for that blind
+    spot: advisory only, nothing auto-parks from it.
+
+    Returns (flagged: [issue numbers], scanned: int, total: int), or None on any hard failure (no
+    gh, network down, sibling scripts unavailable) -- None means "could not run this check", reported
+    as ok=True/silent rather than a false alarm, same fail-open convention as `_board_dup_risk` above.
+
+    Cost design (R6, deliberate, not left to chance): candidates are issues WITHOUT a body marker --
+    nearly every open goal issue in a real backlog, so `max_issues` bounds the TYPICAL per-run cost,
+    not a rare worst case. Measured against a real repo, `gh issue view --json comments` averages
+    ~0.62s/call; the ORIGINAL draft default of 30 would add ~18.5s to a routine `/sdlc-doctor` run (a
+    4-7x regression in what's supposed to be a fast setup check, since it's hit on nearly every real
+    backlog). `_DEFAULT_DOCTOR_MAX_ISSUES = 10` keeps the typical added cost to ~6s, while
+    `backlog_check.doctor_scan.max_issues` stays configurable for a repo that wants a wider scan and
+    is willing to pay for it. The bound is embedded in the check's own `name` (`_chk()` always prints
+    `name`, pass or fail) so it is visible on every run, never silently applied.
+
+    The LIST call itself is capped at 200 (not `max_issues`) -- matching `mirror.py`'s own
+    `_OPEN_LIMIT = 200` ceiling for the identical query shape: `total` is reported against THIS
+    number, so capping the list call at the same small number as the expensive per-issue comment-fetch
+    loop would make `total` itself silently truncated, exactly what "no silent truncation" is about.
+    A backlog bigger than 200 open goal issues still under-reports `total` -- documented, not solved
+    (matching mirror.py's own accepted ceiling), rather than silently assumed complete.
+
+    Deliberately simpler than `_explicit_blockers()`'s own body-scan: this does NOT cross-check that a
+    comment's `#N` reference is to a currently-open issue -- it flags on any `_BLOCK_RE` match in a
+    comment, full stop. Doctor is advisory (nothing auto-parks from this), a false positive costs a
+    human one glance to dismiss, and the extra precision would mean re-deriving the doctor's own
+    "which issues are open" set from the same `gh issue list` call already being made (cheap, and
+    worth doing if this proves noisy in practice -- not required for #389's acceptance criteria)."""
+    try:
+        sources = _load_loop_script("sources")
+        block_re = _load_loop_script("backlog_check")._BLOCK_RE
+    except Exception:
+        return None
+    scan_cfg = _block(bchk_cfg, "doctor_scan")
+    max_issues = _int_cfg(scan_cfg, "max_issues", _DEFAULT_DOCTOR_MAX_ISSUES)
+    max_comments = _int_cfg(scan_cfg, "max_comments", _DEFAULT_DOCTOR_MAX_COMMENTS)
+    repo_args = ["--repo", gh_cfg["repo"]] if gh_cfg.get("repo") else []
+    goal_label = gh_cfg.get("goal_label", "sdlc:goal")
+    # 200, not max_issues, for the LIST call -- see the docstring above for why.
+    raw = run(["gh", "issue", "list", *repo_args, "--label", goal_label, "--state", "open",
+               "--search", "sort:updated-desc", "--json", "number,body", "--limit", "200"])
+    if not raw:
+        return None
+    try:
+        issues = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(issues, list):
+        return None
+    total = len(issues)
+    candidates = [i for i in issues if not block_re.search(i.get("body") or "")][:max_issues]
+    flagged = []
+    for i in candidates:
+        n = i.get("number")
+        comments = sources.fetch_comments({"discovery": {"github": gh_cfg}}, n,
+                                          run=_gh_runner(run), limit=max_comments)
+        if any(block_re.search(c["body"]) for c in comments):
+            flagged.append(n)
+    return flagged, len(candidates), total
+
+
 def _version_tuple(v):
     """Parse a plain dotted-integer version ("0.9.23") into a comparable tuple, or None for
     anything that doesn't parse cleanly — never raises."""
@@ -194,6 +315,7 @@ def check(sdlc_dir=".sdlc", run=None):
     cfg = _cfg(sdlc_dir)
     disc = _block(cfg, "discovery")
     kg = _block(cfg, "knowledge_graph")
+    bchk = _block(cfg, "backlog_check")
     out = [_chk("project layer", (base / "config.json").exists(), "run /sdlc-init to scaffold .sdlc/")]
 
     if disc.get("source") == "github":
@@ -213,6 +335,30 @@ def check(sdlc_dir=".sdlc", run=None):
                                 "creates: " + ", ".join(n for n in unmapped if n) + " - map them in "
                                 "discovery.github.project.custom_fields (field -> option), or backfill by "
                                 "hand, else a loop-created (hand-off) issue is left blank on them."))
+
+        # #389: NOT gated on backlog_check.enabled (nor on the `project` block above) -- a repo with
+        # backlog_check OFF has zero auto-skip happening at all, so this is arguably more useful
+        # there (a nudge toward turning it on); a repo with it ON benefits from catching the exact
+        # blind spot that would otherwise waste a token on a goal that should have been parked.
+        dm = _dependency_marker_scan(gh_disc, bchk, run)
+        if dm is not None:
+            flagged, scanned, total = dm
+            dm_name = f"dependency markers: comments checked against body ({scanned}/{total} open goal(s))"
+            dm_fix = ("comment-only dependency marker(s), no body marker, likely silently ignored by "
+                      "precheck(): #" + ", #".join(str(n) for n in flagged[:10])
+                      + (f" (+{len(flagged) - 10} more)" if len(flagged) > 10 else "")
+                      + " -- re-file the dependency via handoff.py, or manually add a `Blocked by #N` "
+                      "line to the issue body.")
+            if bchk.get("enabled") is not True:
+                # C1 (PR #480 review): this check is deliberately NOT gated on backlog_check.enabled
+                # (see the comment above) -- but while it's off, precheck() returns "OFF" before ever
+                # reaching cross_check(), so the advice above (re-file, or add a body marker) does
+                # NOTHING yet: a body marker is ignored exactly as much as a comment-only one is. Say
+                # so, or the fix text points at an action that fixes nothing.
+                dm_fix += (' Also: backlog_check.enabled is off, so even a body marker won\'t '
+                           'currently be honored by precheck() -- set `backlog_check: {"enabled": '
+                           'true}` to fix that too.')
+            out.append(_chk(dm_name, not flagged, dm_fix))
 
     if kg.get("enabled") is True:
         builder = kg.get("builder", "graphify")
@@ -245,7 +391,6 @@ def check(sdlc_dir=".sdlc", run=None):
 
     # A backlog cross-check whose park_threshold sits BELOW its candidate threshold parks EVERYTHING it
     # finds — the opposite of "confident hits only". Flag it (only when the feature is actually on).
-    bchk = _block(cfg, "backlog_check")
     if bchk.get("enabled") is True:
         dup, park = bchk.get("dup_threshold", 0.72), bchk.get("park_threshold", 0.80)
         try:
