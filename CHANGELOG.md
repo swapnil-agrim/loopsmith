@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## 1.0.5 — the merge-gate release
+
+### fix(work): a check that has not reported is not a check that failed (#464)
+
+`gate()` retried only while GitHub's `mergeable` was `UNKNOWN` — it never waited for the required
+CHECKS. With `UNKNOWN_ATTEMPTS=4` / `UNKNOWN_BACKOFF=3` that is a **21-second** budget against a
+**~300-second** CI run, so a PR that was merely still building was indistinguishable from one that
+had failed, and the caller parks. Parking strips `sdlc:goal`, so a transient four-minute wait
+**permanently dequeued the goal** until a human re-labelled it: 3 of 11 goals on one backlog, and
+effectively every goal during a GitHub Actions outage.
+
+The information was already there and thrown away. `statusCheckRollup` mixes two shapes — CheckRun
+(`conclusion`, empty until it finishes) and StatusContext (`state`) — and the old code collapsed
+them with `conclusion or state`. An unfinished check therefore evaluated to `None`, which was in
+`_CHECK_OK` and counted as **passing**. That is why the park messages said `BLOCKED` with no
+failing check named: nothing was failing, nothing had answered.
+
+`_check_verdict()` now classifies each entry `ok` / `failing` / `pending`, and `gate()` re-reads
+the PR on a **separate** budget (`PENDING_ATTEMPTS=10` × `PENDING_INTERVAL=45s` = 450s, sized to
+outlast CI) while checks are pending — parking the instant one actually fails, and never spending
+the budget on a verdict it already has. `UNKNOWN_*` is left alone: it covers lazy mergeability,
+where 21s is correct.
+
+**`pending` is an explicit allowlist so this fails CLOSED.** Listing the failing states instead
+would make any status GitHub adds later silently "pending" — the gate would wait out its budget and
+then merge something it never understood. Six mutations pin the behaviour, including two fail-open
+inversions and the original bug. One of them survived the first version of the fail-closed test,
+which set `conclusion` where the mutated line reads `state`: the assertions passed while the
+mutated branch never executed. The test now covers both shapes.
+
+
 ## 1.0.4 — the reliability release
 
 ### fix(loop): `watch_classify.classify()` no longer drops a deliberate self-addressed ledger note (#477)

@@ -1391,3 +1391,115 @@ def test_actionlog_module_has_no_ledger_import():
     src = (SCRIPTS / "actionlog.py").read_text(encoding="utf-8")
     assert '_load("ledger")' not in src
     assert not re.search(r"^\s*(import ledger\b|from ledger import)", src, re.MULTILINE)
+
+
+# --- gate: a check that has not reported is not a check that failed (#464) ------------------------
+
+def _mixed(*pairs, status="BLOCKED"):
+    """A rollup where each entry is (name, conclusion) — conclusion "" means "still running",
+    which is exactly what `gh pr view --json statusCheckRollup` returns for an unfinished check."""
+    return _view(status=status, checks=pairs)
+
+
+def test_gate_waits_for_pending_checks_instead_of_parking(tmp_path):
+    """THE #464 fix. gate() retried only while `mergeable` was UNKNOWN — it never waited for the
+    CHECKS. With a 21s budget against a ~300s CI run, a PR that was merely still building was
+    indistinguishable from one that had failed, and the caller PARKED it. Parking strips
+    `sdlc:goal`, so a transient 4-minute wait permanently dequeued the goal until a human
+    re-labelled it: 3 of 11 goals on one backlog, and effectively every goal during a CI outage."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    seen = []
+
+    def view(_line):
+        seen.append(1)
+        if len(seen) < 3:
+            return _mixed(("ci", "SUCCESS"), ("slow", ""))     # still running
+        return _view()                                          # reported, CLEAN
+    ok, verdict, _ = work.gate(d, ON, goal, run=_runner([("pr view", view)]), sleep=NOSLEEP)
+    assert ok and verdict == "clean and safe", verdict
+    assert len(seen) == 3
+
+
+def test_gate_parks_at_once_on_a_real_failure_without_burning_the_pending_budget(tmp_path):
+    """The counterweight. Waiting is only correct for checks that have not ANSWERED; a check that
+    answered FAILURE must park immediately, not after minutes of pointless polling."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([("pr view", _mixed(("ci", "SUCCESS"), ("tests", "FAILURE"), status="UNSTABLE"))])
+    ok, verdict, _ = work.gate(d, ON, goal, run=run, sleep=NOSLEEP)
+    assert not ok and "tests" in verdict and "ci" not in verdict
+    assert sum("pr view" in c for c in run.calls) == 1, "a failure must not be retried"
+
+
+def test_gate_parks_when_checks_stay_pending_past_the_budget(tmp_path):
+    """Bounded, not infinite. If the checks never report, the goal still parks — with a reason that
+    says PENDING, so a human can tell 'CI is stuck' from 'CI said no'."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([("pr view", _mixed(("ci", "SUCCESS"), ("slow", "")))])
+    ok, verdict, _ = work.gate(d, ON, goal, run=run, sleep=NOSLEEP)
+    assert not ok and "pending" in verdict.lower() and "slow" in verdict
+    assert sum("pr view" in c for c in run.calls) == work.PENDING_ATTEMPTS + 1
+
+
+def _rollup(*entries, status="BLOCKED"):
+    """A rollup built field-by-field, so a check can carry a `state` with NO `conclusion` — the
+    CheckRun-vs-StatusContext shape `_view` cannot express. Needed because the two shapes take
+    DIFFERENT branches of `_check_verdict`, and a test that only sets `conclusion` silently never
+    exercises the state branch at all (a mutation proved exactly that)."""
+    return json.dumps({"mergeable": "MERGEABLE", "mergeStateStatus": status, "headRefOid": HEAD_SHA,
+                       "statusCheckRollup": list(entries)})
+
+
+def test_gate_treats_an_unrecognised_conclusion_as_failing(tmp_path):
+    """FAIL CLOSED, conclusion branch: a check that ANSWERED with something we do not recognise is
+    a failure, not a wait."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([("pr view", _mixed(("ci", "SUCCESS"), ("weird", "SOME_NEW_STATE")))])
+    ok, verdict, _ = work.gate(d, ON, goal, run=run, sleep=NOSLEEP)
+    assert not ok and "weird" in verdict
+    assert sum("pr view" in c for c in run.calls) == 1, "an unknown conclusion must not be waited on"
+
+
+def test_gate_treats_an_unrecognised_STATE_as_failing_not_pending(tmp_path):
+    """FAIL CLOSED, state branch — the one that matters for drift.
+
+    `pending` is an explicit allowlist so an unknown state falls through to 'failing' and PARKS.
+    Listing the FAILING states instead would make any status GitHub adds later silently 'pending':
+    the gate would wait out its budget and then merge something it never understood.
+
+    This test exists in this exact shape because its first version set `conclusion` instead of
+    `state` and a mutation that inverted the state branch SURVIVED it — the assertions passed while
+    the mutated line was never executed."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    run = _runner([("pr view", _rollup({"name": "ci", "conclusion": "SUCCESS"},
+                                       {"name": "weird", "state": "SOME_NEW_STATE"}))])
+    ok, verdict, _ = work.gate(d, ON, goal, run=run, sleep=NOSLEEP)
+    assert not ok and "weird" in verdict and "failing" in verdict
+    assert sum("pr view" in c for c in run.calls) == 1, "an unknown state must not be waited on"
+
+
+def test_gate_waits_on_a_state_only_pending_check(tmp_path):
+    """The positive half of the same branch: a StatusContext reporting IN_PROGRESS has no
+    `conclusion` at all, and must be waited on rather than parked."""
+    d = _sdlc(tmp_path)
+    goal = _started(d)
+    seen = []
+
+    def view(_line):
+        seen.append(1)
+        if len(seen) < 2:
+            return _rollup({"name": "ci", "state": "IN_PROGRESS"})
+        return _view()
+    ok, verdict, _ = work.gate(d, ON, goal, run=_runner([("pr view", view)]), sleep=NOSLEEP)
+    assert ok and verdict == "clean and safe"
+
+
+def test_gate_pending_budget_outlasts_a_real_ci_run(tmp_path):
+    """The budget is the whole point: 21s could never outlast this repo's ~300s CI. A budget that
+    is merely *larger* but still shorter than CI would reproduce the bug more slowly."""
+    assert work.PENDING_ATTEMPTS * work.PENDING_INTERVAL >= 360, (
+        f"pending budget is {work.PENDING_ATTEMPTS * work.PENDING_INTERVAL}s — must outlast CI")
