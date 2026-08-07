@@ -44,6 +44,13 @@ AttributeError before the fix), then confirms the same test now raises `ConfigMi
 fix, plus an extended test that verifies the fix also handles other valid-JSON non-dicts (lists,
 strings, numbers). Full test suite (1483 tests, 93% coverage) passes; no existing behavior changed.
 
+### docs: README's merge-gate status claim now reflects live PRs (#460)
+The "Status (honest)" section claimed the autonomous merge gate "has not yet merged a live pull
+request." This is now stale — the gate fires reliably in production on this repo: `work.auto_merge:
+"always"` + `work.require_review: "approval"` are active, and 9+ live merged PRs each show an
+independent post-PR `loopsmith:approve` review comment from the loop's own review phase, followed by
+a same-account merge minutes later. Updated the claim with evidence and date (2026-08-06).
+
 ## 1.0.3 — the observability release
 
 ### feat(loop): local-only action log + `sdlc-log` status command (#463)
