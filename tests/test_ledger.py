@@ -145,6 +145,81 @@ def test_actor_name_cannot_escape_the_entries_directory(tmp_path):
     assert ledger.entries_dir(d).resolve() in written.resolve().parents
 
 
+# --------------------------------------------------------------------- files_for (#488)
+
+
+def test_files_for_finds_a_file_written_under_a_different_case(tmp_path):
+    """#488: a case-insensitive filesystem (macOS/Windows) resolves two differently-cased
+    `open()`/`exists()` calls to the SAME dirent, case-PRESERVED under whichever casing wrote it
+    first — but `pathlib.Path.glob()`'s pattern match is a plain Python string compare that never
+    consults the filesystem's own case sensitivity, so a later, differently-cased query used to
+    miss a file that genuinely exists. Constructed directly (write one real file under one casing,
+    query with another) rather than relying on the host filesystem's own case-folding behavior, so
+    this is deterministic on both a case-insensitive dev machine and case-sensitive CI
+    (`ubuntu-latest`/ext4) alike."""
+    d = _sdlc(tmp_path, ON)
+    entries = ledger.entries_dir(d)
+    entries.mkdir(parents=True, exist_ok=True)
+    on_disk = entries / "dana-111.jsonl"
+    on_disk.write_text(json.dumps({"id": "dana:111:1", "ts": "2026-01-01T00:00:00Z",
+                                    "actor": "dana", "kind": "note", "goal": "g"}) + "\n")
+    assert ledger.files_for(entries, "Dana") == [on_disk]
+
+
+def test_files_for_is_symmetric_the_other_casing_direction_also_works(tmp_path):
+    """The direction a canonical-login-resolution design would leave broken: a file written under
+    a HAND-TYPED casing, found by a later query using a DIFFERENT casing. Proves the fix is a
+    genuine case-insensitive match, not a one-directional canonicalization toward some "preferred"
+    casing."""
+    d = _sdlc(tmp_path, ON)
+    entries = ledger.entries_dir(d)
+    entries.mkdir(parents=True, exist_ok=True)
+    on_disk = entries / "Dana-222.jsonl"
+    on_disk.write_text(json.dumps({"id": "Dana:222:1", "ts": "2026-01-01T00:00:00Z",
+                                    "actor": "Dana", "kind": "note", "goal": "g"}) + "\n")
+    assert ledger.files_for(entries, "dana") == [on_disk]
+
+
+def test_files_for_still_never_matches_a_different_actor_as_a_prefix(tmp_path):
+    """The pre-existing "team" vs "team-bot" guarantee (files_for()'s own docstring) must survive
+    the switch from a targeted `{safe}-*.jsonl` glob to a full `*.jsonl` scan + case-insensitive
+    compare — still an exact match post-lowercasing, never a prefix, in either case."""
+    d = _sdlc(tmp_path, ON)
+    entries = ledger.entries_dir(d)
+    entries.mkdir(parents=True, exist_ok=True)
+    (entries / "team-bot-333.jsonl").write_text("{}\n")
+    (entries / "TEAM-BOT-444.jsonl").write_text("{}\n")
+    assert ledger.files_for(entries, "team") == []
+    assert ledger.files_for(entries, "TEAM") == []
+
+
+def test_files_for_still_ignores_a_non_pid_suffix(tmp_path):
+    """The digit-pid guard (`pid.isdigit()`) must still exclude a same-named file whose suffix
+    isn't a process id — unaffected by the case-insensitivity change, pinned now that the glob
+    pattern itself widened from a targeted `{safe}-*.jsonl` to a full `*.jsonl` scan."""
+    d = _sdlc(tmp_path, ON)
+    entries = ledger.entries_dir(d)
+    entries.mkdir(parents=True, exist_ok=True)
+    (entries / "Dana-notapid.jsonl").write_text("{}\n")
+    assert ledger.files_for(entries, "dana") == []
+
+
+def test_files_for_still_finds_the_legacy_bare_file(tmp_path):
+    """Pre-#337 bare `<who>.jsonl` compat path — left exact-case on purpose (see `files_for()`'s
+    docstring: `.exists()` already resolves case-insensitively at the OS level on the filesystems
+    this bug concerns, so there is nothing here for #488 to fix)."""
+    d = _sdlc(tmp_path, ON)
+    entries = ledger.entries_dir(d)
+    entries.mkdir(parents=True, exist_ok=True)
+    legacy = entries / "dana.jsonl"
+    legacy.write_text("{}\n")
+    assert ledger.files_for(entries, "dana") == [legacy]
+
+
+def test_files_for_on_a_missing_directory_is_empty():
+    assert ledger.files_for(pathlib.Path("/nonexistent/nope-488"), "dana") == []
+
+
 # --------------------------------------------------------------------- read
 
 
