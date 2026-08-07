@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### fix(loop): `actionlog.py`'s `log_path()` now rejects a path-traversal goal (#486)
+Found during the post-1.0.4 real-ticket validation pass: `log_path()` embedded the caller-supplied
+`goal` directly into a filesystem path with no validation, unlike the sibling `thread` parameter
+(`loop.py`'s `_unsafe_thread_reason()`, added for #467's own path-traversal fix). A goal containing
+`../` sequences and no `.md` suffix — reachable via the sanctioned, agent-facing `loop.py log` CLI
+verb with an ordinary-looking argument, no unusual flags needed — escaped `.sdlc/state/log/`
+entirely: reproduced live, `../../../ESCAPED-outside-sdlc` wrote a file three directories above the
+intended location, outside `RUNTIME_IGNORES` gitignore coverage. Fix: a local `_unsafe_goal_reason()`
+mirroring `_unsafe_thread_reason()`'s exact validation (reject `/`, `\`, `:`, `..`), applied to
+`work.stem(goal)`'s output — the value actually about to be embedded in the path, correctly handling
+both the `.md`-suffixed case (already partially reduced by `.stem`) and the bare-string case in one
+check — enforced at the `log_path()` chokepoint so every caller is protected regardless of how it
+reaches this function. `loop.py`'s existing `except ValueError` in the `log` CLI dispatch already
+turns this into a clean, loud exit-2 refusal with no code changes needed there. Verified
+non-vacuously: reverted the fix, confirmed both new tests fail with the exact predicted symptom
+(`DID NOT RAISE ValueError`; a live subprocess returning exit 0 instead of 2 with the escaped file
+actually present on disk), restored, confirmed both pass. Also fixed a related README clarity gap
+the same validation pass surfaced: the "Local action log" section showed `sdlc-log status` right
+after the `loop.py log` write-path example, but `status`'s "active" definition requires an
+INTERNAL-only `claimed` entry never reachable from that CLI — so following the section verbatim
+produced a misleadingly empty result. Reordered and annotated so `goal <id>` (which works for any
+goal) is shown as the more broadly applicable read path.
+
 ## 1.0.5 — the merge-gate release
 
 ### fix(work): a check that has not reported is not a check that failed (#464)
@@ -31,7 +54,6 @@ then merge something it never understood. Six mutations pin the behaviour, inclu
 inversions and the original bug. One of them survived the first version of the fail-closed test,
 which set `conclusion` where the mutated line reads `state`: the assertions passed while the
 mutated branch never executed. The test now covers both shapes.
-
 
 ## 1.0.4 — the reliability release
 
