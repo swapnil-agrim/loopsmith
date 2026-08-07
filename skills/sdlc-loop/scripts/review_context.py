@@ -93,6 +93,7 @@ def _dossier(sdlc_dir, goal):
     research = pathlib.Path(sdlc_dir) / "research"
     if not (goal and research.is_dir()):
         return ""
+    # Path(goal).stem extracts only the filename component (no directories or extension), preventing traversal (#486).
     stem = pathlib.Path(goal).stem
     # Goals are `NNNN-slug.md`; a dossier may be filed under either the full stem or the bare slug.
     slug = stem.split("-", 1)[1] if "-" in stem and stem.split("-", 1)[0].isdigit() else stem

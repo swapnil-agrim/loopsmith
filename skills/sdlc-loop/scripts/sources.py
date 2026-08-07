@@ -59,6 +59,7 @@ class LocalSource:
         jdir = pathlib.Path(self.sdlc_dir) / "journey"
         jdir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        # Path(goal).stem extracts only the filename component, stripping both directories and extensions, so no traversal is possible (#486).
         with (jdir / (pathlib.Path(goal).stem + ".md")).open("a", encoding="utf-8") as f:
             f.write(f"\n## {ts}\n{text}\n")
 
