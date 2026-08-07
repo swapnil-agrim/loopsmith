@@ -66,26 +66,39 @@ def _runner(by_goal):
 
 
 def test_tick_is_a_noop_when_comment_watch_disabled(tmp_path):
+    """A claim MUST exist here -- without one, open_claims() == {} makes tick() a no-op
+    regardless of whether the enabled() gate runs at all, so the assertion below would pass even
+    with the gate deleted. A call-recorder (not a raising `run`) proves the gate returns before
+    ever attempting a `gh` call -- `fetch_comments`'s own fail-open `except Exception` would
+    silently swallow a raise, letting a deleted gate go undetected (independent review finding)."""
     d = _sdlc(tmp_path, {**ON, "comment_watch": {"enabled": False}})
-    assert comment_watch.tick(d) == ""
+    _claim(d, "50")
+    calls = []
+    assert comment_watch.tick(d, run=lambda args: calls.append(args)) == ""
+    assert calls == []
 
 
 def test_tick_is_a_noop_when_comment_watch_key_absent(tmp_path):
     cfg = {"ledger": {"enabled": True, "actor": ACTOR}, "discovery": {"source": "github"}}
     d = _sdlc(tmp_path, cfg)
-    assert comment_watch.tick(d) == ""
+    _claim(d, "50")
+    calls = []
+    assert comment_watch.tick(d, run=lambda args: calls.append(args)) == ""
+    assert calls == []
 
 
 def test_tick_is_a_noop_in_local_mode(tmp_path):
-    """Comments aren't a concept for local goal files -- must never even attempt a `gh` call."""
+    """Comments aren't a concept for local goal files -- must never even attempt a `gh` call. A
+    call-recorder, not a raising `run`: `fetch_comments`'s own fail-open `except Exception` would
+    silently swallow a raise, so a raise-based check can't actually prove `run` was never invoked
+    (independent review finding)."""
     cfg = {"ledger": {"enabled": True, "actor": ACTOR}, "comment_watch": {"enabled": True}}
     d = _sdlc(tmp_path, cfg)          # no discovery.source: github at all -> local-goals default
     _claim(d, "50")
 
-    def run(args):
-        raise AssertionError("must never be called in local mode")
-
-    assert comment_watch.tick(d, run=run) == ""
+    calls = []
+    assert comment_watch.tick(d, run=lambda args: calls.append(args)) == ""
+    assert calls == []
 
 
 # ------------------------------------------------------------------ core acceptance criteria
@@ -132,13 +145,15 @@ def test_second_tick_over_the_same_comment_notifies_nothing(tmp_path):
 
 
 def test_comment_on_unclaimed_issue_notifies_nothing(tmp_path):
+    """A call-recorder, not a raising `run`: `fetch_comments`'s own fail-open `except Exception`
+    would silently swallow a raise, so a raise-based check can't actually prove `run` was never
+    invoked for an issue with no open claim (independent review finding)."""
     d = _sdlc(tmp_path)
     # no _claim() at all for "50"
 
-    def run(args):
-        raise AssertionError("must never be called for an issue with no open claim")
-
-    assert comment_watch.tick(d, run=run) == ""
+    calls = []
+    assert comment_watch.tick(d, run=lambda args: calls.append(args)) == ""
+    assert calls == []
     assert [e for e in ledger.read_all(d) if e["kind"] == "note"] == []
 
 
