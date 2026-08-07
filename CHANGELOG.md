@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.6 — the sandbox release
+
 ### fix(loop): six chokepoints across the plugin now reject a path-traversal `goal` (#486)
 Found during the post-1.0.4 real-ticket validation pass, then materially widened by independent
 review of the first, narrower fix: `goal` (untrusted exactly like the sibling `thread` parameter,
@@ -58,6 +60,16 @@ section showed `sdlc-log status` right after the `loop.py log` write-path exampl
 "active" definition requires an INTERNAL-only `claimed` entry never reachable from that CLI — so
 following the section verbatim produced a misleadingly empty result. Reordered and annotated so
 `goal <id>` (which works for any goal) is shown as the more broadly applicable read path.
+
+A second independent review of the widened fix caught two more issues before merge: `record <dir>
+<goal> done` under `verify.enforce` reached the same `ValueError` through `_done_refusal()` /
+`_evidence_path()`, but `main`'s dispatch only ever caught `state.ConfigMissing` — the one call site
+this PR's own validation pass didn't exercise fell through as a raw traceback (exit 1) instead of
+the clean exit-2 refusal every other site here uses; now caught at the call site, with a subprocess-
+level regression test proving the exact before/after symptom. Separately, a botched insertion had
+silently split a pre-existing test's third assertion off into an unrelated new test, so it kept
+passing without covering what its name claimed — restored to the right test. A third, explicitly
+scoped review confirmed both closed with no new regression before merge.
 
 ## 1.0.5 — the merge-gate release
 
