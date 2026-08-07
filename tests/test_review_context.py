@@ -240,3 +240,23 @@ def test_plan_phase_persists_the_plan_the_reviewer_is_pointed_at():
     t = (pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-plan" / "SKILL.md").read_text()
     assert ".sdlc/plans/" in t
     assert "hard_plan_gate" in t and "review.independent" in t
+
+
+# --- #500: pinning safe-by-construction Path(goal).stem sites (no work.stem() reduction needed) ---
+
+def test_dossier_safe_from_traversal_via_stem_extraction():
+    """#500: _dossier() uses Path(goal).stem to extract only the filename, preventing any `../`-bearing
+    goal from escaping .sdlc/research/. Path(goal).stem removes both directory components and file
+    extensions, so even if goal is `../../../etc/passwd`, stem is just `passwd`, and the lookup stays
+    confined to the research directory."""
+    with tempfile.TemporaryDirectory() as d:
+        base, root = _repo(d)
+        research = pathlib.Path(base) / "research"; research.mkdir(parents=True, exist_ok=True)
+        # create a safe research dossier
+        (research / "passwd.md").write_text("# Research\n**Queries:**\n- safe query\n", encoding="utf-8")
+        rc = _rc()
+        # a traversal attempt should read from .sdlc/research/passwd.md, not escape
+        result = rc._dossier(base, "../../../etc/passwd")
+        assert "safe query" in result, "goal with ../ should read from research directory, not escape it"
+        # confirm the escape directory DOES NOT exist (proof the traversal failed)
+        assert not (pathlib.Path(d) / "etc" / "passwd.md").exists(), "traversal must not access files outside .sdlc/research/"

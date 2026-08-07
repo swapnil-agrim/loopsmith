@@ -465,3 +465,23 @@ def test_fetch_comments_maps_a_missing_id_to_empty_string():
     run = _recording_runner({"view": json.dumps(payload)})
     out = src.fetch_comments({}, "5", run=run)
     assert out == [{"id": "", "author": "amy", "body": "no id here", "created_at": "2026-08-01T00:00:00Z"}]
+
+
+# --- #500: pinning safe-by-construction Path(goal).stem sites (no work.stem() reduction needed) ---
+
+def test_local_note_safe_from_traversal_via_stem_extraction():
+    """#500: LocalSource.note() uses Path(goal).stem to extract only the filename, preventing any
+    `../`-bearing goal from escaping .sdlc/journey/. Path(goal).stem removes both directory components
+    and file extensions, so even if goal is `../../../etc/passwd.md`, stem is just `passwd`."""
+    src = _mod("sources")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "goals").mkdir(parents=True)
+        g = base / "goals" / "0001-x.md"; g.write_text("---\nstatus: pending\n---\n")
+        local = src.get_source(str(base), {})
+        # a traversal attempt should write to .sdlc/journey/, not escape it
+        local.note("../../../etc/passwd", "traversal attempt")
+        jlog = base / "journey" / "passwd.md"
+        assert jlog.exists(), "goal with ../ should write to journey directory, not escape it"
+        assert "traversal attempt" in jlog.read_text()
+        # confirm the escape directory DOES NOT exist (proof the traversal failed)
+        assert not (pathlib.Path(d) / "etc" / "passwd.md").exists(), "traversal must not create files outside .sdlc/journey/"
