@@ -10,10 +10,29 @@ directory only, so a classifier imported cross-skill would need a second loader 
 _load() per script, same-directory only" convention deliberately does not have one.
 
 v1 signals, in order (first hit wins): body length (word count, then line count) -> independent
-`## ` sections -> top-level checkboxes -> explicit multi-phase structure. Every threshold below is
-a provisional constant, not a tuned one — this slice ships fixture-only tests; the real historical
-corpus validates (and, if needed, retunes) these numbers in a follow-up slice, exactly as the
-`goal_decompose` config explainer tells the operator.
+`## ` sections -> top-level checkboxes -> explicit multi-phase structure.
+
+CALIBRATION PROVENANCE (#520): the four thresholds below are fit against THIS repo's own issue
+history — 269 issues measured on 2026-08-08 — not picked in the abstract, and checked in BOTH
+directions, not just tuned to catch positives:
+
+  - WORD_THRESHOLD=1200: the corpus's largest genuine (non-epic) goal is #522 at 801 words
+    (goal p99=639); 1200 clears it with real margin instead of hugging the observed max.
+  - LINE_THRESHOLD=150: unchanged — no corpus evidence required retuning it.
+  - SECTION_THRESHOLD=6: the fence-stripped corpus's largest genuine goal tops out at 5
+    independent `## ` sections. The old value of 3 produced 32 flags out of 74 issues checked, with
+    ZERO true positives among them — every one was a conventionally-shaped Context/Scope/AC/
+    Verification goal (the #519/#520/#521 shape), never an actual epic.
+  - CHECKBOX_THRESHOLD=4: unchanged, and deliberately so — it is the ONLY signal with any true
+    positive in this corpus. Lowering it to 3 would catch one more real epic (#156) at the cost of
+    34 additional false positives measured across the corpus; see the known-miss note in
+    tests/test_goal_size_corpus.py for the full arithmetic. #156 stays a documented, accepted miss.
+
+These numbers are fit to ONE repo's history and ship as the plugin's defaults regardless — an
+adopting repo's own issue conventions may differ, which is why the config template
+(skills/sdlc-init/templates/config.json.tmpl's `_goal_decompose` explainer) still recommends
+`mode: log` as the first rung for a NEW adopter: log mode surfaces what the classifier would have
+flagged, on that repo's own real goals, before anything ever acts on it.
 
 ponytail: same as predict.py's — a known-coarse heuristic with an explicit, versioned upgrade path
 (retune the constants, or replace with a corpus-fit model) rather than an LLM call on this path,
@@ -33,21 +52,57 @@ DECOMPOSED_FROM_MARKER = "loopsmith:decomposed-from="    # this goal IS a decomp
 DECOMPOSE_OF_MARKER = "loopsmith:decompose-of="          # this goal IS the meta-goal decomposing #N
 
 # --- signal 1: body length ----------------------------------------------------------------------
-WORD_THRESHOLD = 800     # body word count strictly above this alone flags the goal
-LINE_THRESHOLD = 150     # body line count strictly above this alone flags the goal (a dense
-                          # checklist/table can be long-and-thin rather than long-and-wordy)
+WORD_THRESHOLD = 1200      # body word count strictly above this alone flags the goal (corpus p99=639,
+                           # max=801 at #522 — a legitimate large-but-single goal; see module docstring)
+LINE_THRESHOLD = 150       # body line count strictly above this alone flags the goal (a dense
+                           # checklist/table can be long-and-thin rather than long-and-wordy)
 
 # --- signal 2: independent top-level sections ---------------------------------------------------
-SECTION_THRESHOLD = 3     # `## ` headings (H2 only; a `###` subsection never counts) at or above
-                          # this reads as multiple independent scopes stapled into one issue
+SECTION_THRESHOLD = 6      # `## ` headings (H2 only; a `###` subsection never counts; content inside
+                           # a fenced code block never counts either — see _strip_fences) at or above
+                           # this reads as multiple independent scopes stapled into one issue
+                           # (fence-stripped corpus max is 5 — see module docstring)
 
 # --- signal 3: top-level checkboxes ---------------------------------------------------------------
-CHECKBOX_THRESHOLD = 4    # non-indented `- [ ]`/`- [x]` (or `*` bullets) at or above this reads as
-                          # multiple distinct deliverables, not one goal's own sub-steps
+CHECKBOX_THRESHOLD = 4     # non-indented `- [ ]`/`- [x]` (`-`/`*`/`+` bullets) at or above this reads
+                           # as multiple distinct deliverables, not one goal's own sub-steps — the
+                           # only signal with a true positive in the calibration corpus
 
+_FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~)")
 _SECTION_RE = re.compile(r"^##(?!#)[ \t]+\S.*$", re.MULTILINE)
-_CHECKBOX_RE = re.compile(r"^[-*][ \t]\[[ xX]\][ \t]+\S", re.MULTILINE)
-_PHASE_RE = re.compile(r"\bphase[ \t-]*([0-9]+)\b", re.IGNORECASE)
+_CHECKBOX_RE = re.compile(r"^[-*+][ \t]{1,3}\[[ xX]\][ \t]+\S", re.MULTILINE)
+# Anchored to line-start structure (optional heading/bullet/numbered-list marker, optional bold),
+# never a bare mid-sentence "\bphase\b" — the old unanchored version flagged prose accidents like
+# "this is the phase-2 follow-up to the phase-1 work" as a genuine two-phase body (#520; reproduced
+# live against this repo's own issue #519, whose changelog-style prose mentions "Phase-1/Phase-2" —
+# never at a line start — without describing an actual multi-phase goal).
+_PHASE_RE = re.compile(
+    r"^[ \t]*(?:#{1,6}[ \t]+|[-*+][ \t]+|[0-9]+[.)][ \t]+)?(?:\*\*)?phase[ \t-]*([0-9]+)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _strip_fences(text):
+    """Blank every ```-or-~~~ fenced block (delimiter lines included) to empty lines, for
+    section/checkbox/phase counting ONLY — the caller keeps counting words/lines on the RAW body,
+    because fenced bulk is still bulk someone has to read. A fenced code sample can contain lines
+    that are structurally indistinguishable from a markdown heading, a checkbox, or a phase marker
+    (a shell `## banner comment`, a checklist pasted as an example, a code comment mentioning
+    "phase 2") without actually being one.
+
+    An UNTERMINATED fence (opened, never closed) blanks everything from the opening delimiter to
+    EOF, not just some heuristic extent — conservative, and deliberately fails TOWARD not-flagging a
+    malformed body rather than toward flagging one (pinned by
+    test_classify_unterminated_fence_blanks_to_eof)."""
+    out = []
+    fenced = False
+    for line in text.split("\n"):
+        if _FENCE_RE.match(line):
+            fenced = not fenced
+            out.append("")                 # the delimiter line itself never counts as content
+            continue
+        out.append("" if fenced else line)
+    return "\n".join(out)
 
 
 def classify(body):
@@ -66,15 +121,17 @@ def classify(body):
     if lines > LINE_THRESHOLD:
         return True, f"body is {lines} lines (over {LINE_THRESHOLD})"
 
-    sections = len(_SECTION_RE.findall(text))
+    stripped = _strip_fences(text)
+
+    sections = len(_SECTION_RE.findall(stripped))
     if sections >= SECTION_THRESHOLD:
         return True, f"{sections} independent ## sections (>= {SECTION_THRESHOLD})"
 
-    checkboxes = len(_CHECKBOX_RE.findall(text))
+    checkboxes = len(_CHECKBOX_RE.findall(stripped))
     if checkboxes >= CHECKBOX_THRESHOLD:
         return True, f"{checkboxes} top-level checkboxes (>= {CHECKBOX_THRESHOLD})"
 
-    phases = sorted(set(_PHASE_RE.findall(text)), key=int)
+    phases = sorted(set(_PHASE_RE.findall(stripped)), key=int)
     if len(phases) >= 2:
         return True, "explicit multi-phase structure (Phase " + "/".join(phases) + ")"
 

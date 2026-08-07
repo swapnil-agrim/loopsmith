@@ -64,6 +64,24 @@ dup/obsolete/in-flight-similarity parking for that issue; an explicit blocker or
 hand-off still fully applies. Slice 4/4 of the reviewed section-8 decomposition design; inert in this
 repo today (`backlog_check.enabled: false`).
 
+### fix(loop): retune the `goal_size` classifier against a 269-issue corpus (#520)
+Two-direction corpus validation (`tests/test_goal_size_corpus.py`, checked-in fixtures under
+`tests/fixtures/goal_size/`) found #519's constants miscalibrated: `SECTION_THRESHOLD=3` flagged
+32 of this repo's own 74 most-recent issues with ZERO true positives — every hit was a
+conventionally-shaped Context/Scope/AC/Verification goal (including this very epic's own slice
+issues, #519-#522), never an actual epic. Retuned three constants and two regexes: `WORD_THRESHOLD`
+800→1200 (corpus max 801, at #522, now clears with margin); `SECTION_THRESHOLD` 3→6 (fence-stripped
+corpus max is 5); `CHECKBOX_THRESHOLD`/`LINE_THRESHOLD` unchanged (checkboxes remain the only signal
+with a true positive in this corpus). `_PHASE_RE` now anchors to line-start structure instead of
+matching `phase-N` anywhere mid-sentence — the old pattern misread this repo's own #519 changelog
+prose ("Phase-1/Phase-2") as a genuine two-phase body. A new `_strip_fences()` helper blanks
+` ``` `/`~~~` fenced blocks before section/checkbox/phase counting only (word/line counts still see
+the raw body), so a fenced code sample's `## ` comment lines never count as markdown sections; an
+unterminated fence blanks to EOF, failing toward not-flagging. Checkbox dialect widened to also
+count `+` bullets and a 1-3-space (was: exactly one) gap before `[`. Corpus-validated both
+directions: 9/9 real epics still flag (all via checkboxes), 8/8 label-exempted tracking stubs
+(#287-#294) and 12/12 real small/conventionally-shaped goals stay unflagged.
+
 ## 1.0.6 — the sandbox release
 
 ### fix(loop): six chokepoints across the plugin now reject a path-traversal `goal` (#486)
