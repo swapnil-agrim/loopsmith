@@ -171,6 +171,15 @@ jobs:
       # and .sdlc/config.json's own no-pip-install invariant). Placed after prove:role-forbidden,
       # the same "no browser needed" family, and after the two install steps just above since its
       # own seed-ic-fixture.py needs a real duckdb.
+      # Same duckdb dependency, same reason it cannot live in verify_web.py's CHECKS: this proof
+      # drives the REAL `python3 -m insight web ic`, whose query path imports duckdb. It was in
+      # `npm run test` on first push and failed CI here (ModuleNotFoundError: duckdb) while passing
+      # locally, because `npm run test` runs at the top of this job -- before the pip install just
+      # above -- and a developer machine happens to have duckdb already. Local green hid it; only
+      # CI's clean interpreter surfaced it. It belongs beside prove:ic-no-leak, after the install.
+      - name: prove the /ic python bridge maps exit codes to typed errors (npm run prove:ic-bridge)
+        run: npm run prove:ic-bridge
+        working-directory: insight/web
       - name: prove no cross-actor leak on /ic, server-side, across two real identities (npm run prove:ic-no-leak)
         run: npm run prove:ic-no-leak
         working-directory: insight/web
