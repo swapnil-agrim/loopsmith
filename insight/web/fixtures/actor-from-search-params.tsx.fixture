@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
+// issue #310 [E19.S2]. NOT SHIPPED, and not compiled by anything: a `.fixture` extension keeps it
+// out of tsconfig's include glob and out of eslint's, exactly like this directory's existing
+// fixtures. It exists solely so scripts/prove-actor-is-session-bound.mjs Part C can run its OWN
+// Part B scanner over a file that must FAIL -- proving that scanner is falsifiable rather than a
+// tautology that would pass against any source tree at all. Same methodology
+// insight/tests/test_dash_ic_no_leak.py and test_dash_leadership_guardrail.py already use for their
+// own leak checks.
+//
+// This is precisely the shape spec §5.2 rule 1 forbids: the actor taken from the URL rather than
+// from the session, so `/ic?actor=someone-else` would render someone else's view.
+export default async function LeakyIcPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ actor?: string }>;
+}) {
+  const { actor } = await searchParams;
+  return <p>{actor}</p>;
+}

@@ -266,12 +266,16 @@ def _render_cost(cost_row):
     )
 
 
-def render_ic_view(conn, actor, project_id=None, now=None):
-    """Render the IC persona's own page: my queue, blocked on me, my parks, my gate verdicts
-    (given), my cost. Returns `(html_text, summary)`. Every fetch above is actor-scoped in SQL
-    (Decision 4) -- this function only assembles already-filtered rows via #125's unmodified chart
-    primitives; it performs no filtering of its own. See the module docstring for the privacy
-    boundary and its one sanctioned exception, and for the cold-start banner's own reasoning."""
+def collect_ic_payload(conn, actor, project_id=None, now=None):
+    """The six actor-scoped queries + the payload dict literal, extracted out of `render_ic_view`
+    (issue #310 [E19.S2] Task 1, pure refactor -- exactly the dict-construction that used to be
+    inline here, moved verbatim). Returns the dict only -- no banner, no HTML/summary assembly;
+    that stays `render_ic_view`'s job below. Called both by `render_ic_view` (unchanged HTML/CLI
+    path) and by the new `insight web ic` CLI bridge (`insight/__main__.py`, Decision 1/4 of
+    .sdlc/plans/310.md) -- this is the one function both callers share, so the migration to a real
+    FastAPI endpoint (Decision 1's named follow-up) only needs a new thin route calling this same
+    function, not a rewrite. Every fetch below is actor-scoped in SQL (module docstring's own
+    privacy boundary) -- this function performs no filtering of its own, only assembly."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     generated_at = now.isoformat()
 
@@ -283,17 +287,7 @@ def render_ic_view(conn, actor, project_id=None, now=None):
     verdict_rows = _verdicts_given_rows(conn, actor)
     cost_row = _cost_row(conn, actor)
 
-    banner = ""
-    if not actor_ever_appeared:
-        banner = (
-            '<div class="banner"><strong>Actor '
-            f'&quot;{html.escape(actor)}&quot; has never appeared in this project&#39;s ledger'
-            "</strong> &mdash; check <code>ledger.actor</code> in <code>.sdlc/config.json</code> "
-            "(or the <code>--actor</code> flag). Every clause below is empty because nothing was "
-            "found for this identity, not necessarily because there is nothing to show.</div>"
-        )
-
-    payload = {
+    return {
         "generated_at": generated_at,
         "actor": actor,
         "actor_ever_appeared": actor_ever_appeared,
@@ -307,6 +301,39 @@ def render_ic_view(conn, actor, project_id=None, now=None):
             "cost_cents": cost_row[2], "n": cost_row[3],
         },
     }
+
+
+def render_ic_view(conn, actor, project_id=None, now=None):
+    """Render the IC persona's own page: my queue, blocked on me, my parks, my gate verdicts
+    (given), my cost. Returns `(html_text, summary)`. Every fetch above is actor-scoped in SQL
+    (Decision 4) -- this function only assembles already-filtered rows via #125's unmodified chart
+    primitives; it performs no filtering of its own. See the module docstring for the privacy
+    boundary and its one sanctioned exception, and for the cold-start banner's own reasoning."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    payload = collect_ic_payload(conn, actor, project_id=project_id, now=now)
+
+    generated_at = payload["generated_at"]
+    actor_ever_appeared = payload["actor_ever_appeared"]
+    my_queue_rows = payload["my_queue"]
+    handoff_ever_ingested = payload["handoff_ever_ingested"]
+    blocked_rows = payload["blocked_on_me"]
+    park_count = payload["park_count"]
+    verdict_rows = payload["verdicts_given"]
+    # Reconstructed from payload["cost"] rather than re-calling `_cost_row` a second time -- the
+    # HTML renderer below (`_render_cost`) and the summary's `cost_absent` still want the raw
+    # 4-tuple shape `_cost_row` returns, and `collect_ic_payload` already paid for that query once.
+    cost = payload["cost"]
+    cost_row = (cost["tokens_in"], cost["tokens_out"], cost["cost_cents"], cost["n"])
+
+    banner = ""
+    if not actor_ever_appeared:
+        banner = (
+            '<div class="banner"><strong>Actor '
+            f'&quot;{html.escape(actor)}&quot; has never appeared in this project&#39;s ledger'
+            "</strong> &mdash; check <code>ledger.actor</code> in <code>.sdlc/config.json</code> "
+            "(or the <code>--actor</code> flag). Every clause below is empty because nothing was "
+            "found for this identity, not necessarily because there is nothing to show.</div>"
+        )
 
     # The page's own <title> text is preserved exactly (issue #264 Step 8) -- only the head/nav
     # around it now come from the shared instrument.page_open()/page_close() shell.

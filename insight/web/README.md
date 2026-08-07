@@ -301,3 +301,12 @@ starts rendering role-specific or otherwise sensitive content, this exception mu
 either by moving that content behind a real role-gated route, or by revisiting whether `/` belongs in
 `SHARED_AUTHENTICATED_ROUTES` at all. See `.sdlc/plans/309.md` Decision 3 for the full reasoning
 (including why the alternative — listing `/` under all four roles — was rejected).
+
+**E19.S2 (issue #310) reaffirms this caveat rather than weakening it.** The first role-gated data
+surface in this app — `/ic`, the individual contributor's own queue/hand-offs/parks/verdicts/cost —
+deliberately landed at `/ic` (already reserved in `ROLE_ROUTES`, `role-policy.ts`), never at `/`,
+specifically so `/`'s "carries no real product data today" premise stays true rather than becoming
+false out from under this exception. The actor identity on `/ic` is resolved from the session alone
+(`src/lib/auth/actor.ts`'s `resolveActor()`) — no request-supplied parameter, header, or body value
+is ever consulted; see `scripts/prove-actor-is-session-bound.mjs` and
+`scripts/prove-ic-no-cross-actor-leak.mjs` for the compile-time and real-server proofs of that.

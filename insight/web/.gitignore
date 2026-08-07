@@ -32,3 +32,15 @@
 # Bash tool cannot pass ad hoc env vars or delete files it created). Standard Next.js convention;
 # harmless to keep.
 .env*.local
+
+# issue #310 [E19.S2], .sdlc/plans/310.md Task 4 -- same reason as the entries above:
+# scripts/prove-actor-is-session-bound.mjs's Part A/A2 scratch compiles need tsc's upward
+# node_modules walk to find @types/node (actor.ts is imported alongside node:-prefixed callsite
+# fixtures). Torn down in a `finally` (runScenarioInWebAsync), not a correctness guard.
+.actor-proof-scratch-*/
+
+# issue #310 [E19.S2], .sdlc/plans/310.md Task 3 -- same reason again: scripts/prove-ic-python-
+# bridge-exit-codes.mjs's scratch compile needs @types/node too (pythonBridge.ts imports
+# node:child_process/node:path). Torn down in a `finally` (runScenarioInWebAsync), not a
+# correctness guard.
+.ic-python-bridge-proof-scratch-*/

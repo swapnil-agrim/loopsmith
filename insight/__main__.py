@@ -193,6 +193,39 @@ def build_parser():
              "explicitly)",
     )
 
+    # `web` (issue #310 [E19.S2], .sdlc/plans/310.md Decision 1/2): a NEW top-level noun group --
+    # the Next.js Server Component's server-to-server bridge to `insight.dash.ic
+    # .collect_ic_payload`, reached via a Node `child_process.spawn` (Decision 1's shell-out
+    # transport, an interim architecture ahead of a real FastAPI endpoint -- see the plan for the
+    # named deviation from spec §6). Deliberately NOT a new branch of `dash`'s own `--actor` flag:
+    # that flag means something different -- an override for `insight.dash.actor.resolve_actor`'s
+    # `ledger.actor` fallback, feeding a file-writing CLI run once per invocation, not a per-
+    # request JSON bridge with no fallback and no file output (Decision 2). Mirrors `users add`/
+    # `users verify`'s own verb+noun precedent above -- a small, explicit, additive subparser
+    # tree, leaving an obvious (but not pre-built) place for a future sibling action.
+    web_parser = subparsers.add_parser(
+        "web",
+        help="server-to-server bridges for the Next.js web tier (issue #310, E19.S2)",
+    )
+    web_subparsers = web_parser.add_subparsers(dest="action", required=True)
+    web_ic_parser = web_subparsers.add_parser(
+        "ic",
+        help="print the IC persona's own payload (insight.dash.ic.collect_ic_payload) as JSON "
+             "on stdout, for the /ic Server Component's Node bridge -- never writes a file, "
+             "never falls back to ledger.actor",
+    )
+    web_ic_parser.add_argument(
+        "--actor", dest="actor", required=True,
+        help="the actor to fetch data for -- always the caller-supplied session name (the "
+             "Next.js auth session's own actor), resolved nowhere else; no ledger.actor "
+             "fallback, unlike dash's own --actor",
+    )
+    web_ic_parser.add_argument(
+        "--db", dest="db", default=None,
+        help="path to the DuckDB store file (default: .sdlc/insight.duckdb under CWD; same "
+             "semantics as dash's own --db)",
+    )
+
     # the stub loop now has nothing left in it -- kept as an empty tuple rather than deleted, so
     # a FUTURE new stub subcommand has an obvious place to land, mirroring how this loop already
     # shrank from {"gaps", "dash"} to {"dash"} in #122 without changing shape
@@ -650,6 +683,42 @@ def main(argv=None):
             return 2
 
         print(_json.dumps({"role": role}))
+        return 0
+    if args.command == "web" and args.action == "ic":
+        # Lazy, mirroring every other duckdb-touching branch above: keeps duckdb out of the
+        # import graph for --help and every other subcommand. issue #310 [E19.S2],
+        # .sdlc/plans/310.md Decision 2/Task 2.
+        import json as _json
+        from insight.ingest.store import open_store_read_only
+        from insight.gaps.report import json_default
+        from insight.dash.ic import collect_ic_payload
+
+        if not args.actor.strip():
+            # argparse's `required=True` only guards ABSENCE, not an empty/whitespace-only value
+            # -- `--actor " "` would otherwise sail through and query for a blank actor. Same
+            # stdout-marker discipline as the `users verify` branch above: a machine-readable
+            # error, never a bare traceback.
+            print(_json.dumps({"error": "malformed_request"}))
+            return 1
+
+        try:
+            conn = open_store_read_only(args.db)
+        except FileNotFoundError:
+            # Never a raw traceback, never a silently-empty success payload -- this codebase's
+            # ABSENT-!=-PASS doctrine (insight/api/app.py:40-47) forbids conflating "store
+            # missing" with "actor has zero rows". Mirrors pythonBridge.ts's own "never conflate
+            # a crash with a legitimate negative signal" discipline on the Node side.
+            print(_json.dumps({"error": "store_unavailable"}))
+            return 2
+
+        try:
+            payload = collect_ic_payload(conn, args.actor)
+        finally:
+            conn.close()
+        # json_default (insight.gaps.report), NOT insight.dash.render.json_script -- json_script
+        # HTML-escapes for <script>-tag embedding, the wrong transform for a stdout JSON bridge
+        # (Decision 2).
+        print(_json.dumps(payload, default=json_default))
         return 0
     issue = _TRACKING_ISSUE[args.command]
     print(
