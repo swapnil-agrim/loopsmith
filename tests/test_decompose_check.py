@@ -299,6 +299,45 @@ def test_decompose_check_anchoring_is_crlf_tolerant(tmp_path):
     assert not any(c[0] == "park" for c in src.calls)
 
 
+def test_decompose_check_verb_reads_the_marker_constant_live_not_a_hardcoded_copy(tmp_path):
+    """#521 review (SHOULD-FIX): the single-source-of-truth pin was one-sided.
+    tests/test_backlog_check.py's test_backlog_check_exempt_reads_the_constant_live_not_a_hardcoded_copy
+    proves backlog_check reads goal_size's constant live, by mutating the ACTUAL goal_size module
+    object backlog_check holds. But loop.py's own `_load("goal_size")` call resolves a FRESH module
+    instance on every invocation (never cached), so that same trick doesn't reach it -- nothing
+    previously proved decompose_check's guard (loop.py:698) actually reads `gs.DECOMPOSED_FROM_MARKER`
+    at runtime rather than a hand-typed literal that merely happens to match today.
+
+    Monkeypatch loop.py's OWN `_load` (the name decompose_check's `gs = _load("goal_size")` resolves
+    via its module globals at call time) so it hands back a stand-in with a RENAMED
+    DECOMPOSED_FROM_MARKER but the REAL `classify`. A body whose first line carries the OLD/real
+    marker text no longer matches the guard's (renamed) constant, so it falls through to real
+    classification -- and, being unambiguously epic-shaped, gets flagged and parked instead of
+    short-circuiting to a bare PROCEED. A hardcoded-literal guard would be blind to this swap and
+    would still short-circuit to PROCEED regardless -- exactly the gap this test closes."""
+    lp = _mod("loop")
+    gs = _mod("goal_size")
+
+    class _StubGoalSize:
+        DECOMPOSED_FROM_MARKER = "totally-renamed-marker="
+        DECOMPOSE_OF_MARKER = "totally-renamed-meta="
+        classify = staticmethod(gs.classify)             # real classification, unmodified
+
+    real_load = lp._load
+    lp._load = lambda name: _StubGoalSize if name == "goal_size" else real_load(name)
+    try:
+        base = _sdlc(tmp_path, {"goal_decompose": {"enabled": True, "mode": "park"}})
+        cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+        body = "loopsmith:decomposed-from=100\n\n" + _EPIC_BODY     # the OLD/real marker text
+        src = _FakeSource(body=body)
+        result = lp.decompose_check(base, "1", cfg, src)
+        # renamed constant -> the OLD marker text no longer matches the guard -> falls through to
+        # real classification -> epic body gets flagged+parked, NOT a bare "PROCEED".
+        assert result.startswith("PARKED"), result
+    finally:
+        lp._load = real_load
+
+
 # --------------------------------------------------------------------- log mode: zero mutation
 
 

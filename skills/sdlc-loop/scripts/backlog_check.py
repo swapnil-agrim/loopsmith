@@ -39,6 +39,8 @@ def _load_velocity():
 scrub = _load("scrub").scrub
 mirror = _load("mirror")
 sources = _load("sources")
+goal_size = _load("goal_size")     # #521: shared decomposition-marker constants -- single source of
+                                   # truth with loop.py's decompose_check guard
 
 SCHEMA = "backlog-check/v1"
 _DEFAULTS = {"dup_threshold": 0.72, "obsolete_threshold": 0.72, "park_threshold": 0.80, "top_k": 8}
@@ -147,8 +149,11 @@ def _num(cfg, key, default):
 
 
 def _build_corpus(sdlc_dir, config):
-    """Returns (docs, degraded). doc = {ref,title,raw,tokens,open,completed,closed_at,source}.
-    `open` = a live dedup candidate; `completed` = finished work that can obsolete the goal."""
+    """Returns (docs, degraded). doc = {ref,title,raw,body,tokens,open,completed,closed_at,source}.
+    `open` = a live dedup candidate; `completed` = finished work that can obsolete the goal. `body` is
+    the scrubbed body ALONE (unlike `raw`, which is `title + "\\n" + body`) -- #521's decomposition-
+    marker exemption needs the body's own first line, and `raw.splitlines()[0]` is always the TITLE,
+    never the marker."""
     degraded = []
     if mirror.is_github_mode(config):
         recs = mirror.read_mirror(sdlc_dir)
@@ -165,7 +170,7 @@ def _build_corpus(sdlc_dir, config):
             title, body = scrub(r.get("title") or ""), scrub(r.get("body_excerpt") or "")
             state = (r.get("state") or "open").lower()
             docs.append({"ref": str(r.get("number")), "title": title, "raw": title + "\n" + body,
-                         "tokens": _doc_tokens(title, body), "open": state == "open",
+                         "body": body, "tokens": _doc_tokens(title, body), "open": state == "open",
                          "completed": state == "closed", "closed_at": r.get("closed_at"),
                          "source": "mirror"})
         return docs, degraded
@@ -184,7 +189,7 @@ def _build_corpus(sdlc_dir, config):
         title = meta.get("title") or ""
         body = scrub(text.split("---", 2)[-1])          # local bodies aren't pre-scrubbed like the mirror
         docs.append({"ref": str(p), "title": scrub(title), "raw": scrub(title) + "\n" + body,
-                     "tokens": _doc_tokens(scrub(title), body),
+                     "body": body, "tokens": _doc_tokens(scrub(title), body),
                      "open": status not in disc._SKIP, "completed": status == "done",
                      "closed_at": None, "source": "goals"})
     if not docs:
@@ -274,10 +279,17 @@ def _goal_comment_text(sdlc_dir, config, goal_doc, run=None):
         return ""
 
 
-def _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now):
+def _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now, exempt=False):
     """Team-wide signals from the shared ledger (read-only, no `enabled` needed): a SIMILAR goal a
     teammate is claiming right now (the race the exact-goal lease can't see), and an outstanding
-    hand-off whose target is this goal (a real, recorded blocker)."""
+    hand-off whose target is this goal (a real, recorded blocker).
+
+    `exempt` (#521): `goal_doc` is a decomposition child/meta-goal (see `cross_check`'s own
+    precomputed `exempt`). Applies ONLY to the in-flight-elsewhere SIMILARITY branch below -- parallel
+    sibling execution is exactly what decomposition creates, the same false-positive family as
+    duplicate/obsoleted-by, just at this branch's lower (unconditional) bar. Never the recorded-
+    hand-off branch further down: a hand-off is an explicit, human-recorded blocker, not a similarity
+    guess, and applies to a marked child in full."""
     try:
         ledger = _load("ledger")
         entries = ledger.read_all(sdlc_dir)
@@ -297,7 +309,7 @@ def _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now):
             s = _cosine(gvec, _vector(d["tokens"], idf))
             if s >= dup_th:                             # a paraphrase of this goal already in flight
                 out.append(_finding("in-flight-elsewhere", cg, s, "ledger",
-                                     _shared_terms(goal_doc, d, idf), True))
+                                     _shared_terms(goal_doc, d, idf), not exempt))
     except Exception:
         pass
     try:
@@ -399,6 +411,29 @@ def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measur
         avgdl = (sum(sum(d["tokens"].values()) for d in docs) / len(docs)) if docs else 0.0
         gvec = _lex_weight(goal_doc["tokens"], idf, sim_mode, avgdl)
         gterms = set(goal_doc["tokens"])
+        # #521: a first-line `loopsmith:decomposed-from=`/`loopsmith:decompose-of=` marker means this
+        # goal IS a deliberately authored decomposition child/meta-goal (constants shared with loop.py's
+        # decompose_check guard via goal_size.py, so the two checks can't drift apart). The duplicate
+        # path's `_earlier()` rule always parks the NEWER of a similar pair, and a freshly created child
+        # is always the newest -- so a child similar to its own parent/siblings would always be the one
+        # parked; the obsoleted-by path has no `_earlier()` gate but compares against closed work a
+        # fresh child can also spuriously resemble; the in-flight-elsewhere ledger-similarity branch
+        # shares the same false-positive family at a lower bar (parallel sibling execution is exactly
+        # what decomposition creates). Exemption only downgrades `confident` -- the finding is still
+        # EMITTED (module contract: evidence, never a verdict) -- and NEVER reaches `_explicit_blockers`
+        # or the recorded-hand-off branch: an explicit blocker or a recorded hand-off still fully
+        # applies to a marked child.
+        #
+        # "First line" here means the first NON-BLANK line of the (already-scrubbed) body excerpt:
+        # local-mode bodies always start with a blank line right after the frontmatter delimiter (see
+        # `_build_corpus` above), so `lstrip()` before `splitlines()` is mandatory here -- a deliberate
+        # divergence from loop.py's own guard, which reads the raw, unstripped body straight from the
+        # source and has no such leading blank line to strip. CRLF-tolerant via `splitlines()`, same as
+        # loop.py's guard. `.get("body")` because some callers (tests) hand-build a partial doc.
+        first_line = (goal_doc.get("body") or "").lstrip().splitlines()[:1]
+        first_line = first_line[0] if first_line else ""
+        exempt = (goal_size.DECOMPOSED_FROM_MARKER in first_line
+                  or goal_size.DECOMPOSE_OF_MARKER in first_line)
         window = _closed_window_days(config, run=run, velocity_measure=velocity_measure)
 
         # Opt-in dense/embedding channel (Q5): catches paraphrases that share NO lexical term. Fail-open
@@ -427,19 +462,20 @@ def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measur
         for s, d in scored[:top_k]:
             ev = _shared_terms(goal_doc, d, idf)
             if d["completed"] and s >= obs_th and _within_window(d, window, now):
-                findings.append(_finding("obsoleted-by", d["ref"], s, d["source"], ev, s >= park_th))
+                findings.append(_finding("obsoleted-by", d["ref"], s, d["source"], ev,
+                                          s >= park_th and not exempt))
             elif d["open"] and s >= dup_th:
                 # Of a duplicate PAIR, park only the LATER goal: a `duplicate` is park-confident only when
                 # the matched open issue is EARLIER in pick order (lower number / earlier filename). Else
                 # both #1↔#2 would park each other and neither would ever be worked — the first-filed
                 # survives and is worked; later duplicates park against it. (Reported either way.)
-                confident = s >= park_th and _earlier(d["ref"], goal_ref)
+                confident = s >= park_th and _earlier(d["ref"], goal_ref) and not exempt
                 findings.append(_finding("duplicate", d["ref"], s, d["source"], ev, confident))
 
         comment_text = _goal_comment_text(sdlc_dir, config, goal_doc, run=run)
         findings += _explicit_blockers(goal_doc, docs, comment_text)
         doc_by_ref = {d["ref"]: d for d in docs}
-        findings += _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now)
+        findings += _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now, exempt)
         return _pack(goal_ref, _dedup_sort(findings), degraded)
     except Exception:
         return _pack(goal_ref, [], ["error"])
