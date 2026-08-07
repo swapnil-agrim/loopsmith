@@ -6,7 +6,8 @@
 # Each tick: pull the ops branch -> classify what is addressed to you and not yet surfaced ->
 # write .sdlc/state/inbox.md -> check every claimed goal's registered agent marker for a
 # genuinely dead pid and notify (agent_watch.py, off by default — agent_watch.enabled) ->
-# publish anything of your own that is still local -> sleep.
+# check every claimed issue for new comments and notify the claimant (comment_watch.py, off by
+# default — comment_watch.enabled) -> publish anything of your own that is still local -> sleep.
 #
 # The loop reads that inbox between goals (loop.py next prints it on stderr), which is the honest
 # delivery mechanism: nothing can inject a message into a running session, so the hand-off waits at
@@ -165,6 +166,8 @@ while :; do
   [ -n "$summary" ] && echo "watch: $summary" | tee -a "$LOG"
   agent_summary="$(python3 "$HERE/agent_watch.py" "$SDLC_DIR" 2>>"$LOG" || echo '')"
   [ -n "$agent_summary" ] && echo "watch: $agent_summary" | tee -a "$LOG"
+  comment_summary="$(python3 "$HERE/comment_watch.py" "$SDLC_DIR" 2>>"$LOG" || echo '')"
+  [ -n "$comment_summary" ] && echo "watch: $comment_summary" | tee -a "$LOG"
   python3 "$HERE/sync.py" publish "$SDLC_DIR" >> "$LOG" 2>&1 || true
 
   sleep_for=$(( INTERVAL * SCALE ))

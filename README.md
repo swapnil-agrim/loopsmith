@@ -250,6 +250,7 @@ Everything optional ships OFF — `/sdlc-doctor` prints this dashboard live (`do
 | `ledger.watch.interval_seconds` | 900 | how often `watch.sh` pulls the ledger ops branch and refreshes the inbox |
 | `action_log: {"enabled": true}` | off | a full local, gitignored trace of loop activity per goal (`.sdlc/state/log/<goal>.jsonl`) — read via the `sdlc-log` skill; never touches the shared ledger either direction |
 | `agent_watch: {"enabled": true}` | off | background-agent-death watch — a claimed goal's registered pid confirmed dead notifies (email if `notify.email` is also configured, else always a ledger note); needs `ledger.enabled` too, since `watch.sh` is what runs the check |
+| `comment_watch: {"enabled": true}` | off | in-flight comment watch — a new comment on a claimed issue notifies the claimant via a ledger note (self-comments suppressed); needs `ledger.enabled` too, since `watch.sh` is what runs the check, and github discovery (comments aren't a concept for local goal files) |
 | `parallel: {"enabled": true}` | off | a goal's independent slices run concurrently in waves (`max_concurrent`, default 3) from `.sdlc/plans/<goal>.slices.json` |
 | `parallel: {"goals": {"enabled": true}}` | off | `next-batch` returns up to `max_concurrent` (default 3) BACKLOG GOALS at once for one person's own concurrent subagents, one worktree+PR each |
 | `backlog_check: {"enabled": true}` | off | pre-work cross-check: parks a picked goal that duplicates / is obsoleted-by / is blocked-by other backlog items, before any token spend — includes a bounded comment-read fallback for a human-authored, comment-only dependency marker; `/sdlc-doctor` flags one that's still silently ignored |
@@ -693,6 +694,30 @@ new dependency — and **never accepts a literal password**: `pass_env` names an
 send is loud on stderr and always falls back to a ledger note addressed to the goal's claimant —
 never silently drops a notification. Exactly-once per dead pid: a fresh `agent-start` is what makes
 it eligible to notify again.
+
+### Watching for a new comment on a claimed issue
+
+A comment landing on an issue while someone (or something) holds an open claim on it is invisible
+unless they happen to re-check GitHub manually — for an unattended overnight drain, a comment
+carrying something urgent (a correction, a blocker, a "stop, don't do X") can sit unseen for however
+long the goal takes to finish. Turn it on:
+
+```json
+"comment_watch": { "enabled": true }
+```
+
+Needs `ledger.enabled` too — `watch.sh`'s own tick is what runs the check — and github discovery
+(comments aren't a concept for local goal files). Each tick fetches comments for every issue with an
+open ledger claim and diffs them against a per-issue, per-machine cursor
+(`.sdlc/state/comment-watch-cursor.json`, gitignored, never the shared ledger branch): a genuinely
+new comment writes a ledger note addressed to the claimant, reusing the exact same inbox mechanism
+the mention-watcher above already delivers through — no new channel. The claimant commenting on
+their own claimed issue is suppressed (compares the comment's real GitHub author against the
+claimant directly, correct even across machines). Exactly-once per comment: a second tick over the
+same comment notifies nothing, and a second, later, genuinely *different* comment on the same issue
+still notifies — each comment carries the underlying GitHub comment id as its own ledger `ref`, so
+distinct comments never collide on the same suppression signature. Comment text is scrubbed the same
+way `why` already is everywhere else in the ledger before it is ever written.
 
 ---
 

@@ -12,8 +12,11 @@ Two independent suppressions, because they catch different mistakes:
     two separate ledger files (see ledger.py's per-actor-per-process files) — `_writer()` keys
     those apart by pid so one writer's advancing seq can never suppress the other's not-yet-seen
     entries;
-  * the **signature** (`kind:issue:state:priority`) stops the same mention firing again when a
+  * the **signature** (`kind:issue:state:priority:ref`) stops the same mention firing again when a
     colleague's file is rewritten, rebased, or replayed — the cursor alone would re-fire all of it.
+    `ref` (#385) is what lets a caller legitimately raise MULTIPLE distinct same-kind/issue/state/
+    priority notes over time (e.g. comment_watch.py: one note per comment) without colliding on the
+    same signature — see signature()'s own docstring for the full story.
 
 A *state change* is deliberately not suppressed: `open` -> `deferred` on the same issue is news.
 Neither is a *priority change*: a hand-off always writes `state="open"` (see handoff.py), so an
@@ -98,9 +101,29 @@ def signature(entry):
     changes those without changing what happened). `priority` IS included: a hand-off always writes
     `state="open"` (handoff.py never varies it), so without priority a re-raise that escalates P1 ->
     P0 (or re-opens after a decline) would collide with the first raise's signature and be dropped —
-    exactly the escalation a suppressed duplicate must never hide (F13/#345)."""
+    exactly the escalation a suppressed duplicate must never hide (F13/#345).
+
+    `ref` (OPTIONAL_FIELDS, ledger.py:58) is folded in as a fourth, additive component (#385): an
+    EXISTING, previously-unused entry field — no shipped caller set it before comment_watch.py, so
+    this is a BEHAVIOURAL no-op for every pre-#385 caller (see
+    test_signature_change_is_behaviourally_a_noop_for_every_existing_caller in test_watch.py) even
+    though the string itself gains a trailing `:<ref-or-empty>` suffix and is therefore NOT
+    byte-identical to before. Without `ref`, every comment-watch note for the SAME issue collides on
+    an identical `kind:issue:state:priority` signature (kind="note", no state, a constant priority)
+    — and the signature set persists in `.sdlc/state/watch-cursor.json` with no expiry — so the
+    FIRST comment notification for an issue would permanently "use up" that signature and silently
+    swallow every later, genuinely different comment on it, forever. `ref=<the comment id>` gives
+    each one its own signature while a genuine re-raise of the identical underlying event (same
+    `ref`) still correctly collapses. Deliberately still excludes `why`/`id`/`ts` — a
+    rewritten/rebased file changing those must still collapse to the SAME signature when `ref` (the
+    caller's own stable identity for the underlying event) is unchanged.
+
+    One-time upgrade effect, stated rather than hidden: every signature stored before this change is
+    in the OLD 3-field format and will not match an identical entry re-classified after upgrading —
+    bounded and self-healing (at most one duplicate inbox item per previously-suppressed signature,
+    on the first tick after upgrade), not a lasting regression."""
     return (f"{entry.get('kind')}:{entry.get('issue') or entry.get('goal')}:"
-            f"{entry.get('state') or ''}:{entry.get('priority') or ''}")
+            f"{entry.get('state') or ''}:{entry.get('priority') or ''}:{entry.get('ref') or ''}")
 
 
 def rank(entry):

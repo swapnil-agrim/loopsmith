@@ -117,6 +117,69 @@ def test_a_same_priority_re_raise_of_an_already_surfaced_issue_is_still_suppress
     assert items == []
 
 
+def test_distinct_ref_breaks_a_same_kind_issue_priority_collision():
+    """#385: a naive comment-watch note always carries the same kind ("note"), the same issue, no
+    state, and a constant priority, so every comment-notification for the SAME issue used to produce
+    an IDENTICAL signature and the second, later, genuinely different comment was silently dropped
+    forever (the signature set has no expiry). `ref` (the comment's own id) breaks the collision.
+    Fails on the pre-#385 3-field signature (both entries collide); passes once `ref` is folded in."""
+    entries = [_entry("amy", 1, to=ME, kind="note", issue=50, priority="P2", ref="IC_1"),
+               _entry("amy", 2, to=ME, kind="note", issue=50, priority="P2", ref="IC_2")]
+    items, _ = classify.classify(entries, dict(classify.EMPTY_CURSOR), ME)
+    assert [e["ref"] for e in items] == ["IC_1", "IC_2"]        # both surface, not just the first
+
+
+def test_same_ref_reraise_still_suppressed():
+    """The complement of the test above: including `ref` in the signature must not turn off
+    suppression altogether -- a genuine re-raise of the SAME underlying event (identical `ref`)
+    still correctly collapses to one. Deliberately uses two DIFFERENT writers ("amy" then "bo"), not
+    the same actor twice: this is the exact shape comment_watch.py's own multi-watcher-race scope-out
+    relies on (two different teammates' watchers independently discovering and writing a note for
+    the SAME comment) -- proving the collapse holds via the SIGNATURE, not merely via one writer's
+    own per-writer cursor baseline advancing (which a different writer starts fresh at 0, so it
+    would NOT catch this on its own)."""
+    cursor = classify.classify(
+        [_entry("amy", 1, to=ME, kind="note", issue=50, priority="P2", ref="IC_1")],
+        dict(classify.EMPTY_CURSOR), ME)[1]
+    items, _ = classify.classify(
+        [_entry("bo", 1, to=ME, kind="note", issue=50, priority="P2", ref="IC_1")], cursor, ME)
+    assert items == []
+
+
+def test_signature_change_is_behaviourally_a_noop_for_every_existing_caller():
+    """Plan-review R4: adding `:{ref or ''}` to signature() makes `handoff:5:open:P1` become
+    `handoff:5:open:P1:` -- NOT byte-identical to the pre-#385 string (asserted below, so this test
+    documents the change rather than hiding it). What actually matters for every caller that
+    predates `ref` (handoff.py, agent_watch.py -- neither ever sets it) is that BEHAVIOUR is
+    unchanged: every existing entry gets the identical empty trailing component, so every
+    suppression/escalation OUTCOME is provably the same as before, even though the literal string
+    is not. Re-runs the existing escalation/suppression scenarios (no `ref` set anywhere, matching
+    every pre-#385 caller) and checks the same outcomes those existing tests already assert."""
+    assert (classify.signature(_entry("amy", 1, to="rae", issue=5, state="open", priority="P1"))
+            == "handoff:5:open:P1:")                     # trailing ':' + empty ref -- not byte-identical
+
+    # same as test_a_same_priority_re_raise_of_an_already_surfaced_issue_is_still_suppressed
+    cursor = classify.classify([_entry("amy", 1, to=ME, issue=5, state="open", priority="P1")],
+                               dict(classify.EMPTY_CURSOR), ME)[1]
+    items, _ = classify.classify(
+        [_entry("amy", 2, to=ME, issue=5, state="open", priority="P1")], cursor, ME)
+    assert items == []
+
+    # same as test_a_priority_escalation_re_raise_is_news
+    cursor = classify.classify([_entry("amy", 1, to=ME, issue=5, state="open", priority="P1")],
+                               dict(classify.EMPTY_CURSOR), ME)[1]
+    items, _ = classify.classify(
+        [_entry("amy", 2, to=ME, issue=5, state="open", priority="P0")], cursor, ME)
+    assert len(items) == 1 and items[0]["priority"] == "P0"
+
+    # same as test_a_replayed_entry_after_a_rebase_does_not_refire
+    cursor2 = classify.classify([_entry("amy", 4, to=ME, issue=61, state="open")],
+                                dict(classify.EMPTY_CURSOR), ME)[1]
+    replayed = [_entry("amy", 1, to=ME, issue=61, state="open")]
+    items2, _ = classify.classify(replayed, cursor2, ME)
+    assert items2 == []
+
+
 def test_most_urgent_first_then_oldest():
     entries = [_entry("amy", 1, to=ME, priority="P2", issue=1),
                _entry("amy", 2, to=ME, priority="P0", issue=2),

@@ -678,9 +678,19 @@ def append(sdlc_dir, config, kind, goal, run=None, now=None, stream=ENTRIES, **f
             # sanctioned command) lands a secret/client string in version control. Same
             # flatten->scrub->cap treatment as EVENTS' free-text fields, gated on the one ENTRIES
             # field that is actually prose — see OPTIONAL_FIELDS: `area`/`to`/`issue`/`priority`/
-            # `state`/`ref`/`pr` are all short enums/ids, never free text.
+            # `state`/`pr` are short enums/ids ALWAYS sourced from our own code (operator/CLI-typed
+            # or a hard-coded constant in every existing caller), never externally-authored.
+            #
+            # `ref` is the one exception (#385, POST-REVIEW FIX): comment_watch.py is the first
+            # ENTRIES caller to source a field from something outside this plugin's own control at
+            # all — a GitHub comment's opaque node id. "Safe by convention" is exactly the pattern
+            # EVENT_BOUNDED_ID_FIELDS below was hardened against after two earlier review blocks on
+            # the events stream; `ref` gets the identical enforcement here rather than trusting the
+            # next ENTRIES caller to also be well-behaved.
             if stream == ENTRIES and name == "why":
                 value = _sanitize_free_text(value)
+            elif stream == ENTRIES and name == "ref":
+                value = _sanitize_free_text(value, cap=BOUNDED_ID_CAP)
             elif stream == EVENTS:
                 if name in EVENT_FREE_TEXT_FIELDS.get(kind, ()):
                     value = _sanitize_free_text(value)
