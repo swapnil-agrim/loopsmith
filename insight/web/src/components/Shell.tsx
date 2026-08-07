@@ -21,15 +21,20 @@
 // the mechanism -- not the absence of anything happening on click -- is what actually matters.)
 import Link from "next/link";
 
-import { NAV_ITEMS } from "@/lib/nav";
+import { navItemsFor } from "@/lib/nav";
 import { auth, signOut } from "@/auth";
 
 export async function Shell({ children }: { children: React.ReactNode }) {
-  // issue #308 [E18.S3], .sdlc/plans/308.md Decision 7. One auth() call, used only to decide
-  // whether a sign-out control has anything to sign out of -- Shell renders around EVERY route,
-  // including /login (this app has only one root layout, a pre-existing quirk this goal does not
-  // fix), where there is never a session and the button must not appear.
+  // issue #308 [E18.S3], .sdlc/plans/308.md Decision 7. One auth() call, used to decide whether a
+  // sign-out control has anything to sign out of, AND (issue #311 [E19.S3]) to compute which nav
+  // items this session's role can reach -- Shell renders around EVERY route, including /login
+  // (this app has only one root layout, a pre-existing quirk this goal does not fix), where there
+  // is never a session and neither the button nor any nav item may appear.
   const session = await auth();
+  // issue #311 [E19.S3] Decision 2: navItemsFor() mirrors decide()'s own gates -- no session means
+  // an empty nav, fail closed, same as an anonymous /login visitor gets no dead links or hints
+  // about views they cannot open.
+  const navItems = navItemsFor(!!session?.user, session?.user?.role);
 
   return (
     <div
@@ -78,31 +83,22 @@ export async function Shell({ children }: { children: React.ReactNode }) {
       <div className="flex min-h-0 flex-1">
         <nav data-testid="shell-nav" className="w-56 shrink-0 border-r border-panel-rule px-3 py-4">
           <ul className="flex flex-col gap-1">
-            {NAV_ITEMS.map((item) =>
-              item.href ? (
-                <li key={item.label}>
-                  <Link
-                    href={item.href}
-                    data-testid="shell-nav-link"
-                    className="block rounded px-2 py-1.5 text-panel-bone hover:bg-panel-raised"
-                    style={{ fontSize: "var(--panel-text-body)" }}
-                  >
-                    {item.label}
-                  </Link>
-                </li>
-              ) : (
-                <li key={item.label}>
-                  <span
-                    data-testid="shell-nav-placeholder"
-                    aria-disabled="true"
-                    className="block cursor-default px-2 py-1.5 text-panel-faint"
-                    style={{ fontSize: "var(--panel-text-body)" }}
-                  >
-                    {item.label}
-                  </span>
-                </li>
-              ),
-            )}
+            {/* issue #311 [E19.S3]: navItemsFor() never returns an item without an href (Decision
+                2) -- an item nav cannot yet link to is simply never returned, not returned
+                hrefless, so the old placeholder <span> branch is dead code by construction and is
+                deleted, not kept dormant. */}
+            {navItems.map((item) => (
+              <li key={item.label}>
+                <Link
+                  href={item.href}
+                  data-testid="shell-nav-link"
+                  className="block rounded px-2 py-1.5 text-panel-bone hover:bg-panel-raised"
+                  style={{ fontSize: "var(--panel-text-body)" }}
+                >
+                  {item.label}
+                </Link>
+              </li>
+            ))}
           </ul>
         </nav>
 

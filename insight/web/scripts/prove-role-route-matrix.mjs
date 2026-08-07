@@ -1,30 +1,44 @@
 // SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
-// issue #309 [E19.S1], .sdlc/plans/309.md. Two parts, mirroring
+// issue #309 [E19.S1], .sdlc/plans/309.md. Three parts, mirroring
 // prove-every-route-is-private-by-default.mjs's own Part B (compiled route-policy.ts, pure logic)
 // and Part C (compiled + EXECUTED proxy.ts against stubs) -- that file's own Part A (synthetic
 // filesystem-walk fixture) has no role analogue and is not repeated here.
 //
-//   PART A -- compiles the real route-policy.ts with the local tsc, dynamic-imports it, and
-//   table-tests decide() directly: each role against its own route and a DIFFERENT role's route,
-//   an unknown role string, role=undefined, the deliberately-unregistered "/finance-exports"
-//   against every known role (done-when 3), and the two shared-authenticated routes against every
-//   role including an unknown one (Decision 3's carve-out, proven not just asserted).
+//   PART A -- issue #311 [E19.S3], .sdlc/plans/311.md Task 3: compiles the real route-policy.ts
+//   with the local tsc, dynamic-imports it, and table-tests decide() directly -- GENERATED from
+//   the real, live `ROLE_ROUTES`/`SHARED_AUTHENTICATED_ROUTES` exports, not hand-typed copies of
+//   the role list or route strings (the defect this story exists to fix: the old `ROLES` array and
+//   `OWN_ROUTE` map here were both retyped literals that a route/role change could silently drift
+//   from). Every role against its own route and every other role's route, an unknown role string,
+//   role=undefined, the deliberately-unregistered "/finance-exports" against every known role
+//   (done-when 3), and every SHARED_AUTHENTICATED_ROUTES entry against every role including an
+//   unknown one (Decision 3's carve-out, proven not just asserted) -- all iterated over the live
+//   table, so a route added to either object tomorrow is automatically exercised here.
 //
 //   PART B -- compiles and EXECUTES the real src/proxy.ts against stub next/server (extended with
 //   NextResponse.json) and stub @/auth (Req.auth widened to carry user.role). Drives the real,
 //   compiled handler and asserts the WHOLE captured response body for a forbidden request --
 //   done-when 2's own wording, verified on the actual enforcement point, not the pure function
 //   alone (same reasoning as the existing script's own Part C doc comment).
+//
+//   PART C -- issue #311 [E19.S3] Task 3b: filesystem <-> table drift, both directions. Reuses
+//   walkRoutes(SRC_APP) (scripts/lib/route-inventory.mjs, the SAME real-filesystem walker
+//   prove-every-route-is-private-by-default.mjs's own Part B already uses for the public/private
+//   axis) and the SAME compiled route-policy.ts module Part A already produced -- a route that
+//   exists on disk but is missing from the table, or a table entry marked `implemented: true` with
+//   no page on disk, is a detectable, tested condition, not a silent one.
 import assert from "node:assert/strict";
 import { writeFileSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { WEB, runTsc, runScenarioAsync } from "./lib/tsc-scratch.mjs";
+import { walkRoutes } from "./lib/route-inventory.mjs";
 
 const SRC_AUTH_LIB = path.join(WEB, "src", "lib", "auth");
+const SRC_APP = path.join(WEB, "src", "app");
 
-// --------------------------------------------------------------------------------------- part A
+// --------------------------------------------------------------------------------- shared compile
 
 function scratchTsconfig() {
   return {
@@ -49,35 +63,54 @@ function compileRoutePolicy(dir) {
   return path.join(dir, "out", "route-policy.js");
 }
 
-const ROLES = ["manager", "leadership", "ic", "cross-functional"];
-const UNREGISTERED_ROUTE = "/finance-exports"; // deliberately in NO list anywhere -- done-when 3
-
-async function partA() {
-  const mod = await runScenarioAsync("insight-web-role-route-matrix-proof-", async (dir) => {
+async function loadRoutePolicy() {
+  return runScenarioAsync("insight-web-role-route-matrix-proof-", async (dir) => {
     const emitted = compileRoutePolicy(dir);
     return import(pathToFileURL(emitted).href);
   });
-  const { decide, ROLE_ROUTES } = mod;
+}
 
-  assert.deepEqual(
-    Object.keys(ROLE_ROUTES).sort(), [...ROLES].sort(),
-    `ROLE_ROUTES must have exactly the four canonical roles, got: ${Object.keys(ROLE_ROUTES)}`,
-  );
+const UNREGISTERED_ROUTE = "/finance-exports"; // deliberately in NO list anywhere -- done-when 3
 
-  const OWN_ROUTE = { manager: "/manager", leadership: "/leadership", ic: "/ic", "cross-functional": "/cross-functional" };
+// --------------------------------------------------------------------------------------- part A
+
+async function partA(mod) {
+  const { decide, ROLE_ROUTES, SHARED_AUTHENTICATED_ROUTES, representativePath, isKnownRole } = mod;
+
+  // Generated, not hand-typed (issue #311): the role axis is whatever ROLE_ROUTES actually
+  // declares right now.
+  const ROLES = Object.keys(ROLE_ROUTES);
+  assert.ok(ROLES.length >= 1, "ROLE_ROUTES must declare at least one role");
+
+  // Sanity guard: representativePath() picks entry.exact[0] ?? entry.prefix[0] and assumes exactly
+  // one path per entry -- documents and enforces that assumption so a second string silently added
+  // to one array fails loudly here rather than picking the wrong string somewhere downstream.
+  for (const [key, entry] of [
+    ...Object.entries(ROLE_ROUTES),
+    ...SHARED_AUTHENTICATED_ROUTES.map((entry, i) => [`SHARED_AUTHENTICATED_ROUTES[${i}]`, entry]),
+  ]) {
+    const list = entry.exact ?? entry.prefix;
+    assert.equal(
+      list.length, 1,
+      `${key}'s route pattern must have exactly one path (representativePath()'s assumption) -- ` +
+      `got ${JSON.stringify(list)}`,
+    );
+  }
 
   for (const role of ROLES) {
+    const ownRoute = representativePath(ROLE_ROUTES[role]);
     // A role reaches its own route.
     assert.equal(
-      decide(OWN_ROUTE[role], true, role), "allow",
-      `${role} must be allowed on its own route ${OWN_ROUTE[role]}`,
+      decide(ownRoute, true, role), "allow",
+      `${role} must be allowed on its own route ${ownRoute}`,
     );
     // A role does NOT reach another role's route.
     for (const other of ROLES) {
       if (other === role) continue;
+      const otherRoute = representativePath(ROLE_ROUTES[other]);
       assert.equal(
-        decide(OWN_ROUTE[other], true, role), "forbid",
-        `${role} must be forbidden on ${other}'s route ${OWN_ROUTE[other]}`,
+        decide(otherRoute, true, role), "forbid",
+        `${role} must be forbidden on ${other}'s route ${otherRoute}`,
       );
     }
     // done-when 3: an unregistered route is denied for EVERY known role.
@@ -85,19 +118,30 @@ async function partA() {
       decide(UNREGISTERED_ROUTE, true, role), "forbid",
       `${role} must be forbidden on the deliberately-unregistered route ${UNREGISTERED_ROUTE}`,
     );
-    // Decision 3: shared-authenticated routes stay reachable for every real role too.
-    assert.equal(decide("/", true, role), "allow", `${role} must reach the shared "/" route`);
-    assert.equal(
-      decide("/dev/absence-states", true, role), "allow",
-      `${role} must reach the shared /dev/absence-states route`,
-    );
+    // Decision 3: EVERY shared-authenticated route stays reachable for every real role too --
+    // iterated over the live array, so a THIRD shared route added tomorrow is automatically
+    // covered instead of getting zero new coverage silently (issue #311's own named gap).
+    for (const entry of SHARED_AUTHENTICATED_ROUTES) {
+      const sharedRoute = representativePath(entry);
+      assert.equal(
+        decide(sharedRoute, true, role), "allow",
+        `${role} must reach the shared ${sharedRoute} route`,
+      );
+    }
   }
 
   // Decision 2: an unknown role string -- NOT a crash, a denial.
   assert.doesNotThrow(() => decide("/manager", true, "owner"));
   assert.equal(decide("/manager", true, "owner"), "forbid", "an unknown role must be forbidden, not allowed");
-  // An unknown role still reaches the shared routes (Decision 3 is role-agnostic).
-  assert.equal(decide("/", true, "owner"), "allow", "an unknown role must still reach the shared / route");
+  assert.equal(isKnownRole("owner"), false, "sanity: \"owner\" must not be a known role");
+  // An unknown role still reaches every shared route (Decision 3 is role-agnostic).
+  for (const entry of SHARED_AUTHENTICATED_ROUTES) {
+    const sharedRoute = representativePath(entry);
+    assert.equal(
+      decide(sharedRoute, true, "owner"), "allow",
+      `an unknown role must still reach the shared ${sharedRoute} route`,
+    );
+  }
 
   // Decision 2: role=undefined -- NOT a crash, a denial (a session that predates any role).
   assert.doesNotThrow(() => decide("/manager", true, undefined));
@@ -109,7 +153,11 @@ async function partA() {
   // Regression: public routes are unaffected by any of this.
   assert.equal(decide("/login", false, undefined), "allow", "the public /login route must be unaffected");
 
-  console.log("OK: route-policy.ts's role matrix -- own route allowed, other roles forbidden, unknown role and unregistered route both denied, shared routes reachable by every role");
+  console.log(
+    `OK: route-policy.ts's role matrix -- ${ROLES.length} role(s) and ${SHARED_AUTHENTICATED_ROUTES.length} ` +
+    "shared route(s), all GENERATED from the live table, own route allowed, other roles forbidden, " +
+    "unknown role and unregistered route both denied, every shared route reachable by every role",
+  );
 }
 
 // --------------------------------------------------------------------------------------- part B
@@ -118,9 +166,7 @@ async function partA() {
 // pattern as prove-every-route-is-private-by-default.mjs's own Part C, and for the same reason
 // stated there: Part A above proves decide() is right, but proxy.ts is what CALLS it, and nothing
 // in Part A imports proxy.ts at all. Stubs replace only the two FRAMEWORK imports; route-policy.ts
-// is the real file, and proxy.ts's body is compiled verbatim, never rewritten. No new imports are
-// needed beyond what Part A already pulled in at the top of the file (writeFileSync, readFileSync,
-// path, pathToFileURL, runScenarioAsync, runTsc are all already in scope).
+// is the real file, and proxy.ts's body is compiled verbatim, never rewritten.
 
 // issue #309 Decision 6: types added on every param (unlike the plan doc's own JS-flavored
 // sketch) because this stub is written into a real .ts file compiled under this repo's
@@ -241,9 +287,98 @@ async function partB() {
   console.log("OK: src/proxy.ts's own handler returns a fixed, data-free 403 body for a forbidden request, and denies both an unknown role and a deliberately-unregistered route without throwing");
 }
 
+// --------------------------------------------------------------------------------------- part C
+//
+// issue #311 [E19.S3] Task 3b: filesystem <-> table drift, both directions -- the directive's
+// explicit ask, "a route that exists in the filesystem but is missing from the table, or vice
+// versa, is a detectable, tested condition rather than a silent one."
+
+// AMENDMENT 2 (plan review of .sdlc/plans/311.md): mirrors matchesRoutes' prefix-or-exact rule
+// (route-policy.ts) exactly -- `route === representativePath(e) || route.startsWith(rep + "/")` --
+// so this drift check can never disagree with decide() about what a pattern covers. Re-derived
+// locally (not imported) because route-policy.ts's own matchesPattern/matchesRoutes are module-
+// private, and exporting an internal matcher just for one test is a worse trade than restating the
+// same one-line rule that already appears three times inside that file (matchesRoutes,
+// matchesPattern, representativePath's own doc comment) -- a deliberate, tiny exception to "never
+// retype policy logic."
+function matchesRepresentative(route, entry, representativePath) {
+  const rep = representativePath(entry);
+  return route === rep || route.startsWith(`${rep}/`);
+}
+
+/** Both directions of the drift check. `routes` is the real (or synthetic) filesystem inventory;
+ *  `reachabilityEntries` is every SHARED_AUTHENTICATED_ROUTES/ROLE_ROUTES entry. */
+function assertRoutesCovered(routes, reachabilityEntries, isPublicRoute, representativePath) {
+  // Direction 1: every real, non-public route must be claimed by some table entry, and that
+  // entry must say the page is actually built.
+  for (const route of routes) {
+    if (isPublicRoute(route)) continue; // already proven by the sibling public/private proof
+    const owner = reachabilityEntries.find((e) => matchesRepresentative(route, e, representativePath));
+    assert.ok(owner, `real route ${route} is not public and matches NO entry in ` +
+      `SHARED_AUTHENTICATED_ROUTES or ROLE_ROUTES -- decide() would forbid it for every role, ` +
+      `silently, because nothing in the table claims it`);
+    assert.ok(owner.implemented, `real route ${route} exists on disk but its table entry has ` +
+      `implemented:false -- flip it to true now that the page exists`);
+  }
+  // Direction 2: every table entry marked implemented:true must have a real page on disk.
+  for (const entry of reachabilityEntries) {
+    if (!entry.implemented) continue;
+    const p = representativePath(entry);
+    const covered = routes.some((r) => r === p || r.startsWith(`${p}/`));
+    assert.ok(covered, `table entry ${p} is marked implemented:true but no page exists on ` +
+      `disk at or under it`);
+  }
+}
+
+function partC(mod) {
+  const { ROLE_ROUTES, SHARED_AUTHENTICATED_ROUTES, isPublicRoute, representativePath } = mod;
+  const reachabilityEntries = [...SHARED_AUTHENTICATED_ROUTES, ...Object.values(ROLE_ROUTES)];
+
+  // Real-tree case: the actual src/app/ inventory against the actual table. Must pass with zero
+  // findings -- confirms no pre-existing drift.
+  const realRoutes = walkRoutes(SRC_APP);
+  assertRoutesCovered(realRoutes, reachabilityEntries, isPublicRoute, representativePath);
+  console.log(
+    `OK: filesystem <-> table drift check -- ${realRoutes.length} real route(s) all claimed by an ` +
+    "implemented table entry, and every implemented table entry has a real page on disk",
+  );
+
+  // ---- negative controls -------------------------------------------------------------------
+  // Proves the checker can actually FAIL, not just happens to pass on today's clean tree (same
+  // ethos as prove-every-route-is-private-by-default.mjs Part A's synthetic-tree check).
+
+  // 1. A page shipped, the table forgot it: a real route with no matching entry at all.
+  assert.throws(
+    () => assertRoutesCovered(
+      ["/orphan-page"],
+      [], // no entries at all -- nothing could possibly claim it
+      () => false, // not public
+      representativePath,
+    ),
+    /matches NO entry/,
+    "negative control 1 failed to fire: a filesystem route with no table entry must be caught",
+  );
+  console.log("OK: negative control 1 -- an unclaimed real route is correctly caught (page shipped, table forgot it)");
+
+  // 2. The table says live, the page doesn't exist: implemented:true with nothing on disk.
+  assert.throws(
+    () => assertRoutesCovered(
+      [], // empty filesystem -- the entry below claims a page that isn't there
+      [{ exact: ["/ghost-page"], implemented: true }],
+      () => false,
+      representativePath,
+    ),
+    /no page exists on/,
+    "negative control 2 failed to fire: an implemented:true entry with no real page must be caught",
+  );
+  console.log("OK: negative control 2 -- an implemented:true entry with no real page is correctly caught (table says live, page doesn't exist)");
+}
+
 async function main() {
-  await partA();
+  const mod = await loadRoutePolicy();
+  await partA(mod);
   await partB();
+  partC(mod);
 }
 
 main();

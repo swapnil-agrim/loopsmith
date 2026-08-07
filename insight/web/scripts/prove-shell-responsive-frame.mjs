@@ -20,6 +20,17 @@
 //                               (data-testid="dev-wide-fixture", see that page's own comment)
 //                               whose sole job is giving this script something wide to test
 //                               containment against.
+//
+// issue #311 [E19.S3], .sdlc/plans/311.md Task 5: nav is now role-aware (src/lib/nav.ts's
+// navItemsFor()), so the width/page loop below authenticates as the unknown-role sentinel "owner"
+// (mirrors prove-role-route-matrix.mjs's own edge case: an unknown role is a real, meaningful
+// session -- Home-only nav, still reachable on every shared route) instead of the arbitrary
+// "admin" default, and a SEPARATE per-role block afterward authenticates as "manager"
+// (implemented:false -- proves NO /manager link) and "ic" (implemented:true -- proves exactly one
+// role item plus Home), each asserted against navItemsFor()'s own computed output via
+// prove-nav-items.mjs's loadNav() -- the SAME compiled module that file's own offline proofs run
+// against, so a rendering assertion here can never hardcode a count that silently drifts from the
+// real table.
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
 import net from "node:net";
@@ -27,7 +38,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 
-import { loadNavItems } from "./prove-nav-items.mjs";
+import { loadNav } from "./prove-nav-items.mjs";
 import { authenticatedContext, proofServerEnv } from "./lib/proof-session.mjs";
 
 const WEB = path.resolve(fileURLToPath(import.meta.url), "..", "..");
@@ -136,25 +147,39 @@ async function assertNoPageOverflow(page, pageLabel, width) {
 
 // done-when 1 says the shell composes NAVIGATION -- not that a nav element exists. An empty
 // <nav data-testid="shell-nav"> passes assertShellPresent identically to a correct one, so the
-// count of rendered items is checked against the real NAV_ITEMS (imported, not hardcoded): a
-// .map() that throws, renders zero, or truncates is caught here and nowhere else.
-async function assertNavRendered(page, pageLabel, navItems) {
-  const rendered = page.locator(
-    '[data-testid="shell-nav-link"], [data-testid="shell-nav-placeholder"]',
-  );
-  const count = await rendered.count();
+// rendered items are checked against navItemsFor()'s own computed output (imported, not
+// hardcoded): a .map() that throws, renders zero, truncates, or leaks an unreachable item is
+// caught here and nowhere else.
+//
+// issue #311 [E19.S3]: `shell-nav-placeholder` no longer exists -- navItemsFor() never returns an
+// item without an href, so Shell.tsx's placeholder <span> branch was deleted, not kept dormant
+// (Task 2). `[data-testid="shell-nav-link"]` is now the ONLY nav testid; asserted by href AND
+// count, exactly, against `expectedItems` (the real, live navItemsFor(hasSession, role) output for
+// the session under test) so this proof cannot drift from the real table either.
+async function assertNavRendered(page, pageLabel, expectedItems) {
   assert.equal(
-    count, navItems.length,
-    `${pageLabel}: expected ${navItems.length} rendered nav items (one per NAV_ITEMS entry), ` +
-    `found ${count}`,
+    await page.locator('[data-testid="shell-nav-placeholder"]').count(), 0,
+    `${pageLabel}: shell-nav-placeholder must never render -- navItemsFor() never returns an ` +
+    "hrefless item, so Shell.tsx's placeholder branch must be dead code",
   );
 
   const links = page.locator('[data-testid="shell-nav-link"]');
-  assert.equal(await links.count(), 1, `${pageLabel}: expected exactly one linked nav item`);
-  const href = await links.first().getAttribute("href");
-  assert.equal(href, "/", `${pageLabel}: the one linked nav item must point at "/", got "${href}"`);
+  const count = await links.count();
+  assert.equal(
+    count, expectedItems.length,
+    `${pageLabel}: expected ${expectedItems.length} rendered nav link(s) (navItemsFor()'s own ` +
+    `output), found ${count}`,
+  );
 
-  console.log(`OK: ${pageLabel} -- ${count} nav items rendered, 1 linked to "/"`);
+  const renderedHrefs = (await links.evaluateAll((els) => els.map((el) => el.getAttribute("href")))).sort();
+  const expectedHrefs = expectedItems.map((item) => item.href).sort();
+  assert.deepEqual(
+    renderedHrefs, expectedHrefs,
+    `${pageLabel}: rendered nav hrefs ${JSON.stringify(renderedHrefs)} must exactly match ` +
+    `navItemsFor()'s expected hrefs ${JSON.stringify(expectedHrefs)}`,
+  );
+
+  console.log(`OK: ${pageLabel} -- ${count} nav item(s) rendered, hrefs exactly ${JSON.stringify(renderedHrefs)}`);
 }
 
 async function assertWideContentContained(page, width) {
@@ -175,9 +200,32 @@ async function assertWideContentContained(page, width) {
   );
 }
 
+// issue #311 [E19.S3] Task 5: one dedicated context per role under test, each asserted against
+// navItemsFor()'s own computed output for that exact (hasSession=true, role) pair -- not a
+// hardcoded expectation. Reuses assertShellPresent so a role's session is also proven to actually
+// reach the shell (not silently redirected to /login).
+async function assertRoleNavAtRoot(browser, baseUrl, role, navItemsFor) {
+  const context = await authenticatedContext(browser, baseUrl, role);
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1440, height: HEIGHT });
+    await page.goto(`${baseUrl}/`);
+    assert.equal(
+      new URL(page.url()).pathname, "/",
+      `role=${role}: expected to land on / with a valid session, got ${page.url()}`,
+    );
+    const expected = navItemsFor(true, role);
+    await assertShellPresent(page, `role=${role}`);
+    await assertNavRendered(page, `role=${role}`, expected);
+    await page.close();
+  } finally {
+    await context.close();
+  }
+}
+
 async function main() {
   const t0 = Date.now();
-  const navItems = await loadNavItems();
+  const { navItemsFor } = await loadNav();
   const { proc, baseUrl } = await startNext();
   let browser;
   try {
@@ -185,8 +233,15 @@ async function main() {
     // issue #307 [E18.S2]: every page in PAGES is private by default now, so this proof has to
     // arrive with a session -- anonymously it measures the login page at three widths and proves
     // nothing about the shell. See scripts/lib/proof-session.mjs.
-    const context = await authenticatedContext(browser, baseUrl);
+    //
+    // issue #311 [E19.S3]: "owner" -- the same unknown-role sentinel prove-role-route-matrix.mjs
+    // uses -- for the width/page loop below, since nav rendering is now role-aware and this loop's
+    // real purpose is responsive layout, not nav content; an unknown role still reaches every
+    // shared route (Decision 3), so it exercises the exact same pages the old "admin" fixture did,
+    // while also being a real, meaningful nav case (Home-only) asserted below via navItemsFor.
+    const context = await authenticatedContext(browser, baseUrl, "owner");
     const page = await context.newPage();
+    const ownerNavItems = navItemsFor(true, "owner");
 
     for (const width of WIDTHS) {
       await page.setViewportSize({ width, height: HEIGHT });
@@ -199,13 +254,20 @@ async function main() {
           "be measuring the login page instead of the shell",
         );
         await assertShellPresent(page, `${pagePath} @ ${width}px`);
-        await assertNavRendered(page, `${pagePath} @ ${width}px`, navItems);
+        await assertNavRendered(page, `${pagePath} @ ${width}px`, ownerNavItems);
         await assertNoPageOverflow(page, pagePath, width);
         if (pagePath === "/dev/absence-states") {
           await assertWideContentContained(page, width);
         }
       }
     }
+
+    // ---- role-aware nav rendering (issue #311 [E19.S3]) --------------------------------------
+    // "manager" -- implemented:false -- proves NO /manager link renders (the load-bearing outcome
+    // done-when 2 exists for) and no placeholder either (Task 2 deleted that branch). "ic" --
+    // implemented:true -- proves exactly one role item (IC) plus Home renders, both linked.
+    await assertRoleNavAtRoot(browser, baseUrl, "manager", navItemsFor);
+    await assertRoleNavAtRoot(browser, baseUrl, "ic", navItemsFor);
 
     // ---- negative control ---------------------------------------------------------------------
     // Proves the page-level "no horizontal scroll" assertion is not a tautology: injects a
