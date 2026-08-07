@@ -35,10 +35,14 @@ export function navItemsFor(hasSession: boolean, role: string | undefined): read
       items.push({ label: entry.navLabel, href: representativePath(entry) });
     }
   }
+  // issue #312 [E20.S1] Goal A: ROLE_ROUTES[role] is now an array of entries (a role can reach
+  // more than one route, e.g. its own dashboard plus /delivery) -- loop over all of them instead
+  // of assuming exactly one.
   if (isKnownRole(role)) {
-    const entry = ROLE_ROUTES[role];
-    if (entry.navLabel && entry.implemented) {
-      items.push({ label: entry.navLabel, href: representativePath(entry) });
+    for (const entry of ROLE_ROUTES[role]) {
+      if (entry.navLabel && entry.implemented) {
+        items.push({ label: entry.navLabel, href: representativePath(entry) });
+      }
     }
   }
   return items;

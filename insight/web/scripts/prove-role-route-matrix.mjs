@@ -9,11 +9,14 @@
 //   the real, live `ROLE_ROUTES`/`SHARED_AUTHENTICATED_ROUTES` exports, not hand-typed copies of
 //   the role list or route strings (the defect this story exists to fix: the old `ROLES` array and
 //   `OWN_ROUTE` map here were both retyped literals that a route/role change could silently drift
-//   from). Every role against its own route and every other role's route, an unknown role string,
-//   role=undefined, the deliberately-unregistered "/finance-exports" against every known role
-//   (done-when 3), and every SHARED_AUTHENTICATED_ROUTES entry against every role including an
-//   unknown one (Decision 3's carve-out, proven not just asserted) -- all iterated over the live
-//   table, so a route added to either object tomorrow is automatically exercised here.
+//   from). issue #312 [E20.S1] Goal A: every route string appearing anywhere in `ROLE_ROUTES` is
+//   checked against its live GRANTEE SET (allow iff granted, forbid otherwise) -- the
+//   generalisation of "a role's own route is denied to every other role" once a route can have
+//   more than one grantee (/delivery has three). Also: an unknown role string, role=undefined, the
+//   deliberately-unregistered "/finance-exports" against every known role (done-when 3), and every
+//   SHARED_AUTHENTICATED_ROUTES entry against every role including an unknown one (Decision 3's
+//   carve-out, proven not just asserted) -- all iterated over the live table, so a route added to
+//   either object tomorrow is automatically exercised here.
 //
 //   PART B -- compiles and EXECUTES the real src/proxy.ts against stub next/server (extended with
 //   NextResponse.json) and stub @/auth (Req.auth widened to carry user.role). Drives the real,
@@ -85,8 +88,14 @@ async function partA(mod) {
   // Sanity guard: representativePath() picks entry.exact[0] ?? entry.prefix[0] and assumes exactly
   // one path per entry -- documents and enforces that assumption so a second string silently added
   // to one array fails loudly here rather than picking the wrong string somewhere downstream.
+  //
+  // issue #312 [E20.S1] Goal A: ROLE_ROUTES[role] is now itself an array of entries (a role can
+  // have more than one route), so this must iterate every (role, entry) pair, not one entry per
+  // role -- flatMap over Object.entries(ROLE_ROUTES) instead of Object.entries(ROLE_ROUTES) alone.
   for (const [key, entry] of [
-    ...Object.entries(ROLE_ROUTES),
+    ...Object.entries(ROLE_ROUTES).flatMap(
+      ([role, entries]) => entries.map((e, i) => [`${role}[${i}]`, e]),
+    ),
     ...SHARED_AUTHENTICATED_ROUTES.map((entry, i) => [`SHARED_AUTHENTICATED_ROUTES[${i}]`, entry]),
   ]) {
     const list = entry.exact ?? entry.prefix;
@@ -97,22 +106,57 @@ async function partA(mod) {
     );
   }
 
-  for (const role of ROLES) {
-    const ownRoute = representativePath(ROLE_ROUTES[role]);
-    // A role reaches its own route.
-    assert.equal(
-      decide(ownRoute, true, role), "allow",
-      `${role} must be allowed on its own route ${ownRoute}`,
-    );
-    // A role does NOT reach another role's route.
-    for (const other of ROLES) {
-      if (other === role) continue;
-      const otherRoute = representativePath(ROLE_ROUTES[other]);
+  // issue #312 [E20.S1] Goal A: "a role's own route is denied to every other role" (the old
+  // per-role block that lived here) assumed exactly one route per role, so "own route" vs "every
+  // other role" was unambiguous. That framing breaks the moment a route has more than one grantee
+  // (/delivery now has three). Replaced with the table-derived generalisation: for every route
+  // string appearing anywhere in ROLE_ROUTES, compute its GRANTEE SET from the live table, then
+  // assert every role gets "allow" iff it is a grantee and "forbid" otherwise. GENERATED, not
+  // hand-typed -- a route added to any role's array tomorrow is automatically covered here with
+  // zero new code. Collapses to the old invariant exactly when a route has exactly one grantee
+  // (every pre-#312 route), so this is zero coverage loss for the existing single-grantee routes.
+  const routeGrantees = new Map();
+  for (const [role, entries] of Object.entries(ROLE_ROUTES)) {
+    for (const entry of entries) {
+      const route = representativePath(entry);
+      if (!routeGrantees.has(route)) routeGrantees.set(route, new Set());
+      routeGrantees.get(route).add(role);
+    }
+  }
+  for (const [route, grantees] of routeGrantees) {
+    for (const role of ROLES) {
+      const expected = grantees.has(role) ? "allow" : "forbid";
       assert.equal(
-        decide(otherRoute, true, role), "forbid",
-        `${role} must be forbidden on ${other}'s route ${otherRoute}`,
+        decide(route, true, role), expected,
+        `${role} on ${route}: expected ${expected} (granted to: ${[...grantees].join(", ")})`,
       );
     }
+  }
+  console.log(
+    `OK: route-grantee cross-product -- ${routeGrantees.size} distinct route(s) in ROLE_ROUTES, ` +
+    "every role checked allow/forbid against its live grantee set, GENERATED from the table",
+  );
+
+  // issue #312 [E20.S1] Goal A, Task A2: belt-and-suspenders on top of the generated cross-product
+  // above (which already covers /delivery automatically the moment the table changes, with zero
+  // new code) -- one named block pinning the SPECIFIC policy in a form a reviewer can read without
+  // deriving it from the generated loop: /delivery granted to manager/leadership/ic, denied to
+  // cross-functional. cross-functional's denial is structural (no /delivery entry in its array),
+  // never a special case.
+  assert.equal(decide("/delivery", true, "manager"), "allow", "manager must reach /delivery");
+  assert.equal(decide("/delivery", true, "leadership"), "allow", "leadership must reach /delivery");
+  assert.equal(decide("/delivery", true, "ic"), "allow", "ic must reach /delivery");
+  assert.equal(
+    decide("/delivery", true, "cross-functional"), "forbid",
+    "cross-functional must be denied /delivery",
+  );
+  console.log("OK: /delivery named grants -- manager/leadership/ic allowed, cross-functional forbidden");
+
+  // AMENDMENT 2 (.sdlc/plans/312.md): the block above (lines ~100-115 pre-#312) is REPLACED by the
+  // table-derived cross-product above. The unregistered-route and shared-route-reachability checks
+  // below SURVIVE UNCHANGED inside the same `for (const role of ROLES)` loop -- only the now-dead
+  // `ownRoute`/"other role" variables are removed.
+  for (const role of ROLES) {
     // done-when 3: an unregistered route is denied for EVERY known role.
     assert.equal(
       decide(UNREGISTERED_ROUTE, true, role), "forbid",
@@ -332,7 +376,9 @@ function assertRoutesCovered(routes, reachabilityEntries, isPublicRoute, represe
 
 function partC(mod) {
   const { ROLE_ROUTES, SHARED_AUTHENTICATED_ROUTES, isPublicRoute, representativePath } = mod;
-  const reachabilityEntries = [...SHARED_AUTHENTICATED_ROUTES, ...Object.values(ROLE_ROUTES)];
+  // issue #312 [E20.S1] Goal A: Object.values(ROLE_ROUTES) now yields an array of entries per
+  // role -- flatten so reachabilityEntries stays a flat list of individual table entries.
+  const reachabilityEntries = [...SHARED_AUTHENTICATED_ROUTES, ...Object.values(ROLE_ROUTES).flat()];
 
   // Real-tree case: the actual src/app/ inventory against the actual table. Must pass with zero
   // findings -- confirms no pre-existing drift.

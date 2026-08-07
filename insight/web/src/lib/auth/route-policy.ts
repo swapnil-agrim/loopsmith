@@ -134,16 +134,42 @@ export const SHARED_AUTHENTICATED_ROUTES: readonly (RoutePattern & RouteMeta)[] 
 // routes today even though no page exists at any of them yet -- nav.ts's navItemsFor() is the ONLY
 // reader of `implemented`; decide() below is unchanged. `ic` is `implemented: true` since #310
 // shipped its real page.
-export const ROLE_ROUTES: Readonly<Record<Role, RoutePattern & RouteMeta>> = {
-  manager: { prefix: ["/manager"], navLabel: "Manager", implemented: false },
-  leadership: { prefix: ["/leadership"], navLabel: "Leadership", implemented: false },
-  ic: { prefix: ["/ic"], navLabel: "IC", implemented: true },
-  "cross-functional": { prefix: ["/cross-functional"], navLabel: "Cross-functional", implemented: false },
+//
+// issue #312 [E20.S1] Goal A: widened from ONE entry per role to an ARRAY of entries per role --
+// `manager`/`leadership`/`ic` each now reach a SECOND, shared route (`/delivery`) in addition to
+// their own dashboard. `Record<Role, ...>` itself is untouched (still one key per Role, so the
+// compiler still rejects a literal missing any role); only the VALUE type widens from a single
+// `RoutePattern & RouteMeta` to `readonly (RoutePattern & RouteMeta)[]`. Shape mirrors
+// SHARED_AUTHENTICATED_ROUTES's own array-of-entries shape above, for the same reason: multiple
+// independent routes need independent navLabel/implemented metadata. `cross-functional` gets NO
+// `/delivery` entry -- its denial is structural (decide()'s fall-through-deny, same as every other
+// unlisted route), never a special case or an explicit deny marker.
+export const ROLE_ROUTES: Readonly<Record<Role, readonly (RoutePattern & RouteMeta)[]>> = {
+  manager: [
+    { prefix: ["/manager"], navLabel: "Manager", implemented: false },
+    { prefix: ["/delivery"], navLabel: "Delivery panel", implemented: false },
+  ],
+  leadership: [
+    { prefix: ["/leadership"], navLabel: "Leadership", implemented: false },
+    { prefix: ["/delivery"], navLabel: "Delivery panel", implemented: false },
+  ],
+  ic: [
+    { prefix: ["/ic"], navLabel: "IC", implemented: true },
+    { prefix: ["/delivery"], navLabel: "Delivery panel", implemented: false },
+  ],
+  "cross-functional": [
+    { prefix: ["/cross-functional"], navLabel: "Cross-functional", implemented: false },
+    // NO /delivery entry -- denial is by omission, the same fall-through-deny decide() already
+    // applies to every unlisted route. Never add a "denied: true" marker; absence from the table
+    // IS the denial.
+  ],
 };
 
+// issue #312 [E20.S1] Goal A: was a single matchesPattern() call against ROLE_ROUTES[role] --
+// ROLE_ROUTES[role] is now an array, so a role's route is allowed iff ANY of its entries matches.
 function isRouteAllowedForRole(pathname: string, role: string | undefined): boolean {
   if (!isKnownRole(role)) return false;
-  return matchesPattern(pathname, ROLE_ROUTES[role]);
+  return ROLE_ROUTES[role].some((entry) => matchesPattern(pathname, entry));
 }
 
 export type RouteDecision = "allow" | "redirect" | "forbid";
