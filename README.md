@@ -1070,9 +1070,10 @@ install, and the `superpowers`/`code-review` companions. The phase executors are
 
 The **git half** of per-goal worktrees is verified end-to-end against a real repo (worktree cut from
 `<remote>/<base>`, `verify_command` running in the goal's tree, the main checkout left untouched). The
-**`gh` half** — opening the PR and the merge gate — is covered by injected runners and validated
-against `gh` 2.87.3's field and flag names, but **has not yet merged a live pull request**. That is
-part of why `work.auto_merge` ships off.
+**`gh` half** — opening the PR and the merge gate — is verified end-to-end against real, live, merged
+PRs with independent post-PR review + auto-merge (confirmed via 9+ merged PRs showing the
+`loopsmith:approve` independent-review comment followed by same-account merge, as of 2026-08-06). The
+gate fires reliably in production use on this very repo.
 
 ## Quality & drift (`evals/`)
 
