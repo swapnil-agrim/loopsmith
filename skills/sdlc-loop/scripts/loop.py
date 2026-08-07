@@ -680,6 +680,14 @@ def decompose_check(sdlc_dir, goal, config, source):
     CRLF-tolerant) — never the title, and never a marker that only appears further down the body —
     so a goal merely discussing decomposition in passing is not exempted by accident.
 
+    Deliberate asymmetry, not drift (#521 review): this guard reads the RAW, unstripped body's first
+    line, so a body starting with a blank line sees an empty first line and is NOT exempted here.
+    `backlog_check`'s own dedup exemption (its `exempt` computation, backlog_check.py:427-432) instead
+    reads the first NON-BLANK line of the stripped excerpt, because local-mode bodies always start
+    with a blank line after the frontmatter delimiter. Net effect: a body opening with a blank line
+    before its marker is dedup-exempt in `backlog_check` but still fully classified by this guard —
+    a recorded decision, not an inconsistency to fix.
+
     mode: 'log' (default once enabled) classifies + annotates via the local action log, zero
     mutation ever. 'park' parks a flagged goal (`_record`, the same chokepoint every other outcome
     goes through) for a human to split. 'file' behaves as 'park' in this slice — the meta-goal-

@@ -40,7 +40,7 @@ scrub = _load("scrub").scrub
 mirror = _load("mirror")
 sources = _load("sources")
 goal_size = _load("goal_size")     # #521: shared decomposition-marker constants -- single source of
-                                    # truth with loop.py's decompose_check guard
+                                   # truth with loop.py's decompose_check guard
 
 SCHEMA = "backlog-check/v1"
 _DEFAULTS = {"dup_threshold": 0.72, "obsolete_threshold": 0.72, "park_threshold": 0.80, "top_k": 8}
