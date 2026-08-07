@@ -779,3 +779,161 @@ def test_verify_user_still_propagates_kdf_unavailable_error_from_the_known_user_
 
     with pytest.raises(hashing.KDFUnavailableError):
         store.verify_user("alice", "irrelevant", accounts_path=accounts_path)
+
+
+# --------------------------------------------------------------------------- issue #308 [E18.S3], .sdlc/plans/308.md Task 1: fcntl-based locking primitive, wired through add_user
+#
+# Ungated throughout -- these guards are about file locking and process concurrency, not
+# hashing, so none of them need a real argon2 install EXCEPT the two that actually exercise
+# add_user's own hashing call end to end (marked below).
+
+
+def test_locked_accounts_raises_loud_error_when_fcntl_unavailable(tmp_path, monkeypatch):
+    """Direct proof of the guarded-import seam (mirrors hashing.py:70-73's own `argon2 = None`
+    pattern exactly): `monkeypatch.setattr(store, "fcntl", None)` deterministically exercises the
+    "locking unavailable" path on this machine, which genuinely HAS fcntl -- so this is the only
+    way to prove the fail-loud behavior without a real non-POSIX machine. Must raise BEFORE
+    creating or opening anything (no lock file, no accounts file)."""
+    monkeypatch.setattr(store, "fcntl", None)
+    accounts_path = tmp_path / "accounts.json"
+    with pytest.raises(store.AccountsLockUnavailableError):
+        with store._locked_accounts(accounts_path):
+            pytest.fail("must raise before the with-block body ever runs")
+    assert not accounts_path.exists()
+    assert not (tmp_path / "accounts.json.lock").exists()
+
+
+def test_add_user_raises_loud_error_when_fcntl_unavailable_rather_than_writing_unlocked(
+    tmp_path, monkeypatch
+):
+    """add_user must propagate AccountsLockUnavailableError rather than silently falling back to
+    an unlocked read-modify-write (Decision 4's whole point: a silent no-op would make this
+    APPEAR tested and safe while providing zero protection)."""
+    monkeypatch.setattr(store, "fcntl", None)
+    accounts_path = tmp_path / "accounts.json"
+    with pytest.raises(store.AccountsLockUnavailableError):
+        store.add_user("alice", "pw", "manager", accounts_path=accounts_path)
+    assert not accounts_path.exists()
+
+
+def test_locked_accounts_refuses_to_follow_a_symlinked_lock_file(tmp_path):
+    """issue #308 [E18.S3], .sdlc/plans/308.md Decision 4 (both reviewers of #308, a consistency
+    finding): `_locked_accounts` opens its sibling `<path>.lock` file with `O_NOFOLLOW` too now,
+    matching `_read_accounts_data`/`_open_fresh_temp_file`'s own use of the same flag -- this was
+    previously the one open in the module that omitted it. A symlink planted at the predictable
+    `<accounts>.lock` path (pointing at some unrelated file this process has no business locking
+    or touching) must be refused outright (`OSError`, `errno.ELOOP` on a platform that supports
+    the flag), never silently followed and `flock()`ed -- `flock()` locks the OPEN FILE
+    DESCRIPTION, so following the symlink would mean locking (and, on some code paths, later
+    writing) the SYMLINK'S TARGET rather than the sibling lock file this function believes it is
+    locking. Ungated, matching the module's other symlink-hijack tests -- this repo's own
+    CI/local dev are both POSIX (see AccountsLockUnavailableError's own docstring)."""
+    accounts_path = tmp_path / "accounts.json"
+    victim_path = tmp_path / "victim.txt"
+    victim_path.write_text("must survive\n", encoding="utf-8")
+    lock_path = tmp_path / "accounts.json.lock"
+    lock_path.symlink_to(victim_path)
+
+    with pytest.raises(OSError):
+        with store._locked_accounts(accounts_path):
+            pytest.fail("must raise before the with-block body ever runs")
+
+    assert victim_path.read_text(encoding="utf-8") == "must survive\n"
+    assert lock_path.is_symlink(), "must be refused, not silently replaced"
+    assert not accounts_path.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fcntl.flock is POSIX-only")
+def test_locked_accounts_serializes_two_concurrent_callers(tmp_path):
+    """Direct test of `_locked_accounts`'s mutual exclusion (issue #308 [E18.S3],
+    .sdlc/plans/308.md Task 1) -- two THREADS, each opening its OWN file descriptor via a
+    separate `_locked_accounts` call (an `flock` conflict is keyed on the open file description,
+    not the process, so two distinct `os.open()` calls in the same process still correctly
+    contend -- this is real OS-level locking, not a simulation). Ordering is asserted via a
+    shared side-effect log built from `threading.Event`s, never via a timing/`sleep` race, so
+    this is not flaky: the SECOND caller cannot log "second-enter" until the FIRST has both
+    entered (proven by a wait on `first_has_entered`) and is deliberately held open by
+    `first_may_release`, which does not fire until the assertion below has already inspected the
+    log while the first caller is verified still holding the lock."""
+    import threading
+
+    accounts_path = tmp_path / "accounts.json"
+    log = []
+    first_has_entered = threading.Event()
+    first_may_release = threading.Event()
+    second_has_entered = threading.Event()
+
+    def first():
+        with store._locked_accounts(accounts_path):
+            log.append("first-enter")
+            first_has_entered.set()
+            first_may_release.wait(timeout=5)
+            log.append("first-exit")
+
+    def second():
+        first_has_entered.wait(timeout=5)
+        with store._locked_accounts(accounts_path):
+            log.append("second-enter")
+            second_has_entered.set()
+
+    t1 = threading.Thread(target=first)
+    t2 = threading.Thread(target=second)
+    t1.start()
+    t1_entered = first_has_entered.wait(timeout=5)
+    assert t1_entered, "first caller never entered its critical section"
+    t2.start()
+    # Give the second thread a real chance to reach (and block on) the lock while the first
+    # still holds it -- this sleep is NOT the correctness assertion (the log content below is),
+    # it only makes the "second is still blocked" negative assertion meaningful rather than
+    # trivially true because second() simply hadn't been scheduled yet.
+    blocked_before_release = not second_has_entered.wait(timeout=0.3)
+    assert blocked_before_release, (
+        "the second caller entered its critical section WHILE the first still held the lock -- "
+        "_locked_accounts is not providing mutual exclusion"
+    )
+    assert log == ["first-enter"]
+    first_may_release.set()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+    assert not t1.is_alive() and not t2.is_alive()
+    assert log == ["first-enter", "first-exit", "second-enter"], log
+
+
+@pytest.mark.skipif(os.name == "nt", reason="multiprocessing 'fork' context is POSIX-only")
+def test_ten_concurrent_add_user_calls_against_one_store_all_succeed_under_the_lock(tmp_path):
+    """Regression test for the exact race add_user's own docstring measured live PRE-#308 (10
+    concurrent `add_user` calls, each for a distinct username against the same store, 8 of 10
+    silently lost) -- issue #308 [E18.S3], .sdlc/plans/308.md Task 1. Uses REAL, separate OS
+    processes (`multiprocessing.get_context("fork")`, never threads sharing one
+    interpreter/GIL) so this is a genuine reproduction of the race shape, not a simulation. The
+    `fork` context (rather than the platform-default `spawn` on macOS) means each child is a
+    direct copy of this already-imported, already `fast_params`-monkeypatched process -- no
+    pickling of the target closure is needed, and each child's `hashing.PRODUCTION_PARAMS` is
+    already the fast TEST_PARAMS this file's autouse fixture set, so ten real KDF operations stay
+    cheap."""
+    pytest.importorskip("argon2")
+    import multiprocessing
+
+    accounts_path = tmp_path / "accounts.json"
+    n = 10
+
+    def worker(i):
+        store.add_user("user%d" % i, "pw", "manager", accounts_path=accounts_path)
+
+    ctx = multiprocessing.get_context("fork")
+    procs = [ctx.Process(target=worker, args=(i,)) for i in range(n)]
+    for p in procs:
+        p.start()
+    for p in procs:
+        p.join(timeout=60)
+    for i, p in enumerate(procs):
+        assert p.exitcode == 0, "worker %d exited %r (should have succeeded)" % (i, p.exitcode)
+
+    users = json.loads(accounts_path.read_text())["users"]
+    assert len(users) == n, (
+        "expected all %d accounts to exist -- lost accounts under concurrency is exactly the "
+        "pre-#308 'last writer wins silently' race _locked_accounts exists to close (got %d)"
+        % (n, len(users))
+    )
+    for i in range(n):
+        assert "user%d" % i in users

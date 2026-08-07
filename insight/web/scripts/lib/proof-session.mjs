@@ -20,6 +20,10 @@
 // The secret below is a test fixture, not a credential: it is passed to the throwaway `next start`
 // these proofs spawn, and the server is killed when they finish. Nothing signs anything real with
 // it, and it must never be used as a deployment's AUTH_SECRET.
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { encode } from "next-auth/jwt";
 
 export const PROOF_AUTH_SECRET =
@@ -48,6 +52,16 @@ export function proofServerEnv() {
     // signed in successfully. Any real deployment of this app must set AUTH_URL or
     // AUTH_TRUST_HOST for the same reason -- see insight/web/README.md.
     AUTH_TRUST_HOST: "1",
+    // issue #308 [E18.S3]. sessionEpoch.ts defaults INSIGHT_SESSIONS_PATH to the REPO's own
+    // `.sdlc/insight-web-sessions.json`. Point it at a throwaway instead: these proofs must not
+    // read (or, if a future proof signs out, write) the developer's real session store, and an
+    // empty store is what makes `sessionEpoch: 0` in authenticatedContext() below provably the
+    // live epoch rather than merely the usual one. Callers that need to inspect the file
+    // themselves (prove-session-revocation-and-expiry.mjs) override this key after spreading.
+    INSIGHT_SESSIONS_PATH: path.join(
+      mkdtempSync(path.join(tmpdir(), "insight-proof-sessions-")),
+      "sessions.json",
+    ),
   };
 }
 
@@ -58,7 +72,13 @@ export async function authenticatedContext(browser, baseUrl) {
     // mismatch here decodes to null (anonymous) rather than throwing.
     salt: SESSION_COOKIE_NAME,
     secret: PROOF_AUTH_SECRET,
-    token: { name: "proof-user", sub: "proof-user", role: "admin" },
+    // issue #308 [E18.S3]. `sessionEpoch` is NOT optional: auth.ts's jwt() callback compares it
+    // against getEpoch(token.sub) on every read of an existing token and returns null (-> no
+    // session -> 302 to /login) on any mismatch, deliberately including the `undefined` a token
+    // minted without it carries. 0 is what a genuine sign-in stamps for an account that has never
+    // been signed out, and proofServerEnv() above gives every proof server an empty session store
+    // so 0 is exactly what getEpoch() will return here.
+    token: { name: "proof-user", sub: "proof-user", role: "admin", sessionEpoch: 0 },
   });
   const context = await browser.newContext();
   await context.addCookies([{ name: SESSION_COOKIE_NAME, value: token, url: baseUrl }]);

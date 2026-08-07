@@ -24,7 +24,8 @@ import path from "node:path";
  * asserted by the audited Python, never inferred from an exit status it shares with a crash. */
 export class InvalidCredentialsError extends Error {}
 
-/** Every other failure mode: KDF unavailable (exit 2), the WHOLE store corrupt (exit 3),
+/** Every other failure mode: the credential check could not run (exit 2), the WHOLE store
+ * corrupt (exit 3),
  * malformed stdin (exit 4), python3 missing (spawn ENOENT), or an unrecognized exit code. NEVER
  * caught and re-shown as "invalid credentials" -- that would silently lock out every user behind
  * a misleading message (Decision 1's whole point). */
@@ -132,7 +133,17 @@ export function verifyCredentials(
           return;
         }
         case 2:
-          reject(new CredentialCheckUnavailableError(`KDF unavailable: ${stderr}`));
+          // Exit 2 carries TWO causes, so this text must not name either one (issue #308
+          // [E18.S3], PR #485 code review). insight/__main__.py returns it for
+          // hashing.KDFUnavailableError AND -- since #308 -- for
+          // store.AccountsLockUnavailableError, deliberately reusing the code rather than
+          // minting a new one, because prove-python-bridge-exit-codes.mjs pins a small closed
+          // set. Hardcoding "KDF unavailable" here labelled a lock-contention timeout as an
+          // argon2 install problem, sending an operator after the wrong fault. The Python
+          // side's own stderr, appended below, says which one it actually was.
+          reject(
+            new CredentialCheckUnavailableError(`credential check could not run: ${stderr}`),
+          );
           return;
         case 3:
           reject(new CredentialCheckUnavailableError(`accounts store corrupt: ${stderr}`));
