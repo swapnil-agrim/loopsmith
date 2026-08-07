@@ -550,11 +550,13 @@ def _config_warnings(config):
 
 
 # Ordered, first match wins, case-insensitive, matched against a lowercased `detail`. Every needle
-# below (other than "irreversible") is a verbatim substring of real work.py PARK: text, verified
-# against the live source — see .sdlc/plans/139.md Design decision 4 for the file:line each one
-# comes from. Unmatched text (including every agent-supplied `loop.py record ... parked "<free
-# text>"`) maps to "unknown", never guessed. None of these needles is currently a substring of
-# another, so the ordering is defensive rather than load-bearing.
+# below (other than "irreversible" and "needs manual decomposition") is a verbatim substring of
+# real work.py PARK: text, verified against the live source — see .sdlc/plans/139.md Design
+# decision 4 for the file:line each one comes from. "needs manual decomposition" is instead a
+# verbatim substring of loop.py's OWN decompose_check park detail (#519), not work.py's. Unmatched
+# text (including every agent-supplied `loop.py record ... parked "<free text>"`) maps to
+# "unknown", never guessed. None of these needles is currently a substring of another, so the
+# ordering is defensive rather than load-bearing.
 _REASON_CLASS_RULES = (
     ("irreversible", "irreversible"),                       # SKILL.md's own park-for-irreversible
                                                               # prose — best-effort only, see _reason_class's docstring
@@ -570,6 +572,7 @@ _REASON_CLASS_RULES = (
     ("not approved yet", "needs_decision"),
     ("loopsmith:block", "needs_decision"),
     ("did not converge", "review_cap"),
+    ("needs manual decomposition", "needs_decision"),       # loop.py's own decompose_check (#519)
 )
 
 
@@ -644,6 +647,85 @@ def precheck(sdlc_dir, goal, config, source, run=None, now=None):
         return "PROCEED" + (" (advisory)" if decision["note"] else "")
     except Exception as e:
         print(f"loop.py precheck: non-fatal ({e}) — proceeding", file=sys.stderr)
+        return "PROCEED"
+
+
+def decompose_check(sdlc_dir, goal, config, source):
+    """Pre-work oversized-goal classifier (OPT-IN via `goal_decompose.enabled is True`), mirroring
+    `precheck`'s own shape one section up. Before a picked goal spends a token: read its own title
+    +body through `source.fetch_title_body` (never a module-level gh shell-out — see
+    `sources.GitHubSource.fetch_title_body`'s own docstring for why that matters for testability),
+    skip a goal that is ITSELF a decomposition child or meta-goal (first line of the BODY only —
+    see the anchoring note below), then classify what is left with `goal_size.classify` — a
+    deterministic, zero-LLM heuristic. This verb never files anything: the actual decomposition
+    (drafting child goals) runs later as its own normal SDLC goal, protected by the same
+    plan-review/budget/claims machinery every goal already gets — this is detection only.
+
+    Returns a one-line result the SKILL reads by its first word: 'OFF' (disabled) | 'PARKED
+    <reason>' (parked for a human to split; do not research it, take the next goal) | 'PROCEED'
+    (unflagged, or a decomposition child/meta-goal) | 'PROCEED (flagged: <reason>)' (`log` mode —
+    annotated only, the goal still runs). FAIL-OPEN: any error BEFORE a park decision is made,
+    INCLUDING a config value so malformed the guard itself cannot evaluate it (e.g.
+    `goal_decompose: "on"` instead of a dict — `.get` on a non-dict raises), returns 'PROCEED' with
+    one stderr line — this check must never block or crash the loop, matching `precheck`'s own
+    "gate inside the guard" idiom: disabled / absent / falsy-malformed short-circuits to 'OFF' with
+    no warning, only a genuinely ill-typed value reaches the outer catch. Once a park decision IS
+    made, that guarantee flips: `_record`'s own bookkeeping (cursor/ledger/actionlog) is wrapped in
+    its OWN try/except, separate from the outer one, so a failure there — AFTER `source.park` has
+    already gone out — still reports 'PARKED', never downgrades to 'PROCEED' (a caller reading
+    PROCEED would go implement the very epic-shaped goal this feature exists to catch, stacked on
+    top of it now also being parked on GitHub).
+
+    Anchoring: the refusal guards match ONLY the first line of the BODY (`.splitlines()[:1]`,
+    CRLF-tolerant) — never the title, and never a marker that only appears further down the body —
+    so a goal merely discussing decomposition in passing is not exempted by accident.
+
+    mode: 'log' (default once enabled) classifies + annotates via the local action log, zero
+    mutation ever. 'park' parks a flagged goal (`_record`, the same chokepoint every other outcome
+    goes through) for a human to split. 'file' behaves as 'park' in this slice — the meta-goal-
+    filing branch ships later; degrading a deliberate opt-in to the safe VISIBLE action is correct
+    (a hard OFF here would silently implement an oversized goal, inverting the operator's intent).
+    An unrecognized mode string warns once to stderr and falls back to 'log' — the printed result
+    always stays inside the OFF | PARKED | PROCEED vocabulary above, never `None`."""
+    try:
+        gd = config.get("goal_decompose") or {}
+        if gd.get("enabled") is not True:
+            return "OFF"                                                  # gate inside the guard: a
+        body = (source.fetch_title_body(goal) or {}).get("body") or ""    # malformed config -> PROCEED
+        first_line = body.splitlines()[:1]
+        first_line = first_line[0] if first_line else ""
+        if "loopsmith:decomposed-from=" in first_line or "loopsmith:decompose-of=" in first_line:
+            return "PROCEED"                        # a child (depth-limited to 1) or a meta-goal itself
+        flagged, reason = _load("goal_size").classify(body)
+        if not flagged:
+            return "PROCEED"
+        mode = gd.get("mode") or "log"               # absent -> 'log', silently — see docstring
+        if mode not in ("log", "park", "file"):
+            print(f"loop.py decompose-check: unrecognized mode {mode!r} for goal_decompose "
+                  "— treating as 'log'", file=sys.stderr)
+            mode = "log"
+        if mode == "log":
+            actionlog.safe_append(sdlc_dir, goal, "decompose_check",
+                                   verdict="flagged", reason=reason, mode=mode)
+            return f"PROCEED (flagged: {reason})"
+        # park (and file, until its own filing branch ships): visible, human-actionable, never a
+        # silently-implemented epic.
+        detail = f"too large per goal_size ({reason}) — needs manual decomposition"
+        # `detail` is built BEFORE calling `_record`, and `_record` gets its OWN try/except here,
+        # separate from the outer one below: `_record` calls `source.park` FIRST, then cursor /
+        # ledger / actionlog bookkeeping — once that park mutation has actually gone out, a LATER
+        # bookkeeping failure must never downgrade this to PROCEED (a caller reading PROCEED would
+        # go implement the very epic-shaped goal this feature exists to catch, on top of it now
+        # ALSO being parked on GitHub). So a park decision, once made, is reported as PARKED no
+        # matter what happens next — only the read/classify path above is allowed to fail open.
+        try:
+            _record(sdlc_dir, source, goal, "parked", detail)
+        except Exception as e:
+            print(f"loop.py decompose-check: park record failed after park — "
+                  f"treating as PARKED anyway: {e}", file=sys.stderr)
+        return "PARKED " + detail
+    except Exception as e:
+        print(f"loop.py decompose-check: non-fatal ({e}) — proceeding", file=sys.stderr)
         return "PROCEED"
 
 
@@ -973,6 +1055,10 @@ def _dispatch(argv):
         config = state.load_config(argv[2])
         print(precheck(argv[2], argv[3], config, sources.get_source(argv[2], config)))
         return 0
+    if len(argv) >= 4 and argv[1] == "decompose-check":   # opt-in oversized-goal classifier (fail-open)
+        config = state.load_config(argv[2])
+        print(decompose_check(argv[2], argv[3], config, sources.get_source(argv[2], config)))
+        return 0
     if len(argv) >= 5 and argv[1] == "note":        # record a journey-log / critical-insight note (fail-open)
         config = state.load_config(argv[2])
         try:
@@ -1096,7 +1182,7 @@ def _dispatch(argv):
     print("usage: loop.py start <dir> [--session-pid PID] | next <dir> [--skip a,b] | "
           "next-batch <dir> [--skip a,b] | session-active <dir> | session-end <dir> | "
           "agent-start <dir> <goal> --pid PID [--thread T] | agent-end <dir> <goal> | "
-          "qc <dir> <goal> | note <dir> <goal> <text> | "
+          "qc <dir> <goal> | decompose-check <dir> <goal> | note <dir> <goal> <text> | "
           "record <dir> <goal> done|parked|failed [reason] | "
           "spend <dir> <tokens> [goal] [--k v ...] | emit <dir> <goal> <kind> [--k v ...] | "
           "log <dir> <goal> <kind> [--thread T] [--k v ...] | "

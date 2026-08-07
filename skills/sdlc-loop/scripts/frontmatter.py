@@ -20,6 +20,14 @@ def get(text, key):
     return parse(text).get(key)
 
 
+def strip(text):
+    """The goal's own markdown with any leading frontmatter fence removed — the plain-text half a
+    non-metadata reader (a size/content classifier, a human) actually wants, so it never mistakes a
+    YAML key for goal content. Text without a fence at all is returned unchanged."""
+    m = _FENCE.match(text)
+    return text[m.end():] if m else text
+
+
 def set_field(text, key, value):
     m = _FENCE.match(text)
     if not m:

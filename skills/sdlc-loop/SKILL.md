@@ -71,6 +71,20 @@ Then repeat until the helper says stop:
      research it: loop back to step 1** and take the next goal. (The park counts as one iteration.)
    - prints **`PROCEED`** (optionally `(advisory)`, having annotated a weak match) → carry on below.
 
+   Then **check for an oversized goal** (opt-in, `goal_decompose.enabled`) — before spending a
+   token, run `result=$(python3 "${CLAUDE_SKILL_DIR}/scripts/loop.py" decompose-check .sdlc
+   "$goal")`. It prints `OFF` (a no-op — feature disabled) or, when on, classifies the goal's own
+   body at **zero LLM cost** (a goal already marked as a decomposition child or meta-goal is exempt
+   by construction), then either:
+   - prints **`PARKED <reason>`** — the goal reads like an epic (oversized per the classifier) and
+     has already been parked for a human to split it. **Do not research it: loop back to step 1**
+     and take the next goal. (The park counts as one iteration.)
+   - prints **`PROCEED`** (optionally `(flagged: <reason>)`, `log` mode having only annotated) →
+     carry on below.
+
+   Placed AFTER the cross-check above so a duplicate parks as a duplicate — a goal that is both a
+   dup and an epic never reaches this check.
+
    Then **recall prior art** — if the knowledge graph is enabled, run the `sdlc-context`
    pre-flight to pull a cited brief from the graph + past issues + conventions, so the goal starts
    informed by history instead of a flushed window (no-op when the KG is off).
