@@ -602,6 +602,47 @@ def test_features_backlog_check_malformed_block_does_not_crash(tmp_path):
     assert _bc_rows(d, tmp_path, {"backlog_check": "yes please"})["pre-work backlog cross-check"].startswith("off")
 
 
+# --- pre-work oversized-goal classifier (1.0.7) -----------------------------------------------
+
+def _gd_rows(d, tmp_path, cfg):
+    return {n: s for n, s, _ in d.features(_sdlc(tmp_path, cfg))}
+
+
+def test_features_goal_decompose_off_by_default_and_on_when_enabled(tmp_path):
+    d = _doc()
+    assert _gd_rows(d, tmp_path, {})["pre-work oversized-goal classifier"].startswith("off")   # absent -> off
+    park = _gd_rows(d, tmp_path / "park",
+                     {"goal_decompose": {"enabled": True, "mode": "park"}})["pre-work oversized-goal classifier"]
+    assert park.startswith("ON") and "parks an oversized goal" in park
+    log = _gd_rows(d, tmp_path / "log",
+                   {"goal_decompose": {"enabled": True, "mode": "log"}})["pre-work oversized-goal classifier"]
+    assert "log mode" in log and "never parks" in log
+    filed = _gd_rows(d, tmp_path / "file",
+                     {"goal_decompose": {"enabled": True, "mode": "file"}})["pre-work oversized-goal classifier"]
+    assert "Decompose #N" in filed
+
+
+def test_features_goal_decompose_enabled_is_strict_true_not_truthy(tmp_path):
+    d = _doc()
+    # a stringy "true" / 1 must NOT switch a pick-path behavior on
+    assert _gd_rows(d, tmp_path, {"goal_decompose": {"enabled": "true"}})["pre-work oversized-goal classifier"].startswith("off")
+    assert _gd_rows(d, tmp_path / "one", {"goal_decompose": {"enabled": 1}})["pre-work oversized-goal classifier"].startswith("off")
+
+
+def test_features_goal_decompose_malformed_block_does_not_crash(tmp_path):
+    d = _doc()
+    assert _gd_rows(d, tmp_path, {"goal_decompose": "yes please"})["pre-work oversized-goal classifier"].startswith("off")
+
+
+def test_features_goal_decompose_unrecognized_mode_falls_back_to_log(tmp_path):
+    d = _doc()
+    # mirrors decompose_check's own fallback (loop.py): an unrecognized mode string reads as 'log',
+    # never crashes and never reports a state the guard itself would never actually take.
+    row = _gd_rows(d, tmp_path,
+                   {"goal_decompose": {"enabled": True, "mode": "bogus-mode"}})["pre-work oversized-goal classifier"]
+    assert "log mode" in row and "never parks" in row
+
+
 def test_check_flags_park_threshold_below_dup_threshold(tmp_path):
     d = _doc()
     base = _sdlc(tmp_path, {"backlog_check": {"enabled": True, "dup_threshold": 0.72, "park_threshold": 0.5}})
@@ -998,7 +1039,8 @@ def test_the_issues_exact_repro_does_not_crash(tmp_path):
 
 
 _MALFORMED_BLOCKS = ["discovery", "knowledge_graph", "ledger", "verify", "work", "gates",
-                     "review", "budget", "parallel", "session_start", "backlog_check", "telemetry"]
+                     "review", "budget", "parallel", "session_start", "backlog_check", "telemetry",
+                     "goal_decompose"]
 
 
 @pytest.mark.parametrize("bad_value", ["a string", ["a", "list"], 42, True], ids=["str", "list", "int", "bool"])

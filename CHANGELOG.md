@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.7 — the decomposition release
+
 ### fix(loop): `kg.py::load_config()` no longer crashes on a non-dict `config.json` (#475)
 `json.loads()` doesn't raise on valid JSON that isn't a dict (`null`, a list, a string, a number) —
 only the following `.get()` call did. Now falls back to safe defaults, matching this function's own

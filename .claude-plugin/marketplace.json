@@ -6,7 +6,7 @@
     {
       "name": "loopsmith",
       "description": "Guardrails + an overnight autopilot for your AI coding agent — a plan-gated 7-phase SDLC on a GitHub Projects board.",
-      "version": "1.0.6",
+      "version": "1.0.7",
       "source": "./"
     }
   ]

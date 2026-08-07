@@ -627,6 +627,24 @@ def _backlog_check_state(cfg):
     return "ON — pre-work cross-check " + how
 
 
+def _goal_decompose_state(cfg):
+    """OFF unless goal_decompose.enabled is strictly True (same truthy-string guard as
+    _backlog_check_state above — a pick-path behavior must not switch on a non-bool truthy value).
+    A non-dict block degrades to off; an unrecognized mode string mirrors decompose_check's own
+    fallback to 'log' (loop.py) rather than reporting a state the guard itself would never take."""
+    g = _block(cfg, "goal_decompose")
+    if g.get("enabled") is not True:
+        return "off (a picked goal is never size-checked)"
+    mode = g.get("mode") or "log"
+    if mode not in ("log", "park", "file"):
+        mode = "log"
+    how = {
+        "park": "parks an oversized goal for a human to split",
+        "file": 'parks an oversized goal AND files one idempotency-guarded "Decompose #N" meta-issue',
+    }.get(mode, "only annotates (log mode — never parks)")
+    return "ON — pre-work size classifier " + how
+
+
 def _decision_gate_state(base, cfg):
     """Count the ACTIVE decisions, not the entries. A registry whose decisions are all superseded
     enforces nothing, and reporting it as ON would be exactly the false assurance this gate exists
@@ -745,6 +763,9 @@ def features(sdlc_dir=".sdlc"):
         ("pre-work backlog cross-check",
          _backlog_check_state(cfg),
          'config: "backlog_check": {"enabled": true}'),
+        ("pre-work oversized-goal classifier",
+         _goal_decompose_state(cfg),
+         'config: "goal_decompose": {"enabled": true}'),
         ("slice parallelism",
          ("ON — up to %s concurrent slices per wave" % par.get("max_concurrent", 3))
          if par.get("enabled") is True else "off (a goal's slices run one after another)",
