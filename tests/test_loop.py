@@ -150,6 +150,24 @@ def test_record_done_warns_loudly_when_work_is_off(capsys):
         assert "work.enabled is off" in err and "no branch/commit/PR" in err   # the silent no-PR is now loud
 
 
+def test_record_done_with_verify_enforce_refuses_an_unsafe_goal_cleanly_instead_of_a_raw_traceback():
+    """#487 independent review (B1): `record ... done` under `verify.enforce` reaches
+    `_done_refusal` -> `_evidence_path`, which raises ValueError for an unsafe goal (see
+    state.unsafe_goal_reason) -- but `main`'s dispatch only ever caught `state.ConfigMissing`
+    (#403's docstring), so a traversal goal on this specific path fell through as an uncaught
+    exception: `sys.exit(main(...))` on an uncaught ValueError prints a full traceback and exits 1,
+    unlike every other unsafe-goal site in this same PR, which refuses cleanly with exit 2."""
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, 0)
+        (pathlib.Path(base) / "config.json").write_text(json.dumps(
+            {"verify": {"enforce": True, "command": ""}}))
+        r = subprocess.run([sys.executable, str(S / "loop.py"), "record", base,
+                             "../../../evil-goal", "done"], capture_output=True, text=True)
+        assert r.returncode == 2
+        assert "Traceback" not in r.stderr
+        assert "unsafe goal" in r.stderr
+
+
 def test_start_surfaces_the_work_off_and_verify_traps(capsys):
     with tempfile.TemporaryDirectory() as d:
         base = _backlog(d, 0); lp = _loop()
@@ -1017,6 +1035,91 @@ def test_cli_agent_start_rejects_a_thread_with_path_traversal(capsys):
         # nothing escaped onto disk outside base's own .sdlc tree
         assert not (pathlib.Path(base).parent / "evil.active").exists()
         assert not (pathlib.Path(base) / "evil.active").exists()
+
+
+# ------------------------------------------------------------------ goal path-traversal (PR #486/#487 review)
+# Independent review of PR #487 (which fixed actionlog.py's own instance of this bug) found the
+# IDENTICAL unguarded pattern repeated across loop.py: `goal` (untrusted exactly like `thread`
+# above) was spliced into _agent_marker_path/_claim_lock_path/verify_goal's evidence path with NO
+# validation, unlike thread. agent_end()'s case is the most severe: an unconditional, ungated
+# shutil.rmtree() on the resulting path, reachable from the everyday `record` verb (not just the
+# `agent-end` escape hatch). These tests are NON-VACUOUS -- run against pre-fix code they fail with
+# the exact symptom (a real directory deleted / file written outside the sandbox); after the fix
+# they pass.
+
+TRAVERSAL_GOAL = "../../../evil-goal"    # 3 levels: <subdir> -> state -> sdlc_dir -> escapes to tmp_path
+
+
+def test_agent_marker_path_rejects_a_goal_containing_a_path_separator():
+    lp = _loop()
+    for bad in (TRAVERSAL_GOAL, "..", "a/b", "a\\b", "C:evil"):
+        try:
+            lp._agent_marker_path("/tmp/.sdlc", bad)
+            assert False, f"expected _agent_marker_path to refuse goal={bad!r}"
+        except ValueError:
+            pass
+
+
+def test_agent_end_never_deletes_a_real_directory_outside_the_sandbox_for_a_traversal_goal(tmp_path):
+    """The reviewer's own live reproduction, proven functionally against the real filesystem: a
+    real directory + file planted OUTSIDE .sdlc, at exactly the location the pre-fix code's
+    shutil.rmtree() would resolve to for TRAVERSAL_GOAL, must survive agent_end() untouched.
+    `state/agents/` must exist first -- POSIX path resolution needs every intermediate component
+    of a `..`-bearing path to actually exist before the `..` segments can resolve at all; a real
+    agent_watch-enabled repo already has this directory from an earlier legitimate agent_start()
+    by the time agent_end() ever runs, so creating it here matches the real precondition, not just
+    a convenient shortcut."""
+    lp = _loop()
+    sdlc = tmp_path / ".sdlc"
+    (sdlc / "state" / "agents").mkdir(parents=True)
+    victim_dir = tmp_path / "evil-goal"          # 3 levels of '../' from .sdlc/state/agents/<goal>/
+    victim_dir.mkdir()
+    victim_file = victim_dir / "important-data.txt"
+    victim_file.write_text("do not delete me")
+
+    lp.agent_end(str(sdlc), TRAVERSAL_GOAL)      # must not raise (fail-open), must not delete
+
+    assert victim_dir.is_dir()
+    assert victim_file.read_text() == "do not delete me"
+
+
+def test_agent_threads_returns_empty_for_a_traversal_goal_rather_than_raising():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        assert lp.agent_threads(d + "/.sdlc", TRAVERSAL_GOAL) == []
+
+
+def test_claim_lock_path_rejects_a_traversal_goal():
+    lp = _loop()
+    try:
+        lp._claim_lock_path("/tmp/.sdlc", TRAVERSAL_GOAL)
+        assert False, "expected _claim_lock_path to refuse a traversal goal"
+    except ValueError:
+        pass
+
+
+def test_try_acquire_claim_lock_fails_open_for_a_traversal_goal(tmp_path):
+    """Same fail-open posture as no-fcntl / cannot-create-directory (existing tests above) --
+    an unsafe goal degrades to _LOCK_UNAVAILABLE, never a raw crash, never a lock written outside
+    the sandbox."""
+    lp = _loop()
+    sdlc = str(tmp_path / ".sdlc")
+    assert lp._try_acquire_claim_lock(sdlc, TRAVERSAL_GOAL) == lp._LOCK_UNAVAILABLE
+    assert not (tmp_path / "evil-goal.lock").exists()
+
+
+def test_cli_verify_refuses_a_traversal_goal_and_writes_no_evidence_outside_the_sandbox(tmp_path, capsys):
+    """The reviewer's own live reproduction: `loop.py verify <dir> "<traversal-goal>"` used to
+    write a file outside .sdlc and report VERIFIED (exit 0). Checked before the proving command
+    even runs (see verify_goal's own docstring) -- exit 2, not 0 or 1."""
+    lp = _loop()
+    sdlc = tmp_path / ".sdlc"
+    sdlc.mkdir()
+    (sdlc / "config.json").write_text(json.dumps({"verify": {"command": "true"}}))
+    rc = lp.main(["loop.py", "verify", str(sdlc), TRAVERSAL_GOAL])
+    assert rc == 2
+    assert "unsafe goal" in capsys.readouterr().err
+    assert not (tmp_path / "evil-goal.json").exists()
 
 
 def test_cli_verbs_handle_a_never_init_d_sdlc_dir_gracefully(capsys):

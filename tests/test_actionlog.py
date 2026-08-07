@@ -381,3 +381,40 @@ def test_log_path_uses_work_stem_not_a_reimplementation(tmp_path):
     d = _sdlc(tmp_path, ON)
     assert actionlog.log_path(d, "0001-x.md") == actionlog.log_path(d, "0001-x")
     assert actionlog.log_path(d, "158").name == "158.jsonl"
+
+
+def test_log_path_rejects_a_goal_that_would_escape_state_log_via_path_traversal(tmp_path):
+    """1.0.4 validation-pass finding: unlike `thread` (guarded by loop.py's
+    `_unsafe_thread_reason`), `goal` reached `log_path()`'s pathlib `/` join completely
+    unvalidated — a goal with no `.md` suffix skips `work.stem()`'s own directory-stripping
+    `.stem` reduction and is embedded raw. Reproduced live before this fix: a goal of
+    `"../../../ESCAPED-outside-sdlc"` wrote a `.jsonl` file three directories above
+    `state/log/`, outside `RUNTIME_IGNORES` coverage. `log_path()` itself is the chokepoint (not
+    just `append()`), so every caller is protected regardless of how it reaches this function."""
+    d = _sdlc(tmp_path, ON)
+    with pytest.raises(ValueError, match="unsafe goal"):
+        actionlog.log_path(d, "../../../ESCAPED-outside-sdlc")
+    with pytest.raises(ValueError, match="unsafe goal"):
+        actionlog.log_path(d, "goals/nested")               # a bare '/', no '..' needed
+    with pytest.raises(ValueError, match="unsafe goal"):
+        actionlog.log_path(d, "C:\\Windows\\evil")           # Windows drive-letter-rooted shape
+    # legitimate shapes from the existing test above must still resolve, unaffected
+    assert actionlog.log_path(d, "0001-x.md") == actionlog.log_path(d, "0001-x")
+    assert actionlog.log_path(d, "158").name == "158.jsonl"
+
+
+def test_actionlog_cli_refuses_a_path_traversal_goal_and_writes_nothing_outside_the_tree(tmp_path):
+    """End-to-end, real subprocess, real filesystem: the exact reproduction from the validation
+    pass, now refused loudly (exit 2) with nothing written anywhere — not just inside `.sdlc/`,
+    literally nowhere on disk, proven by checking the specific path the pre-fix code actually
+    wrote to."""
+    d = _sdlc(tmp_path, ON)
+    escaped_path = tmp_path / "ESCAPED-outside-sdlc.jsonl"    # 3 dirs above state/log/, from d
+    proc = subprocess.run(
+        [sys.executable, str(S / "loop.py"), "log", str(d), "../../../ESCAPED-outside-sdlc",
+         "note", "--text", "traversal probe"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 2
+    assert "unsafe goal" in proc.stderr
+    assert not escaped_path.exists()

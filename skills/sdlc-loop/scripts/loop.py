@@ -105,7 +105,11 @@ _LOCK_UNAVAILABLE = -1   # fail-open sentinel from _try_acquire_claim_lock: no r
 
 
 def _claim_lock_path(sdlc_dir, goal):
-    return pathlib.Path(sdlc_dir) / "state" / "claims" / f"{work.stem(goal)}.lock"
+    stem = work.stem(goal)
+    reason = state.unsafe_goal_reason(stem)
+    if reason:
+        raise ValueError(f"unsafe goal {goal!r} for the claim lock: {reason}")
+    return pathlib.Path(sdlc_dir) / "state" / "claims" / f"{stem}.lock"
 
 
 def _try_acquire_claim_lock(sdlc_dir, goal):
@@ -146,7 +150,10 @@ def _try_acquire_claim_lock(sdlc_dir, goal):
     always-on defense regardless of whether this local, best-effort narrowing is available at all."""
     if fcntl is None:
         return _LOCK_UNAVAILABLE
-    path = _claim_lock_path(sdlc_dir, goal)
+    try:
+        path = _claim_lock_path(sdlc_dir, goal)
+    except ValueError:
+        return _LOCK_UNAVAILABLE             # unsafe goal — same fail-open posture as an OSError
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(path), os.O_CREAT | os.O_RDWR)
@@ -398,14 +405,25 @@ def _unsafe_thread_reason(thread):
 
 
 def _agent_marker_path(sdlc_dir, goal, thread="main"):
-    """Raises ValueError for an unsafe `thread` (see `_unsafe_thread_reason`) — every existing
-    caller already treats that as fail-open: `agent_start`'s try/except already catches
-    ValueError, and `agent_alive` catches it too (the call sits inside its own try block, right
-    alongside the read it was already guarding)."""
+    """Raises ValueError for an unsafe `thread` (see `_unsafe_thread_reason`) OR an unsafe `goal`
+    (see `state.unsafe_goal_reason` — added after independent review of #486/PR #487 found `goal`
+    had NO validation here at all, unlike `thread`: `agent_end()`'s unconditional, ungated
+    `shutil.rmtree()` on the resulting path — reachable from the everyday `record` verb, not just
+    the `agent-end` escape hatch — made this the most severe of the five sibling gaps that review
+    found). Every existing caller already treats a ValueError here as fail-open: `agent_start`'s
+    try/except already catches it, `agent_alive` catches it too (the call sits inside its own try
+    block, right alongside the read it was already guarding), `agent_end`'s broad `except
+    Exception` catches it BEFORE `shutil.rmtree` is ever reached (the raise happens while
+    computing `d`, not after), and `agent_threads` now has its own guard added alongside this
+    fix."""
     reason = _unsafe_thread_reason(thread)
     if reason:
         raise ValueError(f"unsafe thread id {thread!r}: {reason}")
-    return pathlib.Path(sdlc_dir) / "state" / "agents" / work.stem(goal) / f"{thread}.active"
+    stem = work.stem(goal)
+    reason = state.unsafe_goal_reason(stem)
+    if reason:
+        raise ValueError(f"unsafe goal {goal!r} for the agent marker: {reason}")
+    return pathlib.Path(sdlc_dir) / "state" / "agents" / stem / f"{thread}.active"
 
 
 def agent_start(sdlc_dir, goal, agent_pid, config, thread="main"):
@@ -455,8 +473,13 @@ def agent_alive(sdlc_dir, goal, config, thread="main"):
 def agent_threads(sdlc_dir, goal):
     """Every thread name with a currently-registered marker for `goal` — ["main"] is the common
     case; more than one entry means genuine intra-goal (slice) parallelism registered
-    independently-tracked pids (see SKILL.md wiring, item 6)."""
-    d = _agent_marker_path(sdlc_dir, goal).parent
+    independently-tracked pids (see SKILL.md wiring, item 6). An unsafe `goal` (see
+    `_agent_marker_path`) degrades to "no threads registered" — the correct answer either way:
+    nobody validly registered a marker for it."""
+    try:
+        d = _agent_marker_path(sdlc_dir, goal).parent
+    except ValueError:
+        return []
     return sorted(p.stem for p in d.glob("*.active")) if d.is_dir() else []
 
 
@@ -632,8 +655,17 @@ def verify_goal(sdlc_dir, goal):
     """Run the goal's proving command and persist MACHINE evidence (sdlc-verify's
     prose gate, made checkable). Command source: goal frontmatter `verify_command`
     (local mode), else config `verify.command`.
-    Exit: 0 verified · 1 the command failed · 3 no command declared (honest absence)."""
+    Exit: 0 verified · 1 the command failed · 2 unsafe goal (refused before running anything) ·
+    3 no command declared (honest absence)."""
     import hashlib, json as _json, subprocess
+    # Checked FIRST, before the subprocess even runs — not just left to _evidence_path()'s own
+    # guard further down, which would let an unsafe goal's proving command execute for nothing
+    # (see state.unsafe_goal_reason's docstring for the reproduced vulnerability this closes).
+    goal_stem = pathlib.Path(str(goal)).stem if str(goal).endswith(".md") else str(goal)
+    reason = state.unsafe_goal_reason(goal_stem)
+    if reason:
+        print(f"loop.py verify: unsafe goal {goal!r}: {reason}", file=sys.stderr)
+        return 2
     config = state.load_config(sdlc_dir)
     cmd = None
     goal_path = pathlib.Path(str(goal))
@@ -955,7 +987,14 @@ def _dispatch(argv):
         # _enforce_enabled (not a strict `is True`): F17/#342 — `enforce: 1` / `"true"` must not
         # silently skip this gate just because they aren't the literal bool `True`.
         if argv[4] == "done" and _enforce_enabled(config.get("verify") or {}):
-            refusal = _done_refusal(argv[2], argv[3])
+            # unsafe goal -> ValueError from _evidence_path (see state.unsafe_goal_reason);
+            # caught here (exit 2, matching verify_goal's own unsafe-goal convention) instead of
+            # letting it reach `main`'s ConfigMissing-only catch as a raw traceback.
+            try:
+                refusal = _done_refusal(argv[2], argv[3])
+            except ValueError as exc:
+                print(f"loop.py record: {exc}", file=sys.stderr)
+                return 2
             if refusal:
                 print(f"REFUSED: {refusal} — run `loop.py verify {argv[2]} <goal>` first "
                       "(config verify.enforce is on)", file=sys.stderr)

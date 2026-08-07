@@ -40,6 +40,7 @@ def _load(name):
 
 
 ledger = _load("ledger")            # team record (config-gated, default OFF; every call is fail-open)
+state = _load("state")              # unsafe_goal_reason() — the shared goal-path validator
 
 #: Manifest suffix, written beside the goal's plan so the two are groomed together.
 SUFFIX = ".slices.json"
@@ -98,7 +99,14 @@ def goal_stem(goal):
 
 
 def manifest_path(sdlc_dir, goal):
-    return pathlib.Path(sdlc_dir) / "plans" / f"{goal_stem(goal)}{SUFFIX}"
+    """Raises `ValueError` for an unsafe `goal` — same validator, same reasoning as
+    `state.unsafe_goal_reason`'s own docstring (independent review of #486/PR #487 found this
+    exact unguarded pattern repeated across several `stem(goal)`-into-path call sites)."""
+    stem = goal_stem(goal)
+    reason = state.unsafe_goal_reason(stem)
+    if reason:
+        raise ValueError(f"unsafe goal {goal!r} for the slice manifest: {reason}")
+    return pathlib.Path(sdlc_dir) / "plans" / f"{stem}{SUFFIX}"
 
 
 def _as_list(value):

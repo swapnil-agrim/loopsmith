@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+### fix(loop): six chokepoints across the plugin now reject a path-traversal `goal` (#486)
+Found during the post-1.0.4 real-ticket validation pass, then materially widened by independent
+review of the first, narrower fix: `goal` (untrusted exactly like the sibling `thread` parameter,
+which already got this treatment for #467) was spliced unvalidated into a filesystem path at SIX
+separate call sites across the plugin, unlike `thread`. Three are real, live-reproduced primitives,
+not just misplaced files:
+
+- **`loop.py::agent_end()` — the most severe: an unconditional, ungated, arbitrary recursive
+  directory DELETE.** `_agent_marker_path()` validated `thread` but not `goal`; `agent_end()` runs
+  `shutil.rmtree()` on the resulting path with no feature-flag gate ("No gate: cleanup always
+  attempts") and is called unconditionally from `_record()` on every goal completion — the everyday
+  `record` verb, not just the escape-hatch `agent-end` verb. Reproduced live: a crafted goal deleted
+  a real directory + file outside `.sdlc` entirely, silently (exit 0).
+- **`skills/sdlc-log/scripts/log.py::read_goal()` — arbitrary file DISCLOSURE.** A deliberately
+  independent, zero-import reimplementation (format-only coupling, see its own module docstring)
+  with no validation of its own, reachable via the agent-facing `sdlc-log goal <dir> <goal>` CLI.
+  Reproduced live: a crafted traversal goal read an unrelated planted file's real content into
+  command output.
+- **`loop.py::verify_goal()` (via `state.py::evidence_path()`) — arbitrary file WRITE.** Reproduced
+  live: `loop.py verify <dir> "<traversal-goal>"` wrote a file outside `.sdlc`, reporting "VERIFIED"
+  (exit 0).
+- **`loop.py::_claim_lock_path()`, `work.py::record_path()`, `work.py::start()`, and
+  `slices.py::manifest_path()`** — the same unguarded pattern, each confirmed and closed
+  alongside the three above. `work.py::start()`'s case is also a real filesystem operation, not
+  just a JSON file: an unsafe goal would have made `git worktree add` create a checkout outside
+  `worktree_dir` entirely.
+
+**Fix**: one shared validator, `state.py::unsafe_goal_reason()` — the exact `_unsafe_thread_reason()`
+character-rejection logic (`/`, `\`, `:`, `..`), applied to each site's already-goal-stem-reduced
+value (the value actually about to be embedded in a path). Lives in `state.py` specifically because
+it is the one module every affected `skills/sdlc-loop/scripts/` file already imports with zero
+import-cycle risk — a single implementation, not one per caller, closing exactly the
+hardened-sibling-divergence gap the narrower first fix would have left (`actionlog.py`'s own former
+local copy was consolidated to call the shared one instead). `skills/sdlc-log/scripts/log.py` needs
+its own local copy (it deliberately never imports `skills/sdlc-loop/scripts/` at all), kept
+byte-identical on purpose. Each site's own existing error-handling convention was matched rather
+than reshaped: `loop.py`'s CLI dispatch already turns a `ValueError` into a clean exit-2 refusal for
+`log`/`verify`/`work.py`'s `_COMMANDS` dispatch with no further changes needed; `agent_start`/
+`agent_alive`/`agent_end` already fail-open on `ValueError`, and `agent_threads`/
+`_try_acquire_claim_lock` gained the same fail-open handling alongside this fix; `record_path()`'s
+existing read path (`_record()`) already degrades gracefully via its own broad `except Exception`.
+
+Verified non-vacuously at every site, including the two most consequential: `agent_end`'s fix was
+proven by planting a REAL directory + file at the exact filesystem location the pre-fix code's
+`shutil.rmtree()` resolved to, confirming it survives untouched after the fix (and is genuinely
+deleted before it, on reverted code — the reproduction needed the intermediate `state/agents/`
+directory to actually exist first, matching real precondition, not just a convenient test shortcut);
+`sdlc-log`'s fix was proven by planting a real file with real, identifiable content and confirming
+`read_goal()` never surfaces it, before or after. 15 new tests across `tests/test_state.py`,
+`tests/test_loop.py`, `tests/test_work.py`, `tests/test_slices.py`, and `tests/test_log.py`.
+
+Also fixed a related README clarity gap the same validation pass surfaced: the "Local action log"
+section showed `sdlc-log status` right after the `loop.py log` write-path example, but `status`'s
+"active" definition requires an INTERNAL-only `claimed` entry never reachable from that CLI — so
+following the section verbatim produced a misleadingly empty result. Reordered and annotated so
+`goal <id>` (which works for any goal) is shown as the more broadly applicable read path.
+
 ## 1.0.5 — the merge-gate release
 
 ### fix(work): a check that has not reported is not a check that failed (#464)
@@ -31,7 +88,6 @@ then merge something it never understood. Six mutations pin the behaviour, inclu
 inversions and the original bug. One of them survived the first version of the fail-closed test,
 which set `conclusion` where the mutated line reads `state`: the assertions passed while the
 mutated branch never executed. The test now covers both shapes.
-
 
 ## 1.0.4 — the reliability release
 

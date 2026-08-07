@@ -190,7 +190,14 @@ def reject_newline(value, label):
 
 
 def log_path(sdlc_dir, goal):
-    return pathlib.Path(sdlc_dir) / "state" / "log" / f"{work.stem(goal)}.jsonl"
+    """Raises `ValueError` for an unsafe `goal` — see `state.unsafe_goal_reason`'s own docstring
+    for the reproduced vulnerability this closes and why the shared implementation lives there,
+    not a local copy here (both `state` and `work` are already imported at this module's top)."""
+    stem = work.stem(goal)
+    reason = state.unsafe_goal_reason(stem)
+    if reason:
+        raise ValueError(f"unsafe goal {goal!r} for the action log: {reason}")
+    return pathlib.Path(sdlc_dir) / "state" / "log" / f"{stem}.jsonl"
 
 
 # --------------------------------------------------------------------------- timestamps

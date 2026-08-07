@@ -31,14 +31,33 @@ def _stem(goal):
     return p.stem if p.suffix == ".md" else str(goal)
 
 
+def _unsafe_goal_reason(stem):
+    """Local copy of `state.py`'s `unsafe_goal_reason` (skills/sdlc-loop/scripts/state.py) — kept
+    byte-identical on purpose, not a divergent reimplementation; this skill deliberately does not
+    import `skills/sdlc-loop/scripts/` at all (format-only coupling, see module docstring), so it
+    cannot import the shared original either. Independent review of #486/PR #487 found `read_goal`
+    below embedded a caller-supplied goal into a path with zero validation, reachable via the
+    agent-facing `sdlc-log goal <dir> <goal>` CLI — reproduced live as an arbitrary-file-disclosure
+    bug (a crafted traversal goal read an unrelated planted file's content into command output)."""
+    text = str(stem)
+    if any(c in text for c in ("/", "\\", ":")) or ".." in text:
+        return "must not contain '/', '\\', ':', or '..' once reduced to a path component"
+    return None
+
+
 def log_dir(sdlc_dir):
     return pathlib.Path(sdlc_dir) / "state" / "log"
 
 
 def read_goal(sdlc_dir, goal):
     """Every entry for one goal, oldest-first. A malformed line is skipped, never fatal — local
-    copy of actionlog.py's own `read_goal` (format-only coupling, see module docstring)."""
-    path = log_dir(sdlc_dir) / f"{_stem(goal)}.jsonl"
+    copy of actionlog.py's own `read_goal` (format-only coupling, see module docstring). An unsafe
+    `goal` (see `_unsafe_goal_reason`) degrades to "no entries" — the correct answer either way:
+    nothing was ever validly logged under a goal id like that."""
+    stem = _stem(goal)
+    if _unsafe_goal_reason(stem):
+        return []
+    path = log_dir(sdlc_dir) / f"{stem}.jsonl"
     if not path.exists():
         return []
     try:

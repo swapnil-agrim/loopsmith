@@ -245,6 +245,39 @@ def test_epoch_returns_none_for_unparseable_timestamps():
     assert log._epoch("2026-08-06T16:34:02Z") is None    # missing the .mmm milliseconds part
 
 
+# --- #486/PR #487 independent review: read_goal() had zero validation on `goal`, unlike
+# actionlog.py's write-side log_path() (the original bug this PR set out to fix) -- an arbitrary-
+# file-DISCLOSURE bug, reproduced live: a crafted traversal goal read an unrelated planted file's
+# real content into command output. `log.py` is a deliberately independent, zero-import copy (see
+# module docstring) so it needs its OWN local `_unsafe_goal_reason`, not a shared one.
+
+
+def test_unsafe_goal_reason_rejects_path_traversal_shapes():
+    assert log._unsafe_goal_reason("../../../SECRET") is not None
+    assert log._unsafe_goal_reason("goals/nested") is not None
+    assert log._unsafe_goal_reason("158") is None
+    assert log._unsafe_goal_reason("0007-cache") is None
+
+
+def test_read_goal_never_discloses_a_real_file_outside_the_sandbox_for_a_traversal_goal(tmp_path):
+    """The reviewer's own live reproduction, proven functionally: a real file planted OUTSIDE
+    .sdlc, at exactly the location the pre-fix code's path join would resolve to, must never have
+    its content surfaced by read_goal(). `state/log/` must exist first -- POSIX path resolution
+    needs every intermediate component of a `..`-bearing path to actually exist before the `..`
+    segments can resolve at all (same precondition test_loop.py's own agent_end traversal test
+    needed)."""
+    d = tmp_path / ".sdlc"
+    (d / "state" / "log").mkdir(parents=True)
+    secret = tmp_path / "SECRET.jsonl"           # 3 levels of '../' from .sdlc/state/log/<goal>.jsonl
+    secret.write_text(json.dumps({"ts": "2026-01-01T00:00:00.000Z", "goal": "x", "thread": "main",
+                                   "actor": "agent", "kind": "note", "text": "TOP-SECRET-PAYLOAD"}) + "\n")
+
+    entries = log.read_goal(str(d), "../../../SECRET")
+
+    assert entries == []
+    assert secret.exists() and "TOP-SECRET-PAYLOAD" in secret.read_text()   # untouched, not deleted either
+
+
 def test_epoch_returns_none_for_a_regex_matching_but_semantically_invalid_date():
     """The regex shape alone (`\\d{4}-\\d{2}-\\d{2}...`) can match a syntactically-plausible but
     calendar-invalid value (month 99) — `time.strptime` then raises ValueError, which must degrade

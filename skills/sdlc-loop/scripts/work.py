@@ -144,7 +144,11 @@ def project_root(sdlc_dir):
 
 
 def record_path(sdlc_dir, goal):
-    return pathlib.Path(sdlc_dir) / "state" / "work" / f"{stem(goal)}.json"
+    goal_stem = stem(goal)
+    reason = state.unsafe_goal_reason(goal_stem)
+    if reason:
+        raise ValueError(f"unsafe goal {goal!r} for the work record: {reason}")
+    return pathlib.Path(sdlc_dir) / "state" / "work" / f"{goal_stem}.json"
 
 
 def _record(sdlc_dir, goal):
@@ -226,7 +230,16 @@ def start(sdlc_dir, config, goal, run=None):
     started`) or was lost while the branch/worktree survived (`branch outlived its record`, below)
     — but ONLY once `_resume_blocked_by_a_live_sibling` confirms that goal's ledger claim (if the
     ledger is on) is genuinely safe to treat as mine to resume, not another still-live process of my
-    own actor's in-flight work (F10.5/#374; the fallback path closed by #388)."""
+    own actor's in-flight work (F10.5/#374; the fallback path closed by #388).
+
+    Checked FIRST, before any git call: `stem(goal)` feeds directly into the real worktree
+    filesystem path below (`base_root / s["worktree_dir"] / stem(goal)`) with no reduction of its
+    own — unlike `record_path()` (fixed alongside this, #486/PR #487's independent review), an
+    unsafe goal here would make `git worktree add` create a REAL checkout outside the intended
+    `worktree_dir` entirely, not just misplace a JSON file. Same validator, same reasoning."""
+    reason = state.unsafe_goal_reason(stem(goal))
+    if reason:
+        raise ValueError(f"unsafe goal {goal!r} for work.start: {reason}")
     run = run or _run
     s, base_root = settings(config), project_root(sdlc_dir)
     rec = _record(sdlc_dir, goal)

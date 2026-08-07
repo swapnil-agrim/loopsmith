@@ -166,8 +166,48 @@ def _queue(sdlc_dir, goal_path, reason, needs):
         f.write(f"\n## {name}\n- reason: {reason}\n- needs: {needs}\n")
 
 
+def unsafe_goal_reason(stem):
+    """None iff `stem` (an ALREADY goal-stem-reduced value — what a caller is about to embed as a
+    single path component, not necessarily the raw caller-supplied goal) is safe, else the reason
+    it is not. THE shared validator for every `.../state/.../<stem(goal)>...` path across this
+    plugin — `loop.py`'s `_unsafe_thread_reason` (for `thread`, a sibling untrusted value) is the
+    proven-correct pattern this mirrors exactly (same character set, same reasoning); this lives in
+    `state.py` specifically because it is the one module every affected caller
+    (`loop.py`/`work.py`/`actionlog.py`) already imports with zero import-cycle risk (`state.py`
+    itself imports only stdlib) — a single implementation, not one per caller, closes the
+    hardened-sibling-divergence gap found when only `actionlog.py::log_path()` had this check
+    (independent review of #486/PR #487): `loop.py::agent_end()`'s unconditional, ungated
+    `shutil.rmtree()` on an unvalidated goal-derived path (reachable from the everyday `record`
+    verb, not just the `agent-end` escape hatch), `loop.py::verify_goal()`'s file write, and
+    `loop.py::_claim_lock_path()` / `work.py::record_path()` all shared the identical gap.
+    `skills/sdlc-log/scripts/log.py` needs its OWN local copy (it deliberately does not import
+    `skills/sdlc-loop/scripts/` at all — format-only coupling, see its own module docstring), kept
+    byte-identical to this on purpose.
+
+    `goal` reaches every one of these from either an LLM/agent-typed CLI argument or (rarely) a
+    malformed local `.sdlc/goals/*.md` filename — untrusted in both cases, exactly like `thread`.
+    pathlib's own `/` join operator RE-PARSES a string argument for separator characters, so a `/`
+    or `\\` inside `stem` does not stay one filename, it becomes ADDITIONAL path segments, one of
+    which can be a literal `..` — escaping the intended `state/...` subtree entirely (confirmed by
+    direct reproduction across all five call sites: file read/write/delete, one of them an
+    unconditional `shutil.rmtree`). Checked on the STEM (the reduced value about to be embedded),
+    not the raw goal, so a `.md`-suffixed goal already reduced by `pathlib.Path.stem` (which strips
+    any directory prefix as a side effect) is not double-penalized, while a non-`.md` goal — where
+    stem-reduction is a no-op — is still caught, since the raw string is what's checked in that
+    case. Rejecting any separator closes the join's only real danger directly; `..` is kept as an
+    explicit belt-and-suspenders check. `:` is rejected too for the same class of risk on Windows
+    (a drive-letter-rooted path). Never raises — `str(stem)` handles anything."""
+    text = str(stem)
+    if any(c in text for c in ("/", "\\", ":")) or ".." in text:
+        return "must not contain '/', '\\', ':', or '..' once reduced to a path component"
+    return None
+
+
 def evidence_path(sdlc_dir, goal):
     stem = pathlib.Path(goal).stem if str(goal).endswith(".md") else str(goal)
+    reason = unsafe_goal_reason(stem)
+    if reason:
+        raise ValueError(f"unsafe goal {goal!r} for verify evidence: {reason}")
     return pathlib.Path(sdlc_dir) / "state" / "verify" / f"{stem}.json"
 
 

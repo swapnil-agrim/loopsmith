@@ -504,9 +504,17 @@ by the ledger — the two mechanisms can't leak into each other even if both are
 Read it with the `sdlc-log` skill (or directly):
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/skills/sdlc-log/scripts/log.py" status .sdlc        # every goal, latest event
 python3 "${CLAUDE_PLUGIN_ROOT}/skills/sdlc-log/scripts/log.py" goal   .sdlc 0007-cache.md  # one goal's full trace
+python3 "${CLAUDE_PLUGIN_ROOT}/skills/sdlc-log/scripts/log.py" status .sdlc        # every ACTIVE goal, latest event
 ```
+
+`goal <id>` works for any goal that has ever written an entry, including one an agent has only ever
+logged notes for by hand. **`status` shows less than that** — "active" means the loop itself is
+driving the goal (a `claimed` entry, which only the loop's own internal call sites can write, never
+the CLI), so a goal you populated purely via `loop.py log` from the shell — exactly the example
+below — will not appear in `status`'s output even though `goal <id>` reads it back correctly. Not a
+bug, just a narrower definition of "active" than the write path above might suggest; check `goal
+<id>` directly if `status` looks emptier than expected.
 
 An agent can add its own notes to the same trace — `file` / `model_choice` / `agent_dispatch` /
 `agent_done` / `note`, a closed vocabulary the CLI enforces, each with its own whitelisted fields
