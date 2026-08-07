@@ -137,5 +137,12 @@ jobs:
       - name: prove absence primitives render + are visually distinct (npm run prove:absence-states)
         run: npm run prove:absence-states
         working-directory: insight/web
+      # issue #305 [E17.S4], .sdlc/plans/305.md Step 6. Reuses the SAME browser prove:fonts's
+      # install step above already provisioned, and the SAME .next build / INSIGHT_DEV_ROUTES=1
+      # env prove:absence-states already relies on -- zero incremental provisioning cost, same
+      # job, same reasoning as prove:absence-states itself.
+      - name: prove shell reflows at 1440/1024/768 with no page-level horizontal scroll (npm run prove:shell-responsive)
+        run: npm run prove:shell-responsive
+        working-directory: insight/web
       - name: docker build (Dockerfile.web) -- the Dockerfile is proven to build, not just present
         run: docker build -f insight/Dockerfile.web -t insight-web-scaffold:ci insight/
