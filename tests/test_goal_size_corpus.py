@@ -35,6 +35,7 @@ Fixture loading mirrors the insight subproject's `Path(__file__).parent / "fixtu
 (insight/tests/test_metric_severity_rank.py:56) — the only on-disk fixture pattern already in this
 repo — but only the PATH SHAPE is borrowed; insight/ itself is never imported from here
 (tests/test_import_boundary.py forbids it, and this file doesn't need it)."""
+import ast
 import importlib.util
 import pathlib
 import re
@@ -111,14 +112,28 @@ def test_small_488_sanitization_preserved_word_count():
 
 # --------------------------------------------------------------------- fixture self-containment
 
-# tests/test_self_contained.py's own scanner (`test_no_onshot_specifics_in_shipped_files`,
-# lines 51-70) explicitly SKIPS every path under tests/ ("test files legitimately NAME the banned
-# words as leakage guards") — so a checked-in fixture under tests/fixtures/ is invisible to that
-# scan by construction. This corpus test enforces itself: scanning its OWN fixtures for the SAME
-# banned list, plus the account-name pattern that was sanitized out of small-488.md above
-# (case-insensitive — the fixture's own bug story needs the case DIFFERENCE preserved, but the real
-# account name must never survive in either case).
-_BANNED = ("media-orch", "OnShot", "Temporal", "RunPod", "/services/", "onshot")
+# tests/test_self_contained.py's own leakage scanner (lines 51-70) explicitly SKIPS every path
+# under tests/ ("test files legitimately NAME the banned words as leakage guards") — so a
+# checked-in fixture under tests/fixtures/ is invisible to that scan by construction. This corpus
+# test enforces itself: scanning its OWN fixtures for the SAME banned list, plus the account-name
+# pattern that was sanitized out of small-488.md above (case-insensitive — the fixture's own bug
+# story needs the case DIFFERENCE preserved, but the real account name must never survive in
+# either case).
+
+
+def _shared_banned_words():
+    """Read tests/test_self_contained.py's own `banned = (...)` tuple as TEXT and parse it with
+    `ast.literal_eval`, rather than hand-copying a second literal list that could silently drift
+    from that file's own denylist — the same "derive a value from its source instead of
+    re-deriving/duplicating it" precedent this repo's insight subproject already follows for
+    pipeline.py's severity order (insight/tests/test_metric_severity_rank.py's own docstring)."""
+    src = (pathlib.Path(__file__).resolve().parent / "test_self_contained.py").read_text(encoding="utf-8")
+    m = re.search(r"banned = \(([^)]*)\)", src)
+    assert m, "tests/test_self_contained.py's own banned=(...) tuple was not found by this reader"
+    return ast.literal_eval("(" + m.group(1) + ")")
+
+
+_BANNED = _shared_banned_words()
 _ACCOUNT_RE = re.compile(r"(?i)mstomar")
 
 
