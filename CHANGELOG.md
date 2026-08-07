@@ -35,7 +35,8 @@ posts the comment via a standalone call when the issue is already closed.
 The label was write-only — added when work starts, never removed. `complete()` and `_offboard()` now
 both clear it, mirroring how `_offboard()` already clears `sdlc:goal`.
 
-All six found and fixed during a 2026-08-07 overnight drain that doubled as the first real,
+All seven (six fixes plus one documentation pin) found and shipped during a 2026-08-07 overnight
+drain that doubled as the first real,
 end-to-end exercise of `action_log`/`agent_watch` against live goals in this repo's own `.sdlc/`
 (previously shipped, never actually turned on here) — 74 real action-log entries across 9 event
 kinds, clean structure, zero anomalies once the two real completion-path bugs above were found and
