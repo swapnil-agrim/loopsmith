@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
 // issue #304 [E17.S3], .sdlc/plans/304.md Step 5.
 //
-// Unlinked dev route -- no nav references it yet (E17.S4's job). Exists solely so
-// scripts/prove-absence-primitives-render.mjs (Step 6, CI-only) has something to visit:
-// hardcoded fixture Metric literals, one per state, rendered through both <Metric> and
+// Unlinked dev route, PERMANENTLY -- issue #305 [E17.S4] decided this: the route is env-gated out
+// of every production build (INSIGHT_DEV_ROUTES, see below), so a nav entry pointing at it would
+// 404 for every real user. src/lib/nav.ts never lists it, in either linked or placeholder form,
+// and scripts/prove-nav-items.mjs asserts that stays true. Also now carries one deliberately-wide
+// fixture element (data-testid="dev-wide-fixture") for scripts/prove-shell-responsive-frame.mjs
+// (CI-only) to exercise the shell's own-container-scrolls-not-the-page guarantee against.
+//
+// Exists solely so scripts/prove-absence-primitives-render.mjs (Step 6, CI-only) has something to
+// visit: hardcoded fixture Metric literals, one per state, rendered through both <Metric> and
 // <MetricCell>.
 //
 // GATED, not merely unlinked: insight/Dockerfile.web's runtime stage serves every route under
@@ -89,6 +95,15 @@ export default function AbsenceStatesDevPage() {
             </div>
           ))}
         </div>
+      </section>
+
+      <section>
+        <h2>Shell reflow fixture (E17.S4)</h2>
+        {/* Deliberately wide -- exists so scripts/prove-shell-responsive-frame.mjs (CI-only) has
+            something inside shell-content wide enough to overflow ITS container without
+            overflowing the page. Not a real dashboard element; this page never ships (env gate
+            above). */}
+        <div data-testid="dev-wide-fixture" style={{ width: "2400px", height: "40px" }} />
       </section>
     </main>
   );

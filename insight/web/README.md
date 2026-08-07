@@ -74,12 +74,41 @@ none is a stub.
 - **`build`** is real: `next build`, with `next.config.mjs` setting `output: "standalone"` so
   `insight/Dockerfile.web`'s runtime stage can copy a self-contained `.next/standalone/server.js`
   without a second `npm ci`.
+- **`prove-nav-items.mjs`** (part of `test`, added **E17.S4** / #305) is the browser-free half of
+  the done-when that the nav stays "a placeholder list" (no auth/role model): compiles the real
+  `src/lib/nav.ts` with the local `tsc` into a scratch dir, then asserts `NAV_ITEMS` is non-empty,
+  exactly one entry has `href="/"`, at least one entry has no `href` (a real placeholder), and no
+  entry's `href` contains `"dev"` — a permanent, mechanical guard against ever linking
+  `/dev/absence-states` from the nav (see that page's own header for why). Exports `loadNavItems()`
+  so `prove:shell-responsive` below can assert the *rendered* nav against this same source of
+  truth instead of a hardcoded count.
+- **`prove:shell-responsive`** (`scripts/prove-shell-responsive-frame.mjs`, added **E17.S4** /
+  #305) is the CI-only behavioral proof of the app shell (`src/components/Shell.tsx`): on both
+  pages that exist today (`/` and `/dev/absence-states`), asserts the masthead/nav/content-frame
+  each render exactly once, the nav renders one item per `NAV_ITEMS` entry (an empty `<nav>` would
+  otherwise pass the presence check vacuously), and — at exactly 1440/1024/768px — that the page
+  itself never scrolls horizontally while a deliberately-wide fixture on the dev page overflows
+  *inside* `shell-content` specifically. A negative control injects a 3000px element outside
+  `shell-content` to prove the overflow comparator can actually fail, not just always pass. Same
+  CI-only reasoning as `prove:fonts`/`prove:absence-states` above — a hard browser dependency in
+  the always-on local gate would park every goal in the repo on a machine without a Chromium-family
+  browser. Runs in `.github/workflows/ci.yml`'s `web` job, right after `prove:absence-states`,
+  reusing the browser `prove:fonts`'s install step already provisioned and the `.next` build
+  `prove:absence-states` already relies on — zero incremental cost.
 
-The app itself (`src/app/`) is a minimal App Router scaffold: `layout.tsx` + `page.tsx`, Tailwind
-v4 wired in via `globals.css`'s `@import "tailwindcss"` (CSS-first config — no `tailwind.config.ts`
-for defaults; design tokens are E17.S2, out of scope here). `page.tsx` imports `Metric` from
-`@/lib/api/metric` and reads `.label`, so the one real page is already wired to the generated API
-contract rather than being inert boilerplate — no live data fetch yet (a later story).
+The app itself (`src/app/`) is a minimal App Router scaffold: `layout.tsx` renders
+`src/components/Shell.tsx` (masthead + role-placeholder nav + content frame, **E17.S4** / #305)
+around every route, then `page.tsx`. Tailwind v4 wired in via `globals.css`'s
+`@import "tailwindcss"` (CSS-first config — no `tailwind.config.ts` for defaults; most design
+tokens are E17.S2, out of scope here). `page.tsx` imports `Metric` from `@/lib/api/metric` and
+reads `.label`, so the one real page is already wired to the generated API contract rather than
+being inert boilerplate — no live data fetch yet (a later story). `src/lib/nav.ts` holds the shell's
+nav data (`NAV_ITEMS`) as plain, browser-free, auth-free static data — see `Shell.tsx`'s and
+`nav.ts`'s own header comments and `.sdlc/plans/305.md` for why the shell is a single component
+rendered from exactly one place (`layout.tsx`'s root layout), which is what makes "every page uses
+the shell" hold structurally rather than by convention, and why `shell-content` is a `<div>`, not a
+`<main>` (both existing pages already render their own `<main>`, and a document has exactly one
+main landmark).
 
 `insight/Dockerfile.web` (sibling to this directory, not at the repository root — spec §7) is a
 multi-stage build proven by a `docker build` step in CI's `web` job, not by the local gate:
