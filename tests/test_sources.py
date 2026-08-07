@@ -563,3 +563,89 @@ def test_offboard_survives_in_progress_label_removal_failure():
 
     gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
     gh.park("42", "deploy gate")  # must not raise
+
+
+# --- #505: complete()'s completion comment must post even when the issue is already closed ---
+# `gh issue close --comment` on an issue GitHub already auto-closed (via the merged PR's
+# "Fixes #N"/"Closes #N") exits 0 but never posts the --comment text -- verified live against the
+# real gh CLI (v2.97.0): stdout empty, stderr "! Issue ... is already closed", comment count stays
+# 0. complete() now probes the issue's state first and routes the comment through whichever call
+# will actually post it.
+
+def test_complete_still_uses_combined_close_when_issue_open():
+    """When the state-probe finds the issue still OPEN, complete() keeps today's single combined
+    'issue close --comment' call -- no standalone fallback needed."""
+    src = _mod("sources")
+    run = _recording_runner({"view": "OPEN\n"})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh.complete("42")
+
+    close_calls = [c for c in run.calls if len(c) > 1 and c[1] == "close"]
+    comment_calls = [c for c in run.calls if len(c) > 1 and c[1] == "comment"]
+    assert len(close_calls) == 1, "combined issue close call missing"
+    assert "--comment" in close_calls[0] and "Completed by the LoopSmith SDLC loop." in close_calls[0]
+    assert comment_calls == [], "no standalone issue comment call should happen when the issue was open"
+
+
+def test_complete_posts_comment_via_fallback_when_already_closed():
+    """When the state-probe finds the issue already CLOSED (GitHub auto-closed it via the merged
+    PR's "Fixes #N"), complete() must skip the now-redundant 'issue close' call and post the
+    completion comment via a standalone 'issue comment' call instead, so the audit-trail comment
+    is never silently lost.
+
+    Non-vacuous: confirmed to FAIL against the pre-fix code (issue close was called
+    unconditionally and no standalone comment call existed) before the fix was applied."""
+    src = _mod("sources")
+    run = _recording_runner({"view": "CLOSED\n"})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh.complete("42")
+
+    close_calls = [c for c in run.calls if len(c) > 1 and c[1] == "close"]
+    comment_calls = [c for c in run.calls if len(c) > 1 and c[1] == "comment"]
+    assert close_calls == [], "issue close must not be called when the issue is already closed"
+    assert len(comment_calls) == 1, "standalone issue comment call missing"
+    assert "--body" in comment_calls[0] and "Completed by the LoopSmith SDLC loop." in comment_calls[0]
+
+
+def test_complete_survives_fallback_comment_failure_when_already_closed():
+    """The standalone fallback 'issue comment' call (already-closed branch) must be best-effort.
+    run_loop downgrades ANY exception out of complete() into a park() -- misleadingly
+    parking/blocking an issue that is already genuinely closed over a mere transient gh error
+    would be worse than the original silent-comment bug this fix closes."""
+    src = _mod("sources")
+
+    def run(a):
+        verb = a[1] if len(a) > 1 else a[0]
+        if verb == "view":
+            return "CLOSED\n"
+        if verb == "comment":
+            raise RuntimeError("gh: HTTP 502 Bad Gateway")
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh.complete("42")   # must not raise
+
+
+def test_complete_falls_back_to_combined_call_when_state_probe_fails():
+    """If the state probe itself fails (transient gh error), complete() must fall through to
+    today's unchanged combined 'issue close --comment' call -- never attempt the standalone
+    comment path on a state it could not actually determine, and never raise (the probe is a new
+    read and must not make complete() any more fragile than it was before this fix)."""
+    src = _mod("sources")
+    calls = []
+
+    def run(a):
+        calls.append(list(a))
+        verb = a[1] if len(a) > 1 else a[0]
+        if verb == "view":
+            raise RuntimeError("gh: HTTP 503 Service Unavailable")
+        return ""
+
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    gh.complete("42")   # must not raise
+
+    close_calls = [c for c in calls if len(c) > 1 and c[1] == "close"]
+    comment_calls = [c for c in calls if len(c) > 1 and c[1] == "comment"]
+    assert len(close_calls) == 1, "combined issue close call missing on probe failure"
+    assert "--comment" in close_calls[0]
+    assert comment_calls == [], "no standalone issue comment call should be attempted when the probe itself failed"
