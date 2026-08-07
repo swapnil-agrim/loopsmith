@@ -269,6 +269,94 @@ request." This is now stale — the gate fires reliably in production on this re
 independent post-PR `loopsmith:approve` review comment from the loop's own review phase, followed by
 a same-account merge minutes later. Updated the claim with evidence and date (2026-08-06).
 
+### feat(loop): comment-to-ledger claimant notification (#385)
+A comment landing on an issue while someone holds an open claim on it was invisible unless they
+happened to re-check GitHub manually — for a zero-touch, unattended drain, a comment carrying
+something urgent (a correction, a blocker, a "stop, don't do X") could sit unseen for however long
+the goal took to finish. Reuses three existing mechanisms, builds no new delivery channel: for every
+issue with a currently-open ledger claim (`ledger.open_claims`), the already-running `watch.sh`
+periodic tick now also fetches its comments (`sources.fetch_comments`, #389) and diffs them against
+a durable per-issue cursor, writing a `to`-addressed `ledger.append(..., "note", ..., to=<claimant>,
+why=<scrubbed excerpt>)` for anything new — surfaced via the existing `LEDGER INBOX` block and
+`watch_classify.classify()`'s dedup/cursor machinery, exactly like every other ledger note.
+
+**New `skills/sdlc-loop/scripts/comment_watch.py`**, mirroring `agent_watch.py`'s shape line for
+line: off by default (`comment_watch.enabled`), only runs when the ledger is on and discovery is
+github (comments aren't a concept for local goal files). One new line in `watch.sh`, after the
+existing `agent_watch.py` call. New cursor `.sdlc/state/comment-watch-cursor.json` — no gitignore
+change needed, already covered by the existing `.sdlc/state/` entry in `setup.py`'s
+`RUNTIME_IGNORES`, the same way `agent-watch-cursor.json`/`watch-cursor.json` already are. Explicit,
+always-correct self-suppression compares the comment's real GitHub author against the claimant
+directly (not left to `classify()`'s downstream `actor == me` filter alone, which only
+self-suppresses when THIS machine's own `ledger.actor` happens to equal the claimant).
+
+This feature depended on two prerequisites, both already shipped and required before it could work
+at all:
+- **#477**, fixed first, in its own PR: `classify()`'s own-write filter used to drop ANY entry with
+  `actor == me`, including a DELIBERATE self-addressed note (`to == me`, written by `me`) — exactly
+  the shape a solo/self-claimed deployment produces (this module's own notes: actor=claimant,
+  to=claimant, both resolved from one machine's `ledger.actor`). Without #477, a comment-watch note
+  would be written but never delivered to that claimant's own inbox — the common, not the edge, case.
+- **#389**, the shared `sources.fetch_comments(config, goal, run=None, limit=20)` helper this module
+  consumes unchanged, per this repo's own "one shared comment-read primitive, not two" discipline.
+
+**Signature-collision fix, folded into `watch_classify.signature()`** (plan-review finding, load-
+bearing — not an afterthought): a naive comment-watch note always carries the same `kind` ("note"),
+the same `issue`, no `state`, and a constant `priority`, so EVERY comment-notification for the SAME
+issue produced an IDENTICAL `kind:issue:state:priority` signature — and that signature set persists
+in `.sdlc/state/watch-cursor.json` with no expiry, so the FIRST comment notification for an issue
+would permanently "use up" the signature and silently swallow every later, genuinely different
+comment on it, forever. Fix: fold the already-declared-but-previously-unused `ref` field
+(`ledger.OPTIONAL_FIELDS`) into `signature()` as an additive fourth component, and set
+`ref=<the comment's id>` on every comment-watch note. A genuine re-raise of the identical comment
+(same `ref`) still correctly collapses. Confirmed a behavioural no-op for every pre-#385 caller — no
+shipped writer set `ref` before this — but NOT byte-identical (the string gains a trailing
+`:<ref-or-empty>` suffix); tested and documented as such, including the one-time, bounded,
+self-healing upgrade effect on already-persisted signatures (at most one duplicate inbox item per
+previously-suppressed signature, on the first tick after upgrade).
+
+**Two more plan-review findings folded in:**
+- `ref` was assumed to already be capped on the ENTRIES ledger stream "like every other short
+  OPTIONAL_FIELDS value" — false: `ledger.append()`'s ENTRIES branch only ever sanitized `why`, so
+  `ref` would have been written **raw and unbounded** into the shared, committed
+  `.sdlc/ledger/entries/<login>.jsonl`. `comment_watch.py` is the first ENTRIES caller ever to
+  source a field from something outside this plugin's own control (a GitHub comment's opaque node
+  id) rather than an operator/CLI-typed or hard-coded value. Fix: `append()`'s ENTRIES branch now
+  runs `ref` through the same `_sanitize_free_text(value, cap=BOUNDED_ID_CAP)` treatment
+  `EVENT_BOUNDED_ID_FIELDS` already gives the events stream's own short-id fields — flatten, scrub,
+  cap — enforced once for every current and future caller, not left to convention.
+- The cursor's original eviction design sorted the per-issue seen-id set LEXICOGRAPHICALLY to decide
+  what to forget once past `sources.DEFAULT_COMMENT_LIMIT` entries — wrong, because a GitHub comment
+  id is an opaque GraphQL node id, not a sortable integer (confirmed live), and could have evicted an
+  id still inside a future fetch window, causing a re-notify and breaking "at most once, ever." Fix:
+  the per-issue cursor is now derived directly from the fetch's own `created_at` order —
+  `sources.fetch_comments` already returns comments oldest-first and already caps to
+  `DEFAULT_COMMENT_LIMIT`, so the cursor for an issue is simply that tick's own comment-id list,
+  replacing (not merging with) the prior value. An id that has scrolled out of the fetch window can
+  never reappear in a future fetch either, so it is correct, not merely convenient, to stop
+  remembering it.
+
+New tests: `tests/test_watch.py` gains a same-kind/issue/state/priority-but-different-`ref` pair that
+must both surface (fails on the pre-fix signature, passes after), the same pair with an identical
+`ref` that must still collapse to one, and a behavioural (not byte-identity) no-op check across the
+existing suppression/escalation scenarios. `tests/test_ledger.py` gains a secret-laden, oversized
+`ref` value confirmed redacted/flattened/capped both in the returned entry and in the persisted
+`.jsonl` line. New `tests/test_comment_watch.py` (mirrors `tests/test_agent_watch.py` structurally):
+enabled/local-mode/github-mode gating; a new comment on a claimed issue notifies the claimant
+**in the normal solo deployment shape** (this machine's own `ledger.actor` IS the claimant — the
+exact shape #477 was required for), proven end to end through `watch_classify.classify()`, not just
+the ledger file; a second tick over the identical comment notifies nothing; a comment on an unclaimed
+issue never even triggers a fetch; a self-comment (including a case-varied login) notifies nothing
+but still advances the cursor; two distinct comments both notify AND both surface in the inbox (the
+test that actually proves the signature fix is load-bearing, not decorative — it fails on the
+pre-fix signature); multiple claimed issues are polled independently with no cross-issue leakage; a
+`gh` failure on one issue degrades only that issue, never the whole tick; comment text is confirmed
+scrubbed (a planted AWS-shaped key redacted) and the 160-char excerpt boundary is confirmed to fire
+before the ledger's own 200-char cap would; and a dedicated eviction test demonstrates the
+lexicographic-vs-`created_at` discrepancy concretely (ids chosen so the two orders disagree, proving
+the fix keeps the chronologically-newest ids, not the alphabetically-last ones).
+`python3 -m pytest tests/ -q --cov=skills --cov=hooks --cov-fail-under=85` passes green.
+
 ## 1.0.3 — the observability release
 
 ### feat(loop): local-only action log + `sdlc-log` status command (#463)

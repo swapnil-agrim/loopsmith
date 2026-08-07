@@ -832,6 +832,48 @@ def test_entries_stream_why_scrub_survives_the_committed_jsonl_and_rendered_team
     assert SECRET not in rendered and "[REDACTED:aws-key]" in rendered
 
 
+def test_entries_stream_ref_is_capped_and_scrubbed(tmp_path):
+    """Plan-review R2 (#385): `ref` was assumed to already be "unscrubbed-but-capped" on the
+    ENTRIES stream, like every other short OPTIONAL_FIELDS value -- FALSE. append()'s ENTRIES branch
+    only ever sanitized `why` (see the test above); `ref` was written RAW AND UNBOUNDED. Every OTHER
+    ENTRIES optional field is operator/CLI-typed or a hard-coded constant in every existing caller;
+    comment_watch.py (#385) is the first to source `ref` from something outside this plugin's own
+    control (a GitHub comment's opaque node id), so it needs the SAME flatten->scrub->cap enforcement
+    EVENT_BOUNDED_ID_FIELDS already gets on the events stream, not trust that the next caller will
+    also be well-behaved. Fails before the fix (SECRET and the full 300+ char value both present,
+    uncapped); passes after (redacted, flattened, capped to BOUNDED_ID_CAP)."""
+    d = _sdlc(tmp_path, ON)
+    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    ref = f"{SECRET}-" + "x" * 300 + "\nsecond line"
+    e = ledger.append(d, ON, "note", "g.md", ref=ref)
+    assert SECRET not in e["ref"]
+    assert "[REDACTED:aws-key]" in e["ref"]
+    assert "\n" not in e["ref"]                        # flattened
+    assert len(e["ref"]) <= ledger.BOUNDED_ID_CAP        # capped SHORT, not FREE_TEXT_CAP -- an id, not prose
+    assert len(e["ref"]) < len(ref)                      # actually shorter than the raw input, not a no-op
+
+
+def test_entries_stream_ref_scrub_survives_the_committed_jsonl(tmp_path):
+    """R2's stated concern is specifically that `ref` is committed byte-for-byte to the shared,
+    pushed `sdlc-ledger` branch -- redaction has to hold in the actual persisted line, not just the
+    in-memory returned dict."""
+    d = _sdlc(tmp_path, ON)
+    SECRET = "AKIAIOSFODNN7EXAMPLE"
+    ledger.append(d, ON, "note", "g.md", ref=f"{SECRET}" + "y" * 200)
+    persisted = ledger.entry_file(d, "dana").read_text(encoding="utf-8")
+    assert SECRET not in persisted
+    assert "[REDACTED:aws-key]" in persisted
+
+
+def test_entries_stream_ref_a_normal_comment_id_passes_through_intact(tmp_path):
+    """The non-degenerate case: a REAL GitHub GraphQL comment id (short, no secret shape) must not
+    be mangled by the new enforcement -- flatten/scrub/cap must be a no-op for well-formed input,
+    only a backstop for malformed/oversized/secret-bearing input."""
+    d = _sdlc(tmp_path, ON)
+    e = ledger.append(d, ON, "note", "g.md", ref="IC_kwDOTE1deM8AAAABNe8Wcg")
+    assert e["ref"] == "IC_kwDOTE1deM8AAAABNe8Wcg"
+
+
 def test_scan_file_and_slice_slice_are_not_in_the_declared_set():
     """`file`/`slice` are ids and short paths, not prose — they must never get the PROSE cap/scrub
     treatment (FREE_TEXT_CAP=200, the `why`/`model` cap). Post-review fix: they are NOT unbounded
