@@ -581,6 +581,15 @@ def main(argv=None):
         except hashing.KDFUnavailableError as e:
             print("insight users add: %s" % e, file=sys.stderr)
             return 1
+        except store.AccountsLockUnavailableError as e:
+            # issue #308 [E18.S3], .sdlc/plans/308.md Decision 4 (code review finding 2). Never
+            # caught before this fix, so it escaped as a raw traceback instead of this module's
+            # established clean-CLI-error convention -- every OTHER account-store error above gets
+            # a one-line stderr message and a non-zero exit, not a stack trace. `add_user` fires
+            # this on every platform lacking `fcntl` (Windows); this repo's own CI/dev are both
+            # POSIX, so it never fires in practice today.
+            print("insight users add: %s" % e, file=sys.stderr)
+            return 1
 
         print("insight users add: created account %r (role: %s)" % (args.username, args.role))
         return 0
@@ -621,6 +630,24 @@ def main(argv=None):
         except store.AccountsStoreCorruptError as e:
             print("insight users verify: %s" % e, file=sys.stderr)
             return 3
+        except store.AccountsLockUnavailableError as e:
+            # issue #308 [E18.S3], .sdlc/plans/308.md Decision 4 (both independent code/security
+            # reviews of #308 found this). Never caught before this fix, so it escaped as a raw
+            # traceback instead of this branch's established per-cause exit-code convention
+            # (1/2/3/4 above). Deliberately REUSES exit 2 -- the SAME code `hashing.
+            # KDFUnavailableError` returns just above -- rather than inventing a fresh one. A lock
+            # that cannot be acquired is exactly "the credential check could not run," the same
+            # class of operator/infra failure as "the KDF is unavailable," never "invalid
+            # credentials": on the Node side, pythonBridge.ts's `switch` already maps exit 2 to
+            # `CredentialCheckUnavailableError` (checked on both sides before choosing this, per
+            # the review), so reusing it needs zero Node-side changes and stays inside the
+            # existing Python/Node exit-code contract `insight/web/scripts/
+            # prove-python-bridge-exit-codes.mjs` pins -- an earlier version of this fix invented
+            # a new exit code (5) instead, which that same contract argues against: every code
+            # this CLI returns is meant to be one of a small, closed, Node-mapped set, not grown
+            # ad hoc per new Python-side exception type.
+            print("insight users verify: %s" % e, file=sys.stderr)
+            return 2
 
         print(_json.dumps({"role": role}))
         return 0

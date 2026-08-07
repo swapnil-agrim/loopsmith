@@ -95,6 +95,41 @@ none is a stub.
   browser. Runs in `.github/workflows/ci.yml`'s `web` job, right after `prove:absence-states`,
   reusing the browser `prove:fonts`'s install step already provisioned and the `.next` build
   `prove:absence-states` already relies on — zero incremental cost.
+- **`prove-session-epoch-store.mjs`** (part of `test`, added **E18.S3** / #308) is the offline
+  proof of `src/lib/auth/sessionEpoch.ts`, the per-account session-epoch store that server-side
+  logout revocation is built on (`.sdlc/plans/308.md` Decision 1/2). Compiles the real file with
+  the local `tsc` into a scratch dir (same pattern as `prove-python-bridge-exit-codes.mjs`), then
+  drives it with no server, no browser: a missing sessions file reads as epoch 0; `bumpEpoch()`
+  then `getEpoch()` in the same module instance observes the write; the on-disk JSON shape is
+  asserted directly (`{"version":1,"epochs":{"<username>":<int>}}`); a **fresh, separately
+  compiled/imported module instance** reads exactly what an earlier instance persisted — the
+  literal durability property Decision 2's cache-free design depends on, since `proxy.ts` and the
+  sign-out Route Handler load this file through two distinct `require()`s in a real deployment;
+  overlapping `bumpEpoch()` calls against one account don't lose an increment (the in-process
+  write-serialization queue actually serializes); and a corrupted sessions file makes `getEpoch()`
+  throw rather than silently default to epoch 0, which would be the fail-*open* direction this
+  file's whole design exists to avoid.
+- **`prove-session-revocation-and-expiry.mjs`** (part of `test`, added **E18.S3** / #308) is the
+  browser-free, sleep-free smoke proof for done-when 1 ("logout invalidates the session
+  server-side — a test replays the old cookie and is refused") and done-when 2 ("sessions expire;
+  an expired session is refused and redirects to login"). Reuses
+  `scripts/lib/proof-session.mjs`'s `proofServerEnv()`/`SESSION_COOKIE_NAME` (from #307) to mint
+  real Auth.js session cookies with next-auth's own `encode()`, then, in one server boot: (1)
+  positive control — a freshly-minted valid cookie reaches `/`; (2) done-when 1 — `GET
+  /api/auth/csrf` for a CSRF token/cookie, `POST /api/auth/signout` with that token plus the
+  scenario-1 session cookie (the real `events.signOut` → `bumpEpoch()` path, no stub), then
+  replay the **original, unmodified** cookie and assert it now redirects to `/login`; (3)
+  done-when 2 — a token minted with a negative `maxAge` (an already-past `exp`, via `encode()`
+  directly — never produced by waiting) is refused the same way; (4) negative control — a fresh
+  cookie for a third, never-touched username is still accepted after (2) and (3) ran, proving
+  those refusals are specific to the revoked/expired token rather than "every cookie is now
+  refused." Per `.sdlc/plans/308.md` Decision 8, this script runs its **own** scoped `next build`
+  before `next start` (into the same `.next/` output the `build` `CHECKS` step also produces, so
+  that step's later build is a warm incremental rebuild, not a second cold one) and prints the
+  measured build time — deliberately not reordering `insight/verify_web.py`'s `CHECKS`
+  (`typecheck`/`lint`/`test`/`build`, `test` before `build`), which stays a repo-wide contract this
+  goal does not touch. See the PR description for the measured `verify.command` wall-clock delta
+  this decision was made contingent on.
 
 The app itself (`src/app/`) is a minimal App Router scaffold: `layout.tsx` renders
 `src/components/Shell.tsx` (masthead + role-placeholder nav + content frame, **E17.S4** / #305)
@@ -138,6 +173,13 @@ sibling `package-lock.json` and declare every `CHECKS` name — continues to enf
   `src/lib/auth/pythonBridge.ts`. Required in any deployment where the Node process's CWD does not
   happen to be two directories below the repo root (i.e. always required outside plain local dev)
   — see `.sdlc/plans/307.md` Decision 1.
+- `INSIGHT_SESSIONS_PATH` — absolute path to the per-account session-epoch store (default
+  `.sdlc/insight-web-sessions.json`, resolved the same CWD-relative way `INSIGHT_ACCOUNTS_PATH`'s
+  own default is), read/written by `src/lib/auth/sessionEpoch.ts`. This is a **separate** file
+  from `INSIGHT_ACCOUNTS_PATH`'s — Node owns it exclusively (sign-out bumps it directly, no
+  `python3` shell-out on that path), and Python never touches it (`.sdlc/plans/308.md` Decision
+  2). Same CWD caveat as `INSIGHT_ACCOUNTS_PATH`: set it explicitly in any deployment where the
+  Node process's CWD is not `insight/web/`.
 - `INSIGHT_TRUST_PROXY_PROTO` — set to `1` **only** when this app sits behind a reverse proxy you
   control that always overwrites `X-Forwarded-Proto` (nginx: `proxy_set_header X-Forwarded-Proto
   $scheme;`). It is what makes `src/lib/auth/secure.ts` believe that header when deciding the
@@ -152,3 +194,50 @@ sibling `package-lock.json` and declare every `CHECKS` name — continues to enf
   `Secure` is set unless the server itself observes plaintext on a *loopback* host (local
   `npm run dev`). A genuinely plaintext deployment on a real hostname therefore breaks **visibly**
   rather than silently shipping a cookie that a network attacker can lift.
+
+## Session lifetime, logout, and per-account throttling (E18.S3, issue #308)
+
+`src/auth.ts`'s `session` config now sets **`maxAge: 60 * 60 * 8`** (8 hours) and
+**`updateAge: 60 * 60 * 2`** (2 hours) explicitly, replacing Auth.js's own silent 30-day default
+(`@auth/core/src/lib/init.ts:71`). Neither the issue nor the design spec names a specific number —
+these are `.sdlc/plans/308.md` Decision 9's own reasonable defaults, short enough to be a
+meaningful improvement over 30 days without inventing a compliance requirement this app does not
+have; revisit if a real one shows up.
+
+**`maxAge` is NOT an absolute ceiling on a token's total lifetime — it is an inactivity timeout**
+(corrected after #308's own security review; an earlier version of this section, and of a comment
+in `src/auth.ts`, both claimed otherwise). Verified against `@auth/core@0.41.3`'s own `session()`
+action (`node_modules/@auth/core/src/lib/actions/session.ts:56-79`): for the JWT strategy this app
+uses, **every** session check unconditionally re-signs the token with a fresh `maxAge`-out expiry
+and pushes a new cookie — there is no `updateAge`-gated conditional in that code path (unlike the
+database-strategy branch immediately below it in the same file, which does check
+`sessionUpdateAge` before bothering to write). Since `proxy.ts` calls `auth()` — which reaches this
+same code — on every guarded request, **a stolen cookie that gets replayed at least once per
+`maxAge` window never expires**: each replay resets its own clock. `updateAge` is therefore not
+"how often the ceiling resets" (there is no ceiling for it to reset); it is only meaningful for the
+database-strategy branch this app does not use. A true absolute ceiling — expiring a token after a
+fixed lifetime regardless of activity — would need a separate mechanism: an `issuedAt` timestamp
+stamped onto the token at sign-in, compared against the current time on every read, and rejected
+once that difference exceeds the intended lifetime. This app does not implement that today; the
+session-epoch revocation described below (done-when 1) is the only mechanism that can end a
+still-`maxAge`-fresh session before it goes inactive, and only in response to an explicit sign-out.
+
+**Logout is a server-side revocation, not just a cleared cookie** (done-when 1). `signOut`
+(exported from `auth.ts`, wired to a "Sign out" button in `src/components/Shell.tsx`'s masthead
+whenever a session exists) and a raw POST to Auth.js's own `/api/auth/signout` both fire
+`events.signOut`, which bumps that account's entry in the per-account **session-epoch** store
+(`src/lib/auth/sessionEpoch.ts`, `INSIGHT_SESSIONS_PATH` above). Every subsequent request's
+`callbacks.jwt` compares the epoch stamped on the presented token against the current on-disk
+value; a mismatch makes the callback return `null`, which Auth.js already treats as "no session."
+One integer per account, not a `jti` denylist — coarser (it revokes every session for that
+account, not one specific cookie) but needs no pruning and no additional framework plumbing; see
+`.sdlc/plans/308.md` Decision 1/2 for the alternatives considered and rejected.
+
+**Per-account throttling of failed login attempts** (done-when 3) lives entirely on the Python
+side — `insight/accounts/store.py`'s `verify_user` locks an account for 15 minutes after 5
+consecutive failed attempts, full reset (not sliding) once the window passes, and the locked-out
+response is byte-identical to an ordinary wrong-password response (no new message, no new exit
+code) so this Node app needs no changes to consume it — `src/lib/auth/pythonBridge.ts`'s existing
+`InvalidCredentialsError` handling already covers it unchanged. See
+`insight/accounts/store.py`'s own module docstring and `_locked_accounts`/`verify_user`
+docstrings for the throttle policy's full reasoning (`.sdlc/plans/308.md` Decision 3/4/5/6).

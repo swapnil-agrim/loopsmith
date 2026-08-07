@@ -21,6 +21,12 @@
 # upward node_modules walk, which only works rooted under insight/web/. Torn down in a `finally`.
 .secure-cookie-proof-scratch-*/
 
+# issue #308 [E18.S3], .sdlc/plans/308.md Task 4 -- same reason as the two entries above:
+# prove-session-epoch-store.mjs's scratch compile needs @types/node too (sessionEpoch.ts imports
+# node:crypto/node:fs/node:path). Torn down in a `finally` (runScenarioInWebAsync), not a
+# correctness guard.
+.session-epoch-proof-scratch-*/
+
 # Not in the plan's file list -- added during implementation verification (Step 5's
 # INSIGHT_DEV_ROUTES gate was probed locally via a throwaway .env.local, since this sandbox's
 # Bash tool cannot pass ad hoc env vars or delete files it created). Standard Next.js convention;

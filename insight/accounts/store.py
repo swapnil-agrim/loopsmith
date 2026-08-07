@@ -117,7 +117,36 @@ a planted admin account, and `O_NOFOLLOW` has no opinion whatsoever about an ord
 ever rejects a symlink). Closing that would mean validating every ancestor directory's ownership
 and permissions up to the filesystem root on every read/write, which is disproportionate machinery
 for a single-operator local CLI's account store; a compromised or attacker-writable `.sdlc/` is
-already a total-compromise scenario this module was never designed to survive."""
+already a total-compromise scenario this module was never designed to survive.
+
+CONCURRENT-INVOCATION LOCKING AND PER-ACCOUNT THROTTLING (issue #308 [E18.S3],
+.sdlc/plans/308.md, Decisions 3/4/5/6). A new `_locked_accounts(path)` context manager holds an
+exclusive `fcntl.flock` around the ENTIRE read-check-mutate-write cycle of both `add_user` and
+`verify_user` -- not just `_write_accounts_data`'s own atomic temp-file swap, which says nothing
+about two calls racing each other's READ. This closes the race `add_user`'s docstring used to
+document as an accepted, unfixed limitation (see that docstring's own history) and, more
+importantly, closes the same race against the new per-account throttle counters
+(`failed_attempts`/`locked_until`, extra optional fields on each known user's record) that an
+attacker firing concurrent guesses instead of sequential ones could otherwise use to under-count
+failed attempts. `fcntl` is imported in a guarded `try/except ImportError` mirroring
+`hashing.py:70-73`'s own `argon2 = None` seam; if unavailable, `_locked_accounts` raises a loud
+`AccountsLockUnavailableError` rather than proceeding unlocked -- see that exception's own
+docstring for why a silent no-op is unacceptable, and note that this now fires on EVERY
+`verify_user` call (including a successful login, since success also resets the throttle
+counters under the same lock), not merely `add_user`.
+
+The throttle policy itself (5 consecutive failed attempts, a 15-minute lockout with no
+extension on further attempts, full reset once the window passes, `store._now()` as an
+injectable clock seam) is implemented entirely inside `verify_user` -- see that function's own
+docstring for the full policy and, critically, for how a locked-out account stays
+message/timing-indistinguishable from an unknown username (Decision 6): the locked response is
+the SAME `InvalidCredentials`, and an attempt against an already-locked account still performs
+the FULL locked read-modify-write (never a read-only early return) so it remains
+indistinguishable by cost and filesystem side effect from the unknown-user path, which now also
+touches a single, bounded, shared dummy counter (`_dummy_throttle_attempts`, top-level in the
+accounts JSON, never per-username -- an unknown username never accumulates real per-account
+state)."""
+import contextlib
 import datetime
 import errno
 import json
@@ -127,6 +156,18 @@ import secrets
 import sys
 
 from insight.accounts import hashing
+
+# issue #308 [E18.S3], .sdlc/plans/308.md Decision 4 -- imported in a guarded try/except
+# ImportError, mirroring hashing.py:70-73's own `argon2 = None` seam EXACTLY: a TESTABLE seam (a
+# test can `monkeypatch.setattr(store, "fcntl", None)` to deterministically exercise the
+# "locking unavailable" path on any machine, including this repo's own POSIX dev/CI, which
+# always has fcntl). `_locked_accounts` below checks this name and raises
+# `AccountsLockUnavailableError` -- a loud, actionable failure -- rather than silently proceeding
+# unlocked; see that exception's own docstring for why a silent no-op is unacceptable here.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised via the monkeypatch seam, not a real absence
+    fcntl = None
 
 #: Resolved relative to CWD at call time (see resolve_accounts_path), never at import time --
 #: mirrors insight/ingest/store.py's DEFAULT_DB_PATH exactly.
@@ -139,10 +180,33 @@ _INVALID_CREDENTIALS_MESSAGE = "invalid username or password"
 
 _FORMAT_VERSION = 1
 
+#: issue #308 [E18.S3], .sdlc/plans/308.md Decision 5 -- 5 consecutive failed attempts locks the
+#: account. "Consecutive" per Decision 5's own definition: any verify_user call for a known
+#: username that does not return a role (wrong password, a malformed record, or a
+#: correct-password attempt made while already locked) counts; a real success resets to 0.
+_THROTTLE_THRESHOLD = 5
+
+#: issue #308 [E18.S3], .sdlc/plans/308.md Decision 5 -- the lockout window, computed ONCE (as an
+#: absolute `locked_until` timestamp) when the threshold-th failure lands, never extended by
+#: further attempts during the window (see verify_user's own docstring for why extending would
+#: be a self-inflicted denial-of-service an attacker who cannot guess the password could still
+#: trigger just by continuing to poll).
+_THROTTLE_LOCKOUT = datetime.timedelta(minutes=15)
+
+#: issue #308 [E18.S3], .sdlc/plans/308.md Decision 6.2 -- a single, bounded, shared sentinel
+#: counter (top-level in the accounts JSON, never per-username) that the unknown-user branch of
+#: verify_user increments under the SAME lock as a known user's own throttle write, so the two
+#: remain indistinguishable by cost/filesystem side effect. Its VALUE is never consulted to
+#: change behavior or the message -- only its read+increment+write SHAPE matters. Leading
+#: underscore (unlike "version"/"users") flags it as an internal bookkeeping key, not part of
+#: the public accounts-store shape any caller should read.
+_DUMMY_THROTTLE_KEY = "_dummy_throttle_attempts"
+
 
 class InvalidCredentials(Exception):
-    """Raised by `verify_user` for both a wrong password and an unknown username -- the SAME
-    exception type, with the SAME message, in both cases (done-when 3)."""
+    """Raised by `verify_user` for a wrong password, an unknown username, a malformed record, OR
+    a locked-out account (issue #308 [E18.S3]) -- the SAME exception type, with the SAME message,
+    in every case (done-when 3, extended by Decision 6 to also cover "locked")."""
 
 
 class AccountsStoreCorruptError(Exception):
@@ -154,6 +218,26 @@ class AccountsStoreCorruptError(Exception):
 
 class UsernameExistsError(Exception):
     """Raised by `add_user` when the given username already has an account."""
+
+
+class AccountsLockUnavailableError(Exception):
+    """Raised by `_locked_accounts` when `fcntl` could not be imported -- this process is not
+    running on a POSIX platform (issue #308 [E18.S3], .sdlc/plans/308.md Decision 4). A SILENT
+    no-op lock would make the throttle counter (and add_user's own concurrency-safety) APPEAR
+    present and tested while providing zero actual protection against the exact concurrent
+    read-modify-write race this lock exists to close, on any platform lacking `fcntl` -- so this
+    fails LOUD instead: every operation that needs the lock refuses outright rather than
+    proceeding unlocked.
+
+    THIS FIRES ON EVERY `verify_user` CALL, NOT JUST `add_user` (stated plainly, not resting on
+    `add_user`'s narrower precedent -- add_user is a rarely-invoked CLI action; verify_user is the
+    ordinary login path, and a SUCCESSFUL login still takes this lock, because a successful login
+    still resets the throttle counters under it, per Decision 5). On a platform without `fcntl`
+    (Windows), this decision turns ordinary web login into a hard failure, not merely `insight
+    users add`. CI (`ubuntu-latest`) and this repo's own local dev (`darwin`) are both POSIX, so
+    this never fires in practice today; it is a fail-closed floor for the day it might. If
+    Windows support is ever required, the fix is a portable lock (`msvcrt.locking`, or a
+    lock-file protocol), NOT relaxing this to a no-op."""
 
 
 def resolve_accounts_path(path=None):
@@ -219,10 +303,110 @@ def _open_fresh_temp_file(directory, name_hint, mode):
     )
 
 
-def _read_accounts(path):
-    """Return the parsed `users` dict for `path`. `{}` if the file does not exist yet -- a
-    missing store is NOT a corrupt one, it is simply "no accounts exist yet" (treated identically
-    to an unknown user by `verify_user`). Raises `AccountsStoreCorruptError` for unparseable JSON,
+@contextlib.contextmanager
+def _locked_accounts(path):
+    """Hold an exclusive `fcntl.flock` on a SIBLING lock file (`<path>.lock`) for the duration of
+    the `with` block -- issue #308 [E18.S3], .sdlc/plans/308.md Decision 4. Both `add_user` and
+    `verify_user` wrap their ENTIRE read-check-mutate-write cycle in this, not merely
+    `_write_accounts_data`'s own temp-file-plus-rename swap: that swap is already atomic per
+    CALL, but says nothing about two calls racing each other's READ -- two callers can each read
+    the same pre-write state, independently decide what to do, and the second `os.replace()`
+    silently clobbers whatever the first one just wrote. This directly targets the race
+    `add_user`'s docstring measured live pre-#308 (10 concurrent calls, 8 of 10 silently lost)
+    and the equivalent race against the throttle counters this same lock now also protects.
+
+    A SIBLING file, never `path` itself: locking `path` directly would conflict with
+    `_write_accounts_data`'s own `O_NOFOLLOW`/symlink-refusal guards on that exact path, and a
+    lock file has no JSON content of its own for a corrupt-store guard to worry about. The lock
+    file is opened with `O_CREAT` and simply never removed -- an `flock` held against a
+    since-deleted-and-recreated *inode* is a real class of bug this sidesteps by construction; a
+    leftover empty `.lock` file next to the real store is harmless and expected.
+
+    `O_NOFOLLOW`, TOO (both reviewers of #308, for consistency with every other open in this
+    module -- `_read_accounts_data` and `_open_fresh_temp_file` both already carry it). This
+    open was the one place in the module that didn't: a planted symlink at the predictable
+    `<path>.lock` name would otherwise be silently followed and `flock`ed (POSIX `flock()` locks
+    the OPEN FILE DESCRIPTION, which after following a symlink refers to whatever the link's
+    target is, not the sibling lock file this function thinks it is locking) -- opening the lock,
+    not the accounts store itself, so it never reaches the read/write path's own symlink guards
+    at all. `getattr(os, "O_NOFOLLOW", 0)`, exactly like the module's other two uses: `0` (a
+    no-op) on a platform lacking the flag, never a hard dependency.
+
+    Raises `AccountsLockUnavailableError` immediately, before opening or creating anything, if
+    `fcntl` could not be imported -- see that exception's own docstring for why this is a loud
+    failure rather than a silent no-op, and note it now fires for EVERY `verify_user` call
+    (success included), not merely the rarely-invoked `add_user`."""
+    if fcntl is None:
+        raise AccountsLockUnavailableError(
+            "file locking (fcntl) is required for concurrent-safe writes to the accounts "
+            "store but is not available on this platform"
+        )
+    path = pathlib.Path(path)
+    # mkdir mirrors _open_fresh_temp_file's own parents=True, exist_ok=True call -- the FIRST
+    # add_user/verify_user invocation against a brand-new checkout may need to create .sdlc/
+    # itself before any lock file can live inside it.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.parent / (path.name + ".lock")
+    # issue #308 [E18.S3], .sdlc/plans/308.md Decision 4 (both reviewers, consistency finding):
+    # O_NOFOLLOW added alongside O_CREAT | O_RDWR -- see this function's own docstring above for
+    # why a planted symlink here is a real, distinct exploit from the ones the read/write path
+    # already guards against.
+    fd = os.open(
+        str(lock_path), os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600
+    )
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _now():
+    """The store's own clock seam (issue #308 [E18.S3], .sdlc/plans/308.md Decision 5) --
+    factored into its own function purely so a test can `monkeypatch.setattr(store, "_now", ...)`
+    to prove the 15-minute lockout expiry with ZERO real sleeping, mirroring hashing.py's own
+    injectable-seam style for `argon2`/`PRODUCTION_PARAMS`. Always UTC and timezone-aware -- never
+    a naive datetime, so comparisons against a parsed `locked_until` (also always UTC-aware, see
+    `_parse_iso`) never raise `TypeError: can't compare offset-naive and offset-aware datetimes`."""
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def _parse_iso(value):
+    """Parse a stored `locked_until` ISO-8601 string back into a timezone-aware `datetime`, or
+    return `None` for anything that isn't one (missing, `None`, or -- defensively, matching this
+    module's broader "a hand-edited/partially-written field must not become a new way to crash"
+    philosophy -- an unparseable string or wrong-typed value). Treated as "not locked" rather than
+    raising: a corrupt `locked_until` must not itself become a distinguishable failure mode."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+def _coerce_int(value, default=0):
+    """Best-effort coercion of a stored throttle counter (`failed_attempts`) back to a plain
+    `int`, falling back to `default` for anything else (a hand-edited or partially-written
+    field, a `bool` -- `isinstance(True, int)` is True in Python, deliberately excluded here so a
+    stray `true`/`false` in the JSON doesn't silently become 1/0). Same "malformed field must not
+    itself crash verify_user" reasoning as `_parse_iso` above."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _read_accounts_data(path):
+    """Return the FULL parsed top-level accounts-store dict for `path` -- `{"version": ...,
+    "users": {...}}`, plus any additional top-level keys such as `_dummy_throttle_attempts`
+    (issue #308 [E18.S3], .sdlc/plans/308.md Decision 6.2). `{"version": _FORMAT_VERSION,
+    "users": {}}` if the file does not exist yet -- a missing store is NOT a corrupt one, it is
+    simply "no accounts exist yet" (treated identically to an unknown user by `verify_user`).
+    Raises `AccountsStoreCorruptError` for unparseable JSON,
     a shape missing the required `users`/`version` keys, `path` itself being a symlink, `path`
     being unreadable (permission denied), or `path` being a FIFO/other special file that would
     otherwise never yield readable JSON.
@@ -266,13 +450,13 @@ def _read_accounts(path):
     open never blocks the open() call, regardless of whether a writer exists), and the subsequent
     read either sees immediate EOF or raises `BlockingIOError` (an `OSError` subclass, already
     caught by the JSON-parse `except (OSError, ValueError)` below) -- either way, a FIFO at the
-    accounts path (never a shape `_write_accounts` itself produces) ends up refused as
+    accounts path (never a shape `_write_accounts_data` itself produces) ends up refused as
     `AccountsStoreCorruptError`, not hung forever."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         fd = os.open(str(path), flags)
     except FileNotFoundError:
-        return {}
+        return {"version": _FORMAT_VERSION, "users": {}}
     except PermissionError:
         # A store the process cannot read at all -- e.g. `chmod 000` -- is not a symlink and not
         # unparseable JSON, but it is exactly as untrustworthy-as-is (PR #461 review, third pass
@@ -307,26 +491,39 @@ def _read_accounts(path):
         raise AccountsStoreCorruptError(
             "accounts store at %s is not a valid accounts store (users is not an object)" % path
         )
-    return data["users"]
+    return data
 
 
-def _write_accounts(path, users):
-    """Write `users` to `path` atomically, with owner-only (0600) permissions -- never a plain
-    `write_text()`, which would briefly (or permanently, depending on umask) leave the file
-    group/world-readable. Refuses loudly if `path` itself is already a symlink
-    (`_refuse_if_symlink`, PR #461 review BLOCKING 1) rather than clobbering whatever it points at.
-    Writes to a same-directory, freshly and unpredictably named temp file (`_open_fresh_temp_file`
-    -- `O_EXCL`/`O_NOFOLLOW`, never the old fixed `.<name>.tmp` path a symlink could be pre-planted
-    at) with the identical explicit mode, then `os.replace()`s it into place, so the file is never
-    briefly at default permissions and a mid-write crash never leaves a half-written store at the
-    real path. `os.replace()`'s destination semantics matter here too: POSIX `rename()` never
-    dereferences an existing destination -- if something raced a symlink into place at `path`
-    between the check above and this call, `replace()` still only swaps the dentry, so the new file
-    always lands as a REAL file at `path`, never written through a race-planted link; the check
-    above exists to refuse loudly on the ALREADY-symlinked case, not because `replace()` itself is
-    unsafe without it."""
+def _read_accounts(path):
+    """Return just the parsed `users` dict for `path` -- a thin, users-only-shaped wrapper
+    around `_read_accounts_data` (issue #308 [E18.S3]), kept for every existing caller/test that
+    only ever needed the `users` sub-dict and never the extra top-level
+    `_dummy_throttle_attempts` sentinel Decision 6.2 introduced. See `_read_accounts_data`'s own
+    docstring for the full set of guarantees (symlink/TOCTOU hardening, corrupt-store handling,
+    PermissionError/FIFO handling) -- all unchanged, all still enforced by the function this now
+    delegates to."""
+    return _read_accounts_data(path)["users"]
+
+
+def _write_accounts_data(path, data):
+    """Write the FULL top-level accounts-store dict `data` (`{"version": ..., "users": {...},
+    ...}`, including any extra top-level keys such as `_dummy_throttle_attempts` -- issue #308
+    [E18.S3], .sdlc/plans/308.md Decision 6.2) to `path` atomically, with owner-only (0600)
+    permissions -- never a plain `write_text()`, which would briefly (or permanently, depending
+    on umask) leave the file group/world-readable. Refuses loudly if `path` itself is already a
+    symlink (`_refuse_if_symlink`, PR #461 review BLOCKING 1) rather than clobbering whatever it
+    points at. Writes to a same-directory, freshly and unpredictably named temp file
+    (`_open_fresh_temp_file` -- `O_EXCL`/`O_NOFOLLOW`, never the old fixed `.<name>.tmp` path a
+    symlink could be pre-planted at) with the identical explicit mode, then `os.replace()`s it
+    into place, so the file is never briefly at default permissions and a mid-write crash never
+    leaves a half-written store at the real path. `os.replace()`'s destination semantics matter
+    here too: POSIX `rename()` never dereferences an existing destination -- if something raced a
+    symlink into place at `path` between the check above and this call, `replace()` still only
+    swaps the dentry, so the new file always lands as a REAL file at `path`, never written through
+    a race-planted link; the check above exists to refuse loudly on the ALREADY-symlinked case,
+    not because `replace()` itself is unsafe without it."""
     _refuse_if_symlink(path)
-    payload = json.dumps({"version": _FORMAT_VERSION, "users": users}, indent=2)
+    payload = json.dumps(data, indent=2)
     fd, tmp_path = _open_fresh_temp_file(path.parent, path.name, 0o600)
     try:
         with os.fdopen(fd, "w") as f:
@@ -340,6 +537,18 @@ def _write_accounts(path, users):
         raise
 
 
+def _write_accounts(path, users):
+    """Write just `users` (`{"version": _FORMAT_VERSION, "users": users}`, no extra top-level
+    keys) to `path` -- a thin, users-only-shaped wrapper around `_write_accounts_data` (issue
+    #308 [E18.S3]), kept for every existing caller/test that only ever dealt with the `users`
+    dict directly. See `_write_accounts_data`'s own docstring for the full set of guarantees
+    (atomic swap, 0600 permissions, symlink refusal) -- all unchanged. NOTE: unlike
+    `_write_accounts_data`, this DISCARDS any `_dummy_throttle_attempts` sentinel a previous
+    write may have set -- callers that must preserve it (verify_user) use
+    `_write_accounts_data` directly instead of this wrapper."""
+    _write_accounts_data(path, {"version": _FORMAT_VERSION, "users": users})
+
+
 def add_user(username, password, role, accounts_path=None):
     """Create a new account. `username`/`role` are stripped and must be non-empty (`ValueError`
     otherwise, no file written). Raises `UsernameExistsError` if the username already has an
@@ -347,26 +556,30 @@ def add_user(username, password, role, accounts_path=None):
     rather than silently paving over a corrupt existing store -- a corrupt store must be fixed
     deliberately, since paving over it could silently destroy other admins' accounts.
 
-    NOT SAFE AGAINST CONCURRENT INVOCATIONS (PR #461 review, first pass, SHOULD-FIX 4 -- distinct
-    from the SECOND pass's own SHOULD-FIX 4, about a symlinked ancestor directory; see the module
-    docstring's TRUST BOUNDARY note -- documented rather than fixed, deliberately). Two
-    `insight users add` processes running at the same time each read the same pre-write `users`
-    dict, independently hash, and `os.replace()` -- last writer wins silently: no error, no lock,
-    no detection that the file changed underneath. The second pass's reviewer MEASURED this for
-    real rather than reasoning about it in the abstract: 10 concurrent `add_user` calls, each for a
-    distinct username against the same store, and 8 of the 10 accounts were silently lost --
-    overwritten by a later racing write that never saw them -- with zero errors, zero exceptions,
-    and no signal to the caller that anything was wrong. This is judged low severity and left
-    undocumented-but-unfixed rather than gold-plated with a lock, because (a)
-    `insight users add` is a single-operator local CLI, not a server handling concurrent requests --
-    there is no realistic scenario where two invocations race by accident, only by a deliberate
-    double-run; (b) the failure mode is "re-run the second `add` and it succeeds" -- an account is
-    never corrupted or partially written (`_write_accounts` is still atomic), only silently not
-    created; and (c) a real fix needs an OS-level exclusive lock (`fcntl.flock` on POSIX,
-    `msvcrt.locking` on Windows) with its own edge cases (stale locks, timeouts) that are
-    disproportionate machinery for a low-severity, single-operator race. If `insight users add` is
-    ever driven by anything other than an interactive human at a terminal (automation, a setup
-    script run in parallel), revisit this."""
+    LOCKED AGAINST CONCURRENT INVOCATIONS (issue #308 [E18.S3], .sdlc/plans/308.md Decision 4 --
+    CORRECTING this docstring's own PRE-#308 claim, quoted below for the historical record). The
+    whole read-check-write sequence below now runs inside `_locked_accounts` (an exclusive
+    `fcntl.flock` on a sibling lock file), so two `insight users add` processes running at the
+    same time no longer race each other's READ: the second caller's lock acquisition simply
+    BLOCKS until the first has finished its own full read-modify-write and released, then
+    proceeds against the now-current state. A losing writer is never silently dropped anymore --
+    at worst it now correctly raises `UsernameExistsError` if the winner created the SAME
+    username, or succeeds cleanly if it created a DIFFERENT one. See
+    insight/tests/test_accounts_store.py's ten-concurrent-writers regression test, which replays
+    the exact scenario measured below and asserts all ten now succeed.
+
+    PRE-#308 HISTORY (the race this section used to document as accepted-but-unfixed no longer
+    exists, per the locking fix above -- kept verbatim as the record of what was measured and
+    why a lock was originally deferred): "NOT SAFE AGAINST CONCURRENT INVOCATIONS (PR #461
+    review, first pass, SHOULD-FIX 4 ...). Two `insight users add` processes running at the same
+    time each read the same pre-write `users` dict, independently hash, and `os.replace()` --
+    last writer wins silently: no error, no lock, no detection that the file changed underneath.
+    The second pass's reviewer MEASURED this for real rather than reasoning about it in the
+    abstract: 10 concurrent `add_user` calls, each for a distinct username against the same
+    store, and 8 of the 10 accounts were silently lost -- overwritten by a later racing write
+    that never saw them -- with zero errors, zero exceptions, and no signal to the caller that
+    anything was wrong." That measurement is exactly what issue #308's regression test now
+    proves no longer happens."""
     username = (username or "").strip()
     role = (role or "").strip()
     if not username:
@@ -375,28 +588,68 @@ def add_user(username, password, role, accounts_path=None):
         raise ValueError("role must not be empty")
 
     path = resolve_accounts_path(accounts_path)
-    users = _read_accounts(path)
-    if username in users:
-        raise UsernameExistsError("account %r already exists" % username)
+    with _locked_accounts(path):
+        data = _read_accounts_data(path)
+        users = data["users"]
+        if username in users:
+            raise UsernameExistsError("account %r already exists" % username)
 
-    password_hash = hashing.hash_password(password)
-    users[username] = {
-        "password_hash": password_hash,
-        "role": role,
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
-    _write_accounts(path, users)
+        password_hash = hashing.hash_password(password)
+        users[username] = {
+            "password_hash": password_hash,
+            "role": role,
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        _write_accounts_data(path, data)
 
 
 def verify_user(username, password, accounts_path=None):
     """Verify `username`/`password` and return the stored role on success. Raises
-    `InvalidCredentials` (identical message/type for a wrong password, an unknown username, OR ANY
-    way a known user's own record turns out to be malformed -- see below, PR #461 review, second
-    pass BLOCKING 1) or `AccountsStoreCorruptError` (the store AS A WHOLE is
-    unparseable/malformed/a symlink, distinct from "no such user" or "this one user's record is
-    bad") or `hashing.KDFUnavailableError` (argon2-cffi not installed -- propagated unchanged,
-    from every branch, including the malformed-record one; see below for why that one exception
-    type is deliberately NOT folded in).
+    `InvalidCredentials` (identical message/type for a wrong password, an unknown username, a
+    LOCKED-OUT account -- even with the objectively CORRECT password, issue #308 [E18.S3],
+    .sdlc/plans/308.md Decision 6 -- OR ANY way a known user's own record turns out to be
+    malformed -- see below, PR #461 review, second pass BLOCKING 1) or `AccountsStoreCorruptError`
+    (the store AS A WHOLE is unparseable/malformed/a symlink, distinct from "no such user" or
+    "this one user's record is bad") or `hashing.KDFUnavailableError` (argon2-cffi not installed
+    -- propagated unchanged, from every branch, including the malformed-record one; see below for
+    why that one exception type is deliberately NOT folded in) or `AccountsLockUnavailableError`
+    (`fcntl` unavailable on this platform -- issue #308 [E18.S3], .sdlc/plans/308.md Decision 4;
+    see that exception's own docstring, and note it fires on EVERY call to this function,
+    including a successful login, not merely `add_user`).
+
+    THROTTLING (issue #308 [E18.S3], .sdlc/plans/308.md Decisions 3/4/5/6). This ENTIRE function
+    body runs inside `_locked_accounts` -- the same `fcntl` lock `add_user` uses -- around its
+    whole read-check-mutate-write cycle, so every branch below (including a locked-account
+    refusal and a successful login's own counter reset) is race-free against a concurrent
+    invocation. Two extra optional per-record fields, `failed_attempts` (int) and `locked_until`
+    (an ISO datetime string or `None`), implement a flat threshold-and-window policy: 5
+    consecutive failures locks the account for 15 minutes (`locked_until`, an ABSOLUTE timestamp
+    computed once when the 5th failure lands, never extended by further attempts during the
+    window -- extending on every attempt would let an attacker who cannot even guess the password
+    still hold a real account locked out indefinitely just by continuing to poll it, a
+    self-inflicted denial-of-service this throttle must not create); once `locked_until` has
+    passed, the very next attempt is evaluated as if `failed_attempts` were 0 (a full reset, not
+    a sliding/partial-credit window); a SUCCESSFUL login always resets both fields. `_now()` is
+    this module's own clock seam, so tests prove the 15-minute expiry with zero real sleeping.
+
+    AN ATTEMPT AGAINST AN ALREADY-LOCKED ACCOUNT STILL ACQUIRES THE LOCK AND PERFORMS THE FULL
+    READ-MODIFY-WRITE, even though `locked_until` itself comes out unchanged (only
+    `failed_attempts` still increments) -- this is NOT "optimised" into a read-only early return,
+    deliberately: Decision 6.2's unknown-username branch below unconditionally does a full
+    lock+read+write of EQUIVALENT shape against a shared dummy counter, and if the known-locked
+    path stopped writing while the unknown path kept writing, the two would become
+    distinguishable by cost and by filesystem side effect -- precisely the enumeration signal PR
+    #461 spent three review passes closing. The parity requirement is the invariant; a skipped
+    write here would be a bug, not an optimisation.
+
+    AN UNKNOWN USERNAME NEVER ACCUMULATES REAL PER-ACCOUNT STATE (Decision 6.2): it never gets
+    its own `failed_attempts`/`locked_until` (unbounded storage growth under a trivial
+    enumerate-fake-usernames attack) -- instead it touches a single, bounded, shared sentinel
+    counter (`_dummy_throttle_attempts`, top-level in the accounts JSON) under the SAME lock,
+    with the SAME read+increment+write shape as the known-locked path above, before falling
+    through to the existing dummy-hash KDF call. The counter's VALUE is never consulted to change
+    behavior or the message -- only the shape of the operation matters, for cost/timing parity
+    with a real, known, locked account.
 
     Calls `hashing.verify_password` EXACTLY ONCE on every failure path in the common case -- for a
     known user, against their real stored hash; for an unknown user, against the precomputed dummy
@@ -452,31 +705,118 @@ def verify_user(username, password, accounts_path=None):
     way to learn about it -- that signal deliberately does NOT reach the caller's exception, which
     stays identical to every other failure (done-when 3)."""
     path = resolve_accounts_path(accounts_path)
-    users = _read_accounts(path)
-    record = users.get(username)
+    # issue #308 [E18.S3], .sdlc/plans/308.md Decision 4 -- the fcntl lock now wraps this
+    # function's ENTIRE read-check-mutate-write cycle, exactly like add_user's. Stated plainly,
+    # not resting on add_user's narrower precedent (see AccountsLockUnavailableError's own
+    # docstring): this fires on EVERY verify_user call, including a SUCCESSFUL login, since a
+    # successful login also resets the throttle counters under this same lock (Decision 5).
+    with _locked_accounts(path):
+        data = _read_accounts_data(path)
+        users = data["users"]
+        record = users.get(username)
+        now = _now()
 
-    if record is None:
-        hashing.verify_password(password, hashing.dummy_hash_for(hashing.PRODUCTION_PARAMS))
-        raise InvalidCredentials(_INVALID_CREDENTIALS_MESSAGE)
+        if record is None:
+            # Decision 6.2 -- an unknown username never gets its own per-account throttle
+            # record; instead it touches a single, bounded, shared sentinel counter under the
+            # SAME lock, with the SAME read+increment+write shape as the known-locked branch
+            # below, so the two stay indistinguishable by cost/filesystem side effect.
+            data[_DUMMY_THROTTLE_KEY] = data.get(_DUMMY_THROTTLE_KEY, 0) + 1
+            _write_accounts_data(path, data)
+            hashing.verify_password(password, hashing.dummy_hash_for(hashing.PRODUCTION_PARAMS))
+            raise InvalidCredentials(_INVALID_CREDENTIALS_MESSAGE)
 
-    try:
-        if hashing.verify_password(password, record["password_hash"]):
+        if not isinstance(record, dict):
+            # A record that is not even a dict (e.g. a hand-edited store where "alice" maps to a
+            # bare string) is folded into InvalidCredentials exactly like every other malformed
+            # shape below. There is no dict here to safely track failed_attempts/locked_until ON
+            # (correcting this comment's own earlier claim, live in code review, issue #308
+            # [E18.S3]: an EARLIER version of this branch skipped the throttle write entirely for
+            # that reason -- that was itself Decision 5's exact bug, an "apparently-harmless"
+            # skipped write breaking write-parity with every sibling failure branch below.
+            # `_write_accounts_data(path, data)` still runs a few lines down, on `data` unchanged
+            # from what was just read, purely so this branch's lock+read+write SHAPE stays
+            # indistinguishable from the unknown-user/locked-account branches' own writes -- see
+            # that call's own comment).
+            print(
+                "insight accounts: corrupt record for user %r in store %s (not an object) -- "
+                "treating as invalid credentials" % (username, path),
+                file=sys.stderr,
+            )
+            # issue #308 [E18.S3], .sdlc/plans/308.md Decision 5's write-parity invariant (code
+            # review finding): every OTHER failure branch below performs a write under this same
+            # lock (the unknown-user branch bumps the shared dummy counter, the locked branch
+            # bumps failed_attempts, the wrong-password branch bumps failed_attempts) -- this
+            # branch has no per-record field to safely mutate (there is no dict here), but it must
+            # still WRITE, even though `data` is otherwise unchanged, so this shape stays
+            # indistinguishable by filesystem side effect from every sibling branch. Skipping the
+            # write here would be exactly the "apparently-harmless efficiency tweak" Decision 5
+            # warns against for the locked-account branch, just for a different malformed shape.
+            _write_accounts_data(path, data)
+            hashing.verify_password(password, hashing.dummy_hash_for(hashing.PRODUCTION_PARAMS))
+            raise InvalidCredentials(_INVALID_CREDENTIALS_MESSAGE)
+
+        locked_until = _parse_iso(record.get("locked_until"))
+        if locked_until is not None and locked_until > now:
+            # issue #308 [E18.S3], .sdlc/plans/308.md Decision 5's "no extension" bullet: the
+            # VALUE of locked_until does NOT change here -- but the write still happens
+            # (failed_attempts still increments) so this branch keeps the SAME lock+read+write
+            # shape as every other branch, including the unknown-user one above. Do NOT
+            # "optimise" this into a read-only early return -- see this function's own docstring
+            # and Decision 5's explicit warning: that would make a locked account distinguishable
+            # from an unknown one by cost and by filesystem side effect, reopening the exact
+            # enumeration signal PR #461 closed. The real hash is never touched while locked --
+            # the outcome is fixed regardless of whether the submitted password is correct.
+            record["failed_attempts"] = _coerce_int(record.get("failed_attempts")) + 1
+            _write_accounts_data(path, data)
+            hashing.verify_password(password, hashing.dummy_hash_for(hashing.PRODUCTION_PARAMS))
+            raise InvalidCredentials(_INVALID_CREDENTIALS_MESSAGE)
+
+        if locked_until is not None and locked_until <= now:
+            # Decision 5's decay: a full reset once the window has passed, not a sliding/partial
+            # window -- the very next attempt is evaluated as if failed_attempts were 0.
+            record["failed_attempts"] = 0
+            record["locked_until"] = None
+
+        try:
+            ok = hashing.verify_password(password, record["password_hash"])
+        except hashing.KDFUnavailableError:
+            # Not a malformed-record concern -- argon2 itself is unavailable, identically for
+            # every call site in this module. Re-raised, never folded into InvalidCredentials
+            # (see docstring). No throttle-state write happens on this path either: an infra
+            # failure is not a "failed attempt."
+            raise
+        except Exception as e:
+            # ANY OTHER exception raised while touching this known user's record: a single
+            # defensive boundary, deliberately not an allowlist of specific types (see docstring
+            # -- that is what broke twice already, pre-#306).
+            print(
+                "insight accounts: corrupt record for user %r in store %s (%s: %s) -- "
+                "treating as invalid credentials" % (username, path, type(e).__name__, e),
+                file=sys.stderr,
+            )
+            # Pay the same KDF-sized cost as every other failure path (see docstring above) --
+            # never a fast path that itself distinguishes a malformed record from a wrong
+            # password by timing.
+            hashing.verify_password(password, hashing.dummy_hash_for(hashing.PRODUCTION_PARAMS))
+            ok = False
+
+        if ok:
+            # issue #308 [E18.S3], .sdlc/plans/308.md Decision 5 -- a successful login ALWAYS
+            # resets both throttle fields, the only way failed_attempts decreases before the
+            # window elapses on its own.
+            record["failed_attempts"] = 0
+            record["locked_until"] = None
+            _write_accounts_data(path, data)
             return record["role"]
-    except hashing.KDFUnavailableError:
-        # Not a malformed-record concern -- argon2 itself is unavailable, identically for every
-        # call site in this module. Re-raised, never folded into InvalidCredentials (see docstring).
-        raise
-    except Exception as e:
-        # ANY OTHER exception raised while touching this known user's record: a single defensive
-        # boundary, deliberately not an allowlist of specific types (see docstring -- that is what
-        # broke twice already).
-        print(
-            "insight accounts: corrupt record for user %r in store %s (%s: %s) -- "
-            "treating as invalid credentials" % (username, path, type(e).__name__, e),
-            file=sys.stderr,
-        )
-        # Pay the same KDF-sized cost as every other failure path (see docstring above) -- never a
-        # fast path that itself distinguishes a malformed record from a wrong password by timing.
-        hashing.verify_password(password, hashing.dummy_hash_for(hashing.PRODUCTION_PARAMS))
 
-    raise InvalidCredentials(_INVALID_CREDENTIALS_MESSAGE)
+        # Wrong password, or a malformed record folded into the same outcome above: increment
+        # the throttle counter under the lock; set locked_until ONLY the moment it first reaches
+        # the threshold (never recomputed/extended on a later attempt -- see the "no extension"
+        # branch above, which this attempt would have taken instead had the account already been
+        # locked at the top of this call).
+        record["failed_attempts"] = _coerce_int(record.get("failed_attempts")) + 1
+        if record["failed_attempts"] >= _THROTTLE_THRESHOLD:
+            record["locked_until"] = (now + _THROTTLE_LOCKOUT).isoformat()
+        _write_accounts_data(path, data)
+        raise InvalidCredentials(_INVALID_CREDENTIALS_MESSAGE)
