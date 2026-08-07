@@ -116,3 +116,39 @@ multi-stage build proven by a `docker build` step in CI's `web` job, not by the 
 
 `insight/tests/test_verify_web.py`'s machine-checked invariant — `package.json` must have a
 sibling `package-lock.json` and declare every `CHECKS` name — continues to enforce for real.
+
+## Environment variables (E18.S2, issue #307)
+
+- `AUTH_SECRET` — required by Auth.js in any real deployment (throws `MissingSecretError` at
+  request time if unset; **not** required for `next build`/`next lint`/`next typecheck`, since
+  Auth.js only validates config lazily, per request — verified against `@auth/core@0.41.3`'s own
+  `assertConfig`, called from `Auth()`, never from `NextAuth()`'s own module-scope call).
+- `AUTH_URL` **or** `AUTH_TRUST_HOST` — one of these is **required in any self-hosted production
+  deployment**, and getting it wrong does not produce an error. `@auth/core`'s `setEnvDefaults`
+  (`lib/utils/env.js:40-44`) defaults `trustHost` to
+  `!!(AUTH_URL ?? AUTH_TRUST_HOST ?? VERCEL ?? CF_PAGES ?? NODE_ENV !== "production")`. `next start`
+  sets `NODE_ENV=production`, so on a plain self-hosted server with none of these set `trustHost` is
+  **false**, every session lookup returns `UntrustedHost`, and next-auth's `parseSessionResponse`
+  turns that non-OK response into "no session" — deliberately fail-closed. The symptom is therefore
+  not a crash or a log line: it is a **silent, permanent redirect to `/login` for every user**,
+  including one who just signed in with correct credentials. Found by #307's CI browser proofs,
+  which hit exactly this against `next start`; `scripts/lib/proof-session.mjs` sets
+  `AUTH_TRUST_HOST=1` for the same reason.
+- `INSIGHT_ACCOUNTS_PATH` — absolute path to `insight-accounts.json`, read by
+  `src/lib/auth/pythonBridge.ts`. Required in any deployment where the Node process's CWD does not
+  happen to be two directories below the repo root (i.e. always required outside plain local dev)
+  — see `.sdlc/plans/307.md` Decision 1.
+- `INSIGHT_TRUST_PROXY_PROTO` — set to `1` **only** when this app sits behind a reverse proxy you
+  control that always overwrites `X-Forwarded-Proto` (nginx: `proxy_set_header X-Forwarded-Proto
+  $scheme;`). It is what makes `src/lib/auth/secure.ts` believe that header when deciding the
+  session cookie's `Secure` flag. Leave it unset anywhere the app can be reached directly: the
+  header is client-suppliable, so trusting it unconditionally let anyone strip `Secure` off their
+  own session cookie by sending `X-Forwarded-Proto: http` over a real HTTPS connection (found by
+  #307's security review). **You need this in exactly the common production topology** where the
+  proxy terminates TLS and forwards to `http://127.0.0.1:3000` — without it the app only sees a
+  plaintext loopback URL and, per the rule below, would issue a non-`Secure` cookie.
+
+  Everything else about that decision is deliberately fail-closed: with no trusted-proxy opt-in,
+  `Secure` is set unless the server itself observes plaintext on a *loopback* host (local
+  `npm run dev`). A genuinely plaintext deployment on a real hostname therefore breaks **visibly**
+  rather than silently shipping a cookie that a network attacker can lift.

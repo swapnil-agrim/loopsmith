@@ -9,6 +9,18 @@
 # crash mid-run leaving debris, not a correctness guard the test suite depends on.
 .contract-proof-scratch-*/
 
+# issue #307 [E18.S2], .sdlc/plans/307.md Task 4 -- found live during implementation:
+# scripts/prove-python-bridge-exit-codes.mjs's fixture imports node:child_process/node:path, so
+# its scratch compile needs tsc's ordinary upward node_modules walk to find @types/node, exactly
+# the same reason .contract-proof-scratch-*/ exists above for @types/react. Torn down in a
+# `finally` block on every run (runScenarioInWebAsync, tsc-scratch.mjs) -- not a correctness guard.
+.python-bridge-proof-scratch-*/
+
+# issue #307 [E18.S2] -- same reason again, one file over: the security review's fix gave
+# secure.ts a `process.env` default, so its scratch compile now needs @types/node via tsc's
+# upward node_modules walk, which only works rooted under insight/web/. Torn down in a `finally`.
+.secure-cookie-proof-scratch-*/
+
 # Not in the plan's file list -- added during implementation verification (Step 5's
 # INSIGHT_DEV_ROUTES gate was probed locally via a throwaway .env.local, since this sandbox's
 # Bash tool cannot pass ad hoc env vars or delete files it created). Standard Next.js convention;
