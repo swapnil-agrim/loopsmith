@@ -62,6 +62,40 @@ UNKNOWN_ATTEMPTS = 4        # GitHub computes mergeability lazily — the first 
 UNKNOWN_BACKOFF = 3         # seconds before the first retry, doubled each time
 BEHIND = "BEHIND"           # the one verdict the caller acts on rather than parks
 _CHECK_OK = ("SUCCESS", "NEUTRAL", "SKIPPED", None)
+# A check that has NOT ANSWERED is not a check that failed (#464). PENDING is an explicit
+# allowlist so anything unrecognised falls through to "failing" and PARKS -- listing the failing
+# states instead would make any status GitHub adds later silently "pending", and the gate would
+# wait and then merge something it never understood. Fail closed.
+_CHECK_PENDING = ("PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "REQUESTED", "WAITING")
+# A SEPARATE budget from UNKNOWN_*, deliberately. UNKNOWN_* covers GitHub computing mergeability
+# lazily, where 21s is right. This one has to outlast a real CI run: on the repo that surfaced
+# #464, CI takes ~300s while the gate gave checks 21s, so a PR that was merely still building was
+# indistinguishable from one that had failed -- and the caller parks, which strips `sdlc:goal` and
+# permanently dequeues the goal until a human re-labels it.
+PENDING_ATTEMPTS = 10       # re-reads after the first, before giving up
+PENDING_INTERVAL = 45       # seconds between re-reads -- flat, not exponential: a doubling
+                            # backoff overshoots CI's duration and then waits far past it
+
+
+def _check_verdict(check):
+    """'ok' | 'failing' | 'pending' for one statusCheckRollup entry.
+
+    `gh pr view --json statusCheckRollup` mixes two shapes: CheckRun (`conclusion`, empty until it
+    finishes, plus `status`) and StatusContext (`state`). The pre-#464 code collapsed them with
+    `conclusion or state`, so an unfinished check -- conclusion "" and no state -- evaluated to
+    None, which was in `_CHECK_OK` and counted as PASSING. That is why the park messages said
+    `BLOCKED` with no failing check named: nothing was failing, nothing had answered."""
+    concl = (check.get("conclusion") or "").upper()
+    if concl:
+        return "ok" if concl in ("SUCCESS", "NEUTRAL", "SKIPPED") else "failing"
+    state = (check.get("status") or check.get("state") or "").upper()
+    if not state:
+        return "pending"                       # no conclusion, no state -> has not reported yet
+    if state in _CHECK_PENDING:
+        return "pending"
+    if state in ("SUCCESS", "NEUTRAL", "SKIPPED", "COMPLETED"):
+        return "ok"
+    return "failing"                           # unrecognised -> park, never wait
 _CAN_MERGE = ("ADMIN", "MAINTAIN", "WRITE")
 
 OFF, PROTECTED, ALWAYS = "off", "protected", "always"
@@ -294,53 +328,71 @@ def gate(sdlc_dir, config, goal, run=None, sleep=time.sleep):
     if not rec or not rec.get("pr"):
         return False, "no PR for this goal — run `work.py pr` first", {}
     data = {}
-    for attempt in range(UNKNOWN_ATTEMPTS):
-        try:
-            data = json.loads(run(rec["worktree"], [
-                "gh", "pr", "view", rec["pr"],
-                "--json", "mergeable,mergeStateStatus,statusCheckRollup,headRefOid"]))
-        except Exception as exc:            # noqa: BLE001 - a raising read must fail closed, not crash
-            if attempt == UNKNOWN_ATTEMPTS - 1:
-                return False, f"could not read PR state ({exc})", {}
-            sleep(UNKNOWN_BACKOFF * (2 ** attempt))
-            continue
-        if data.get("mergeable") != "UNKNOWN":
-            break
-        if attempt < UNKNOWN_ATTEMPTS - 1:
-            sleep(UNKNOWN_BACKOFF * (2 ** attempt))
+    # Outer loop: while required checks have not ANSWERED, re-read the PR. Re-reading (not
+    # re-judging cached data) is the point -- the whole question is whether GitHub's answer has
+    # changed. The stale-head check below therefore re-runs on every round too.
+    for pending_round in range(PENDING_ATTEMPTS + 1):
+      for attempt in range(UNKNOWN_ATTEMPTS):
+          try:
+              data = json.loads(run(rec["worktree"], [
+                  "gh", "pr", "view", rec["pr"],
+                  "--json", "mergeable,mergeStateStatus,statusCheckRollup,headRefOid"]))
+          except Exception as exc:            # noqa: BLE001 - a raising read must fail closed, not crash
+              if attempt == UNKNOWN_ATTEMPTS - 1:
+                  return False, f"could not read PR state ({exc})", {}
+              sleep(UNKNOWN_BACKOFF * (2 ** attempt))
+              continue
+          if data.get("mergeable") != "UNKNOWN":
+              break
+          if attempt < UNKNOWN_ATTEMPTS - 1:
+              sleep(UNKNOWN_BACKOFF * (2 ** attempt))
 
-    # Before any GitHub verdict is believed: is GitHub even looking at what we reviewed?
-    remote_head = (data.get("headRefOid") or "").strip()
-    try:
-        local_head = run(rec["worktree"], ["git", "rev-parse", "HEAD"]).strip()
-    except Exception as exc:                # noqa: BLE001 - unreadable tip must never merge
-        return False, f"could not read the local branch tip ({exc})", data
-    if not remote_head:
-        return False, ("GitHub did not report headRefOid, so the PR head cannot be checked against "
-                       "this worktree — refusing rather than merging an unverifiable head"), data
-    if not local_head:
-        return False, ("the local branch tip read back empty, so the PR head cannot be checked "
-                       "against it — refusing rather than merging an unverifiable head"), data
-    if remote_head != local_head:
-        return False, (
-            f"STALE HEAD — the PR is at {remote_head[:7]} but this worktree is at "
-            f"{local_head[:7]}. Commits made after the last `work.py pr` were never pushed, so "
-            f"GitHub's checks and reviews all passed against code that is NOT what was reviewed "
-            f"here. Run `work.py pr` to push, then re-review."), data
+      # Before any GitHub verdict is believed: is GitHub even looking at what we reviewed?
+      remote_head = (data.get("headRefOid") or "").strip()
+      try:
+          local_head = run(rec["worktree"], ["git", "rev-parse", "HEAD"]).strip()
+      except Exception as exc:                # noqa: BLE001 - unreadable tip must never merge
+          return False, f"could not read the local branch tip ({exc})", data
+      if not remote_head:
+          return False, ("GitHub did not report headRefOid, so the PR head cannot be checked against "
+                         "this worktree — refusing rather than merging an unverifiable head"), data
+      if not local_head:
+          return False, ("the local branch tip read back empty, so the PR head cannot be checked "
+                         "against it — refusing rather than merging an unverifiable head"), data
+      if remote_head != local_head:
+          return False, (
+              f"STALE HEAD — the PR is at {remote_head[:7]} but this worktree is at "
+              f"{local_head[:7]}. Commits made after the last `work.py pr` were never pushed, so "
+              f"GitHub's checks and reviews all passed against code that is NOT what was reviewed "
+              f"here. Run `work.py pr` to push, then re-review."), data
 
-    mergeable, status = data.get("mergeable"), data.get("mergeStateStatus")
-    if mergeable == "UNKNOWN":
-        return False, "GitHub could not compute mergeability (still UNKNOWN after retries)", data
-    if mergeable == "CONFLICTING":
-        return False, "conflicts with the base branch — a human has to resolve them", data
-    if status == BEHIND:
-        return False, BEHIND, data
-    if status != "CLEAN":
-        failing = [c.get("name") or c.get("context") for c in (data.get("statusCheckRollup") or [])
-                   if (c.get("conclusion") or c.get("state")) not in _CHECK_OK]
-        detail = f" — failing: {', '.join(f for f in failing if f)}" if any(failing) else ""
-        return False, f"not safe to merge (mergeStateStatus={status}){detail}", data
-    return True, "clean and safe", data
+      mergeable, status = data.get("mergeable"), data.get("mergeStateStatus")
+      if mergeable == "UNKNOWN":
+          return False, "GitHub could not compute mergeability (still UNKNOWN after retries)", data
+      if mergeable == "CONFLICTING":
+          return False, "conflicts with the base branch — a human has to resolve them", data
+      if status == BEHIND:
+          return False, BEHIND, data
+      if status != "CLEAN":
+          rollup = data.get("statusCheckRollup") or []
+          named = [(c.get("name") or c.get("context"), _check_verdict(c)) for c in rollup]
+          failing = [n for n, v in named if v == "failing" and n]
+          pending = [n for n, v in named if v == "pending" and n]
+          if failing:
+              # Answered, and the answer was no. Park at once -- never spend the pending budget on
+              # a verdict we already have.
+              return False, (f"not safe to merge (mergeStateStatus={status}) — "
+                             f"failing: {', '.join(failing)}"), data
+          if pending:
+              if pending_round < PENDING_ATTEMPTS:
+                  sleep(PENDING_INTERVAL)
+                  continue                       # re-read: the checks have not answered yet
+              waited = PENDING_ATTEMPTS * PENDING_INTERVAL
+              return False, (f"required checks still pending after {waited}s "
+                             f"(mergeStateStatus={status}) — pending: {', '.join(pending)}"), data
+          # Not a check problem at all (a required review, say). Unchanged.
+          return False, f"not safe to merge (mergeStateStatus={status})", data
+      return True, "clean and safe", data
 
 
 def merge_rights(sdlc_dir, config, goal, run=None):
