@@ -261,3 +261,51 @@ def test_users_verify_corrupt_store_exits_3_not_as_invalid_credentials(
     assert code == 3
     out, err = capsys.readouterr()
     assert out == ""
+
+
+def test_users_add_reports_lock_unavailable_loudly_not_as_a_traceback(tmp_path, monkeypatch, capsys):
+    """Code review finding, issue #308 [E18.S3], .sdlc/plans/308.md Decision 4:
+    store.AccountsLockUnavailableError was not caught by this handler, so it escaped as a raw
+    traceback instead of this module's established clean-CLI-error convention (every other
+    account-store error above prints one stderr line and returns non-zero). Ungated -- fcntl
+    unavailability is simulated via monkeypatch, never a real KDF call is reached."""
+    monkeypatch.chdir(tmp_path)
+    from insight.accounts import store as accounts_store
+    monkeypatch.setattr(accounts_store, "fcntl", None)
+
+    prompts = iter(["some-password", "some-password"])
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(prompts))
+
+    code = main(["users", "add", "--username", "alice", "--role", "manager"])
+    assert code == 1
+    out, err = capsys.readouterr()
+    assert "fcntl" in err
+    assert "Traceback" not in out
+    assert "Traceback" not in err
+
+
+def test_users_verify_lock_unavailable_exits_2_same_as_kdf_unavailable_not_traceback_not_invalid_credentials(
+    tmp_path, monkeypatch, capsys
+):
+    """Both independent code/security reviews of #308: same gap as the `add` handler's own test
+    above, for `verify`. Exit code 2 is REUSED from `hashing.KDFUnavailableError` -- deliberately
+    not a fresh code -- because pythonBridge.ts's `switch` already maps exit 2 to
+    `CredentialCheckUnavailableError`, and a locking failure is exactly that same class of
+    operator/infra problem, never "invalid credentials." Reusing the existing code keeps this
+    inside the Python/Node exit-code contract `insight/web/scripts/
+    prove-python-bridge-exit-codes.mjs` pins, rather than growing it ad hoc. Critically, this must
+    NOT be exit 1 either (which the Node bridge treats as a genuine credentials verdict when
+    marked)."""
+    import io, json
+    from insight.accounts import store as accounts_store
+    monkeypatch.setattr(accounts_store, "fcntl", None)
+    accounts_path = tmp_path / "accounts.json"
+    monkeypatch.setattr(
+        "sys.stdin", io.StringIO(json.dumps({"username": "alice", "password": "x"}))
+    )
+    code = main(["users", "verify", "--accounts-path", str(accounts_path)])
+    assert code == 2, "AccountsLockUnavailableError must exit with the SAME code as KDFUnavailableError"
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "fcntl" in err
+    assert "Traceback" not in err

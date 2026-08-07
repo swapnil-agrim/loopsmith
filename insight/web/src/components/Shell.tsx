@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
-// issue #305 [E17.S4], .sdlc/plans/305.md Decision 1.
+// issue #305 [E17.S4], .sdlc/plans/305.md Decision 1 / issue #308 [E18.S3],
+// .sdlc/plans/308.md Decision 7.
 //
 // The single composition point for masthead + navigation + content frame. Rendered from exactly
 // one place -- src/app/layout.tsx, the App Router root layout -- which Next.js renders around
@@ -11,13 +12,25 @@
 // and Decision 4 for why min-w-0 + overflow-x-auto on the content slot below -- not a breakpoint
 // -- is what keeps wide content from ever pushing the PAGE itself into horizontal scroll.
 //
-// No "use client": nothing here is interactive (plain <Link>, no state), so this stays a Server
-// Component like every other file under src/app/ and src/components/ today.
+// No "use client": there is no client-side interactivity here -- issue #308 [E18.S3] adds a
+// <form> below whose action is a Server Action (an inline closure calling signOut(), see that
+// form's own comment for why), and a Server Action form needs no client JS to submit, so this
+// stays a Server Component like every other file under src/app/ and src/components/ today. (The
+// original wording here was "nothing here is interactive," which was true when this file had
+// only a plain <Link>; corrected to "no client-side interactivity" now that a form exists, since
+// the mechanism -- not the absence of anything happening on click -- is what actually matters.)
 import Link from "next/link";
 
 import { NAV_ITEMS } from "@/lib/nav";
+import { auth, signOut } from "@/auth";
 
-export function Shell({ children }: { children: React.ReactNode }) {
+export async function Shell({ children }: { children: React.ReactNode }) {
+  // issue #308 [E18.S3], .sdlc/plans/308.md Decision 7. One auth() call, used only to decide
+  // whether a sign-out control has anything to sign out of -- Shell renders around EVERY route,
+  // including /login (this app has only one root layout, a pre-existing quirk this goal does not
+  // fix), where there is never a session and the button must not appear.
+  const session = await auth();
+
   return (
     <div
       data-testid="shell-root"
@@ -30,6 +43,36 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <span className="font-mono" style={{ fontSize: "var(--panel-text-title)" }}>
           LoopSmith Insight
         </span>
+        {/* issue #308 [E18.S3], .sdlc/plans/308.md Decision 7: deliberately minimal -- a bare
+            Server Action form, no confirmation dialog, no dropdown, no icon. Matches the "ad hoc
+            Tailwind, not a shared component" posture login/page.tsx's own ponytail: marker
+            already accepts for this app's current maturity. Only rendered when a session exists,
+            so it is absent on /login and anywhere else nobody is signed in. */}
+        {session?.user ? (
+          <form
+            action={async () => {
+              "use server";
+              // issue #308 [E18.S3], .sdlc/plans/308.md Decision 7. `signOut` itself is not
+              // directly assignable to a <form action={...}> -- its exported type takes an
+              // OPTIONS object, not a FormData (next-auth/index.d.ts's signIn() gets a FormData
+              // overload; signOut() does not) -- found live during implementation as a real
+              // tsc --noEmit TS2322. Wrapped in an inline Server Action closure instead, which is
+              // Auth.js's own documented pattern for this exact button (see signOut()'s own
+              // doc comment in next-auth/index.d.ts).
+              await signOut();
+            }}
+            className="ml-auto"
+          >
+            <button
+              type="submit"
+              data-testid="shell-signout-button"
+              className="rounded px-2 py-1.5 text-panel-bone hover:bg-panel-raised"
+              style={{ fontSize: "var(--panel-text-body)" }}
+            >
+              Sign out
+            </button>
+          </form>
+        ) : null}
       </header>
 
       <div className="flex min-h-0 flex-1">
