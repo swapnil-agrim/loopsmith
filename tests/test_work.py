@@ -137,6 +137,36 @@ def test_start_cuts_from_the_remote_base_and_records_it(tmp_path):
     assert rec["base"] == "main" and pathlib.Path(rec["worktree"]).is_absolute()
 
 
+# --- #486/PR #487 independent review: record_path() and start() had the identical unguarded
+# goal-into-path pattern actionlog.py's log_path() was originally fixed for. start()'s case is
+# real: an unsafe goal would make `git worktree add` create a checkout OUTSIDE worktree_dir
+# entirely (a real git operation, not just a JSON file write).
+
+
+def test_record_path_rejects_a_traversal_goal(tmp_path):
+    d = _sdlc(tmp_path)
+    try:
+        work.record_path(d, "../../../evil-goal")
+        assert False, "expected record_path to refuse a traversal goal"
+    except ValueError as exc:
+        assert "unsafe goal" in str(exc)
+    # legitimate goals still resolve, unaffected
+    assert work.record_path(d, "0001-x.md").name == "0001-x.json"
+
+
+def test_start_refuses_a_traversal_goal_before_any_git_call(tmp_path):
+    """Checked FIRST, before `git fetch`/`git worktree add` — a traversal goal must never reach
+    the point of computing a real worktree path, let alone running git against it."""
+    d = _sdlc(tmp_path)
+    run = _runner([("rev-parse", "main")])
+    try:
+        work.start(d, ON, "../../../evil-goal", run=run)
+        assert False, "expected start() to refuse a traversal goal"
+    except ValueError as exc:
+        assert "unsafe goal" in str(exc)
+    assert run.calls == []                      # no git call was ever attempted
+
+
 def test_start_is_idempotent_so_a_supervisor_relaunch_reattaches(tmp_path):
     d = _sdlc(tmp_path)
     goal = _started(d)

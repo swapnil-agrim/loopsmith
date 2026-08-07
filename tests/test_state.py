@@ -148,6 +148,43 @@ def test_load_config_raises_clear_error_when_config_json_is_valid_json_but_not_d
         s.load_config(str(d))
 
 
+# --- #486/PR #487 independent review: unsafe_goal_reason, the shared path-traversal validator --
+# actionlog.py's log_path() had a real, reproduced path-traversal bug (a goal with no `.md` suffix
+# skipped work.stem()'s own directory-stripping reduction and was embedded raw). Independent review
+# found the SAME unguarded pattern repeated at five more chokepoints across loop.py/work.py/
+# slices.py/sdlc-log's own independent copy -- one of them (loop.py's agent_end()) an unconditional,
+# ungated shutil.rmtree() reachable from the everyday `record` verb. unsafe_goal_reason lives here,
+# not duplicated per-caller, so a single implementation protects all of them.
+
+
+def test_unsafe_goal_reason_rejects_path_traversal_shapes():
+    s = _state()
+    assert s.unsafe_goal_reason("../../../ESCAPED") is not None
+    assert s.unsafe_goal_reason("goals/nested") is not None          # bare '/', no '..' needed
+    assert s.unsafe_goal_reason("a\\b") is not None                  # backslash
+    assert s.unsafe_goal_reason("C:\\Windows\\evil") is not None     # Windows drive-letter shape
+    assert s.unsafe_goal_reason("a:b") is not None                   # bare colon
+
+
+def test_unsafe_goal_reason_accepts_legitimate_goal_shapes():
+    s = _state()
+    for legit in ("0001-x", "158", "0007-cache", "goal with spaces", "emoji-🚀-ok"):
+        assert s.unsafe_goal_reason(legit) is None
+
+
+def test_evidence_path_rejects_a_path_traversal_goal(tmp_path):
+    """Reproduces the review's own finding: loop.py verify <dir> "<traversal-goal>" wrote a file
+    outside .sdlc, reporting VERIFIED (exit 0), before this fix."""
+    s = _state()
+    d = tmp_path / ".sdlc"
+    d.mkdir()
+    with pytest.raises(ValueError, match="unsafe goal"):
+        s.evidence_path(str(d), "../../../ESCAPED-outside-sdlc")
+    # legitimate goals still resolve, unaffected
+    assert s.evidence_path(str(d), "0001-x.md").name == "0001-x.json"
+    assert s.evidence_path(str(d), "158").name == "158.json"
+
+
 # --- F11/#341: the whole-second staleness hole in done_refusal ---------------------------------
 # `run_started_at` and evidence `at` used to both be `int(time.time())` -- a verify from a PRIOR
 # run at T-0.4s and a run starting at T+0.3s both floor to the same integer second, so the stale

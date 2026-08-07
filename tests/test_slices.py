@@ -85,6 +85,21 @@ def test_manifest_lives_beside_the_plan_under_the_goal_stem(tmp_path):
     assert slices.manifest_path(d, GOAL).parent.name == "plans"
 
 
+def test_manifest_path_rejects_a_traversal_goal(tmp_path):
+    """#486/PR #487 independent review: the identical unguarded goal-into-path pattern found and
+    fixed in actionlog.py/loop.py/work.py was also present here."""
+    d = _sdlc(tmp_path)
+    with pytest.raises(ValueError, match="unsafe goal"):
+        slices.manifest_path(d, "../../../evil-goal")
+
+
+def test_load_propagates_the_traversal_refusal_at_the_cli_edge_not_a_traceback(tmp_path, capsys):
+    d = _sdlc(tmp_path)
+    slices_, error = slices._load_or_report(d, "../../../evil-goal")
+    assert slices_ is None
+    assert "unsafe goal" in error
+
+
 def test_a_github_issue_number_is_its_own_stem():
     assert slices.goal_stem("61") == "61"                 # not a path — never strip a suffix off it
     assert slices.goal_stem(GOAL) == STEM

@@ -1019,6 +1019,91 @@ def test_cli_agent_start_rejects_a_thread_with_path_traversal(capsys):
         assert not (pathlib.Path(base) / "evil.active").exists()
 
 
+# ------------------------------------------------------------------ goal path-traversal (PR #486/#487 review)
+# Independent review of PR #487 (which fixed actionlog.py's own instance of this bug) found the
+# IDENTICAL unguarded pattern repeated across loop.py: `goal` (untrusted exactly like `thread`
+# above) was spliced into _agent_marker_path/_claim_lock_path/verify_goal's evidence path with NO
+# validation, unlike thread. agent_end()'s case is the most severe: an unconditional, ungated
+# shutil.rmtree() on the resulting path, reachable from the everyday `record` verb (not just the
+# `agent-end` escape hatch). These tests are NON-VACUOUS -- run against pre-fix code they fail with
+# the exact symptom (a real directory deleted / file written outside the sandbox); after the fix
+# they pass.
+
+TRAVERSAL_GOAL = "../../../evil-goal"    # 3 levels: <subdir> -> state -> sdlc_dir -> escapes to tmp_path
+
+
+def test_agent_marker_path_rejects_a_goal_containing_a_path_separator():
+    lp = _loop()
+    for bad in (TRAVERSAL_GOAL, "..", "a/b", "a\\b", "C:evil"):
+        try:
+            lp._agent_marker_path("/tmp/.sdlc", bad)
+            assert False, f"expected _agent_marker_path to refuse goal={bad!r}"
+        except ValueError:
+            pass
+
+
+def test_agent_end_never_deletes_a_real_directory_outside_the_sandbox_for_a_traversal_goal(tmp_path):
+    """The reviewer's own live reproduction, proven functionally against the real filesystem: a
+    real directory + file planted OUTSIDE .sdlc, at exactly the location the pre-fix code's
+    shutil.rmtree() would resolve to for TRAVERSAL_GOAL, must survive agent_end() untouched.
+    `state/agents/` must exist first -- POSIX path resolution needs every intermediate component
+    of a `..`-bearing path to actually exist before the `..` segments can resolve at all; a real
+    agent_watch-enabled repo already has this directory from an earlier legitimate agent_start()
+    by the time agent_end() ever runs, so creating it here matches the real precondition, not just
+    a convenient shortcut."""
+    lp = _loop()
+    sdlc = tmp_path / ".sdlc"
+    (sdlc / "state" / "agents").mkdir(parents=True)
+    victim_dir = tmp_path / "evil-goal"          # 3 levels of '../' from .sdlc/state/agents/<goal>/
+    victim_dir.mkdir()
+    victim_file = victim_dir / "important-data.txt"
+    victim_file.write_text("do not delete me")
+
+    lp.agent_end(str(sdlc), TRAVERSAL_GOAL)      # must not raise (fail-open), must not delete
+
+    assert victim_dir.is_dir()
+    assert victim_file.read_text() == "do not delete me"
+
+
+def test_agent_threads_returns_empty_for_a_traversal_goal_rather_than_raising():
+    lp = _loop()
+    with tempfile.TemporaryDirectory() as d:
+        assert lp.agent_threads(d + "/.sdlc", TRAVERSAL_GOAL) == []
+
+
+def test_claim_lock_path_rejects_a_traversal_goal():
+    lp = _loop()
+    try:
+        lp._claim_lock_path("/tmp/.sdlc", TRAVERSAL_GOAL)
+        assert False, "expected _claim_lock_path to refuse a traversal goal"
+    except ValueError:
+        pass
+
+
+def test_try_acquire_claim_lock_fails_open_for_a_traversal_goal(tmp_path):
+    """Same fail-open posture as no-fcntl / cannot-create-directory (existing tests above) --
+    an unsafe goal degrades to _LOCK_UNAVAILABLE, never a raw crash, never a lock written outside
+    the sandbox."""
+    lp = _loop()
+    sdlc = str(tmp_path / ".sdlc")
+    assert lp._try_acquire_claim_lock(sdlc, TRAVERSAL_GOAL) == lp._LOCK_UNAVAILABLE
+    assert not (tmp_path / "evil-goal.lock").exists()
+
+
+def test_cli_verify_refuses_a_traversal_goal_and_writes_no_evidence_outside_the_sandbox(tmp_path, capsys):
+    """The reviewer's own live reproduction: `loop.py verify <dir> "<traversal-goal>"` used to
+    write a file outside .sdlc and report VERIFIED (exit 0). Checked before the proving command
+    even runs (see verify_goal's own docstring) -- exit 2, not 0 or 1."""
+    lp = _loop()
+    sdlc = tmp_path / ".sdlc"
+    sdlc.mkdir()
+    (sdlc / "config.json").write_text(json.dumps({"verify": {"command": "true"}}))
+    rc = lp.main(["loop.py", "verify", str(sdlc), TRAVERSAL_GOAL])
+    assert rc == 2
+    assert "unsafe goal" in capsys.readouterr().err
+    assert not (tmp_path / "evil-goal.json").exists()
+
+
 def test_cli_verbs_handle_a_never_init_d_sdlc_dir_gracefully(capsys):
     """#403: `next`/`next-batch`/`start`/`session-active` all call `state.load_config` before any
     of their own logic runs. Pointed at a `.sdlc` that was never `/sdlc-init`'d (no config.json at

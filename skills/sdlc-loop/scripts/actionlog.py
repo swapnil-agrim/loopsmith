@@ -189,33 +189,12 @@ def reject_newline(value, label):
 # --------------------------------------------------------------------------- paths
 
 
-def _unsafe_goal_reason(stem):
-    """None iff `stem` (the ALREADY-`work.stem()`-reduced goal — the value about to be embedded in
-    a path, not the raw caller-supplied goal) is safe as a single path component, else the reason
-    it is not. Local copy of `loop.py`'s `_unsafe_thread_reason` (actionlog.py does not import
-    loop.py — see module docstring's own import-cycle note); same reasoning applies verbatim: an
-    LLM/agent-typed `goal` reaching `loop.py log`'s CLI is untrusted exactly like `thread` is, and
-    pathlib's own `/` join operator RE-PARSES a string argument for separator characters, so a `/`
-    or `\\` inside `stem` does not stay one filename, it becomes ADDITIONAL path segments — one of
-    which can be a literal `..`, escaping `state/log/` entirely (confirmed by direct reproduction:
-    a goal of `\"../../../ESCAPED\"` wrote a file three directories above `state/log/`, outside
-    `RUNTIME_IGNORES` coverage). `work.stem()` already strips any directory prefix for a
-    `.md`-suffixed goal (via `pathlib.Path.stem`, which only ever returns the last component), so
-    this is checked on ITS OUTPUT, not the raw input — the one case `.stem` does NOT reduce is a
-    goal with no `.md` suffix (e.g. a bare GitHub issue number path passed unusually), where
-    `work.stem()` returns the string unchanged. Checking for a literal `..` alone would miss a bare
-    `/`; rejecting any separator closes the join's only real danger directly. `:` is rejected too
-    for the same class of risk on Windows (a drive-letter-rooted path). Never raises —
-    `str(stem)` handles anything."""
-    text = str(stem)
-    if any(c in text for c in ("/", "\\", ":")) or ".." in text:
-        return "must not contain '/', '\\', ':', or '..' once reduced to a path component"
-    return None
-
-
 def log_path(sdlc_dir, goal):
+    """Raises `ValueError` for an unsafe `goal` — see `state.unsafe_goal_reason`'s own docstring
+    for the reproduced vulnerability this closes and why the shared implementation lives there,
+    not a local copy here (both `state` and `work` are already imported at this module's top)."""
     stem = work.stem(goal)
-    reason = _unsafe_goal_reason(stem)
+    reason = state.unsafe_goal_reason(stem)
     if reason:
         raise ValueError(f"unsafe goal {goal!r} for the action log: {reason}")
     return pathlib.Path(sdlc_dir) / "state" / "log" / f"{stem}.jsonl"
