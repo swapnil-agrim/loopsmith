@@ -398,15 +398,31 @@ def files_for(directory, who):
     Matches the safe name exactly, never as a prefix: a naive `<safe>-*` glob would also match a
     DIFFERENT actor whose safe name happens to start with `<safe>-` (e.g. "team" matching
     "team-bot"'s files), so each candidate is split on its trailing `-<pid>` and the remainder is
-    compared for equality first."""
+    compared for equality first.
+
+    #488: the comparison is CASE-INSENSITIVE. `pathlib.Path.glob()` is a pure Python string match
+    that never consults the real filesystem's own case sensitivity, even where the filesystem IS
+    case-insensitive (macOS APFS default, Windows NTFS) — so the old case-sensitive
+    `{safe}-*.jsonl` glob could miss a file that a case-insensitive `open()` elsewhere in this
+    module (`entry_file()`, via `append()`) happily wrote into, because `ledger.actor` in
+    config.json is a hand-typed string whose casing can drift between runs (e.g. unset, so an
+    earlier run fell back to `gh api user`'s lowercase login; a later hand-typed override uses
+    different casing). Comparing case-insensitively closes that gap in BOTH directions, without
+    needing to know which casing is "canonical": on a case-insensitive filesystem, two names that
+    only differ by case were never two different actors to begin with. Real cross-actor collisions
+    stay excluded by the same exact-match (post-lowercasing) guard above; for a `gh`-resolved
+    actor that exact match is backed by GitHub's own case-insensitive username-uniqueness, and for
+    a hand-typed `ledger.actor` override it carries the same trust this module already places in
+    config.json elsewhere — unchanged by this fix, not a new assumption."""
     d = pathlib.Path(directory)
     if not d.is_dir():
         return []
     safe = _safe_name(who)
+    safe_lower = safe.lower()
     out = []
-    for p in d.glob(f"{safe}-*.jsonl"):
+    for p in d.glob("*.jsonl"):
         name, _, pid = p.stem.rpartition("-")
-        if name == safe and pid.isdigit():
+        if name.lower() == safe_lower and pid.isdigit():
             out.append(p)
     legacy = d / f"{safe}.jsonl"
     if legacy.exists():
