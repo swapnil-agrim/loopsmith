@@ -64,6 +64,10 @@ def test_an_unknown_field_from_the_fixture_survives_intact_clause_4(tmp_path):
 
 
 def test_read_all_with_reliability_tags_both_streams_correctly(tmp_path):
+    """Both per-record tags, together. reliability_class answers "how much can I trust this
+    record" (spec §3); `stream` (issue #380) answers "which of the reader's three globs did it
+    come from" -- a distinction reliability_class structurally cannot make, since ledger/events/
+    and <sdlc>/events/ are both class 2 yet count their `seq` independently of each other."""
     sdlc_dir = _sdlc_with_fixtures(tmp_path)
     tagged = ledger_reader.read_all_with_reliability(sdlc_dir)
     entries_kinds = set(VOCAB["entries_kinds"])
@@ -71,9 +75,11 @@ def test_read_all_with_reliability_tags_both_streams_correctly(tmp_path):
     for record in tagged:
         if record["kind"] in entries_kinds:
             assert record["reliability_class"] == 1
+            assert record["stream"] == "entries"
         else:
             assert record["kind"] in event_kinds
             assert record["reliability_class"] == 2
+            assert record["stream"] == "events"
 
 
 def test_contract_version_matches_the_fixtures_own_self_reported_version():

@@ -179,6 +179,9 @@ def test_ingest_is_idempotent_via_cli(tmp_path, isolate_path_empty):
         "dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff",
         "fact_collector_pack", "fact_slice", "fact_merge_lead_time",
         "fact_pr_review", "fact_pr_check", "ingest_ledger_cursor",
+        # issue #380: declared unconditionally, so a fresh store carries it (empty) too -- a
+        # store's table set must not depend on whether it was ever migrated.
+        "ingest_ledger_cursor_legacy",
     })
     assert len(names) == len(set(names))
     conn.close()

@@ -260,7 +260,8 @@ def _ledger_has_rows(conn):
     """True iff insight_ledger has ever written a row into fact_event or fact_handoff -- the
     ONLY two tables insight.ingest.ledger_writer writes (verified by reading that module in
     full: _EVENT_INSERT_SQL writes fact_event, _apply_handoff/_apply_ack write fact_handoff;
-    ingest_ledger_cursor is resume bookkeeping only, read by no metric view). Both are real
+    ingest_ledger_cursor and, since issue #380, ingest_ledger_cursor_legacy are resume/migration
+    bookkeeping only, read by no metric view). Both are real
     base tables, not aggregate views, so a plain count(*) is exact -- no phantom-row
     correction needed (same posture as insight.dash.manager._reason_class_measured_count).
     Deliberately NOT derived from any metric's has_data -- see .sdlc/plans/128.md's own 'why the

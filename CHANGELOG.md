@@ -104,6 +104,122 @@ not an unrelated JSON dump, which would never have been able to fail either way)
 `tests/test_doctor.py` (the check flags/stays silent correctly, caps at `max_issues` while visibly
 reporting the bound, is skipped in local mode, and survives a malformed `doctor_scan` config block).
 
+### fix(insight): the ledger resume cursor keys on the writer and the stream, not just the actor (#380)
+`insight`'s `ingest_ledger_cursor` stored ONE watermark per `(project_id, actor_id)`, but
+`ledger.py` derives a record's `seq` from the LINE COUNT of the single file it is appending to, and
+that file is `<sdlc>/ledger/<stream>/<actor>-<pid>.jsonl`. `seq` is therefore monotonic per
+`(actor, pid, stream)`, and one actor's records arrive carrying several INDEPENDENT counters. A
+scalar cannot be the high-water mark for more than one of them: whichever counter runs ahead pushes
+the shared cursor past the others, and every later record from a slower one reads as
+`seq <= cursor`, "already ingested", and is dropped — silently, into a store whose entire purpose is
+analytics. Two axes produce this, and the second one was the live one:
+
+* **the writer axis** (what #380 was filed for): #337/F10 gave every writing PROCESS of one actor
+  its own file and put the pid into `id` (`<actor>:<pid>:<seq>`). PR #372 landed a cheap `GREATEST`
+  mitigation that closed the *regression* half (a lower seq can no longer pull the cursor backward
+  and re-insert an already-landed record as a duplicate) and documented, in a `KNOWN LIMITATION,
+  TRACKED` docstring section plus a test that asserted the bug, that it did NOT close the *skip*
+  half. This is that fix.
+* **the stream axis**, found while researching the above and absent from the issue text: #136 (PR
+  #241) gave `ledger.py` its `stream=` parameter — #136's own done_when reads *"ids stay monotonic
+  per (actor, stream)"* — and PR #242 made `sync.py` publish that second stream to the shared ledger
+  branch, which is what put both streams' records in front of `insight`'s reader. One process
+  writing both streams mints `who:pid:1` twice, once per stream. Measured on the largest real ledger
+  available: **217 entries-stream records, 116 events-stream records, and all 116 of the events ids
+  collide exactly with an entries id.** Replaying those records through the three candidate cursor
+  keys: today's per-actor key skips **116/333 (34.8%)**; #380's per-writer key as filed skips the
+  same **116/333**, because every id on that ledger is still 2-part and `writer_id` collapses onto
+  `actor_id`; `(writer, stream)` skips **0/333**. Shipping the issue exactly as filed would have
+  closed none of the live loss. The loss is strictly cross-run — the cursor snapshot is frozen within
+  one call — so a cold first ingest loses nothing, and thereafter, on that ledger, essentially
+  *every* future events record is lost permanently, because entries (217) outruns events (116) and
+  the cursor only rises.
+
+The key is now `(project_id, actor_id, writer_id, stream)`. `writer_id` is `<actor>:<pid>` for a
+3-part id and the bare actor for a legacy 2-part one, mirroring `watch_classify._writer()`'s
+already-shipped parser (duplicated, not imported — the plugin/product import boundary forbids the
+import, and per-module duplication of that parser is the documented house convention). `stream` is
+stamped by `ledger_reader.read_all_with_reliability` from the glob a record was READ from —
+`entries`/`events`/`local-events` — never from the record's own JSON, so a hand-edited line cannot
+talk itself onto another counter's watermark. `local-events` names the third glob (`<sdlc>/events/`,
+read only when `telemetry.share` is off): a different directory, so a third independent line-count
+space, and `reliability_class` structurally cannot distinguish it from `ledger/events/` because both
+are class 2. `blocked` — the guard that stops the cursor advancing past a failed record — is re-keyed
+the same way, so one writer's bad record no longer stalls a healthy sibling process of the same
+actor. `GREATEST` stays in the upsert but its justification is rewritten in place: within one
+`(writer, stream)` the seq space really is monotonic, so what it guards now is `seq_of()` degrading a
+malformed id tail to `0` and re-ingesting a healthy writer's entire history as duplicates.
+
+**This needed a real migration, not an `ALTER`.** `store.py`'s evolution mechanism is additive
+`ADD COLUMN` only and cannot change a PRIMARY KEY. The old rows also cannot be carried forward as
+data: a row says "project P, actor A, seq 5" and answers neither *which writer* nor *which stream*,
+and that is unrecoverable — applied as a floor for unknown writers/streams it keeps swallowing
+exactly the records this change exists to stop swallowing; dropped without a floor, every
+already-landed record re-ingests as a duplicate, since neither `fact_event` nor `fact_handoff` has a
+dedup constraint. Nor can it be reconstructed from the rows themselves: `fact_event` carries no
+record identity (no `id`, no `seq`; the best available match key is
+`(project_id, actor_id, ts, kind, goal_id, reliability_class)` and `ledger._stamp()` is
+whole-second, so a burst of records from one actor is indistinguishable), and `fact_handoff` is
+lossy by construction — one row absorbs a handoff and *every* later ack, last-write-wins, so N acks
+collapse to one scalar. So the derived rows are rebuilt from the JSONL source of truth instead, in
+two halves:
+
+* `ensure_schema` gains a **third phase**, guarded on `information_schema.columns` and therefore
+  self-extinguishing: in one transaction it copies every pre-migration row into a new
+  `ingest_ledger_cursor_legacy` carrier table, drops the cursor, and recreates it at the new shape.
+  Structural only — it never deletes a `fact_*` row, because `ensure_schema` runs on *every*
+  `open_store()`, read-intent commands (`insight gaps`, `dash`, `ic`, `manager`, `panel`,
+  `leadership`, `cross-functional`) included, so a destructive statement there would fire on a
+  command that only meant to render, and in a `--repos <glob>` store would destroy the facts of every
+  project the next run does not happen to cover. Note that this half is store-WIDE, not
+  project-scoped: it moves every project's rows into the carrier at once, so in a multi-project store
+  a project the next run's glob does not cover keeps its (now stale) fact rows plus a permanently
+  armed marker until it is itself ingested — acceptable and self-healing, and the carrier doubles as
+  the audit trail for it. The carrier is declared unconditionally in `_DDL` (empty on a fresh store)
+  so a store's table set never depends on its history.
+* `ingest_ledger` does the **per-project rebuild**, lazily: at the top of the call, in one
+  transaction, it wipes this project's `fact_event`/`fact_handoff`/cursor rows and consumes its
+  carrier row, then falls through and re-ingests the whole ledger under the new key. It fires once
+  per project, inside the very call that immediately refills the rows. A wipe that fails rolls back
+  and returns all-zeros without ingesting — falling through after a failed wipe is precisely how the
+  duplicates this migration exists to prevent would be created — and the marker survives, so the next
+  run retries. Cost is one transaction per record: sub-second at this repo's real scale (333
+  records), O(N) transactions, so a very large store should expect proportional time.
+
+**The rebuild is gated on the ledger actually reading back records, and that guard is load-bearing.**
+Independent plan review caught this as a reproduced data-loss bug in the reviewed design: `.sdlc/`
+is present but `.sdlc/ledger/` is a *worktree of an ops branch*, so it is routinely absent — never
+bootstrapped, pruned, re-cloned, or a `--repos <glob>`/`--db <central-path>` run over repos that
+never had one (it was absent from this very repo's checkout at the time). The reader returns `[]`
+while the repo still counts as adopted, so `ingest_ledger` still runs; an ungated wipe consumed the
+marker, found nothing to refill with, and left no future run any reason to retry — wipe-and-reingest
+degrading silently to wipe, with every other guard (transactional, project-scoped, lazy) intact and
+the data gone anyway, because "recomputable from the ledger JSONL source of truth" quietly assumes
+the source is *present*. A project holding a marker had cursor rows by definition, so an empty read
+means the source is missing, never that there is nothing to rebuild; leaving the marker armed is
+correct and self-healing, and it covers the sibling cases for free. The regression test for it was
+confirmed non-vacuous by running it against the unguarded version, where it fails with the surviving
+fact rows at 0.
+
+Verified with real DuckDB and real on-disk JSONL throughout, no mocks. The two pre-existing #380
+tests that asserted the *bug* are rewritten to assert the fix — one of them
+(`test_a_still_open_gap_tracked_in_loopsmith_380_…`) asserted `{"events": 0}` and was green, so the
+red→green flip is proven by that test's own history rather than merely claimed. Nine more tests
+cover the two axes, the third `local-events` space, the stamp-from-glob anti-spoof rule, and
+sibling-writer isolation; a new `insight/tests/test_ledger_cursor_migration.py` covers the
+conversion, its at-most-once property, `ensure_schema` leaving `fact_*` rows byte-identical, the
+project-scoped rebuild (including `fact_handoff` through the rebuild, asserted against what a fresh
+store produces from the same ledger), the fresh-store no-op, the failed-wipe path, and the
+missing-ledger guard. The pid/concurrent-writer test class #380 noted was entirely absent (a lone
+comment, zero tests) now exists at this repo's own #387 bar: four genuine OS subprocesses across two
+rounds, real pids, no threads and no monkeypatched `os.getpid`.
+
+Follow-up worth filing: give `fact_event` a real dedup identity — record each ingested ledger `id`
+(globally unique post-#337) in an `ingest_ledger_seen(project_id, record_id)` bookkeeping sibling —
+so idempotence becomes exact, the cursor becomes a pure optimisation, and neither axis above can
+ever bite again. Out of scope here: it is a different design with a per-record storage cost and its
+own plan cycle.
+
 ### fix(ledger): `_cell()` now escapes `\r` too, matching #427's fix in `watch_classify.py` (#454)
 Independent review of PR #449 (#427, `watch_classify.py`'s sibling `_cell()`) found that
 `ledger.py`'s ORIGINAL `_cell()` -- the one #449's copy was duplicated from -- was never actually

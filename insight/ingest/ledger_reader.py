@@ -162,39 +162,62 @@ def seq_of(entry):
     return _seq(entry)
 
 
+#: The `stream` tag (issue #380) read_all_with_reliability stamps on every record, one value per
+#: source glob. 'entries'/'events' are ledger.py's own STREAMS constants, verbatim. 'local-events'
+#: names the third glob -- the local `<sdlc>/events/` directory, read only when telemetry.share is
+#: off -- which ledger.py has no constant for because nothing in the plugin writes it; the reader
+#: accepts it, so it needs a name of its own here.
+STREAM_ENTRIES = "entries"
+STREAM_EVENTS = "events"
+STREAM_LOCAL_EVENTS = "local-events"
+
+
 def read_all_with_reliability(sdlc_dir):
     """Same union and the same oldest-first (ts, actor, seq) sort as read_all, but each
-    returned dict gains one extra key, 'reliability_class': 1 for a record read from
-    ledger/entries/ (Python-controlled -- an actor cannot forget to write a lifecycle line,
-    spec §3's Class 1), 2 for one from ledger/events/ or sdlc_dir/events/ (agent-emitted,
-    best-effort, Class 2). This is the ONE place that distinction is made, so
-    insight/ingest/ledger_writer.py (and anything after it) never has to re-derive "which
-    stream did this come from" from a merged list that has already forgotten -- read_all's own
-    return value carries no such marker, by design (every other current caller -- open_claims,
-    render, team, addressed_to's ledger.py equivalents -- treats the union as one undifferentiated
-    stream, and adding an unrequested key to read_all's own dicts would be an unrelated,
-    untested behaviour change to a function three other stories already depend on byte-for-byte).
+    returned dict gains two extra keys.
+
+    'reliability_class': 1 for a record read from ledger/entries/ (Python-controlled -- an actor
+    cannot forget to write a lifecycle line, spec §3's Class 1), 2 for one from ledger/events/ or
+    sdlc_dir/events/ (agent-emitted, best-effort, Class 2).
+
+    'stream' (issue #380): which of the three globs the record was actually READ from --
+    'entries', 'events' or 'local-events'. reliability_class cannot stand in for it: the second
+    and third globs are BOTH class 2, yet they are different directories, and ledger.py derives a
+    record's `seq` from the line count of the one file it is appending to -- so each glob is its
+    own independent counter. insight/ingest/ledger_writer.py's resume cursor keys on this, and
+    without it the streams' seq spaces collide and the shorter one is silently swallowed whole.
+
+    Both tags are stamped from the glob, never read from the record. A ledger line is a
+    hand-editable file, and one carrying its own "stream": "entries" while sitting in
+    ledger/events/ must not be able to talk itself onto another counter's watermark -- so the
+    keyword arguments below deliberately OVERRIDE any same-named key already in the record.
+
+    This is the ONE place the distinction is made, so ledger_writer.py (and anything after it)
+    never has to re-derive "which stream did this come from" from a merged list that has already
+    forgotten -- read_all's own return value carries no such marker, by design (every other
+    current caller -- open_claims, render, team, addressed_to's ledger.py equivalents -- treats
+    the union as one undifferentiated stream, and adding an unrequested key to read_all's own
+    dicts would be an unrelated, untested behaviour change to a function three other stories
+    already depend on byte-for-byte).
 
     NOT a rewrite of read_all's own internals: same three globs (ledger/entries, ledger/events,
     sdlc_dir/events gated on telemetry.share is off), same _glob_records/_telemetry_share_is_off
-    helpers, same _sort_key. Only the per-record tag and the point at which it is attached are
+    helpers, same _sort_key. Only the per-record tags and the point at which they are attached are
     new. See issue #105 and the module docstring above.
 
-    Today, ledger.py itself has no `stream` parameter yet (that is #136, E6.S1) -- every real
-    ledger write lands in ledger/entries/, so in practice every record read here carries
-    reliability_class=1 until an events-stream writer exists. This function is nonetheless
-    written against the SHAPE the spec already commits to (§3, §A.1), not against today's
-    single-stream reality, so it needs no revision the day #136 starts populating
-    ledger/events/ -- only ledger_writer.py's resume-cursor key (deliberately (project, actor),
-    not (project, actor, stream) -- see that module's own docstring) will need widening then."""
+    An earlier revision of this docstring noted that ledger.py had no `stream` parameter yet
+    ("that is #136, E6.S1") and that every real write therefore landed in ledger/entries/. That is
+    no longer true: #136 (PR #241) added `stream=` to ledger.py -- its own done_when reads "ids
+    stay monotonic per (actor, stream)" -- and PR #242 made sync.py publish the second stream to
+    the shared ledger branch, which is what put both streams' records in front of this reader."""
     base = pathlib.Path(sdlc_dir)
     tagged = []
     for rec in _glob_records(base / "ledger" / "entries"):
-        tagged.append(dict(rec, reliability_class=1))
+        tagged.append(dict(rec, reliability_class=1, stream=STREAM_ENTRIES))
     for rec in _glob_records(base / "ledger" / "events"):
-        tagged.append(dict(rec, reliability_class=2))
+        tagged.append(dict(rec, reliability_class=2, stream=STREAM_EVENTS))
     if _telemetry_share_is_off(base):
         for rec in _glob_records(base / "events"):
-            tagged.append(dict(rec, reliability_class=2))
+            tagged.append(dict(rec, reliability_class=2, stream=STREAM_LOCAL_EVENTS))
     tagged.sort(key=_sort_key)
     return tagged

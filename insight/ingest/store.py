@@ -3,7 +3,7 @@
 
 Scope is schema bootstrap plus a narrow, additive schema evolution — no collector
 adapter, no ledger reading, no rows written, no `phase_trace_completeness`
-computation. `ensure_schema` runs eleven `CREATE TABLE IF NOT EXISTS` statements,
+computation. `ensure_schema` runs twelve `CREATE TABLE IF NOT EXISTS` statements,
 then eleven idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements — two
 added by issue #102, a third by issue #103, three more by issue #104, two
 (dim_project.adopted/skip_reason) by issue #106, a ninth (fact_event.model) by
@@ -19,14 +19,35 @@ column's TYPE, or drop one, still needs to introspect `information_schema.column
 and diff against the expected shape, exactly as this docstring said before #102;
 that remains explicitly not built here.
 
+A THIRD PHASE (issue #380) runs after both, and is the ONE recorded exception to the
+paragraph above — still not a framework, just a single one-shot conversion that the
+additive `ALTER` mechanism structurally cannot express, because it changes a PRIMARY
+KEY. It widens `ingest_ledger_cursor`'s key from `(project_id, actor_id)` to
+`(project_id, actor_id, writer_id, stream)`; see `_migrate_cursor_key` below for the
+mechanics and `insight/ingest/ledger_writer.py`'s own "#380" docstring section for why
+the old per-actor key was silently losing records. It is guarded on
+`information_schema.columns` — exactly the introspection this docstring has always
+said a non-additive change would need — so it fires at most once per store and is a
+no-op on a fresh one. It does only the STRUCTURAL half (copy the old rows into a
+carrier table, drop, recreate at the new shape) and is deliberately non-destructive of
+every `fact_*` table: `ensure_schema` runs on EVERY `open_store()`, including the
+read-intent commands (`insight gaps`, `dash`, `ic`, `manager`, `panel`, `leadership`,
+`cross-functional`), so a destructive statement here would fire on a command that only
+meant to render. The rebuild that consumes the carrier lives in `ingest_ledger`,
+per-project and lazy, inside the very call that immediately refills the rows.
+
 `ingest_ledger_cursor` (issue #105, E1.S7) is the eleventh table, a NEW CREATE
 rather than an ALTER (same footing as fact_collector_pack/fact_slice/
 fact_merge_lead_time/fact_pr_review/fact_pr_check before it) — the resume
 watermark `insight/ingest/ledger_writer.py` reads/advances so a second `insight
 ingest` run neither re-writes a ledger record it already landed in fact_event/
-fact_handoff nor skips one a partial run never reached. It is deliberately NOT
-named `fact_*`/`dim_*`: it is not a fact about the project, it is this ingest
-path's own bookkeeping, the same distinction that keeps it out of
+fact_handoff nor skips one a partial run never reached. `ingest_ledger_cursor_legacy`
+(issue #380) is the twelfth, and carries the conversion above: it holds each
+pre-migration `(project_id, actor_id, last_seq)` row verbatim, which is at once the
+per-project "this project's ledger facts predate the new key, rebuild them" marker and
+the audit trail of where every actor's watermark stood before the change. Neither is
+named `fact_*`/`dim_*`: they are not facts about the project, they are this ingest
+path's own bookkeeping, the same distinction that keeps them out of
 docs/superpowers/specs/2026-07-30-loopsmith-insight-data-platform-design.md §B.3's
 star schema entirely.
 
@@ -51,12 +72,36 @@ DEFAULT_DB_PATH = pathlib.Path(".sdlc") / "insight.duckdb"
 
 #: The tables ensure_schema creates. The first five are #99's schema bootstrap (spec §B.3);
 #: fact_collector_pack (#100), fact_slice (#102), fact_merge_lead_time (#103), fact_pr_review
-#: and fact_pr_check (#104), and ingest_ledger_cursor (#105) are design decisions of those
-#: stories, not part of spec §B.3 -- see .sdlc/plans/100.md §C, .sdlc/plans/102.md §C,
-#: .sdlc/plans/103.md §C, .sdlc/plans/104.md §A.
+#: and fact_pr_check (#104), ingest_ledger_cursor (#105) and ingest_ledger_cursor_legacy (#380)
+#: are design decisions of those stories, not part of spec §B.3 -- see .sdlc/plans/100.md §C,
+#: .sdlc/plans/102.md §C, .sdlc/plans/103.md §C, .sdlc/plans/104.md §A.
 TABLES = ("dim_project", "dim_actor", "fact_goal", "fact_event", "fact_handoff",
           "fact_collector_pack", "fact_slice", "fact_merge_lead_time",
-          "fact_pr_review", "fact_pr_check", "ingest_ledger_cursor")
+          "fact_pr_review", "fact_pr_check", "ingest_ledger_cursor",
+          "ingest_ledger_cursor_legacy")
+
+#: Named, not inlined into _DDL, because `_migrate_cursor_key` recreates the table from this
+#: EXACT text after dropping the old one -- a second, hand-copied CREATE would be free to drift
+#: from the one a fresh store gets, and the whole point of the conversion is that a migrated
+#: store and a fresh store end up indistinguishable.
+#:
+#: `writer_id` is `<actor>:<pid>` for a post-#337 `<actor>:<pid>:<seq>` id and the bare actor for
+#: a legacy 2-part one; `stream` is the reader's own source glob ('entries'/'events'/
+#: 'local-events'). Both are part of the key because ledger.py derives `seq` from the LINE COUNT
+#: of the single file it appends to, and that file is per (actor, pid, stream) -- so one actor's
+#: records arrive carrying several independent counters, each needing its own watermark. Neither
+#: column may be NULL (no PRIMARY KEY column may), which is why ledger_writer's "" sentinel
+#: convention for a missing actor extends to both.
+_CURSOR_DDL = """
+    CREATE TABLE IF NOT EXISTS ingest_ledger_cursor (
+        project_id VARCHAR,
+        actor_id VARCHAR,
+        writer_id VARCHAR,
+        stream VARCHAR,
+        last_seq BIGINT,
+        PRIMARY KEY (project_id, actor_id, writer_id, stream)
+    )
+"""
 
 _DDL = (
     """
@@ -213,12 +258,12 @@ _DDL = (
         PRIMARY KEY (project_id, pr_number, check_name)
     )
     """,
+    _CURSOR_DDL,
     """
-    CREATE TABLE IF NOT EXISTS ingest_ledger_cursor (
+    CREATE TABLE IF NOT EXISTS ingest_ledger_cursor_legacy (
         project_id VARCHAR,
         actor_id VARCHAR,
-        last_seq BIGINT,
-        PRIMARY KEY (project_id, actor_id)
+        last_seq BIGINT
     )
     """,
 )
@@ -252,19 +297,79 @@ def resolve_db_path(db_path=None):
     return pathlib.Path(db_path) if db_path is not None else DEFAULT_DB_PATH
 
 
+def _cursor_needs_writer_key(conn):
+    """True exactly while `ingest_ledger_cursor` is still at its pre-#380 shape. The probe is the
+    presence of `writer_id`, not a version row or a marker file: it is derived from the store's
+    own catalog, so it cannot disagree with reality, and it is self-extinguishing -- the moment
+    the conversion runs, the column exists and this returns False forever after."""
+    columns = conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'ingest_ledger_cursor'"
+    ).fetchall()
+    return "writer_id" not in {row[0] for row in columns}
+
+
+def _migrate_cursor_key(conn):
+    """issue #380, the STRUCTURAL half of the cursor key widening: move every pre-migration row
+    into `ingest_ledger_cursor_legacy`, then drop and recreate the cursor at its new shape.
+
+    The old rows are moved rather than converted because they CANNOT be converted. A row says
+    "project P, actor alice, seq 5" and answers neither "which writer process" nor "which stream"
+    -- and that information exists nowhere else, not even in the fact tables the rows describe
+    (`fact_event` carries no record identity, and `fact_handoff` merges a hand-off and every later
+    ack into one last-write-wins row). Applied as a floor for unknown writers/streams the old
+    value would keep swallowing exactly the records this change exists to stop swallowing; dropped
+    without a floor it would re-ingest already-landed records as duplicates, since neither fact
+    table has a dedup constraint. So the derived rows are rebuilt from the ledger JSONL instead --
+    `insight/ingest/ledger_writer.ingest_ledger` does that, per project and lazily, consuming the
+    carrier row as it goes.
+
+    ONE TRANSACTION. Verified against DuckDB directly, including a SIGKILL mid-transaction: after
+    a hard kill the old cursor table is intact with all its rows and the carrier is empty, so
+    there is no window in which a store is left with neither. A failure ROLLBACKs to exactly that
+    same state and re-raises -- `ensure_schema` has never swallowed DDL errors, and a store whose
+    conversion did not complete must not then be used as though it had."""
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        conn.execute(
+            "INSERT INTO ingest_ledger_cursor_legacy (project_id, actor_id, last_seq) "
+            "SELECT project_id, actor_id, last_seq FROM ingest_ledger_cursor"
+        )
+        conn.execute("DROP TABLE ingest_ledger_cursor")
+        conn.execute(_CURSOR_DDL)
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            # A DuckDB statement error already aborts its transaction, so the explicit ROLLBACK
+            # can itself report "no transaction is active" -- never let that mask the real cause.
+            pass
+        raise
+
+
 def ensure_schema(conn):
-    """Run the eleven idempotent `CREATE TABLE IF NOT EXISTS` statements, then the eleven
+    """Run the twelve idempotent `CREATE TABLE IF NOT EXISTS` statements, then the eleven
     idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements (issues
     #102/#103/#104/#106/#146/#147 -- see the module docstring and .sdlc/plans/102.md §B /
     .sdlc/plans/103.md §C / .sdlc/plans/104.md §A / .sdlc/plans/106.md Design decision D /
-    .sdlc/plans/146.md Design decision 4 / .sdlc/plans/147.md Design decision 1), against an
+    .sdlc/plans/146.md Design decision 4 / .sdlc/plans/147.md Design decision 1), and finally
+    issue #380's one-shot `ingest_ledger_cursor` key conversion, against an
     already-open DuckDB connection. Safe to
     call repeatedly against the same connection or file, including a file created by an
-    earlier story before these columns existed."""
+    earlier story before these columns existed.
+
+    The third phase runs LAST because the first two are no-ops against the old cursor table (the
+    CREATE is `IF NOT EXISTS` and the table already exists; no ALTER names it), so only the
+    conversion can actually change its shape. It is structural only -- it never deletes a
+    `fact_*` row -- because this function runs on every `open_store()`, read-intent commands
+    included."""
     for ddl in _DDL:
         conn.execute(ddl)
     for ddl in _ALTER:
         conn.execute(ddl)
+    if _cursor_needs_writer_key(conn):
+        _migrate_cursor_key(conn)
 
 
 def open_store(db_path=None):
