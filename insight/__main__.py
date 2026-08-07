@@ -174,6 +174,25 @@ def build_parser():
              "fixed vocabulary exists yet (E19's job)",
     )
 
+    # `verify` (issue #307 [E18.S2], .sdlc/plans/307.md Decision 1): the Node web tier's
+    # credential-check bridge shells out to this. Username/password NEVER arrive as flags or
+    # positionals here either (same reasoning as `add`'s own comment above) -- they arrive as a
+    # single JSON object on stdin. `--accounts-path` exists ONLY on this action, not on `add`: the
+    # Node bridge always passes it explicitly rather than relying on this process's CWD matching
+    # resolve_accounts_path's CWD-relative default, which would be wrong in the standalone Docker
+    # runtime (see .sdlc/plans/307.md Decision 1's CWD discussion).
+    users_verify_parser = users_subparsers.add_parser(
+        "verify",
+        help="verify a username/password pair read as JSON from stdin, for the Node web tier's "
+             "credential bridge (issue #307 [E18.S2]); never accepts the password as a flag",
+    )
+    users_verify_parser.add_argument(
+        "--accounts-path", dest="accounts_path", default=None,
+        help="override the accounts store path (default: resolve_accounts_path's own CWD-"
+             "relative default, kept for manual/local use; the Node bridge always passes this "
+             "explicitly)",
+    )
+
     # the stub loop now has nothing left in it -- kept as an empty tuple rather than deleted, so
     # a FUTURE new stub subcommand has an obvious place to land, mirroring how this loop already
     # shrank from {"gaps", "dash"} to {"dash"} in #122 without changing shape
@@ -564,6 +583,46 @@ def main(argv=None):
             return 1
 
         print("insight users add: created account %r (role: %s)" % (args.username, args.role))
+        return 0
+    if args.command == "users" and args.action == "verify":
+        # Lazy import, same reasoning as the `add` branch just above: keeps argon2-cffi (and
+        # insight.accounts.store/hashing) out of the import graph for --help and every other
+        # subcommand. issue #307 [E18.S2], .sdlc/plans/307.md Decision 1.
+        import json as _json
+        from insight.accounts import hashing, store
+
+        try:
+            payload = _json.load(sys.stdin)
+            username = payload["username"]
+            password = payload["password"]
+            if not isinstance(username, str) or not isinstance(password, str):
+                raise ValueError("username and password must both be strings")
+        except Exception as e:
+            print("insight users verify: malformed request on stdin: %s" % e, file=sys.stderr)
+            return 4
+
+        try:
+            role = store.verify_user(username, password, accounts_path=args.accounts_path)
+        except store.InvalidCredentials:
+            # The stdout marker is load-bearing, not decoration (independent security review of
+            # #307). The Node bridge must not read a BARE exit 1 as "wrong password": CPython
+            # exits 1 for any uncaught exception -- e.g. the ModuleNotFoundError from launching
+            # this with the wrong CWD -- and the "not implemented yet" fallthrough below returns 1
+            # too. Without a positive verdict on stdout, every one of those would answer "invalid
+            # username or password" to users typing the CORRECT password, hiding an outage behind
+            # a credentials message. Still ONE message for wrong-password/unknown-user/corrupt-
+            # record, so this leaks no oracle (store.InvalidCredentials' own design).
+            print(_json.dumps({"error": "invalid_credentials"}))
+            print("insight users verify: invalid username or password", file=sys.stderr)
+            return 1
+        except hashing.KDFUnavailableError as e:
+            print("insight users verify: %s" % e, file=sys.stderr)
+            return 2
+        except store.AccountsStoreCorruptError as e:
+            print("insight users verify: %s" % e, file=sys.stderr)
+            return 3
+
+        print(_json.dumps({"role": role}))
         return 0
     issue = _TRACKING_ISSUE[args.command]
     print(

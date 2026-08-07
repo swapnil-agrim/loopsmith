@@ -119,3 +119,145 @@ def test_users_add_reports_kdf_unavailable_loudly_not_as_a_traceback(tmp_path, m
     assert "pip install" in err
     assert "Traceback" not in out
     assert "Traceback" not in err
+
+
+def test_help_lists_verify_subcommand(capsys):
+    """Ungated -- building the parser and rendering --help never imports insight.accounts."""
+    parser = build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["users", "verify", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "accounts-path" in out
+
+
+def test_users_verify_malformed_stdin_exits_4_not_traceback(monkeypatch, capsys):
+    """Ungated: a Node bridge bug (bad JSON, missing keys) is an operator problem, distinct from
+    exit 1 (bad credentials) -- issue #307 [E18.S2], .sdlc/plans/307.md Decision 1."""
+    import io
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+    code = main(["users", "verify"])
+    assert code == 4
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "Traceback" not in err
+
+
+def test_users_verify_kdf_unavailable_exits_2_never_as_invalid_credentials(
+    tmp_path, monkeypatch, capsys
+):
+    """Ungated, and MUST run (not skip) on this machine -- the CLI-level counterpart to
+    test_users_add_reports_kdf_unavailable_loudly_not_as_a_traceback. This is the seam Decision 1
+    exists to protect: a missing KDF must never read as 'wrong password' to a caller parsing exit
+    codes, or it silently locks out every user behind a misleading message."""
+    import io, json
+    import insight.accounts.hashing as hashing
+    monkeypatch.setattr(hashing, "argon2", None)
+    monkeypatch.setattr(
+        "sys.stdin", io.StringIO(json.dumps({"username": "alice", "password": "x"}))
+    )
+    accounts_path = tmp_path / "accounts.json"
+    code = main(["users", "verify", "--accounts-path", str(accounts_path)])
+    assert code == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "argon2-cffi" in err
+
+
+def test_users_verify_correct_password_returns_role_exit_0(tmp_path, monkeypatch, capsys):
+    """Gated: exercises the real KDF end to end."""
+    pytest.importorskip("argon2")
+    import io, json
+    import insight.accounts.hashing as hashing
+    from insight.accounts import store
+    monkeypatch.setattr(hashing, "PRODUCTION_PARAMS", hashing.TEST_PARAMS)
+    accounts_path = tmp_path / "accounts.json"
+    store.add_user("alice", "Tr0ub4dor&3", "manager", accounts_path=accounts_path)
+
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(json.dumps({"username": "alice", "password": "Tr0ub4dor&3"})),
+    )
+    code = main(["users", "verify", "--accounts-path", str(accounts_path)])
+    assert code == 0
+    out, err = capsys.readouterr()
+    assert json.loads(out) == {"role": "manager"}
+    assert err == ""
+    assert "Tr0ub4dor&3" not in out
+
+
+def test_users_verify_wrong_password_exits_1_generic_message(tmp_path, monkeypatch, capsys):
+    """Gated: needs a real hash to compare against."""
+    pytest.importorskip("argon2")
+    import io, json
+    import insight.accounts.hashing as hashing
+    from insight.accounts import store
+    monkeypatch.setattr(hashing, "PRODUCTION_PARAMS", hashing.TEST_PARAMS)
+    accounts_path = tmp_path / "accounts.json"
+    store.add_user("alice", "Tr0ub4dor&3", "manager", accounts_path=accounts_path)
+
+    monkeypatch.setattr(
+        "sys.stdin", io.StringIO(json.dumps({"username": "alice", "password": "wrong"}))
+    )
+    code = main(["users", "verify", "--accounts-path", str(accounts_path)])
+    assert code == 1
+    out, err = capsys.readouterr()
+    # stdout carries the machine verdict the Node bridge REQUIRES before it will call this a
+    # credentials failure (independent security review of #307): exit 1 alone is also what CPython
+    # returns for any uncaught exception, so a bare exit 1 must read as an operator failure. See
+    # test_users_verify_exit_1_carries_the_invalid_credentials_marker below.
+    assert json.loads(out) == {"error": "invalid_credentials"}
+    assert "invalid username or password" in err
+
+
+def test_users_verify_exit_1_carries_the_invalid_credentials_marker(
+    tmp_path, monkeypatch, capsys
+):
+    """The Node half of this contract is pinned in
+    insight/web/scripts/prove-python-bridge-exit-codes.mjs; this is the Python half.
+
+    Why it exists: pythonBridge.ts used to map a BARE exit 1 to "invalid username or password".
+    CPython also exits 1 for any uncaught exception -- e.g. the ModuleNotFoundError raised when
+    `insight` is not importable from the child's CWD, a fragility pythonBridge.ts's own REPO_ROOT
+    comment admits -- and __main__.py's "not implemented yet" fallthrough returns 1 too. So a
+    broken interpreter told users with the CORRECT password that it was wrong, masking a total
+    outage as a credentials problem. The verdict is now asserted positively here and demanded
+    there.
+
+    Gated: reaching InvalidCredentials for an UNKNOWN user still pays store.py's dummy-hash KDF
+    (the timing-equalisation path), so this needs argon2-cffi just like its siblings above."""
+    pytest.importorskip("argon2")
+    import io, json
+    accounts_path = tmp_path / "accounts.json"
+    accounts_path.write_text(json.dumps({"version": 1, "users": {}}))
+    monkeypatch.setattr(
+        "sys.stdin", io.StringIO(json.dumps({"username": "nobody", "password": "x"}))
+    )
+    code = main(["users", "verify", "--accounts-path", str(accounts_path)])
+    assert code == 1
+    out, err = capsys.readouterr()
+    assert json.loads(out) == {"error": "invalid_credentials"}
+    # ...and the marker stays a constant: it must not become an oracle distinguishing "no such
+    # user" from "wrong password", which is precisely what store.InvalidCredentials' single
+    # message and dummy-hash KDF exist to prevent.
+    assert "nobody" not in out
+    assert "invalid username or password" in err
+
+
+def test_users_verify_corrupt_store_exits_3_not_as_invalid_credentials(
+    tmp_path, monkeypatch, capsys
+):
+    """Ungated: a whole-store parse failure happens before any KDF call, so this runs identically
+    with or without argon2-cffi installed -- see store.AccountsStoreCorruptError's own docstring
+    distinguishing 'store as a whole is broken' from 'one record is bad' (the latter folds into
+    InvalidCredentials/exit 1, correctly, inside store.verify_user itself)."""
+    import io, json
+    accounts_path = tmp_path / "accounts.json"
+    accounts_path.write_text("{not valid json")
+    monkeypatch.setattr(
+        "sys.stdin", io.StringIO(json.dumps({"username": "alice", "password": "x"}))
+    )
+    code = main(["users", "verify", "--accounts-path", str(accounts_path)])
+    assert code == 3
+    out, err = capsys.readouterr()
+    assert out == ""

@@ -85,3 +85,23 @@ export async function runScenarioAsync(prefix, fn) {
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+/** Async sibling of runScenarioInWeb() -- same "await before cleanup" reasoning as
+ * runScenarioAsync() above, but rooted under insight/web/ (mkScratchInWeb()) instead of the OS
+ * tmpdir, for a scenario that BOTH dynamic-`import()`s its compiled output AND needs tsc's
+ * ordinary upward node_modules walk to resolve a real package -- e.g. `@types/node` for a
+ * fixture that imports a `node:`-prefixed built-in (issue #307 [E18.S2],
+ * .sdlc/plans/307.md Task 4: pythonBridge.ts imports `node:child_process`/`node:path`, and a
+ * scratch dir under the OS tmpdir has no node_modules ancestor to find `@types/node` in at all --
+ * `tsc` fails with TS2688 "Cannot find type definition file for 'node'" there, exactly the
+ * failure mkScratchInWeb()'s own docstring already names for `@types/react`). The caller's
+ * `prefix` MUST be covered by an insight/web/.gitignore entry, same requirement as
+ * mkScratchInWeb() itself. */
+export async function runScenarioInWebAsync(prefix, fn) {
+  const dir = mkScratchInWeb(prefix);
+  try {
+    return await fn(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
