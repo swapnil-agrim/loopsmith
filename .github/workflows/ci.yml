@@ -154,5 +154,25 @@ jobs:
       - name: prove role survives Auth.js's real JWT pipeline at the proxy layer (npm run prove:role-forbidden)
         run: npm run prove:role-forbidden
         working-directory: insight/web
+      # issue #310 [E19.S2], .sdlc/plans/310.md Decision 7. `insight web ic`'s query path imports
+      # duckdb (via insight.dash.ic/insight.ingest.store) -- the first thing this job's python3
+      # invocations have ever needed that isn't already satisfiable from the repo's own source
+      # tree (users verify, exercised by prove-python-bridge-exit-codes.mjs above, never hit this:
+      # insight.accounts.store has no third-party dependency). Mirrors the `insight` job's own two
+      # install steps verbatim, so there is one source of truth for "what insight/ needs
+      # installed," not a second, independently-drifting duckdb~=1.4 pip line.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install insight/ and its own deps (duckdb) -- prove:ic-no-leak's seed-ic-fixture.py needs it
+        run: python -m pip install -e insight/
+      # CI-only, same family as prove:fonts/prove:role-forbidden above (a booted-server proof has
+      # no place in the always-on offline local gate -- see insight/verify_web.py's own docstring
+      # and .sdlc/config.json's own no-pip-install invariant). Placed after prove:role-forbidden,
+      # the same "no browser needed" family, and after the two install steps just above since its
+      # own seed-ic-fixture.py needs a real duckdb.
+      - name: prove no cross-actor leak on /ic, server-side, across two real identities (npm run prove:ic-no-leak)
+        run: npm run prove:ic-no-leak
+        working-directory: insight/web
       - name: docker build (Dockerfile.web) -- the Dockerfile is proven to build, not just present
         run: docker build -f insight/Dockerfile.web -t insight-web-scaffold:ci insight/

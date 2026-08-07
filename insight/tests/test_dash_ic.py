@@ -11,6 +11,7 @@ import pytest
 duckdb = pytest.importorskip("duckdb")
 
 from insight.dash.render import assert_self_contained  # noqa: E402
+from insight.gaps.report import json_default  # noqa: E402
 from insight.ingest.store import ensure_schema  # noqa: E402
 from insight.dash.ic import (  # noqa: E402
     _actor_ever_appeared,
@@ -20,8 +21,13 @@ from insight.dash.ic import (  # noqa: E402
     _my_queue_rows,
     _park_count,
     _verdicts_given_rows,
+    collect_ic_payload,
     render_ic_view,
 )
+# issue #310 [E19.S2] Task 1: the alice/bob/carol fixture used by test_dash_ic_no_leak.py, reused
+# here (not re-derived) for the two new collect_ic_payload tests below -- see ic_fixture.py's own
+# docstring.
+from insight.tests.ic_fixture import seed_alice_bob_carol  # noqa: E402
 
 #: NAIVE UTC, deliberately -- fact_event.ts/fact_handoff.opened_ts are TIMESTAMP (no tz) columns,
 #: and duckdb's python driver silently converts a tz-AWARE datetime parameter to the LOCAL
@@ -272,3 +278,57 @@ def test_render_ic_view_payload_round_trips_through_the_json_script_block(conn):
     payload = _data_script(html_text)
     assert payload["actor"] == "alice"
     assert len(payload["my_queue"]) == summary["my_queue_count"] == 1
+
+
+# --------------------------------------------------------------------------- collect_ic_payload (issue #310 Task 1)
+
+
+def test_collect_ic_payload_matches_render_ic_views_internal_payload(conn):
+    """Calls `collect_ic_payload` directly against the alice/bob/carol fixture
+    (`test_dash_ic_no_leak.py`'s own fixture, reused via `ic_fixture.seed_alice_bob_carol` --
+    not re-derived) and asserts its shape/values match what `render_ic_view`'s own inlined
+    `<script>` block reports for the same inputs -- the two must never drift apart, since
+    `render_ic_view` now calls this very function (Task 1's pure-refactor claim)."""
+    seed_alice_bob_carol(conn)
+    payload = collect_ic_payload(conn, "alice", project_id="proj1", now=NOW)
+
+    assert payload["actor"] == "alice"
+    assert payload["actor_ever_appeared"] is True
+    assert payload["generated_at"] == NOW.isoformat()
+    assert [r["goal_id"] for r in payload["my_queue"]] == ["g-alice-1"]
+    assert payload["blocked_on_me"] == [{
+        "from_actor": "bob", "to_actor": "alice", "area": "insight", "issue": 301,
+        "priority": "p1", "opened_ts": NOW,
+    }]
+    assert payload["handoff_ever_ingested"] is True
+    assert payload["park_count"] == 0
+    assert [r["pr_number"] for r in payload["verdicts_given"]] == [9101]
+    assert payload["cost"] == {
+        "tokens_in": None, "tokens_out": None, "cost_cents": None, "n": 0,
+    }
+
+    # render_ic_view, given the identical inputs, must report the identical payload through its
+    # own inlined <script> block -- proving the two paths did not silently diverge. Compared via
+    # a JSON round-trip on BOTH sides (not raw equality) because `payload` still carries real
+    # `datetime` objects (e.g. `blocked_on_me[0]["opened_ts"]`) while the rendered block already
+    # went through `json_script`'s own datetime-to-string serialisation.
+    html_text, summary = render_ic_view(conn, "alice", project_id="proj1", now=NOW)
+    rendered_payload = _data_script(html_text)
+    payload_via_json = json.loads(json.dumps(payload, default=json_default))
+    assert rendered_payload == payload_via_json
+    assert summary["my_queue_count"] == len(payload["my_queue"])
+    assert summary["blocked_on_me_count"] == len(payload["blocked_on_me"])
+    assert summary["verdicts_given_count"] == len(payload["verdicts_given"])
+
+
+def test_collect_ic_payload_never_carries_carols_needles(conn):
+    """Payload-level leak test (issue #310 Task 1) -- independent of `render_ic_view`'s HTML
+    string. `collect_ic_payload`'s return value is the exact object the new `insight web ic` CLI
+    bridge (Task 2) ships over the wire, so it earns its own whole-string check: serialise it with
+    the same `json_default` the CLI bridge uses and assert none of carol's needles appear anywhere
+    in the serialised text -- mirrors `test_dash_ic_no_leak.py`'s own needle list exactly."""
+    seed_alice_bob_carol(conn)
+    payload = collect_ic_payload(conn, "alice", project_id="proj1", now=NOW)
+    serialized = json.dumps(payload, default=json_default)
+    for needle in ("carol", "g-carol-1", "g-carol-2", "9103", "303"):
+        assert needle not in serialized, f"carol leaked via {needle!r}"

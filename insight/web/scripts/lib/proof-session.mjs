@@ -36,6 +36,42 @@ export const PROOF_AUTH_SECRET =
 // as anonymous (a redirect to /login, not an error).
 export const SESSION_COOKIE_NAME = "authjs.session-token";
 
+// issue #310 [E19.S2]: found live, not anticipated -- src/proxy.ts's own auth() call always
+// carries a real Request, so isSecureRequest(request) correctly evaluates useSecureCookies=false
+// for a loopback-hosted plain-http proof server (src/lib/auth/secure.ts's LOOPBACK_HOSTS carve-
+// out), matching SESSION_COOKIE_NAME above -- exactly what made prove-role-forbidden-real-
+// server.mjs work. But a Server Component's OWN no-argument auth() call (next-auth/lib/index.js's
+// "React Server Components" branch) always calls the app's config factory with `request:
+// undefined`, and auth.ts's own useSecureCookies ternary reads `request ? isSecureRequest(request)
+// : true` -- FAIL CLOSED when there is no request to judge, UNCONDITIONALLY, regardless of the
+// server's real scheme. So any route whose page.tsx calls auth() itself (first one: /ic, issue
+// #310) looks for the `__Secure-`-prefixed cookie name no matter what -- @auth/core's own
+// defaultCookies() (cookie.ts:59-60): `${useSecureCookies ? "__Secure-" : ""}authjs.session-token`.
+// A cookie minted only under SESSION_COOKIE_NAME above silently reads as anonymous THERE even
+// though it works fine at the proxy layer -- not a redirect (proxy already let the request through
+// on role), just a null session inside the page. This constant, and sessionCookieHeader() below,
+// exist so a proof exercising a Server Component's own auth() call (not just proxy.ts's role
+// gate) can send BOTH names and let each layer find whichever one it is actually looking for.
+export const SECURE_SESSION_COOKIE_NAME = "__Secure-authjs.session-token";
+
+/** A `Cookie` header value carrying `role`/`actor` under BOTH the plain and `__Secure`-prefixed
+ * session cookie names (see SECURE_SESSION_COOKIE_NAME's own comment for why both are needed).
+ *
+ * TWO SEPARATELY-ENCODED TOKENS, not one token string reused under two names -- found live, the
+ * second half of the same discovery. `encode()`'s own `salt` parameter IS the cookie name (see
+ * mintSessionToken's own comment: it is mixed into the key derivation), so a token minted with
+ * `salt: SESSION_COOKIE_NAME` decodes to NULL under `SECURE_SESSION_COOKIE_NAME` -- a mismatch
+ * fails closed rather than throwing, which made the first version of this function look plausible
+ * right up until it was actually run against a real server. Each token below carries the
+ * IDENTICAL payload, salted for the cookie name it will actually be decoded under. */
+export async function sessionCookieHeader(role, actor) {
+  const [plain, secure] = await Promise.all([
+    mintTokenForCookieName(SESSION_COOKIE_NAME, role, actor),
+    mintTokenForCookieName(SECURE_SESSION_COOKIE_NAME, role, actor),
+  ]);
+  return `${SESSION_COOKIE_NAME}=${plain}; ${SECURE_SESSION_COOKIE_NAME}=${secure}`;
+}
+
 /** The env a proof's `next start` must be spawned with for the minted cookie to validate. */
 export function proofServerEnv() {
   return {
@@ -73,11 +109,24 @@ export function proofServerEnv() {
 // so the minted cookie is byte-identical in format to what a real sign-in issues and is decoded by
 // the exact same next-auth code path `req.auth` runs through at the proxy layer -- this is what
 // makes that proof a real test of "does `role` survive JWT-decode -> session-callback", not a stub.
-export async function mintSessionToken(role = "admin") {
+//
+// issue #310 [E19.S2]: `actor` became a SECOND parameter for one reason -- proving that one actor
+// never receives another's data structurally requires minting two DIFFERENT actors in one proof
+// run, and this function hardcoded `"proof-user"` for every session it had ever minted. Appended
+// as an optional trailing parameter, defaulted to the old literal, so both pre-existing call sites
+// (authenticatedContext() below, and prove-role-forbidden-real-server.mjs's fetchAs()) keep their
+// exact previous behaviour untouched. `name` and `sub` are set to the SAME string deliberately:
+// that is what a real sign-in produces (auth.ts's authorize() returns `{ id: username, name:
+// username, role }`, and Auth.js copies id onto sub), so a proof cannot accidentally exercise a
+// split identity the real login path can never issue.
+/** Shared by mintSessionToken() and sessionCookieHeader() -- `salt` IS the cookie name in
+ * Auth.js's JWT scheme (it is mixed into the key derivation, so a mismatch here decodes to null
+ * (anonymous) rather than throwing), and issue #310's sessionCookieHeader() needs the identical
+ * payload signed under TWO different salts (see that function's own comment). Factored out
+ * rather than duplicated so the two never drift on what a "real sign-in token" contains. */
+function mintTokenForCookieName(cookieName, role, actor) {
   return encode({
-    // salt IS the cookie name in Auth.js's JWT scheme -- it is mixed into the key derivation, so a
-    // mismatch here decodes to null (anonymous) rather than throwing.
-    salt: SESSION_COOKIE_NAME,
+    salt: cookieName,
     secret: PROOF_AUTH_SECRET,
     // issue #308 [E18.S3]. `sessionEpoch` is NOT optional: auth.ts's jwt() callback compares it
     // against getEpoch(token.sub) on every read of an existing token and returns null (-> no
@@ -88,8 +137,12 @@ export async function mintSessionToken(role = "admin") {
     // authenticatedContext(): #309's fetch-driven proofs mint through this function too, and a
     // token without it reads as anonymous -- a 302 to /login that a role proof would misread as
     // "the role was denied".
-    token: { name: "proof-user", sub: "proof-user", role, sessionEpoch: 0 },
+    token: { name: actor, sub: actor, role, sessionEpoch: 0 },
   });
+}
+
+export async function mintSessionToken(role = "admin", actor = "proof-user") {
+  return mintTokenForCookieName(SESSION_COOKIE_NAME, role, actor);
 }
 
 /** A Playwright context carrying a valid Auth.js session for `baseUrl`. */

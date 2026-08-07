@@ -19,8 +19,6 @@ own assertion methodology is falsifiable, not a tautology that would pass agains
 exact same fixture, rendered through a deliberately unfiltered query, must FAIL the same "carol is
 absent" check that the positive tests above rely on.
 """
-import datetime
-
 import pytest
 
 duckdb = pytest.importorskip("duckdb")
@@ -33,56 +31,18 @@ from insight.dash.ic import (  # noqa: E402
     _verdicts_given_rows,
     render_ic_view,
 )
-
-#: NAIVE UTC, deliberately -- see insight/tests/test_dash_ic.py's own NOW comment: duckdb's python
-#: driver silently converts a tz-AWARE datetime parameter to the LOCAL system's naive wall-clock
-#: time on insert, which would desynchronize the exact opened_ts equality check below from what
-#: was actually inserted.
-NOW = datetime.datetime(2026, 8, 1)
+# issue #310 [E19.S2] Task 1: the fixture-writing INSERTs now live in one shared place so
+# test_dash_ic.py and test_cli_web_ic.py can reuse the exact same fixture instead of
+# re-deriving it. NOW is re-exported here (rather than imported separately at each use site
+# below) purely so this file's own body keeps reading `NOW` unchanged.
+from insight.tests.ic_fixture import NOW, seed_alice_bob_carol  # noqa: E402
 
 
 @pytest.fixture
 def conn(tmp_path):
     c = duckdb.connect(str(tmp_path / "s.duckdb"))
     ensure_schema(c)
-
-    # fact_event: alice has one open claim; bob has an open claim AND a park; carol has an open
-    # claim AND a park too -- carol must be totally invisible in alice's rendered view.
-    c.execute(
-        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) "
-        "VALUES "
-        "('proj1', 'g-alice-1', ?, 'alice', 'claimed', 1), "
-        "('proj1', 'g-bob-1',   ?, 'bob',   'claimed', 1), "
-        "('proj1', 'g-bob-2',   ?, 'bob',   'parked',  1), "
-        "('proj1', 'g-carol-1', ?, 'carol', 'claimed', 1), "
-        "('proj1', 'g-carol-2', ?, 'carol', 'parked',  1)",
-        [
-            NOW - datetime.timedelta(days=5), NOW - datetime.timedelta(days=1),
-            NOW - datetime.timedelta(days=2), NOW - datetime.timedelta(days=6),
-            NOW - datetime.timedelta(days=7),
-        ],
-    )
-
-    # fact_handoff: bob -> alice (OPEN, the one legitimate exception), alice -> bob (SETTLED, must
-    # not show), carol -> bob (nothing to do with alice at all, must not show).
-    c.execute(
-        "INSERT INTO fact_handoff (project_id, from_actor, to_actor, area, issue, priority, "
-        "opened_ts, ack_ts, ack_state, settled_ts) VALUES "
-        "('proj1', 'bob', 'alice', 'insight', 301, 'p1', ?, NULL, NULL, NULL), "
-        "('proj1', 'alice', 'bob', 'insight', 302, 'p2', ?, ?, 'resolved', ?), "
-        "('proj1', 'carol', 'bob', 'insight', 303, 'p1', ?, NULL, NULL, NULL)",
-        [NOW, NOW, NOW, NOW, NOW],
-    )
-
-    # fact_pr_review: one verdict each, alice/bob/carol as reviewer.
-    c.execute(
-        "INSERT INTO fact_pr_review (project_id, pr_number, source, event_id, actor, verdict, "
-        "event_ts) VALUES "
-        "('proj1', 9101, 'gh', 'e1', 'alice', 'approved', ?), "
-        "('proj1', 9102, 'gh', 'e2', 'bob', 'changes_requested', ?), "
-        "('proj1', 9103, 'gh', 'e3', 'carol', 'approved', ?)",
-        [NOW, NOW, NOW],
-    )
+    seed_alice_bob_carol(c)
     yield c
     c.close()
 
