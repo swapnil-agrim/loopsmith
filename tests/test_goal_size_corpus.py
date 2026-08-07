@@ -143,5 +143,5 @@ def test_fixtures_carry_no_banned_internal_strings():
         text = path.read_text(encoding="utf-8")
         offenders += [f"{path.name}: {b!r}" for b in _BANNED if b in text]
         if _ACCOUNT_RE.search(text):
-            offenders.append(f"{path.name}: account-name pattern (mstomar, any case)")
+            offenders.append(f"{path.name}: sanitized account-name pattern (see _ACCOUNT_RE, any case)")
     assert not offenders, "internal-string leakage in goal_size fixtures:\n" + "\n".join(offenders)
