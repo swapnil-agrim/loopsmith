@@ -173,6 +173,10 @@ def status(sdlc_dir, now=None):
 
 def goal_view(sdlc_dir, goal):
     """The rendered `goal <id>` output — a string, ready to print."""
+    stem = _stem(goal)
+    unsafe_reason = _unsafe_goal_reason(stem)
+    if unsafe_reason:
+        return f"goal {goal}: refused as unsafe ({unsafe_reason})"
     entries = read_goal(sdlc_dir, goal)
     if not entries:
         return (f'no log entries for {goal} (config needs "action_log": {{"enabled": true}} — '

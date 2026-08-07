@@ -278,6 +278,19 @@ def test_read_goal_never_discloses_a_real_file_outside_the_sandbox_for_a_travers
     assert secret.exists() and "TOP-SECRET-PAYLOAD" in secret.read_text()   # untouched, not deleted either
 
 
+def test_goal_view_distinguishes_unsafe_goal_from_no_entries(tmp_path):
+    """#499 — goal_view() must detect unsafe goals and report a distinct message, not the generic
+    "config needs action_log enabled" hint. The unsafe reason must be included in the output."""
+    d = _sdlc(tmp_path)
+    out = log.goal_view(d, "../../../SECRET")
+    # The output must mention it was refused as unsafe
+    assert "refused as unsafe" in out
+    # It must NOT print the generic config hint
+    assert "action_log" not in out
+    # It must include the actual unsafe reason
+    assert "must not contain" in out or ".." in out
+
+
 def test_epoch_returns_none_for_a_regex_matching_but_semantically_invalid_date():
     """The regex shape alone (`\\d{4}-\\d{2}-\\d{2}...`) can match a syntactically-plausible but
     calendar-invalid value (month 99) — `time.strptime` then raises ValueError, which must degrade
