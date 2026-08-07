@@ -88,14 +88,19 @@ ONE tracked meta-issue via `handoff.create_tracked_issue` first, so a flagged go
 own tracked home instead of only a park comment. A new strict read
 (`GitHubSource.fetch_comments_strict`, deliberately the opposite of `fetch_title_body`'s degrade-
 to-empty) checks the parent's own comments for a prior `loopsmith:decompose-filed` marker and fails
-CLOSED on any read error — never treating an unreadable timeline as "no marker", never falling
-through to a bare `PROCEED` — so a re-run (this loop, or a concurrent one) can never double-file. A
-backlog source with no issue-creation seam at all (`LocalSource`) degrades honestly to the same
-visible `park` action. The filed meta-issue is itself a normal SDLC goal — the actual decomposition
-(drafting child goals) runs there later, protected by the same plan-review/budget/claims machinery
-every goal already gets, creating children via `handoff.py track`'s new `--body-file` flag (reads a
-file verbatim as the body, for a body too long for a CLI arg). `max_children` (config
-`goal_decompose`) is now read and interpolated into the filed meta-goal's own instructions.
+CLOSED on any read error or malformed shape — never treating an unreadable or wrongly-shaped
+timeline as "no marker", never falling through to a bare `PROCEED` — so a re-run that gets AS FAR
+AS THE MARKER can never double-file. The residual: a hard crash between the create and the marker
+comment (the process dying mid-request, not an ordinary caught exception — those already park
+without double-filing) can still leave one meta-issue filed with no marker yet, so a re-pick could
+file a second one; the meta-goal's own step 0 (lower-number-wins) is the mitigation, not a
+guarantee this can never happen at all. A backlog source with no issue-creation seam at all
+(`LocalSource`) degrades honestly to the same visible `park` action. The filed meta-issue is itself
+a normal SDLC goal — the actual decomposition (drafting child goals) runs there later, protected by
+the same plan-review/budget/claims machinery every goal already gets, creating children via
+`handoff.py track`'s new `--body-file` flag (reads a file verbatim as the body, for a body too long
+for a CLI arg). `max_children` (config `goal_decompose`) is now read and interpolated into the
+filed meta-goal's own instructions.
 
 ## 1.0.6 — the sandbox release
 

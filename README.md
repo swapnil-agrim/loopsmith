@@ -634,7 +634,10 @@ always), so both commands share one label/assignee/ledger discipline instead of 
 `--title T` sets the new issue's title; `--body-file F` reads a file **verbatim** as its body — for
 a body too long or too structured for a CLI arg (the `goal_decompose` `file`-mode meta-issue is the
 first caller). The file is read *before* anything is created, so a missing path is a hard usage
-error (exit 2, nothing written) rather than a half-filed issue.
+error (exit 2, nothing written) rather than a half-filed issue. `--label` takes a **single** label —
+pass it once; a repeated `--label` on the CLI silently keeps only the last value (plain
+last-wins flag-parsing, no accumulation), so the meta-goal template's own `--label model:<tier>`
+call is the only extra label a `track` invocation can carry today.
 
 ### Sharing it — an ops branch that never touches your working tree
 

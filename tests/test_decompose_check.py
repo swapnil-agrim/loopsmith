@@ -1,7 +1,8 @@
-"""goal_decompose 8a: the deterministic `goal_size` classifier + `loop.py`'s `decompose-check` verb
-(#519) — the `log`/`park` rungs of the mode ladder only; the meta-goal filing branch (`file` mode's
-real behavior) ships in a follow-up slice, so `file` degrades to `park` here. Opt-in
-(`goal_decompose.enabled`), zero LLM, fail-open, off by default. Hermetic, $0.
+"""goal_decompose: the deterministic `goal_size` classifier + `loop.py`'s `decompose-check` verb.
+`log`/`park` (#519) classify + (optionally) park a flagged goal; `file` (#522) additionally files
+one idempotency-guarded "Decompose #N" meta-issue before parking -- see the "#522: file mode (real
+filing)" section below for that behavior specifically. Opt-in (`goal_decompose.enabled`), zero LLM,
+fail-open, off by default. Hermetic, $0.
 
 No conftest.py in this repo (tests/test_import_boundary.py's own docstring records why) — every
 helper below is copied in, not imported, mirroring test_backlog_precheck.py / test_sources.py."""
@@ -31,6 +32,11 @@ def _recording_runner(by_subcommand=None):
     return run
 
 
+_UNSET = object()   # sentinel: "no override given" -- None is itself one of the values #522 fix 2's
+                     # tests need fetch_comments_strict() to be able to return, so it can't double
+                     # as the "not overridden" marker too.
+
+
 class _FakeSource:
     """A source stub carrying a canned title/body plus full call-recording — enough surface for
     `decompose_check` to drive (fetch_title_body/park/note/complete/fail), mirroring
@@ -43,10 +49,16 @@ class _FakeSource:
     see the #522 review's test-infra note). `note_error_on_call` lets a test fail only the Nth
     `note()` call (1-based) -- `create_tracked_issue`'s own narrative note is always call 1, so a
     test isolating decompose_check's OWN marker-note failure (call 2) never also breaks the
-    narrative one."""
+    narrative one. `fetch_comments_strict_return` (#522 review fix 2) overrides the WHOLE return
+    value of fetch_comments_strict -- not just its comments/labels contents -- so a test can drive
+    a malformed-shape return (None, a list, {}, a dict missing "comments") a real GitHubSource
+    could never produce (it always returns a well-shaped dict) but decompose_check must still
+    defend against, since `fetch_strict` is resolved via a bare `getattr` off WHATEVER source it is
+    given, not guaranteed to be a real GitHubSource."""
     def __init__(self, title="", body="", issue_number="90", comments=None, labels=None,
                  last_assignee_applied=True, create_dependency_error=None,
-                 fetch_comments_strict_error=None, note_error=None, note_error_on_call=None):
+                 fetch_comments_strict_error=None, fetch_comments_strict_return=_UNSET,
+                 note_error=None, note_error_on_call=None):
         self.calls = []
         self._title = title
         self._body = body
@@ -56,6 +68,7 @@ class _FakeSource:
         self.last_assignee_applied = last_assignee_applied
         self._create_dependency_error = create_dependency_error
         self._fetch_comments_strict_error = fetch_comments_strict_error
+        self._fetch_comments_strict_return = fetch_comments_strict_return
         self._note_error = note_error
         self._note_error_on_call = note_error_on_call
         self._note_call_count = 0
@@ -69,6 +82,8 @@ class _FakeSource:
         self.calls.append(("fetch_comments_strict", goal))
         if self._fetch_comments_strict_error:
             raise self._fetch_comments_strict_error
+        if self._fetch_comments_strict_return is not _UNSET:
+            return self._fetch_comments_strict_return
         return {"comments": self._comments, "labels": self._labels}
 
     def create_dependency(self, title, body, assignee, labels=(), goal_label=True):
@@ -628,6 +643,69 @@ def test_file_mode_idempotency_read_raising_fails_closed_never_proceeds(tmp_path
     assert not any(c[0] == "create_dependency" for c in src.calls)
 
 
+# --------------------------------------------------------------------- #522 review fix 2: a
+# malformed (not raised, just WRONGLY SHAPED) strict-read return must fail closed too -- treating
+# None / a list / {} / a dict missing "comments" as "no marker found" would re-open the exact
+# fail-open hole the strict read exists to close, one layer down from the "raises" case above.
+# `fetch_strict` is resolved via a bare `getattr` off whatever source decompose_check is given, so
+# this can't assume it always sees a real GitHubSource's own well-shaped dict.
+
+
+def test_file_mode_strict_read_returning_none_fails_closed(tmp_path):
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY, fetch_comments_strict_return=None)
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result == ("PARKED could not confirm whether a decomposition was already filed — "
+                       "check comments")
+    assert not any(c[0] == "create_dependency" for c in src.calls)
+
+
+def test_file_mode_strict_read_returning_a_list_fails_closed(tmp_path):
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY, fetch_comments_strict_return=[])
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result == ("PARKED could not confirm whether a decomposition was already filed — "
+                       "check comments")
+    assert not any(c[0] == "create_dependency" for c in src.calls)
+
+
+def test_file_mode_strict_read_returning_empty_dict_fails_closed(tmp_path):
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY, fetch_comments_strict_return={})
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result == ("PARKED could not confirm whether a decomposition was already filed — "
+                       "check comments")
+    assert not any(c[0] == "create_dependency" for c in src.calls)
+
+
+def test_file_mode_strict_read_missing_comments_key_fails_closed(tmp_path):
+    """A dict that HAS "labels" but no "comments" key at all is just as untrustworthy as a raise --
+    the marker check needs "comments" specifically."""
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY,
+                       fetch_comments_strict_return={"labels": [{"name": "area:engine"}]})
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result == ("PARKED could not confirm whether a decomposition was already filed — "
+                       "check comments")
+    assert not any(c[0] == "create_dependency" for c in src.calls)
+
+
 def test_file_mode_degrades_to_park_when_source_has_no_create_seam(capsys):
     """Mirrors test_decompose_check_cli_local_mode_parks_an_epic (mode park) with mode file: a
     LocalSource has no create_dependency at all, so file mode must degrade to the visible park
@@ -717,6 +795,24 @@ def test_file_mode_happy_path_ordering_one_create_two_notes_marker_last_one_park
     assert goal_label is True                                   # immediately_actionable=True
     assert body.splitlines()[0] == "<!-- loopsmith:decompose-of=#7 -->"
     assert "2..6 children" in body
+
+
+def test_file_mode_max_children_is_floored_at_two(tmp_path):
+    """#522 review fix 6: a hand-edited (or config-typo'd) max_children of 0/1/negative must never
+    render a nonsensical "Plan 2..0 children" (or worse) into the filed meta-goal's own
+    instructions -- 2 is the minimum a "split" can mean at all."""
+    lp = _mod("loop")
+    for bogus in (0, 1, -3):
+        base = _file_cfg(tmp_path / str(bogus), max_children=bogus)
+        cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+        src = _FakeSource(body=_EPIC_BODY, issue_number="901")
+
+        lp.decompose_check(base, "7", cfg, src)
+
+        create_call = next(c for c in src.calls if c[0] == "create_dependency")
+        body = create_call[2]
+        assert "2..2 children" in body, (bogus, body)
+        assert f"2..{bogus} children" not in body, (bogus, body)
 
 
 def test_file_mode_unassigned_surfaces_in_the_park_detail(tmp_path):
@@ -926,6 +1022,24 @@ def test_decompose_meta_body_documents_the_track_call_shape():
     assert "gh issue create" in body and "never" in body   # never gh issue create directly
     assert "<!-- loopsmith:decomposed-from=#522 -->" in body
     assert "Blocked by" in body
+
+
+def test_decompose_meta_body_track_call_targets_this_issue_not_the_parent():
+    """#522 review fix 1 (THE BLOCKER): create_tracked_issue posts each child's narrative on the
+    goal= timeline, and step 0's own reconciliation reads THIS goal's (the meta-goal's OWN)
+    timeline as the child ledger. Interpolating the PARENT's number into the track call's goal
+    argument would file every child FROM THE PARENT instead -- the meta-goal's own timeline would
+    then always be empty, and step 0 could never see its own already-created children. The goal
+    argument must be the literal placeholder "<THIS issue>" -- the meta-goal's own number, known
+    only once IT is created, never {parent}. Every OTHER {parent} interpolation (area, priority,
+    the decomposed-from marker, the parent-closed check) stays exactly as-is -- only the goal
+    argument of the track call itself was wrong."""
+    dg = _mod("decompose_goal")
+    body = dg.render_meta_body("522", 8)
+    assert "track <sdlc-dir> <THIS issue>" in body
+    assert "track <sdlc-dir> 522" not in body
+    # the OTHER {parent} interpolations around the same command must be untouched
+    assert "<#522's area>" in body and "<#522's priority>" in body
 
 
 def test_decompose_meta_body_documents_outcome_check():

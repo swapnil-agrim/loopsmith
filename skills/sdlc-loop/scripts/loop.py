@@ -730,9 +730,14 @@ def decompose_check(sdlc_dir, goal, config, source):
     goes through) for a human to split. 'file' (#522) parks too, but FIRST attempts to file ONE
     idempotency-guarded "Decompose #N" meta-issue via `handoff.create_tracked_issue`: a strict read
     (`source.fetch_comments_strict`) checks the parent's own comments for a prior
-    `loopsmith:decompose-filed` marker first, so a re-run (this loop, or a concurrent one) can never
-    double-file — that read failing (or the source not offering it at all) fails CLOSED to a park,
-    never silently treated as "no marker". A backlog source with no issue-creation seam at all
+    `loopsmith:decompose-filed` marker first — that read failing, returning a malformed shape, or
+    the source not offering it at all, all fail CLOSED to a park, never silently treated as "no
+    marker". This makes a re-run that gets AS FAR AS THE MARKER safe against double-filing; it is
+    NOT an absolute guarantee — a hard crash strictly between the create call landing and the
+    marker comment going out (not an ordinary exception, which is already caught and parked) can
+    still leave one meta-issue with no marker yet, so a later re-pick could file a second one. The
+    meta-goal template's own step 0 (lower-number-wins) is the mitigation for that residual case,
+    not a claim it cannot occur. A backlog source with no issue-creation seam at all
     (`hasattr(source, "create_dependency")` false — e.g. `LocalSource`) degrades honestly to the
     same visible `park` action, never a false "failed to file" park with nothing behind it. An
     unrecognized mode string warns once to stderr and falls back to 'log' — the printed result
@@ -803,8 +808,17 @@ def decompose_check(sdlc_dir, goal, config, source):
                 # meta-issue -- and never fall through to the outer catch's PROCEED either.
                 return _park("could not confirm whether a decomposition was already filed — "
                              "check comments")
+            if not isinstance(strict, dict) or "comments" not in strict:
+                # #522 review fix 2: `fetch_strict` is resolved via a bare `getattr` off whatever
+                # source we were given, not guaranteed to be a real GitHubSource -- a return value
+                # that ISN'T a well-shaped dict (None, a list, {}, a dict missing "comments"
+                # entirely) is exactly as untrustworthy as the read raising outright. Defaulting it
+                # to "no comments" here would silently re-open the fail-open hole this strict read
+                # exists to close, one layer down from the "raises" case just above.
+                return _park("could not confirm whether a decomposition was already filed — "
+                             "check comments")
             dg = _load("decompose_goal")
-            comments = (strict or {}).get("comments") or []
+            comments = strict.get("comments") or []
             if any(dg.DECOMPOSE_FILED_MARKER in (c.get("body") or "")
                    for c in comments if isinstance(c, dict)):
                 return _park("decomposition already filed — see comments")
@@ -812,7 +826,7 @@ def decompose_check(sdlc_dir, goal, config, source):
             # step 2: create exactly ONE meta-issue. area/priority ride the parent's own labels
             # (fetched in the same strict read above) so the filed issue lands in the right area
             # instead of a made-up default, wherever the parent itself was already triaged.
-            names = {(l.get("name") or "") for l in ((strict or {}).get("labels") or [])
+            names = {(l.get("name") or "") for l in (strict.get("labels") or [])
                      if isinstance(l, dict)}
             area = next((n[len("area:"):] for n in names if n.startswith("area:")), "unknown")
             parent_priority = next((n[len("priority:"):] for n in names
@@ -820,7 +834,11 @@ def decompose_check(sdlc_dir, goal, config, source):
 
             hf = _load("handoff")
             meta_title = f"Decompose #{goal}: {title_body.get('title') or ''}"[:256]
-            meta_body = dg.render_meta_body(goal, _num(gd, "max_children", _DEFAULT_MAX_CHILDREN))
+            # floored at 2 (#522 review fix 6): a hand-edited/typo'd 0, 1, or a negative number is
+            # not a valid split size at all -- rendering "Plan 2..0 children" into the filed
+            # meta-goal's own instructions would be nonsensical, not just unusual.
+            max_children = max(2, _num(gd, "max_children", _DEFAULT_MAX_CHILDREN))
+            meta_body = dg.render_meta_body(goal, max_children)
             report = hf.create_tracked_issue(
                 sdlc_dir, config, goal=goal, area=area,
                 why="oversized goal — needs decomposition before implementation",

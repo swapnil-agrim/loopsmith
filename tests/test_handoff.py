@@ -490,6 +490,29 @@ def test_cli_track_body_file_missing_file_refuses_before_creating_anything(tmp_p
     assert ledger.read_all(sdlc) == []
 
 
+def test_cli_track_body_file_non_utf8_refuses_before_creating_anything(tmp_path, capsys, monkeypatch):
+    """#522 review fix 7: a file that fails to DECODE as UTF-8 must refuse the same way a missing
+    file does (stderr + exit 2, nothing created) -- before this fix, `read_text(encoding="utf-8")`
+    raising `UnicodeDecodeError` (not an `OSError` subclass) was uncaught, so a binary/wrongly-
+    encoded --body-file crashed `track` with a raw traceback instead of a usable refusal."""
+    sdlc = _project(tmp_path)
+
+    def boom(*a, **k):
+        raise AssertionError("must never resolve a backlog source before the body file is read")
+
+    monkeypatch.setattr(handoff.sources, "get_source", boom)
+    bad_file = tmp_path / "not-utf8.md"
+    bad_file.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+
+    rc = handoff.main(["handoff.py", "track", str(sdlc), "g.md", "--area", "engine",
+                       "--why", "x", "--queue", "actionable", "--assignee", "same-area",
+                       "--blocks", "no", "--body-file", str(bad_file)])
+
+    assert rc == 2
+    assert "body-file" in capsys.readouterr().err.lower()
+    assert ledger.read_all(sdlc) == []
+
+
 def test_cli_track_usage_strings_mention_body_file(capsys):
     sdlc_missing_area = "irrelevant"
     assert handoff.main(["handoff.py", "track", sdlc_missing_area, "g.md"]) == 2

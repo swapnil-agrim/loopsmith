@@ -72,9 +72,14 @@ plan — the independent reviewer judges the split itself, not just this templat
 Create each child in dependency order (blockers first, so their issue numbers exist before a
 sibling references them) via:
 
-    handoff.py track <sdlc-dir> {parent} --area <#{parent}'s area> --why "<one line>" \\
+    handoff.py track <sdlc-dir> <THIS issue> --area <#{parent}'s area> --why "<one line>" \\
         --queue actionable --assignee same-area --blocks no --priority <#{parent}'s priority> \\
         --label model:<predicted tier> --title "<child title>" --body-file <tmp>
+
+    (the second argument is THIS goal's OWN issue number, never #{parent} -- `track` posts each
+    child's narrative on THAT goal's timeline, and step 0 above reads it back as the child ledger;
+    interpolating {parent} there would file every child from the PARENT instead and step 0 would
+    never see its own already-created children)
 
 Child body: FIRST line `<!-- {decomposed_from}#{parent} -->`; near the top a `Blocked by
 #<sibling>` line for each real dependency; then the child's own content.

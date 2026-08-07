@@ -362,7 +362,10 @@ def main(argv):
         if body_file:
             try:
                 body = pathlib.Path(body_file).read_text(encoding="utf-8")
-            except OSError as exc:
+            except (OSError, UnicodeDecodeError) as exc:
+                # #522 review fix 7: UnicodeDecodeError is NOT an OSError subclass -- a binary or
+                # wrongly-encoded file used to crash with a raw traceback instead of the same usable
+                # refusal a missing file already gets.
                 print(f"handoff.py track: could not read --body-file {body_file!r}: {exc}",
                       file=sys.stderr)
                 return 2

@@ -829,8 +829,31 @@ def test_github_fetch_comments_strict_raises_on_an_empty_response():
         pass
 
 
-def test_github_fetch_comments_strict_defaults_missing_keys_to_empty_lists():
+def test_github_fetch_comments_strict_raises_when_the_comments_key_is_entirely_absent():
+    """#522 review fix 2: a real `gh issue view --json comments,labels` call always returns the
+    requested field, even as an empty array -- a bare {} response (the key entirely ABSENT, not
+    just empty) is itself a signal something is wrong (a truncated/malformed transport), not
+    "genuinely zero comments" (which looks like {"comments": [], ...}). Raising here keeps this
+    method strict at its OWN layer, consistent with decompose_check's own new distrust of a missing
+    "comments" key (loop.py's `not isinstance(strict, dict) or "comments" not in strict` check) --
+    defaulting it away here would just move the same fail-open hole one layer down instead of
+    closing it."""
     src = _mod("sources")
     run = _recording_runner_by_json({"comments,labels": json.dumps({})})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    try:
+        gh.fetch_comments_strict("42")
+        assert False, "expected an exception -- a response missing the comments key entirely must never degrade to empty"
+    except ValueError:
+        pass
+
+
+def test_github_fetch_comments_strict_defaults_a_present_but_empty_comments_list():
+    """The "comments" key itself is the critical field this method protects (decompose_check's
+    marker check reads it); "labels" absence alone -- with "comments" genuinely present, even as an
+    empty list -- still defaults to [] rather than raising, since decompose_check's own area/
+    priority extraction already tolerates missing/empty labels gracefully."""
+    src = _mod("sources")
+    run = _recording_runner_by_json({"comments,labels": json.dumps({"comments": []})})
     gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
     assert gh.fetch_comments_strict("42") == {"comments": [], "labels": []}
