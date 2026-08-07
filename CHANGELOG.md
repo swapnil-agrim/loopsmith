@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.4 — the reliability release
+
 ### fix(loop): `watch_classify.classify()` no longer drops a deliberate self-addressed ledger note (#477)
 `classify()`'s own-write filter (`if actor == me or entry.get("to") != me: continue`) fired on ANY
 entry with `actor == me`, not just an un-addressed self-write, so it silently dropped a DELIBERATE
