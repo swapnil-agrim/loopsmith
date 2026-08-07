@@ -1,39 +1,37 @@
 // SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
-// issue #307 [E18.S2], .sdlc/plans/307.md Decisions 2, 6, 7. NAMED proxy.ts, not middleware.ts:
-// Next 16's `middleware.ts` convention is deprecated (a build-time warnOnce says so) in favor of
-// this one. Verified against next@16.3.0's own dist, not docs: `isProxyFile(page)` alone forces
-// the Node.js runtime for this file, UNCONDITIONALLY (dist/build/index.js:1605,
-// `hasNodeMiddleware = true` regardless of any exported `runtime`) -- so, unlike the earlier
-// draft of this file (which was wrong), child_process genuinely IS available here.
+// issue #307 [E18.S2], .sdlc/plans/307.md Decisions 2, 6, 7 (proxy.ts convention, catch-all matcher).
+// issue #309 [E19.S1], .sdlc/plans/309.md Decisions 1, 5 (role-aware decide(), the forbid response).
+// NAMED proxy.ts, not middleware.ts: Next 16's `middleware.ts` convention is deprecated in favor
+// of this one, and isProxyFile(page) forces the Node.js runtime for this file unconditionally
+// (verified against next@16.3.0's own dist -- see #307 Decision 6). DO NOT add an "export const
+// runtime" of ANY kind to this file (E1031 build error), and a stray sibling src/middleware.ts
+// must not exist alongside it (E900 build error) -- both unchanged from #307.
 //
-// This file still does not call pythonBridge.ts, on cost grounds, not capability: this proxy
-// runs against EVERY request the matcher below matches, and a login-grade credential check (a
-// process spawn plus a ~23ms argon2id KDF) has no business running on every navigation. That
-// check stays confined to auth.ts's authorize() callback, reached only through
-// app/api/auth/[...nextauth]/route.ts's POST -- i.e. only on an actual sign-in attempt. This file
-// only validates an EXISTING session via Auth.js's own `auth()` wrapper (next-auth's documented
-// pattern -- see next-auth/index.d.ts's own example: "export default auth((req) => { ...
-// req.auth ... })"), which decodes the session JWT with Web Crypto -- cheap enough to run on
-// every matched request regardless of which runtime it's on.
-//
-// DO NOT add an "export const runtime" of ANY kind to this file. Verified against
-// next@16.3.0's dist/build/analysis/get-page-static-info.js:606-621: a proxy file exporting any
-// `runtime` value is not silently ignored, it throws in `next build` -- error code E1031,
-// "Route segment config is not allowed in Proxy file ... Proxy always runs on Node.js runtime."
-// See this task's own guard additions below (Step 2), which assert this file exports no
-// `runtime` and that a stray sibling `src/middleware.ts` (E900: having both is also an
-// unconditional build error) does not exist.
+// This file still does not call pythonBridge.ts, on cost grounds: it runs against EVERY request
+// the matcher below matches, and a login-grade credential check has no business running on every
+// navigation. It only validates an EXISTING session via Auth.js's own `auth()` wrapper (a JWT
+// decode, cheap on every request) and now also reads that session's `role` -- no new cost class,
+// the role is already sitting on the decoded token (#307 Decision 1), never a second lookup.
 import { NextResponse } from "next/server";
 
 import { auth } from "@/auth";
 import { decide } from "@/lib/auth/route-policy";
 
 const handler = auth((req) => {
-  const decision = decide(req.nextUrl.pathname, !!req.auth);
+  const decision = decide(req.nextUrl.pathname, !!req.auth, req.auth?.user?.role);
   if (decision === "redirect") {
     const loginUrl = new URL("/login", req.nextUrl);
     loginUrl.searchParams.set("callbackUrl", req.nextUrl.pathname);
     return NextResponse.redirect(loginUrl);
+  }
+  if (decision === "forbid") {
+    // issue #309 [E19.S1] Decision 5: the ENTIRE response body, fixed and minimal -- no route
+    // name, no role name, no rendered app shell. Constructed and returned HERE, before Next.js
+    // resolves the matched route to a Server Component at all -- there is no code path from this
+    // branch to any page's data-fetching, so "renders none of the underlying data" (done-when 2)
+    // holds by construction, not by review. See scripts/prove-role-route-matrix.mjs Part B for the
+    // whole-body assertion this depends on staying true.
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   return NextResponse.next();
 });

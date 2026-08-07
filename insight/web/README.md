@@ -130,6 +130,29 @@ none is a stub.
   (`typecheck`/`lint`/`test`/`build`, `test` before `build`), which stays a repo-wide contract this
   goal does not touch. See the PR description for the measured `verify.command` wall-clock delta
   this decision was made contingent on.
+- **`prove-role-route-matrix.mjs`** (part of `test`, added **E19.S1** / #309) is the mechanical
+  proof for the role-to-route matrix in `src/lib/auth/route-policy.ts`: compiles the real
+  `route-policy.ts` and `proxy.ts` with the local `tsc` (same pattern as
+  `prove-every-route-is-private-by-default.mjs`), and asserts each of the four roles
+  (`manager`/`leadership`/`ic`/`cross-functional`) reaches its own route and is forbidden from
+  every other role's route, that an unknown role string or a route with no matrix entry is
+  forbidden — never allowed by omission — and that a forbidden request's **entire** response body
+  is the fixed `{"error":"forbidden"}`, asserted by exact equality. See `.sdlc/plans/309.md`.
+- **`prove:role-forbidden`** (`scripts/prove-role-forbidden-real-server.mjs`, added **E19.S1** /
+  #309) is the CI-only companion to the proof above, and exists because that one is *entirely*
+  stubbed on the auth side: every role assertion in `prove-role-route-matrix.mjs` injects `role`
+  into a stub `@/auth` module, so nothing there proves `role` actually survives the **real** Auth.js
+  pipeline — JWT encode at sign-in, then JWT decode plus the `session` callback (`src/auth.ts`) at
+  request time — when `auth()` is invoked at the proxy layer. This boots a real `next start` and
+  drives it with plain `fetch()` plus a `Cookie` carrying a session minted through Auth.js's own
+  `encode()` (`scripts/lib/proof-session.mjs`'s `mintSessionToken(role)`), asserting: an
+  unauthenticated request redirects to `/login`; `role: "ic"` on `/manager` is a real HTTP 403 whose
+  body is exactly `{"error":"forbidden"}`; `role: "manager"` on `/manager` is a **404, not a 403**
+  (it passed the proxy — no page exists yet); an unknown role is denied rather than crashing; and
+  the shared `/` route stays reachable. CI-only for the same reason as the three browser proofs
+  above — booting a server does not belong in the always-on local gate — but note it needs **no**
+  browser, so it is not gated on the Playwright install step. Runs in `.github/workflows/ci.yml`'s
+  `web` job, after the build step (reusing `.next`).
 
 The app itself (`src/app/`) is a minimal App Router scaffold: `layout.tsx` renders
 `src/components/Shell.tsx` (masthead + role-placeholder nav + content frame, **E17.S4** / #305)
@@ -252,3 +275,29 @@ contended login can never be mistaken for a wrong password. If you see exit-2 fa
 that is lock contention, not a missing argon2 install: the two share exit 2 deliberately, and the
 Python stderr in the message says which. The residual (a login flood can still fail legitimate
 logins) is out of scope here — it needs network-layer rate limiting — and is tracked in issue #490.
+
+## Roles (E19.S1, issue #309)
+
+The closed role vocabulary — `manager` | `leadership` | `ic` | `cross-functional` — is defined once,
+in `src/lib/auth/route-policy.ts`'s exported `Role` type, and is the only place it exists in either
+language. `insight users add --role` (Python) stays a free-form, unvalidated string by design (see
+`.sdlc/plans/309.md` Decision 2) — an account created with any other string, or no role, is denied
+every role-gated route, not merely mis-routed. **Operators provisioning accounts must type one of
+the four strings above exactly** for role-gated dashboard access to work; nothing on the write side
+checks this today.
+
+**The `SHARED_AUTHENTICATED_ROUTES` carve-out — read this before treating the matrix as the whole
+story.** Two routes, `/` and `/dev/absence-states`, sit in `route-policy.ts`'s
+`SHARED_AUTHENTICATED_ROUTES` list, checked *before* the per-role lookup and *outside* `ROLE_ROUTES`
+entirely. The practical effect: **any authenticated session reaches those two routes, regardless of
+role — including a session whose role is not one of the four strings above at all** (an empty role,
+a typo, `"admin"`, or anything else `insight users add --role` was given, since that CLI never
+validates it). This is deliberate — it is what keeps `/`, the one route every signed-in user already
+sees today, and the dev-only `/dev/absence-states` fixture working the same way they did before this
+story existed — but it means the role matrix does **not** currently gate 100% of authenticated
+traffic, only the routes actually listed under a role. **`/` carries no real product data today** (no
+E20 dashboard exists yet), which is the only reason this carve-out is safe as written. The moment `/`
+starts rendering role-specific or otherwise sensitive content, this exception must be re-examined —
+either by moving that content behind a real role-gated route, or by revisiting whether `/` belongs in
+`SHARED_AUTHENTICATED_ROUTES` at all. See `.sdlc/plans/309.md` Decision 3 for the full reasoning
+(including why the alternative — listing `/` under all four roles — was rejected).

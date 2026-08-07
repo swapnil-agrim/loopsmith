@@ -129,10 +129,22 @@ async function partB() {
 
 // --------------------------------------------------------------------------------------- part C
 
+// issue #309 [E19.S1], .sdlc/plans/309.md Decision 6: `.json` added alongside the Req widening
+// above -- the real proxy.ts's body now calls `NextResponse.json(...)` in its "forbid" branch, and
+// tsc type-checks the WHOLE function regardless of which branch this file's own scenarios happen
+// to exercise at runtime, so the stub object's TYPE must carry `.json` or the compile step itself
+// fails (found empirically: Decision 6's own text named only the Req widening as necessary, but
+// the plan text under-specified this -- the compile fails without it too). None of this file's own
+// Part C scenarios drive a "forbid" decision (its calls omit the third `role` arg, and its one
+// non-public route under test, "/", is a SHARED_AUTHENTICATED_ROUTES entry -- see route-policy.ts
+// -- so it always resolves "allow" for an authenticated request), so this is exactly the same
+// type-only widening Decision 6 describes for STUB_AUTH, just on the sibling stub.
 const STUB_NEXT_SERVER = `// scratch stub -- not shipped.
 export const NextResponse = {
   redirect: (url: URL) => ({ kind: "redirect" as const, location: String(url) }),
   next: () => ({ kind: "next" as const }),
+  json: (body: unknown, init?: { status?: number }) =>
+    ({ kind: "forbid" as const, status: init?.status, body }),
 };
 `;
 
@@ -149,8 +161,12 @@ export const NextResponse = {
 // Next 16's proxy loader throws "must export a function named \\\`proxy\\\` or a default function" on
 // every request. typecheck/lint/build/test all passed; only CI's booted-server proof failed.
 // A stub that is easier than the real thing tests the stub. This one matches the real shape.
+// scratch stub -- not shipped.
+// issue #309 [E19.S1], .sdlc/plans/309.md Decision 6: widened from `auth: unknown` so the REAL
+// proxy.ts (which now reads req.auth?.user?.role) compiles against this stub. Existing scenarios
+// in this file are unaffected -- none of them relies on `role` being present.
 const STUB_AUTH = `// scratch stub -- not shipped.
-type Req = { nextUrl: URL; auth: unknown };
+type Req = { nextUrl: URL; auth: { user?: { role?: string } } | null };
 export const auth = <T,>(cb: (req: Req) => T) => Promise.resolve(cb);
 `;
 
