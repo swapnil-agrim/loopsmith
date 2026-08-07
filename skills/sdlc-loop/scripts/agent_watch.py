@@ -121,7 +121,18 @@ def _notify(sdlc_dir, config, goal, thread, pid, actor, run_email=None):
                   "falling back to ledger note", file=sys.stderr)
         elif _send_email(email_cfg, subject, body, run_email=run_email):
             return
+    # #476: `ref` (ledger.OPTIONAL_FIELDS) is folded into watch_classify.signature() as its fourth,
+    # additive component — without it every dead-agent note for this SAME goal collides on an
+    # identical `kind:goal:state:priority` signature, so the second, later, genuinely distinct
+    # dead-agent event on this goal would be silently dropped by classify()'s dedup, forever (the
+    # signature set has no expiry). `f"{goal}:{thread}:{pid}"` reuses the exact composite `tick()`
+    # already builds locally as its own `sig` (see below) rather than a bare `ref=pid` like
+    # comment_watch.py's sibling call: a GitHub comment id is globally unique so a bare ref is safe
+    # there, but an OS pid recycles over a machine's lifetime, and `thread` is a real independent
+    # dimension (loop.agent_threads) `signature()` has no other way to distinguish — the composite
+    # closes both gaps for free.
     ledger.safe_append(sdlc_dir, "note", goal, config=config, to=actor, priority="P1",
+                        ref=f"{goal}:{thread}:{pid}",
                         why=f"background agent died (thread={thread}, pid={pid}) — reclaim or re-open")
 
 

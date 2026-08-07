@@ -18,6 +18,7 @@ def _mod(name):
 agent_watch = _mod("agent_watch")
 loop = _mod("loop")
 ledger = _mod("ledger")
+watch_classify = _mod("watch_classify")
 
 ME = "watcher"       # the identity agent_watch.py's OWN ledger writes are attributed to
 ACTOR = "amy"         # the claim holder / notification recipient
@@ -108,7 +109,14 @@ def test_agent_watch_detects_a_real_sigkilled_process_and_notifies_via_ledger_ex
 
 def test_agent_watch_notifies_again_after_a_fresh_agent_start_on_a_new_pid(tmp_path):
     """A NEW agent_start (a fresh signature) after a reclaim must be able to notify again if IT
-    also dies -- suppression is per (goal, thread, pid), not per (goal, thread) forever."""
+    also dies -- suppression is per (goal, thread, pid), not per (goal, thread) forever.
+
+    #476: two ledger entries existing on disk is NOT enough to prove this -- that was the exact
+    gap that let the dead-agent notifications collapse silently: agent_watch.py wrote two `note`
+    entries just fine, but omitted `ref=`, so watch_classify.classify()'s signature-dedup still
+    swallowed the second one before it ever reached the claimant's inbox. The assertions below
+    call classify() -- the real read-side consumer -- and prove BOTH surface as distinct inbox
+    items, not just that the ledger file has two lines."""
     d = _sdlc(tmp_path)
     goal = "161.md"
     _claim(d, goal)
@@ -121,6 +129,15 @@ def test_agent_watch_notifies_again_after_a_fresh_agent_start_on_a_new_pid(tmp_p
     loop.agent_start(d, goal, dead_pid_2, ON)   # a fresh registration, e.g. after a reclaim
     agent_watch.tick(d)
     assert len([e for e in ledger.read_all(d) if e["kind"] == "note"]) == 2
+
+    items, _ = watch_classify.classify(ledger.read_all(d), watch_classify.EMPTY_CURSOR, ACTOR)
+    assert len(items) == 2                                          # both delivered, neither swallowed
+    refs = {item.get("ref") for item in items}
+    assert refs == {f"{goal}:main:{dead_pid_1}", f"{goal}:main:{dead_pid_2}"}
+    assert {item["why"] for item in items} == {
+        f"background agent died (thread=main, pid={dead_pid_1}) — reclaim or re-open",
+        f"background agent died (thread=main, pid={dead_pid_2}) — reclaim or re-open",
+    }
 
 
 # ------------------------------------------------------------------ SMTP (DI, never a real server)
