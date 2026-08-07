@@ -28,7 +28,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { decide } from "@/lib/auth/route-policy";
 
-export default auth((req) => {
+const handler = auth((req) => {
   const decision = decide(req.nextUrl.pathname, !!req.auth);
   if (decision === "redirect") {
     const loginUrl = new URL("/login", req.nextUrl);
@@ -37,6 +37,28 @@ export default auth((req) => {
   }
   return NextResponse.next();
 });
+
+// `export default auth(...)` -- the shape next-auth's own docs show -- does NOT work here, and the
+// reason is specific to Decision 5. auth.ts passes NextAuth a FUNCTION (the "lazy initialization"
+// config form) so useSecureCookies can be computed per request. Verified in
+// next-auth/lib/index.js's initAuth(): its `typeof config === "function"` branch returns
+// `async (...args) => ...`, so `auth(cb)` RESOLVES TO the handler instead of BEING it, while the
+// static-object branch just below returns a plain `(...args) => ...` that is one. Next 16's proxy
+// loader (next/dist/build/templates/middleware.js) then does `typeof handlerUserland !== "function"`
+// on the default export and throws "The Proxy file "/proxy" must export a function named `proxy` or
+// a default function" for EVERY request -- the whole app 500s.
+//
+// `next build` does not catch this: it is a runtime value shape, not a static one, so typecheck,
+// lint and build all pass green (next-auth's own .d.ts overloads declare the wrapper form as
+// returning the handler, so the types actively assert the opposite of what runs). Only a booted
+// server sees it, which is why CI's browser proofs caught it and the local gate could not.
+//
+// Awaiting is correct under BOTH config forms -- `await` on a non-promise is a no-op -- so this
+// keeps working if auth.ts ever moves back to a static config object.
+export default async function proxy(...args: Parameters<Awaited<typeof handler>>) {
+  const fn = await handler;
+  return fn(...args);
+}
 
 // Decision 2: a catch-all, not an include-list -- this proxy runs for every app route by
 // construction. Excludes only genuine static assets, never an app route (that distinction lives

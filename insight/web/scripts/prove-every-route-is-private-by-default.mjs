@@ -136,13 +136,22 @@ export const NextResponse = {
 };
 `;
 
-// The identity wrapper is the whole trick: real next-auth's auth() returns a handler that decodes
-// the session and hands the callback a req carrying \`auth\`. Stubbing it as (cb) => cb makes
-// proxy.ts's default export BE that callback, so we can call it directly with a fake req and no
+// Real next-auth's auth() returns a handler that decodes the session and hands the callback a req
+// carrying \`auth\`. The stub returns the callback itself, so we can drive it with a fake req and no
 // AUTH_SECRET, no JWT, no server.
+//
+// It resolves to that callback through a PROMISE, deliberately, because that is what the real one
+// does HERE: auth.ts uses next-auth's lazy config form (a function, so useSecureCookies can be
+// per-request -- Decision 5), and initAuth()'s \`typeof config === "function"\` branch returns
+// \`async (...args) => ...\`, making auth(cb) a Promise of the handler rather than the handler.
+// An earlier version of this stub returned the callback DIRECTLY, and that is precisely what let a
+// real defect through green: proxy.ts did \`export default auth(...)\`, which exports a Promise, and
+// Next 16's proxy loader throws "must export a function named \\\`proxy\\\` or a default function" on
+// every request. typecheck/lint/build/test all passed; only CI's booted-server proof failed.
+// A stub that is easier than the real thing tests the stub. This one matches the real shape.
 const STUB_AUTH = `// scratch stub -- not shipped.
 type Req = { nextUrl: URL; auth: unknown };
-export const auth = <T,>(cb: (req: Req) => T) => cb;
+export const auth = <T,>(cb: (req: Req) => T) => Promise.resolve(cb);
 `;
 
 function compileProxy(dir) {
@@ -198,13 +207,22 @@ async function partC() {
     return import(pathToFileURL(emitted).href);
   });
 
+  // Next 16's proxy loader does exactly this check on the default export
+  // (next/dist/build/templates/middleware.js: `typeof handlerUserland !== "function"`) and throws
+  // for EVERY request if it fails -- so assert it the same way, first. A Promise here (what
+  // `export default auth(...)` produces under the lazy config form) is green through typecheck,
+  // lint and build, and 500s the entire app the moment a server boots.
   const handler = mod.default;
-  assert.equal(typeof handler, "function", "src/proxy.ts must default-export a request handler");
+  assert.equal(
+    typeof handler, "function",
+    "src/proxy.ts's default export must BE a function, not a Promise of one -- Next 16's proxy " +
+    "loader rejects anything else at request time, which no static check catches",
+  );
   const call = (pathname, session) =>
     handler({ nextUrl: new URL(pathname, "https://insight.example"), auth: session });
 
   // 1. A private route with no session REDIRECTS -- the enforcement itself.
-  const denied = call("/", null);
+  const denied = await call("/", null);
   assert.equal(denied.kind, "redirect", "proxy.ts must redirect an unauthenticated request to a private route");
   const loginUrl = new URL(denied.location);
   assert.equal(loginUrl.pathname, "/login", `redirect must target /login, got ${loginUrl.pathname}`);
@@ -216,14 +234,14 @@ async function partC() {
   // 2. A private route WITH a session passes through. Fails if a later edit drops the
   //    `!!req.auth` argument (which would redirect signed-in users into an infinite loop).
   assert.equal(
-    call("/", { user: { name: "someone" } }).kind, "next",
+    (await call("/", { user: { name: "someone" } })).kind, "next",
     "proxy.ts must let an AUTHENTICATED request through to a private route",
   );
 
   // 3. The public login page passes through with no session. Fails if the branch is inverted,
   //    which would redirect /login to /login forever.
   assert.equal(
-    call("/login", null).kind, "next",
+    (await call("/login", null)).kind, "next",
     "proxy.ts must let an unauthenticated request through to the public /login route",
   );
 
