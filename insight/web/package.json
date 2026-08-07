@@ -6,10 +6,11 @@
     "pretypecheck": "node scripts/check-schema-fresh.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "node scripts/prove-metric-contract-safety.mjs && node scripts/prove-metric-view-behavior.mjs && node scripts/prove-nav-items.mjs && node scripts/prove-python-bridge-exit-codes.mjs && node scripts/prove-every-route-is-private-by-default.mjs && node scripts/prove-secure-cookie-flag-is-tls-conditional.mjs && node scripts/prove-session-epoch-store.mjs && node scripts/prove-session-revocation-and-expiry.mjs",
+    "test": "node scripts/prove-metric-contract-safety.mjs && node scripts/prove-metric-view-behavior.mjs && node scripts/prove-nav-items.mjs && node scripts/prove-python-bridge-exit-codes.mjs && node scripts/prove-every-route-is-private-by-default.mjs && node scripts/prove-secure-cookie-flag-is-tls-conditional.mjs && node scripts/prove-session-epoch-store.mjs && node scripts/prove-session-revocation-and-expiry.mjs && node scripts/prove-role-route-matrix.mjs",
     "prove:fonts": "node scripts/prove-fonts-actually-apply.mjs",
     "prove:absence-states": "node scripts/prove-absence-primitives-render.mjs",
     "prove:shell-responsive": "node scripts/prove-shell-responsive-frame.mjs",
+    "prove:role-forbidden": "node scripts/prove-role-forbidden-real-server.mjs",
     "build": "next build"
   },
   "dependencies": {

@@ -144,5 +144,15 @@ jobs:
       - name: prove shell reflows at 1440/1024/768 with no page-level horizontal scroll (npm run prove:shell-responsive)
         run: npm run prove:shell-responsive
         working-directory: insight/web
+      # issue #309 [E19.S1], .sdlc/plans/309.md item (b) (independent plan-review gap). Reuses the
+      # SAME .next build the checks above already produced -- no rebuild. Deliberately NOT part of
+      # verify_web.py's CHECKS/the always-on local gate, same reasoning as the three proofs above
+      # (a booted `next start` server has no place in a repo-wide gate that must run in a fresh
+      # worktree for every goal) -- but unlike those three, this one needs no browser at all (plain
+      # fetch + a real Auth.js-minted session cookie is enough to observe a real HTTP 403), so it
+      # does not depend on the Playwright install step above.
+      - name: prove role survives Auth.js's real JWT pipeline at the proxy layer (npm run prove:role-forbidden)
+        run: npm run prove:role-forbidden
+        working-directory: insight/web
       - name: docker build (Dockerfile.web) -- the Dockerfile is proven to build, not just present
         run: docker build -f insight/Dockerfile.web -t insight-web-scaffold:ci insight/

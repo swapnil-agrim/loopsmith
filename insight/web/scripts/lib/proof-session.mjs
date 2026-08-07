@@ -65,9 +65,16 @@ export function proofServerEnv() {
   };
 }
 
-/** A Playwright context carrying a valid Auth.js session for `baseUrl`. */
-export async function authenticatedContext(browser, baseUrl) {
-  const token = await encode({
+// issue #309 [E19.S1], .sdlc/plans/309.md item (b) (independent plan-review gap): factored out of
+// authenticatedContext() below so a role-carrying session can be minted WITHOUT a Playwright
+// browser at all -- prove-role-forbidden-real-server.mjs drives a real booted `next start` with
+// plain `fetch()` and a `Cookie` header instead, which is enough to prove a real 403 (no DOM
+// assertion needed for that proof). Uses Auth.js's own encode(), same as authenticatedContext(),
+// so the minted cookie is byte-identical in format to what a real sign-in issues and is decoded by
+// the exact same next-auth code path `req.auth` runs through at the proxy layer -- this is what
+// makes that proof a real test of "does `role` survive JWT-decode -> session-callback", not a stub.
+export async function mintSessionToken(role = "admin") {
+  return encode({
     // salt IS the cookie name in Auth.js's JWT scheme -- it is mixed into the key derivation, so a
     // mismatch here decodes to null (anonymous) rather than throwing.
     salt: SESSION_COOKIE_NAME,
@@ -77,9 +84,17 @@ export async function authenticatedContext(browser, baseUrl) {
     // session -> 302 to /login) on any mismatch, deliberately including the `undefined` a token
     // minted without it carries. 0 is what a genuine sign-in stamps for an account that has never
     // been signed out, and proofServerEnv() above gives every proof server an empty session store
-    // so 0 is exactly what getEpoch() will return here.
-    token: { name: "proof-user", sub: "proof-user", role: "admin", sessionEpoch: 0 },
+    // so 0 is exactly what getEpoch() will return here. It must be stamped HERE rather than only in
+    // authenticatedContext(): #309's fetch-driven proofs mint through this function too, and a
+    // token without it reads as anonymous -- a 302 to /login that a role proof would misread as
+    // "the role was denied".
+    token: { name: "proof-user", sub: "proof-user", role, sessionEpoch: 0 },
   });
+}
+
+/** A Playwright context carrying a valid Auth.js session for `baseUrl`. */
+export async function authenticatedContext(browser, baseUrl) {
+  const token = await mintSessionToken("admin");
   const context = await browser.newContext();
   await context.addCookies([{ name: SESSION_COOKIE_NAME, value: token, url: baseUrl }]);
   return context;
