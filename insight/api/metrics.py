@@ -52,8 +52,74 @@ def _numerator_denominator_rate(row):
 # Which catalog ids know how to turn their view's row into (value, numerator, denominator).
 # Deliberately NOT populated for every built .sql file (33 more exist) -- see this module's
 # docstring and .sdlc/plans/300.md Decision (b) for why that is a scope-down, not an oversight.
+def _cycle_time_p50(row):
+    """metric_2: (goal_id, cycle_time_seconds, p50_seconds, p85_seconds,
+    excluded_negative_duration_count, total_count). Value is the project's own p50; coverage is
+    the goals that actually yielded a duration -- total MINUS the ones excluded for a negative
+    duration. Reporting `total` as the numerator would claim coverage the metric does not have."""
+    p50, excluded, total = row[2], row[4], row[5]
+    if p50 is None or total is None:
+        return None
+    measured = total - (excluded or 0)
+    return p50, measured, total
+
+
+def _lead_time_p50(row):
+    """metric_3: (p50_seconds, p85_seconds, measured_count, total_count). The coverage story this
+    metric exists to tell: on this repo only a handful of merges carry a duration at all, so a p50
+    over the non-null subset without its denominator would be a lie of omission."""
+    p50, measured, total = row[0], row[2], row[3]
+    if p50 is None or measured is None or total is None:
+        return None
+    return p50, measured, total
+
+
+def _change_failure_rate(row):
+    """metric_5: (collected_ts, window_commit_count, repeated_revert_or_fixup_count,
+    change_failure_rate)."""
+    commits, reverts, rate = row[1], row[2], row[3]
+    if rate is None or reverts is None or commits is None:
+        return None
+    return rate, reverts, commits
+
+
+def _rework_ratio(row):
+    """metric_20: (collected_ts, window_commit_count, files_touched_more_than_once,
+    total_files_touched, rework_ratio). Coverage is FILES, not commits -- the ratio's own
+    denominator, not the window's."""
+    repeated, total_files, ratio = row[2], row[3], row[4]
+    if ratio is None or repeated is None or total_files is None:
+        return None
+    return ratio, repeated, total_files
+
+
+# Which catalog ids know how to turn their view's row into (value, numerator, denominator).
+#
+# ONLY metrics whose OWN VIEW carries both a value and the counts behind it are registered. Spec
+# section 3 says a `measured` metric carries coverage, so a metric whose view has no denominator
+# cannot become `measured` without INVENTING one -- the exact ABSENT != PASS failure this product
+# exists to prevent. Deliberately still absent, and why:
+#
+#   id 1  Throughput          (week, done_count)      -- a count, no denominator in view
+#   id 7  Flow load (WIP)     (week_start, wip_count) -- same
+#   id 9  Flow distribution   -- a share per (source, lane); no single scalar
+#   id 11 Throughput forecast -- a p10..p90 RANGE, not a point value
+#   ids 10, 26, 35, 41, 42    -- table-shaped: one row per goal/flag, not one measurement
+#
+# Those need a richer contract or their own presentation, not a fabricated denominator.
+# insight/tests/test_api_metrics_extractors.py pins that they stay unwired.
+#
+# EVERY extractor below indexes POSITIONALLY, because `resolve_metric` hands it the tuple from
+# `SELECT * FROM metric_N`. Each docstring states the column order it assumes; a view whose shape
+# changes makes the extractor raise, which resolve_metric already degrades to absent_unbuilt
+# rather than a crash.
 VALUE_EXTRACTORS = {
+    2: _cycle_time_p50,
+    3: _lead_time_p50,
+    5: _change_failure_rate,
     12: _numerator_denominator_rate,
+    14: _numerator_denominator_rate,   # identical (numerator, denominator, rate) shape to 12
+    20: _rework_ratio,
 }
 
 
