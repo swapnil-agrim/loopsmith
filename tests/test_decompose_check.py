@@ -1,7 +1,8 @@
-"""goal_decompose 8a: the deterministic `goal_size` classifier + `loop.py`'s `decompose-check` verb
-(#519) — the `log`/`park` rungs of the mode ladder only; the meta-goal filing branch (`file` mode's
-real behavior) ships in a follow-up slice, so `file` degrades to `park` here. Opt-in
-(`goal_decompose.enabled`), zero LLM, fail-open, off by default. Hermetic, $0.
+"""goal_decompose: the deterministic `goal_size` classifier + `loop.py`'s `decompose-check` verb.
+`log`/`park` (#519) classify + (optionally) park a flagged goal; `file` (#522) additionally files
+one idempotency-guarded "Decompose #N" meta-issue before parking -- see the "#522: file mode (real
+filing)" section below for that behavior specifically. Opt-in (`goal_decompose.enabled`), zero LLM,
+fail-open, off by default. Hermetic, $0.
 
 No conftest.py in this repo (tests/test_import_boundary.py's own docstring records why) — every
 helper below is copied in, not imported, mirroring test_backlog_precheck.py / test_sources.py."""
@@ -31,21 +32,79 @@ def _recording_runner(by_subcommand=None):
     return run
 
 
+_UNSET = object()   # sentinel: "no override given" -- None is itself one of the values #522 fix 2's
+                     # tests need fetch_comments_strict() to be able to return, so it can't double
+                     # as the "not overridden" marker too.
+
+
 class _FakeSource:
     """A source stub carrying a canned title/body plus full call-recording — enough surface for
     `decompose_check` to drive (fetch_title_body/park/note/complete/fail), mirroring
-    tests/test_backlog_precheck.py's own `_FakeSource` extended with the new read method."""
-    def __init__(self, title="", body=""):
+    tests/test_backlog_precheck.py's own `_FakeSource` extended with the new read method.
+
+    #522: further extended with create_dependency/last_assignee_applied/issue_url (modeled on
+    tests/test_handoff.py's own FakeSource, ~line 117) plus fetch_comments_strict, so `file` mode's
+    ordering/idempotency tests can drive the WHOLE sequence at this fake-source layer without ever
+    touching a real GitHubSource (whose own park()/_offboard() issue further gh calls of its own —
+    see the #522 review's test-infra note). `note_error_on_call` lets a test fail only the Nth
+    `note()` call (1-based) -- `create_tracked_issue`'s own narrative note is always call 1, so a
+    test isolating decompose_check's OWN marker-note failure (call 2) never also breaks the
+    narrative one. `fetch_comments_strict_return` (#522 review fix 2) overrides the WHOLE return
+    value of fetch_comments_strict -- not just its comments/labels contents -- so a test can drive
+    a malformed-shape return (None, a list, {}, a dict missing "comments") a real GitHubSource
+    could never produce (it always returns a well-shaped dict) but decompose_check must still
+    defend against, since `fetch_strict` is resolved via a bare `getattr` off WHATEVER source it is
+    given, not guaranteed to be a real GitHubSource."""
+    def __init__(self, title="", body="", issue_number="90", comments=None, labels=None,
+                 last_assignee_applied=True, create_dependency_error=None,
+                 fetch_comments_strict_error=None, fetch_comments_strict_return=_UNSET,
+                 note_error=None, note_error_on_call=None):
         self.calls = []
         self._title = title
         self._body = body
+        self.issue_number = issue_number
+        self._comments = comments if comments is not None else []
+        self._labels = labels if labels is not None else []
+        self.last_assignee_applied = last_assignee_applied
+        self._create_dependency_error = create_dependency_error
+        self._fetch_comments_strict_error = fetch_comments_strict_error
+        self._fetch_comments_strict_return = fetch_comments_strict_return
+        self._note_error = note_error
+        self._note_error_on_call = note_error_on_call
+        self._note_call_count = 0
+        self.created = None
 
     def fetch_title_body(self, goal):
         self.calls.append(("fetch_title_body", goal))
         return {"title": self._title, "body": self._body}
 
+    def fetch_comments_strict(self, goal):
+        self.calls.append(("fetch_comments_strict", goal))
+        if self._fetch_comments_strict_error:
+            raise self._fetch_comments_strict_error
+        if self._fetch_comments_strict_return is not _UNSET:
+            return self._fetch_comments_strict_return
+        return {"comments": self._comments, "labels": self._labels}
+
+    def create_dependency(self, title, body, assignee, labels=(), goal_label=True):
+        self.calls.append(("create_dependency", title, body, assignee, tuple(labels), goal_label))
+        if self._create_dependency_error:
+            raise self._create_dependency_error
+        self.created = {"title": title, "body": body, "assignee": assignee, "labels": list(labels)}
+        return self.issue_number
+
+    def issue_url(self, goal):
+        return f"https://example.invalid/issues/{goal}"
+
     def park(self, goal, reason): self.calls.append(("park", goal, reason))
-    def note(self, goal, text): self.calls.append(("note", goal, text))
+
+    def note(self, goal, text):
+        self._note_call_count += 1
+        self.calls.append(("note", goal, text))
+        if self._note_error and (self._note_error_on_call is None
+                                  or self._note_call_count == self._note_error_on_call):
+            raise self._note_error
+
     def complete(self, goal): self.calls.append(("complete", goal))
     def fail(self, goal, reason): self.calls.append(("fail", goal, reason))
 
@@ -541,14 +600,277 @@ def test_park_mode_records_exactly_once_with_needs_decision_reason_class(tmp_pat
     assert events[0]["reason_class"] == "needs_decision"
 
 
-def test_file_mode_behaves_as_park_in_this_slice(tmp_path):
+def _file_cfg(tmp_path, extra=None, max_children=None):
+    cfg = {"goal_decompose": {"enabled": True, "mode": "file"}, "ledger": {"actor": "rae"}}
+    if max_children is not None:
+        cfg["goal_decompose"]["max_children"] = max_children
+    if extra:
+        cfg.update(extra)
+    return _sdlc(tmp_path, cfg)
+
+
+# --------------------------------------------------------------------- #522: file mode (real filing)
+
+
+def test_file_mode_idempotency_hit_parks_without_creating(tmp_path):
     lp = _mod("loop")
-    base = _sdlc(tmp_path, {"goal_decompose": {"enabled": True, "mode": "file"}})
+    base = _file_cfg(tmp_path)
     cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
-    src = _FakeSource(body=_EPIC_BODY)
+    src = _FakeSource(body=_EPIC_BODY,
+                       comments=[{"body": "just a note"},
+                                 {"body": "already filed: loopsmith:decompose-filed=#901"}])
+
     result = lp.decompose_check(base, "7", cfg, src)
-    assert result.startswith("PARKED ")
+
+    assert result == "PARKED decomposition already filed — see comments"
+    assert not any(c[0] == "create_dependency" for c in src.calls)
     assert len([c for c in src.calls if c[0] == "park"]) == 1
+    assert any(c[0] == "fetch_comments_strict" for c in src.calls)
+
+
+def test_file_mode_idempotency_read_raising_fails_closed_never_proceeds(tmp_path):
+    """NEVER treat an unreadable timeline as "no marker" (that could double-file the meta-issue),
+    and NEVER fall through to the outer catch's bare PROCEED."""
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY, fetch_comments_strict_error=RuntimeError("gh: rate limited"))
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result == ("PARKED could not confirm whether a decomposition was already filed — "
+                       "check comments")
+    assert not any(c[0] == "create_dependency" for c in src.calls)
+
+
+# --------------------------------------------------------------------- #522 review fix 2: a
+# malformed (not raised, just WRONGLY SHAPED) strict-read return must fail closed too -- treating
+# None / a list / {} / a dict missing "comments" as "no marker found" would re-open the exact
+# fail-open hole the strict read exists to close, one layer down from the "raises" case above.
+# `fetch_strict` is resolved via a bare `getattr` off whatever source decompose_check is given, so
+# this can't assume it always sees a real GitHubSource's own well-shaped dict.
+
+
+def test_file_mode_strict_read_returning_none_fails_closed(tmp_path):
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY, fetch_comments_strict_return=None)
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result == ("PARKED could not confirm whether a decomposition was already filed — "
+                       "check comments")
+    assert not any(c[0] == "create_dependency" for c in src.calls)
+
+
+def test_file_mode_strict_read_returning_a_list_fails_closed(tmp_path):
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY, fetch_comments_strict_return=[])
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result == ("PARKED could not confirm whether a decomposition was already filed — "
+                       "check comments")
+    assert not any(c[0] == "create_dependency" for c in src.calls)
+
+
+def test_file_mode_strict_read_returning_empty_dict_fails_closed(tmp_path):
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY, fetch_comments_strict_return={})
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result == ("PARKED could not confirm whether a decomposition was already filed — "
+                       "check comments")
+    assert not any(c[0] == "create_dependency" for c in src.calls)
+
+
+def test_file_mode_strict_read_missing_comments_key_fails_closed(tmp_path):
+    """A dict that HAS "labels" but no "comments" key at all is just as untrustworthy as a raise --
+    the marker check needs "comments" specifically."""
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY,
+                       fetch_comments_strict_return={"labels": [{"name": "area:engine"}]})
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result == ("PARKED could not confirm whether a decomposition was already filed — "
+                       "check comments")
+    assert not any(c[0] == "create_dependency" for c in src.calls)
+
+
+def test_file_mode_degrades_to_park_when_source_has_no_create_seam(capsys):
+    """Mirrors test_decompose_check_cli_local_mode_parks_an_epic (mode park) with mode file: a
+    LocalSource has no create_dependency at all, so file mode must degrade to the visible park
+    action with a clause explaining why, never a false "failed to file" park with nothing behind
+    it."""
+    lp = _mod("loop")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"
+        (base / "goals").mkdir(parents=True)
+        (base / "state").mkdir()
+        (base / "config.json").write_text(json.dumps(
+            {"goal_decompose": {"enabled": True, "mode": "file"}, "budget": {"max_iterations": 100}}))
+        (base / "state" / "STATE.md").write_text("iteration: 0\nrun_iteration: 0\nlast_run: none\n")
+        (base / "state" / "review-queue.md").write_text("# Q\n")
+        goal_path = base / "goals" / "0001.md"
+        goal_path.write_text("---\nid: 0001\nstatus: pending\ntitle: a huge multi-phase goal\n---\n"
+                              + _EPIC_BODY)
+        rc = lp.main(["loop.py", "decompose-check", str(base), str(goal_path)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert out.startswith("PARKED")
+        assert "needs manual decomposition" in out
+        assert "file mode needs an issue tracker" in out
+
+
+def test_file_mode_create_fail_parks_with_warnings_and_never_posts_a_marker(tmp_path):
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY, create_dependency_error=RuntimeError("gh: not authenticated"))
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result.startswith("PARKED too large — failed to file decomposition goal")
+    assert "not authenticated" in result
+    assert result.endswith("— needs a human")
+    assert not any(c[0] == "note" for c in src.calls)          # never attempted -- report["issue"] is None
+    assert len([c for c in src.calls if c[0] == "park"]) == 1
+
+
+def test_file_mode_marker_post_failure_still_parks_with_the_warning_folded_in(tmp_path):
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY, issue_number="901",
+                       note_error=RuntimeError("gh: comment failed"), note_error_on_call=2)
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result.startswith("PARKED too large per goal_size")
+    assert "decomposition filed as #901" in result
+    assert "comment failed" in result                          # the marker-post warning folds in
+    notes = [c for c in src.calls if c[0] == "note"]
+    assert len(notes) == 2
+    assert "decompose-filed" in notes[1][2]                     # the SECOND note is our own marker
+    assert len([c for c in src.calls if c[0] == "park"]) == 1
+
+
+def test_file_mode_happy_path_ordering_one_create_two_notes_marker_last_one_park(tmp_path):
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path, max_children=6)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(title="a huge multi-phase goal", body=_EPIC_BODY, issue_number="901",
+                       labels=[{"name": "area:engine"}, {"name": "priority:P0"}])
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result.startswith("PARKED too large per goal_size")
+    assert "decomposition filed as #901" in result
+
+    kinds = [c[0] for c in src.calls if c[0] in ("create_dependency", "note", "park")]
+    assert kinds == ["create_dependency", "note", "note", "park"]
+
+    notes = [c for c in src.calls if c[0] == "note"]
+    assert "decompose-filed" not in notes[0][2]                 # narrative note (create_tracked_issue)
+    assert "decompose-filed" in notes[1][2]                     # OUR marker note is LAST
+
+    assert len([c for c in src.calls if c[0] == "fetch_title_body"]) == 1     # not re-fetched
+    assert any(c[0] == "fetch_comments_strict" for c in src.calls)
+
+    create_call = next(c for c in src.calls if c[0] == "create_dependency")
+    _, title, body, assignee, labels, goal_label = create_call
+    assert title.startswith("Decompose #7:") and "a huge multi-phase goal" in title
+    assert assignee == "rae"                                    # same_area=True -> ledger.actor
+    assert "area:engine" in labels and "priority:P0" in labels
+    assert "sdlc:decompose" in labels and "model:daily" in labels
+    assert goal_label is True                                   # immediately_actionable=True
+    assert body.splitlines()[0] == "<!-- loopsmith:decompose-of=#7 -->"
+    assert "2..6 children" in body
+
+
+def test_file_mode_max_children_is_floored_at_two(tmp_path):
+    """#522 review fix 6: a hand-edited (or config-typo'd) max_children of 0/1/negative must never
+    render a nonsensical "Plan 2..0 children" (or worse) into the filed meta-goal's own
+    instructions -- 2 is the minimum a "split" can mean at all."""
+    lp = _mod("loop")
+    for bogus in (0, 1, -3):
+        base = _file_cfg(tmp_path / str(bogus), max_children=bogus)
+        cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+        src = _FakeSource(body=_EPIC_BODY, issue_number="901")
+
+        lp.decompose_check(base, "7", cfg, src)
+
+        create_call = next(c for c in src.calls if c[0] == "create_dependency")
+        body = create_call[2]
+        assert "2..2 children" in body, (bogus, body)
+        assert f"2..{bogus} children" not in body, (bogus, body)
+
+
+def test_file_mode_unassigned_surfaces_in_the_park_detail(tmp_path):
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY, issue_number="901", last_assignee_applied=False)
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result.startswith("PARKED")
+    assert "filed as #901 but unassigned — a human must assign it before any loop can see it" in result
+
+
+def test_file_mode_area_and_priority_default_when_the_parent_has_no_such_labels(tmp_path):
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY, issue_number="901")     # no labels configured
+
+    lp.decompose_check(base, "7", cfg, src)
+
+    create_call = next(c for c in src.calls if c[0] == "create_dependency")
+    _, _title, _body, _assignee, labels, _goal_label = create_call
+    assert "area:unknown" in labels
+    assert "priority:P1" in labels                              # handoff.DEFAULT_PRIORITY
+
+
+def test_file_mode_inner_wrapper_survives_a_raise_after_create_dependency_returns(tmp_path, monkeypatch):
+    """R8 (#522 review): a flagged file-mode park path must never report PROCEED once
+    create_dependency has already landed a real issue -- monkeypatch something that runs strictly
+    AFTER create_dependency returns inside create_tracked_issue itself (its own ledger.safe_append,
+    called from handoff.py's OWN loaded `ledger` reference -- precedent
+    test_park_survives_a_failure_after_source_park_has_already_landed, one level up: the file-mode
+    sequence needs the identical guarantee for its own longer inner sequence)."""
+    lp = _mod("loop")
+    real_load = lp._load
+    hf = real_load("handoff")            # a fresh handoff module instance, independent of anything
+                                          # loop.py itself has already loaded
+
+    def _boom(*a, **kw):
+        raise RuntimeError("ledger boom after create")
+    monkeypatch.setattr(hf.ledger, "safe_append", _boom)
+    lp._load = lambda name: hf if name == "handoff" else real_load(name)
+    try:
+        base = _file_cfg(tmp_path)
+        cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+        src = _FakeSource(body=_EPIC_BODY, issue_number="901")
+
+        result = lp.decompose_check(base, "7", cfg, src)
+
+        assert result.split()[0] == "PARKED", \
+            ("a flagged file-mode park path must never downgrade to PROCEED once "
+             f"create_dependency already landed a real issue, got: {result!r}")
+        assert any(c[0] == "create_dependency" for c in src.calls)   # the mutation itself DID happen
+        assert len([c for c in src.calls if c[0] == "park"]) == 1
+    finally:
+        lp._load = real_load
 
 
 def test_park_survives_a_failure_after_source_park_has_already_landed(tmp_path, monkeypatch):
@@ -653,6 +975,110 @@ def test_decompose_check_is_in_the_usage_string(capsys):
     assert "decompose-check <dir> <goal>" in capsys.readouterr().err
 
 
+# --------------------------------------------------------------------- #522: decompose_goal.py (the
+# meta-goal template + filed-marker helper `file` mode drives) -- content pins on the module itself,
+# independent of decompose_check's own orchestration (tested in the `file` mode section below).
+
+
+def test_decompose_meta_body_first_line_is_the_marker():
+    dg = _mod("decompose_goal")
+    body = dg.render_meta_body("522", 8)
+    assert body.splitlines()[0] == "<!-- loopsmith:decompose-of=#522 -->"
+
+
+def test_decompose_meta_body_reads_the_marker_constants_live_not_a_hardcoded_copy():
+    """Mirrors test_decompose_check_verb_reads_the_marker_constant_live_not_a_hardcoded_copy above:
+    the template's own worked examples must read goal_size's marker constants at render time, not a
+    hand-typed copy that merely happens to match today."""
+    dg = _mod("decompose_goal")
+    real_marker = dg.goal_size.DECOMPOSE_OF_MARKER
+    dg.goal_size.DECOMPOSE_OF_MARKER = "totally-renamed-marker="
+    try:
+        body = dg.render_meta_body("522", 8)
+        assert body.splitlines()[0] == "<!-- totally-renamed-marker=#522 -->"
+    finally:
+        dg.goal_size.DECOMPOSE_OF_MARKER = real_marker
+
+
+def test_decompose_meta_body_interpolates_max_children():
+    dg = _mod("decompose_goal")
+    body = dg.render_meta_body("522", 5)
+    assert "2..5 children" in body
+
+
+def test_decompose_meta_body_documents_lower_number_wins_tie_break():
+    dg = _mod("decompose_goal")
+    body = dg.render_meta_body("522", 8)
+    assert "lower-number-wins" in body.lower() or "lowest-numbered" in body.lower()
+    assert "mutual-abort deadlock" in body
+
+
+def test_decompose_meta_body_documents_the_track_call_shape():
+    dg = _mod("decompose_goal")
+    body = dg.render_meta_body("522", 8)
+    assert "handoff.py track" in body
+    assert "--queue actionable" in body and "--assignee same-area" in body and "--blocks no" in body
+    assert "--body-file" in body
+    assert "gh issue create" in body and "never" in body   # never gh issue create directly
+    assert "<!-- loopsmith:decomposed-from=#522 -->" in body
+    assert "Blocked by" in body
+
+
+def test_decompose_meta_body_track_call_targets_this_issue_not_the_parent():
+    """#522 review fix 1 (THE BLOCKER): create_tracked_issue posts each child's narrative on the
+    goal= timeline, and step 0's own reconciliation reads THIS goal's (the meta-goal's OWN)
+    timeline as the child ledger. Interpolating the PARENT's number into the track call's goal
+    argument would file every child FROM THE PARENT instead -- the meta-goal's own timeline would
+    then always be empty, and step 0 could never see its own already-created children. The goal
+    argument must be the literal placeholder "<THIS issue>" -- the meta-goal's own number, known
+    only once IT is created, never {parent}. Every OTHER {parent} interpolation (area, priority,
+    the decomposed-from marker, the parent-closed check) stays exactly as-is -- only the goal
+    argument of the track call itself was wrong."""
+    dg = _mod("decompose_goal")
+    body = dg.render_meta_body("522", 8)
+    assert "track <sdlc-dir> <THIS issue>" in body
+    assert "track <sdlc-dir> 522" not in body
+    # the OTHER {parent} interpolations around the same command must be untouched
+    assert "<#522's area>" in body and "<#522's priority>" in body
+
+
+def test_decompose_meta_body_documents_outcome_check():
+    dg = _mod("decompose_goal")
+    body = dg.render_meta_body("522", 8)
+    assert "gh issue list --label sdlc:goal" in body
+    assert "record parked" in body
+    assert "loop.py verify" in body and "record done" in body
+
+
+def test_decompose_meta_body_documents_skip_work_py():
+    dg = _mod("decompose_goal")
+    body = dg.render_meta_body("522", 8)
+    assert "skip" in body.lower() and "work.py" in body
+
+
+def test_decompose_meta_body_step_0_reconciliation_is_direct_reads_never_search():
+    dg = _mod("decompose_goal")
+    body = dg.render_meta_body("522", 8)
+    assert "CLOSED" in body and "already done" in body
+    assert "sdlc:decompose" in body
+    assert "never a search" in body.lower() or "never search" in body.lower()
+
+
+def test_filed_marker_comment_shape():
+    dg = _mod("decompose_goal")
+    text = dg.filed_marker_comment("531")
+    assert text == ("Too large to implement as one goal — decomposition filed as #531. "
+                     "<!-- loopsmith:decompose-filed=#531 -->")
+
+
+def test_decompose_filed_marker_is_a_bare_substring_of_its_own_comment():
+    """The idempotency check in decompose_check's file mode looks for DECOMPOSE_FILED_MARKER as a
+    bare substring of a comment body -- prove the constant actually matches what
+    filed_marker_comment() posts, so the two can never silently drift apart."""
+    dg = _mod("decompose_goal")
+    assert dg.DECOMPOSE_FILED_MARKER in dg.filed_marker_comment("531")
+
+
 # --------------------------------------------------------------------- config-template discoverability
 
 
@@ -667,7 +1093,10 @@ def test_goal_decompose_key_is_discoverable_in_the_scaffolded_config():
     assert cfg.get("goal_decompose") == {"enabled": False, "mode": "log", "max_children": 8}
     assert "_goal_decompose" in cfg
     explainer = cfg["_goal_decompose"]
-    assert "NOT YET WIRED" in explainer            # honest about max_children + file-mode (review change 5)
+    # #522: file mode + max_children are now real (positive pin, replacing the old "NOT YET WIRED"
+    # placeholder text that was true when this key was first scaffolded, #519).
+    assert "NOT YET WIRED" not in explainer
+    assert "idempotency-guarded" in explainer and "loopsmith:decompose-filed" in explainer
     assert "park" in explainer and "log" in explainer
 
 
@@ -682,3 +1111,18 @@ def test_scaffolded_default_config_is_off_end_to_end(tmp_path):
     src = _FakeSource(body=_EPIC_BODY)
     assert lp.decompose_check(base, "1", cfg, src) == "OFF"
     assert src.calls == []
+
+
+def test_readme_goal_decompose_row_documents_file_mode_and_drops_the_stale_provisional_claim():
+    """#522: the row's old "thresholds are PROVISIONAL... prefer log until a follow-up slice
+    retunes them" claim was already falsified by #520's corpus calibration slice; the row must also
+    now mention `file` mode's real behavior and `max_children`."""
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    row = next(line for line in readme.splitlines() if line.startswith("| `goal_decompose:"))
+    assert "file" in row and "max_children" in row
+    assert "PROVISIONAL" not in row
+
+
+def test_skill_documents_file_mode_files_a_meta_issue():
+    skill = (ROOT / "skills" / "sdlc-loop" / "SKILL.md").read_text(encoding="utf-8")
+    assert "Decompose #" in skill or "meta-issue" in skill.lower()

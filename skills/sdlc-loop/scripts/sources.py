@@ -414,6 +414,42 @@ class GitHubSource:
             data = {}
         return {"title": data.get("title") or "", "body": data.get("body") or ""}
 
+    def fetch_comments_strict(self, goal):
+        """Direct, read-only issue comments+labels — `gh issue view --json comments,labels` through
+        THIS source's own `_run` chokepoint (#522, `goal_decompose`'s `file`-mode idempotency read).
+        Deliberately, DELIBERATELY the opposite of `fetch_title_body` above: that method degrades a
+        transport failure or a malformed/non-object payload to an empty result, because a caller
+        only ever uses it for a classifier that fails open by design either way. THIS method RAISES
+        on all three instead — a transport failure propagates from `self._run` unguarded, a
+        malformed/non-object payload raises `ValueError` explicitly (an empty `raw` is malformed
+        too: no `raw or "{}"` fallback here), and a well-formed JSON OBJECT that is still missing
+        the `"comments"` key entirely ALSO raises (#522 review fix 2) — a real `gh issue view --json
+        comments,labels` call always returns the requested field, even as an empty array, so a bare
+        `{}` is itself a signal something went wrong (a truncated/malformed transport), not
+        "genuinely zero comments" (which looks like `{"comments": [], ...}`); defaulting that case
+        away would just move this method's whole reason for existing one layer down. `"labels"`
+        alone missing (with `"comments"` genuinely present) still defaults to `[]` — it is not the
+        field this method's caller depends on for correctness. The caller (`decompose_check`'s
+        `file`-mode idempotency check) must be able to tell "could not read the parent's own
+        timeline" apart from "read it, found no `loopsmith:decompose-filed` marker" — collapsing
+        those into one fail-open result could let a second, concurrent run silently file a
+        duplicate meta-issue.
+
+        Returns `{"comments": [...], "labels": [...]}` — the RAW gh JSON shapes, unnormalized
+        (unlike `fetch_comments()`'s own `{"id","author","body","created_at"}` shape): the caller
+        only needs comment `body` text (the marker substring) and label `name` strings
+        (`area:`/`priority:`), so no normalization layer earns its keep here. Direct read of the
+        one issue's own timeline — never a search-API query (eventually consistent, #447)."""
+        raw = self._run(["issue", "view", str(goal), *self._repo_args(), "--json", "comments,labels"])
+        data = json.loads(raw)          # empty/malformed `raw` raises here -- no `or "{}"` fallback,
+                                         # unlike fetch_title_body above -- see the asymmetry note.
+        if not isinstance(data, dict):
+            raise ValueError(f"fetch_comments_strict: expected a JSON object, got {type(data).__name__}")
+        if "comments" not in data:
+            raise ValueError("fetch_comments_strict: response has no 'comments' key — "
+                             "malformed or incomplete")
+        return {"comments": data.get("comments") or [], "labels": data.get("labels") or []}
+
     def append_to_body(self, goal, marker):
         """Append `marker` to the issue's CURRENT body — never overwrite it — read then write, not
         atomic (acceptable: a goal a loop just parked is not being concurrently edited by anyone

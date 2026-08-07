@@ -745,3 +745,115 @@ def test_local_fetch_title_body_missing_file_returns_empty_strings():
         base = pathlib.Path(d) / ".sdlc"
         local = src.get_source(str(base), {})
         assert local.fetch_title_body(str(base / "goals" / "nope.md")) == {"title": "", "body": ""}
+
+
+# --- #522: fetch_comments_strict() -- the STRICT read decompose_check's `file`-mode idempotency
+# check drives. Deliberately asymmetric vs fetch_title_body above: raises on a transport failure
+# AND on a malformed/non-object payload, rather than degrading to empty -- the caller must be able
+# to tell "could not read the timeline" apart from "read it, found no marker", or a second
+# concurrent run could silently file a duplicate meta-issue.
+
+def _recording_runner_by_json(by_json=None):
+    """Fake `gh` runner keyed on the `--json` argument's VALUE, not `args[1]` -- fetch_title_body
+    and fetch_comments_strict both issue an `issue view ... --json <fields>` call, so the plain
+    args[1]-keyed _recording_runner above cannot tell them apart (#522 review, test-infra note). A
+    canned value that is an Exception INSTANCE is raised instead of returned, for transport-failure
+    tests."""
+    calls = []
+    by_json = by_json or {}
+    def run(args):
+        calls.append(list(args))
+        key = args[args.index("--json") + 1] if "--json" in args else None
+        val = by_json.get(key, "")
+        if isinstance(val, Exception):
+            raise val
+        return val
+    run.calls = calls
+    return run
+
+
+def test_github_fetch_comments_strict_reads_via_run_chokepoint():
+    src = _mod("sources")
+    run = _recording_runner_by_json({"comments,labels": json.dumps({
+        "comments": [{"id": "1", "body": "hi"}], "labels": [{"name": "area:engine"}]})})
+    gh = src.GitHubSource({"discovery": {"source": "github", "github": {"repo": "o/r"}}}, run=run)
+    result = gh.fetch_comments_strict("42")
+    assert result == {"comments": [{"id": "1", "body": "hi"}], "labels": [{"name": "area:engine"}]}
+    flat = [" ".join(c) for c in run.calls]
+    assert any("issue view 42" in c and "--json comments,labels" in c and "--repo o/r" in c for c in flat)
+
+
+def test_github_fetch_comments_strict_raises_on_transport_failure():
+    src = _mod("sources")
+    run = _recording_runner_by_json({"comments,labels": RuntimeError("gh: not authenticated")})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    try:
+        gh.fetch_comments_strict("42")
+        assert False, "expected an exception -- a transport failure must never degrade to empty here"
+    except RuntimeError as exc:
+        assert "not authenticated" in str(exc)
+
+
+def test_github_fetch_comments_strict_raises_on_malformed_json():
+    src = _mod("sources")
+    run = _recording_runner_by_json({"comments,labels": "not json"})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    try:
+        gh.fetch_comments_strict("42")
+        assert False, "expected an exception -- malformed JSON must never degrade to empty here"
+    except Exception:
+        pass
+
+
+def test_github_fetch_comments_strict_raises_on_a_non_object_payload():
+    src = _mod("sources")
+    run = _recording_runner_by_json({"comments,labels": json.dumps(["not", "an", "object"])})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    try:
+        gh.fetch_comments_strict("42")
+        assert False, "expected an exception -- a non-object payload must never degrade to empty here"
+    except ValueError:
+        pass
+
+
+def test_github_fetch_comments_strict_raises_on_an_empty_response():
+    """Deliberately does NOT mirror fetch_title_body's `raw or "{}"` leniency -- an empty response
+    is exactly the shape a transient blip produces, and this read must fail closed on it too."""
+    src = _mod("sources")
+    run = _recording_runner_by_json({"comments,labels": ""})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    try:
+        gh.fetch_comments_strict("42")
+        assert False, "expected an exception -- an empty response must never degrade to empty here"
+    except Exception:
+        pass
+
+
+def test_github_fetch_comments_strict_raises_when_the_comments_key_is_entirely_absent():
+    """#522 review fix 2: a real `gh issue view --json comments,labels` call always returns the
+    requested field, even as an empty array -- a bare {} response (the key entirely ABSENT, not
+    just empty) is itself a signal something is wrong (a truncated/malformed transport), not
+    "genuinely zero comments" (which looks like {"comments": [], ...}). Raising here keeps this
+    method strict at its OWN layer, consistent with decompose_check's own new distrust of a missing
+    "comments" key (loop.py's `not isinstance(strict, dict) or "comments" not in strict` check) --
+    defaulting it away here would just move the same fail-open hole one layer down instead of
+    closing it."""
+    src = _mod("sources")
+    run = _recording_runner_by_json({"comments,labels": json.dumps({})})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    try:
+        gh.fetch_comments_strict("42")
+        assert False, "expected an exception -- a response missing the comments key entirely must never degrade to empty"
+    except ValueError:
+        pass
+
+
+def test_github_fetch_comments_strict_defaults_a_present_but_empty_comments_list():
+    """The "comments" key itself is the critical field this method protects (decompose_check's
+    marker check reads it); "labels" absence alone -- with "comments" genuinely present, even as an
+    empty list -- still defaults to [] rather than raising, since decompose_check's own area/
+    priority extraction already tolerates missing/empty labels gracefully."""
+    src = _mod("sources")
+    run = _recording_runner_by_json({"comments,labels": json.dumps({"comments": []})})
+    gh = src.GitHubSource({"discovery": {"source": "github"}}, run=run)
+    assert gh.fetch_comments_strict("42") == {"comments": [], "labels": []}

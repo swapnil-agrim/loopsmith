@@ -1513,6 +1513,15 @@ def test_reason_class_table_matches_every_documented_park_source():
         ("post-PR review did not converge after 3 cycles on PR #1", "review_cap"),
         ("too large per goal_size (12 independent ## sections (>= 6)) — needs manual decomposition",
          "needs_decision"),
+        # #522: goal_decompose's `file` mode -- five more decompose_check park details.
+        ("too large per goal_size (12 independent ## sections (>= 6)) — needs manual decomposition "
+         "(file mode needs an issue tracker)", "needs_decision"),
+        ("could not confirm whether a decomposition was already filed — check comments", "no_evidence"),
+        ("decomposition already filed — see comments", "dependency"),
+        ("too large — failed to file decomposition goal: could not open the tracked issue — "
+         "needs a human", "needs_decision"),
+        ("too large per goal_size (12 independent ## sections (>= 6)) — decomposition filed as #901",
+         "dependency"),
         ("something totally unrelated to any known park reason", "unknown"),
     ]
     for detail, expected in cases:
