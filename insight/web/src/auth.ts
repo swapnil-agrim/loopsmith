@@ -100,17 +100,82 @@ function warnIfSessionsWillFailClosed() {
   );
 }
 
+/** The origin this deployment says it is served from, used ONLY when next-auth invokes the config
+ * factory with no request (the in-process Server Action path). Returns undefined when nothing is
+ * declared, which isSecureRequest() then treats as "no signal" and fails closed on. */
+function deploymentOrigin(): string | undefined {
+  return process.env.AUTH_URL ?? process.env.NEXTAUTH_URL;
+}
+
+// Fires ONCE when this deployment cannot name its own origin, because that is the one remaining
+// configuration in which the write half and the read half of the session cookie can still pick
+// DIFFERENT cookie names -- see the long comment on useSecureCookies below for the mechanism and
+// for what it looked like in practice (a correct password, a real cookie, and an instant silent
+// bounce back to /login). Loud on purpose: the failure it describes produces no error of its own,
+// so a warning here is the only thing standing between an operator and an app that rejects every
+// valid login for reasons nothing on the box will tell them.
+//
+// Distinct from warnIfSessionsWillFailClosed() above even though both name AUTH_URL: that one
+// fires only in a production build and is about trustHost; this one fires in ANY environment,
+// because `npm run dev` on plain localhost with no AUTH_URL hits this exact split too.
+//
+// A warning, not a throw, for the same reason: refusing to boot turns a misconfiguration into an
+// outage, and there ARE deployments where the two halves agree anyway (a public hostname, where
+// both branches independently answer `Secure`).
+let warnedNoDeclaredOrigin = false;
+function warnIfSecureCookieNameWillNotMatch() {
+  if (warnedNoDeclaredOrigin) return;
+  if (deploymentOrigin()) return;
+  warnedNoDeclaredOrigin = true;
+  console.warn(
+    "[insight] AUTH_URL is unset, so sign-in through the login form cannot know whether this " +
+    "deployment is served over TLS. On a loopback origin the session cookie will be WRITTEN as " +
+    "`__Secure-authjs.session-token` and READ as `authjs.session-token`, and every correct " +
+    "sign-in will bounce straight back to /login with no error. Set AUTH_URL to the exact origin " +
+    "users reach (e.g. http://localhost:3000). See insight/web/README.md.",
+  );
+}
+
 export const { handlers, auth, signIn, signOut: nextAuthSignOut } = NextAuth((request) => {
   warnIfSessionsWillFailClosed();
+  warnIfSecureCookieNameWillNotMatch();
   return {
   // Decision 5: computed PER REQUEST via next-auth's own "lazy initialization" config form
   // (documented in next-auth/index.d.ts) -- verified against @auth/core@0.41.3's own
   // defaultCookies() (src/lib/utils/cookie.ts:59-70): httpOnly/sameSite=lax stay unconditional,
   // only `secure` reads this.
-  // `: true` when there is no request to judge -- fail CLOSED, same rule as isSecureRequest()'s own
-  // fallbacks (security review of #307): an un-judgeable case must never be the one that silently
-  // drops `Secure`.
-  useSecureCookies: request ? isSecureRequest(request) : true,
+  //
+  // THE NO-REQUEST BRANCH USED TO BE A BARE `: true`, AND THAT MADE BROWSER SIGN-IN IMPOSSIBLE.
+  // Measured live against this build, not reasoned about: `useSecureCookies` does not only set the
+  // `Secure` ATTRIBUTE, it selects the cookie's NAME -- defaultCookies() returns
+  // `__Secure-authjs.session-token` when true and `authjs.session-token` when false -- and
+  // @auth/core salts the session JWT's encryption with that name (so the two are not even
+  // interchangeable after the fact: renaming a captured cookie still fails to decrypt).
+  //
+  // next-auth invokes this factory WITHOUT a request on the in-process Server Action path, which
+  // is exactly how src/app/login/actions.ts signs a browser in. So the two halves disagreed:
+  //
+  //   write (Server Action, no request) -> `: true`  -> sets __Secure-authjs.session-token
+  //   read  (any later HTTP request)    -> isSecureRequest(request) on loopback -> false
+  //                                     -> looks for authjs.session-token, which does not exist
+  //
+  // Result: a correct username and password produced a 303 to `/`, a real session cookie, and
+  // then an immediate bounce back to /login with no session, no error, and nothing in the log.
+  // Signing in over the /api/auth/callback/credentials route worked the whole time (both halves
+  // have a request there), which is why every API-level check passed while the actual product was
+  // unusable.
+  //
+  // The fix keeps the security property intact and only makes the un-judgeable case judgeable:
+  // fall back to the deployment's OWN declared origin and run it through the identical
+  // isSecureRequest() rules, so the no-request branch reaches the same verdict the request-bearing
+  // branch will reach for that same deployment. An https:// AUTH_URL still yields `Secure` and the
+  // `__Secure-` prefix; a real hostname over plaintext still yields `Secure`; only loopback --
+  // where the request-bearing branch already says false -- now agrees. With AUTH_URL unset there
+  // is still no signal at all and isSecureRequest still fails CLOSED to true, unchanged; that
+  // deployment is the one warnIfSecureCookieNameWillNotMatch() below refuses to let pass silently.
+  useSecureCookies: isSecureRequest(
+    request ?? { headers: new Headers(), url: deploymentOrigin() },
+  ),
   session: {
     strategy: "jwt", // required for the Credentials provider (Auth.js's own constraint)
     // issue #308 [E18.S3], .sdlc/plans/308.md Decision 9. Auth.js's own 30-day default

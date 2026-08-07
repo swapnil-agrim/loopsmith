@@ -104,11 +104,31 @@ function partB() {
     "auth.ts must use next-auth's request-aware lazy-init form (NextAuth((request) => ({...}))) " +
     "so useSecureCookies can be computed per request -- see Decision 5",
   );
+  // This assertion USED to require the literal `useSecureCookies: request ? isSecureRequest(request)
+  // : true`, and in doing so it pinned a bug in place: that bare `: true` is the branch next-auth
+  // takes on the in-process Server Action path, i.e. on every browser sign-in, and it made the
+  // write half name the cookie `__Secure-authjs.session-token` while the read half looked for
+  // `authjs.session-token`. Every correct password bounced back to /login. See auth.ts's own
+  // comment on useSecureCookies for the measured mechanism.
+  //
+  // The lesson is the reason this file now also runs partC: a source-shape tripwire can only ever
+  // check that the code LOOKS like the reasoning that produced it. It cannot notice that the
+  // reasoning never covered the path the product actually uses.
   assert.ok(
-    /useSecureCookies:\s*request\s*\?\s*isSecureRequest\(request\)\s*:\s*true/.test(authSrc),
-    "auth.ts must wire useSecureCookies to isSecureRequest(request), and its no-request branch " +
-    "must fail CLOSED (`: true`) -- an un-judgeable request is exactly the case that must not " +
-    "silently drop `Secure` (security review of #307)",
+    /useSecureCookies:\s*isSecureRequest\(\s*request\s*\?\?\s*\{\s*headers:\s*new Headers\(\),\s*url:\s*deploymentOrigin\(\)\s*,?\s*\}\s*,?\s*\)/.test(authSrc),
+    "auth.ts must route BOTH the request-bearing and the no-request case through the same " +
+    "isSecureRequest() rules, falling back to the deployment's declared origin so the cookie NAME " +
+    "cannot differ between the write and the read half",
+  );
+  assert.ok(
+    /function deploymentOrigin\(\)[\s\S]*?process\.env\.AUTH_URL\s*\?\?\s*process\.env\.NEXTAUTH_URL/.test(authSrc),
+    "deploymentOrigin() must read AUTH_URL (then NEXTAUTH_URL) and nothing else -- the no-request " +
+    "branch must derive from CONFIG, never from anything a client can influence",
+  );
+  assert.ok(
+    /warnIfSecureCookieNameWillNotMatch\(\)/.test(authSrc),
+    "auth.ts must warn when AUTH_URL is unset -- that is the one remaining configuration where " +
+    "the two halves can still disagree, and it fails with no error of its own",
   );
   // Plan-review SHOULD-FIX: this negative assertion passes VACUOUSLY today, since auth.ts (Task
   // 5) never defines a `cookies` key at all -- it is a cheap tripwire against a FUTURE edit

@@ -192,6 +192,19 @@ sibling `package-lock.json` and declare every `CHECKS` name — continues to enf
   including one who just signed in with correct credentials. Found by #307's CI browser proofs,
   which hit exactly this against `next start`; `scripts/lib/proof-session.mjs` sets
   `AUTH_TRUST_HOST=1` for the same reason.
+- `AUTH_URL` is additionally required for the LOGIN FORM to work at all, separately from the
+  trustHost reason above, and this one bites on plain `localhost` too. `useSecureCookies` selects
+  the session cookie's NAME (`__Secure-authjs.session-token` vs `authjs.session-token`), and
+  Auth.js salts the session JWT with that name. next-auth invokes `auth.ts`'s config factory with
+  NO request on the in-process Server Action path — which is how `src/app/login/actions.ts` signs
+  a browser in — so without a declared origin that path cannot tell whether it is on TLS. It used
+  to fail closed to `Secure`, writing `__Secure-authjs.session-token` while every later request on
+  a loopback origin read `authjs.session-token`: correct password, real cookie, instant silent
+  bounce back to `/login`, nothing in the log. `auth.ts` now derives the no-request answer from
+  `AUTH_URL` through the same `isSecureRequest()` rules, and warns when it is unset.
+  `scripts/prove-login-form-issues-a-usable-session.mjs` is the regression guard — it signs in
+  through the real form rather than minting a token, which is what every other proof does and is
+  why none of them caught this.
 - `INSIGHT_ACCOUNTS_PATH` — absolute path to `insight-accounts.json`, read by
   `src/lib/auth/pythonBridge.ts`. Required in any deployment where the Node process's CWD does not
   happen to be two directories below the repo root (i.e. always required outside plain local dev)
