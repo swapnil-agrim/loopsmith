@@ -37,6 +37,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 
+import { authenticatedContext, proofServerEnv } from "./lib/proof-session.mjs";
+
 const WEB = path.resolve(fileURLToPath(import.meta.url), "..", "..");
 const NEXT_BIN = path.join(WEB, "node_modules", ".bin", "next");
 
@@ -84,6 +86,9 @@ async function startNext() {
   const proc = spawn(NEXT_BIN, ["start", "-p", String(port)], {
     cwd: WEB,
     stdio: ["ignore", "pipe", "pipe"],
+    // issue #307 [E18.S2]: the server needs the same AUTH_SECRET the proof mints its session
+    // cookie with, or the proxy decodes that cookie to null and 302s this proof to /login.
+    env: proofServerEnv(),
   });
   let out = "";
   proc.stdout.on("data", (d) => (out += d.toString()));
@@ -189,8 +194,18 @@ async function main() {
   let browser;
   try {
     browser = await launchBrowser();
-    const page = await browser.newPage();
+    // issue #307 [E18.S2]: /dev/absence-states is private by default now, so this proof has to
+    // arrive with a session -- anonymously it just renders /login and every assertion below finds
+    // nothing. See scripts/lib/proof-session.mjs for why the session is minted, not logged into.
+    const context = await authenticatedContext(browser, baseUrl);
+    const page = await context.newPage();
     await page.goto(`${baseUrl}/dev/absence-states`);
+    assert.equal(
+      new URL(page.url()).pathname, "/dev/absence-states",
+      `expected to land on /dev/absence-states with a valid session, got ${page.url()} -- ` +
+      "a redirect to /login means the minted session was not accepted, so this proof would " +
+      "otherwise assert against the login page instead of the thing it is meant to check",
+    );
 
     const results = {}; // component.name -> state.id -> { borderStyle, fixText }
     for (const component of COMPONENTS) {

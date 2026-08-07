@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 
 import { loadNavItems } from "./prove-nav-items.mjs";
+import { authenticatedContext, proofServerEnv } from "./lib/proof-session.mjs";
 
 const WEB = path.resolve(fileURLToPath(import.meta.url), "..", "..");
 const NEXT_BIN = path.join(WEB, "node_modules", ".bin", "next");
@@ -71,6 +72,9 @@ async function startNext() {
   const proc = spawn(NEXT_BIN, ["start", "-p", String(port)], {
     cwd: WEB,
     stdio: ["ignore", "pipe", "pipe"],
+    // issue #307 [E18.S2]: same AUTH_SECRET the proof mints its session cookie with, or the proxy
+    // decodes that cookie to null and 302s every navigation below to /login.
+    env: proofServerEnv(),
   });
   let out = "";
   proc.stdout.on("data", (d) => (out += d.toString()));
@@ -178,12 +182,22 @@ async function main() {
   let browser;
   try {
     browser = await launchBrowser();
-    const page = await browser.newPage();
+    // issue #307 [E18.S2]: every page in PAGES is private by default now, so this proof has to
+    // arrive with a session -- anonymously it measures the login page at three widths and proves
+    // nothing about the shell. See scripts/lib/proof-session.mjs.
+    const context = await authenticatedContext(browser, baseUrl);
+    const page = await context.newPage();
 
     for (const width of WIDTHS) {
       await page.setViewportSize({ width, height: HEIGHT });
       for (const pagePath of PAGES) {
         await page.goto(`${baseUrl}${pagePath}`);
+        assert.equal(
+          new URL(page.url()).pathname, pagePath,
+          `expected to land on ${pagePath} with a valid session, got ${page.url()} -- a redirect ` +
+          "to /login means the minted session was not accepted, so every assertion below would " +
+          "be measuring the login page instead of the shell",
+        );
         await assertShellPresent(page, `${pagePath} @ ${width}px`);
         await assertNavRendered(page, `${pagePath} @ ${width}px`, navItems);
         await assertNoPageOverflow(page, pagePath, width);
