@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### fix(loop): `kg.py::load_config()` no longer crashes on a non-dict `config.json` (#475)
+`json.loads()` doesn't raise on valid JSON that isn't a dict (`null`, a list, a string, a number) —
+only the following `.get()` call did. Now falls back to safe defaults, matching this function's own
+documented fail-open contract (mirrors #453's identical fix in `state.py`).
+
+### fix(loop): `agent_watch` dead-agent notes now carry `ref=` so distinct events dedup separately (#476)
+`_notify()`'s ledger write never set `ref=`, so `signature()` collapsed every dead-agent notification
+for the same goal into one — only the first ever reached the inbox.
+
+### fix(ledger): `files_for()` now matches an actor case-insensitively (#488)
+A hand-typed `ledger.actor` casing mismatch could miss a real actor's own files on a case-insensitive
+filesystem. Simplified to a case-insensitive comparison in place — no caching needed after all (an
+earlier network-based design was independently plan-reviewed and correctly rejected as fixing only
+one direction of the bug).
+
+### fix(log): `sdlc-log`'s unsafe-goal refusal no longer shows the generic `action_log` hint (#499)
+`goal_view()` now distinguishes "genuinely no entries" from "goal refused as unsafe" and prints an
+accurate message for the latter instead of the misleading `action_log.enabled` config hint.
+
+### docs(loop): pin + document the two safe-by-construction `goal.stem` sites (#500)
+`sources.py::note()` and `review_context.py`'s dossier lookup were confirmed safe from the #486 class
+of path-traversal bug during that review, but the invariant was undocumented and unpinned. Now has an
+inline comment plus a non-vacuous regression test at each site.
+
+### fix(loop): completion comment no longer silently drops when a merge auto-closes the issue first (#505)
+`complete()`'s combined `issue close --comment` call is a no-op comment-wise on an already-closed
+issue (the norm here, via "Fixes #N") — `gh` exits 0 with nothing posted. Now probes state first and
+posts the comment via a standalone call when the issue is already closed.
+
+### fix(loop): `sdlc:in-progress` is now removed on completion and parking, not just added (#506)
+The label was write-only — added when work starts, never removed. `complete()` and `_offboard()` now
+both clear it, mirroring how `_offboard()` already clears `sdlc:goal`.
+
+All six found and fixed during a 2026-08-07 overnight drain that doubled as the first real,
+end-to-end exercise of `action_log`/`agent_watch` against live goals in this repo's own `.sdlc/`
+(previously shipped, never actually turned on here) — 74 real action-log entries across 9 event
+kinds, clean structure, zero anomalies once the two real completion-path bugs above were found and
+fixed.
+
 ## 1.0.6 — the sandbox release
 
 ### fix(loop): six chokepoints across the plugin now reject a path-traversal `goal` (#486)
