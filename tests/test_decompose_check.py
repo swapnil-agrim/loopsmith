@@ -115,6 +115,17 @@ def test_classify_flags_six_or_more_independent_h2_sections():
     assert flagged is True and "sections" in reason
 
 
+def test_classify_does_not_flag_five_h2_sections():
+    """Boundary pin one below the new threshold: 5 is the fence-stripped corpus's own observed
+    max (see goal_size.py's module docstring), so this is also the tightest real-world case the
+    corpus itself validates precision against."""
+    gs = _mod("goal_size")
+    body = ("## A\nshort\n\n## B\nshort\n\n## C\nshort\n\n"
+            "## D\nshort\n\n## E\nshort\n")
+    flagged, reason = gs.classify(body)
+    assert flagged is False
+
+
 def test_classify_does_not_flag_only_two_h2_sections():
     gs = _mod("goal_size")
     body = "## Context\nshort\n\n## Scope\nshort\n"
@@ -123,8 +134,16 @@ def test_classify_does_not_flag_only_two_h2_sections():
 
 
 def test_classify_h3_subsections_never_count_toward_the_h2_section_signal():
+    """Re-armed for #520's SECTION_THRESHOLD=6 (was 3): with only 3 H3 subsections, even a
+    regression that started counting H3 as a section would total just 1+3=4, still under the new
+    threshold, so that body could no longer catch anything — silently vacuous at the new
+    threshold, not just weak. Widened to 1 H2 + 6 H3 (total 7 if H3 wrongly counted) so the
+    threshold itself is what keeps this test load-bearing; proof: a scratch copy of goal_size.py
+    with `_SECTION_RE` widened to `^###?[ \\t]+\\S.*$` (H2 or H3 both match) classifies this exact
+    body as flagged=True, reason='7 independent ## sections (>= 6)' — confirming this body WOULD
+    fail against that regression, while the real (H2-only) regex classifies it as flagged=False."""
     gs = _mod("goal_size")
-    body = "## Context\n### a\nx\n### b\nx\n### c\nx\n"     # 1 H2 + 3 H3 -> still just 1 independent section
+    body = "## Context\n### a\nx\n### b\nx\n### c\nx\n### d\nx\n### e\nx\n### f\nx\n"   # 1 H2 + 6 H3
     flagged, reason = gs.classify(body)
     assert flagged is False
 
@@ -167,11 +186,14 @@ def test_classify_does_not_flag_a_single_phase_mention():
 def test_classify_reason_is_always_single_line():
     """`reason` lands verbatim in a park detail / action-log field — both reject raw newlines
     (state.py's `_offboard`/actionlog's `reject_newline`) — so a multi-line reason would corrupt
-    either channel, not just look ugly."""
+    either channel, not just look ugly. The sections body below is bumped to 6 (#520's new
+    SECTION_THRESHOLD) — at the old 3-section body this arm no longer flags at all, so `reason`
+    was always "" (trivially single-line) and this stopped actually exercising the sections-signal
+    reason string; 6 makes it produce a real, non-empty reason again."""
     gs = _mod("goal_size")
     bodies = ["word " * (gs.WORD_THRESHOLD + 5),
               "\n".join(f"x {i}" for i in range(gs.LINE_THRESHOLD + 5)),
-              "## a\nx\n\n## b\nx\n\n## c\nx\n",
+              "## a\nx\n\n## b\nx\n\n## c\nx\n\n## d\nx\n\n## e\nx\n\n## f\nx\n",
               "- [ ] a\n- [ ] b\n- [ ] c\n- [ ] d\n",
               "## Phase 1\nx\n\n## Phase 2\nx\n"]
     for body in bodies:
@@ -249,6 +271,19 @@ def test_classify_unterminated_fence_blanks_to_eof():
     body = ("## Context\nshort\n\n## Scope\nshort\n\n"
             "```\nsome code\n"
             "## D\n## E\n## F\n## G\n")
+    flagged, reason = gs.classify(body)
+    assert flagged is False, reason
+
+
+def test_classify_mismatched_fence_delimiter_does_not_close_the_fence():
+    """CommonMark: a fence closes only on a matching delimiter CHARACTER — a ~~~ line inside an
+    open ``` fence is ordinary fenced content, not a close. Without that rule, the ~~~ below would
+    have closed the ``` fence early, exposing the 5 '## ' lines that follow it as real sections (1
+    real section before the fence + those 5 = 6, >= SECTION_THRESHOLD) — this bug failed TOWARD
+    flagging, never away from it."""
+    gs = _mod("goal_size")
+    body = ("## Context\nshort\n\n"
+            "```\nsome code\n~~~\n## D\n## E\n## F\n## G\n## H\n```\n")
     flagged, reason = gs.classify(body)
     assert flagged is False, reason
 

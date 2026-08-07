@@ -68,7 +68,7 @@ CHECKBOX_THRESHOLD = 4     # non-indented `- [ ]`/`- [x]` (`-`/`*`/`+` bullets) 
                            # as multiple distinct deliverables, not one goal's own sub-steps — the
                            # only signal with a true positive in the calibration corpus
 
-_FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~)")
+_FENCE_RE = re.compile(r"^[ \t]*(```|~~~)")
 _SECTION_RE = re.compile(r"^##(?!#)[ \t]+\S.*$", re.MULTILINE)
 _CHECKBOX_RE = re.compile(r"^[-*+][ \t]{1,3}\[[ xX]\][ \t]+\S", re.MULTILINE)
 # Anchored to line-start structure (optional heading/bullet/numbered-list marker, optional bold),
@@ -90,18 +90,36 @@ def _strip_fences(text):
     (a shell `## banner comment`, a checklist pasted as an example, a code comment mentioning
     "phase 2") without actually being one.
 
+    Tracks the OPENING delimiter CHARACTER and closes only on a matching run — CommonMark: a fence
+    closes only on a delimiter of the same character (and at least the same length; length isn't
+    modeled here, only the character is, since every delimiter this regex matches is exactly three
+    chars). A ~~~ line inside an open ``` fence is ordinary fenced CONTENT, not a close, and vice
+    versa — the earlier version toggled on ANY fence-look-alike regardless of character, which
+    means a mismatched delimiter closed the fence early and exposed whatever followed (up to the
+    real closing delimiter) as live, uncounted... except it WAS counted — that bug failed TOWARD
+    flagging a body it shouldn't have, never away from one (pinned by
+    test_classify_mismatched_fence_delimiter_does_not_close_the_fence).
+
     An UNTERMINATED fence (opened, never closed) blanks everything from the opening delimiter to
     EOF, not just some heuristic extent — conservative, and deliberately fails TOWARD not-flagging a
     malformed body rather than toward flagging one (pinned by
     test_classify_unterminated_fence_blanks_to_eof)."""
     out = []
-    fenced = False
+    open_delim = None                      # the delimiter ('```' or '~~~') that opened the
+                                            # current fence, or None when not inside one
     for line in text.split("\n"):
-        if _FENCE_RE.match(line):
-            fenced = not fenced
+        m = _FENCE_RE.match(line)
+        if m:
+            delim = m.group(1)
+            if open_delim is None:
+                open_delim = delim                     # opens a new fence
+            elif delim == open_delim:
+                open_delim = None                      # closes THIS fence (matching character)
+            # else: a differently-fenced delimiter line inside an open fence is content, not a
+            # close — falls through to being blanked below like any other line in the fence.
             out.append("")                 # the delimiter line itself never counts as content
             continue
-        out.append("" if fenced else line)
+        out.append("" if open_delim is not None else line)
     return "\n".join(out)
 
 

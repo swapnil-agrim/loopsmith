@@ -105,20 +105,28 @@ def test_small_488_sanitization_preserved_word_count():
     check-in — same-shape placeholders; the CASE difference is load-bearing for that body's own
     case-sensitivity bug story, so it's preserved, only the account identity is scrubbed. The
     substitution must be word-count-neutral: 409 before, 409 after (both are single hyphenated
-    tokens, so whitespace-split word count cannot drift from swapping one for the other)."""
+    tokens, so whitespace-split word count cannot drift from swapping one for the other).
+
+    Word count alone doesn't prove the sanitization survived — a fixture could be re-harvested
+    from the live issue (raw account name back in place) and still coincidentally land on 409
+    words. The placeholder-presence check below is what actually pins that: both case variants
+    must still be there."""
     body = _load("small-488.md")
     assert len(body.split()) == 409
+    assert "acme-user" in body and "Acme-User" in body, \
+        "small-488.md looks re-harvested raw — the sanitized placeholders are gone"
 
 
 # --------------------------------------------------------------------- fixture self-containment
 
 # tests/test_self_contained.py's own leakage scanner (lines 51-70) explicitly SKIPS every path
 # under tests/ ("test files legitimately NAME the banned words as leakage guards") — so a
-# checked-in fixture under tests/fixtures/ is invisible to that scan by construction. This corpus
-# test enforces itself: scanning its OWN fixtures for the SAME banned list, plus the account-name
-# pattern that was sanitized out of small-488.md above (case-insensitive — the fixture's own bug
-# story needs the case DIFFERENCE preserved, but the real account name must never survive in
-# either case).
+# checked-in fixture under tests/fixtures/ is invisible to that scan by construction. Fixture
+# cleanliness is self-enforced here instead, on two fronts: every checked-in fixture is scanned
+# below for the same banned-word list that scanner uses (derived from its own source, not
+# duplicated — see _shared_banned_words), and small-488.md specifically carries its own
+# placeholder-presence pin above (test_small_488_sanitization_preserved_word_count) rather than a
+# repo-wide account-name regex.
 
 
 def _shared_banned_words():
@@ -134,7 +142,6 @@ def _shared_banned_words():
 
 
 _BANNED = _shared_banned_words()
-_ACCOUNT_RE = re.compile(r"(?i)mstomar")
 
 
 def test_fixtures_carry_no_banned_internal_strings():
@@ -142,6 +149,4 @@ def test_fixtures_carry_no_banned_internal_strings():
     for path in sorted(FIXTURES_DIR.glob("*.md")):
         text = path.read_text(encoding="utf-8")
         offenders += [f"{path.name}: {b!r}" for b in _BANNED if b in text]
-        if _ACCOUNT_RE.search(text):
-            offenders.append(f"{path.name}: sanitized account-name pattern (see _ACCOUNT_RE, any case)")
     assert not offenders, "internal-string leakage in goal_size fixtures:\n" + "\n".join(offenders)
