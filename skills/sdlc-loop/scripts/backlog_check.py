@@ -187,7 +187,11 @@ def _build_corpus(sdlc_dir, config):
             continue                                    # a README etc. — not a goal
         status = meta.get("status")
         title = meta.get("title") or ""
-        body = scrub(text.split("---", 2)[-1])          # local bodies aren't pre-scrubbed like the mirror
+        # #544: NOT text.split("---", 2) -- a bare '---' substring inside a frontmatter VALUE (e.g. a
+        # title like "Fix the A---B connector bug") counts as a split point ahead of the real closing
+        # fence, under-stripping the body (a title fragment + the real fence get prepended to it).
+        # fm.strip() reuses the same line-anchored _FENCE regex fm.parse() already applies above.
+        body = scrub(fm.strip(text))                    # local bodies aren't pre-scrubbed like the mirror
         docs.append({"ref": str(p), "title": scrub(title), "raw": scrub(title) + "\n" + body,
                      "body": body, "tokens": _doc_tokens(scrub(title), body),
                      "open": status not in disc._SKIP, "completed": status == "done",
@@ -454,12 +458,16 @@ def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measur
         # or the recorded-hand-off branch: an explicit blocker or a recorded hand-off still fully
         # applies to a marked child.
         #
-        # "First line" here means the first NON-BLANK line of the (already-scrubbed) body excerpt:
-        # local-mode bodies always start with a blank line right after the frontmatter delimiter (see
-        # `_build_corpus` above), so `lstrip()` before `splitlines()` is mandatory here -- a deliberate
-        # divergence from loop.py's own guard, which reads the raw, unstripped body straight from the
-        # source and has no such leading blank line to strip. CRLF-tolerant via `splitlines()`, same as
-        # loop.py's guard. `.get("body")` because some callers (tests) hand-build a partial doc.
+        # "First line" here means the first NON-BLANK line of the (already-scrubbed) body excerpt.
+        # local-mode bodies do NOT always start with a blank line (#544: `_build_corpus` strips the
+        # frontmatter fence itself via `frontmatter.strip()`, not an extra artifact newline) -- but a
+        # goal file AUTHORED with a blank line right after the closing fence (a common, legitimate
+        # markdown style) still produces one, since that blank line is real content the fence-stripping
+        # never touches. `lstrip()` before `splitlines()` therefore stays mandatory for that still-live
+        # case -- a deliberate divergence from loop.py's own guard, which reads the raw, unstripped body
+        # straight from the source and has no such leading blank line to strip. CRLF-tolerant via
+        # `splitlines()`, same as loop.py's guard. `.get("body")` because some callers (tests) hand-build
+        # a partial doc.
         first_line = (goal_doc.get("body") or "").lstrip().splitlines()[:1]
         first_line = first_line[0] if first_line else ""
         exempt = (goal_size.DECOMPOSED_FROM_MARKER in first_line

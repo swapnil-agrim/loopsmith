@@ -576,20 +576,62 @@ def test_decompose_of_marker_also_exempts_duplicate_path():
 
 
 def test_local_mode_lstrip_pin_marker_after_leading_blank_line_exempts():
-    # local-mode bodies always start with "\n" right after the frontmatter delimiter (_local_base
-    # below reproduces this exactly, matching _build_corpus's real local branch) -- without lstrip(),
-    # the "first line" would be "" and this marker would never be seen. local-mode ref ordering is by
-    # filename ("0001.md" < "0002.md"), so the LATER goal (0002) is the one that would park.
+    # local-mode bodies do NOT always start with "\n" right after the frontmatter delimiter (#544
+    # fixed `_build_corpus` to strip the fence itself via frontmatter.strip(), not leave an artifact
+    # newline behind) -- but a goal file AUTHORED with a blank line right after the closing fence (a
+    # common, legitimate markdown style) still produces one, since that blank line is real content the
+    # fence-stripping never touches. The explicit leading "\n" in 0002's body below reproduces exactly
+    # that authored-blank-line shape -- without lstrip(), the "first line" would be "" and this marker
+    # would never be seen. local-mode ref ordering is by filename ("0001.md" < "0002.md"), so the LATER
+    # goal (0002) is the one that would park.
     bc = _mod("backlog_check")
     with tempfile.TemporaryDirectory() as d:
         base = _local_base(d, [
             ("0001.md", "pending", _GOAL, "already shipped equivalent"),
-            ("0002.md", "pending", _GOAL, "loopsmith:decomposed-from=0001\n\nchild details"),
+            ("0002.md", "pending", _GOAL, "\nloopsmith:decomposed-from=0001\n\nchild details"),
         ], dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
         goal = str(pathlib.Path(base) / "goals" / "0002.md")
         f = next(f for f in bc.cross_check(base, goal)["findings"]
                  if pathlib.Path(f["ref"]).name == "0001.md")
         assert f["confident"] is False           # on unfixed code this is True
+
+
+def test_local_mode_a_bare_triple_dash_inside_a_frontmatter_value_does_not_pollute_the_body():
+    """#544: `text.split("---", 2)[-1]` splits on the first TWO bare '---' SUBSTRINGS, not the
+    line-anchored fence `frontmatter.parse()`/`frontmatter.strip()` already implement -- a
+    frontmatter VALUE containing a literal '---' (the issue's own repro shape: a free-text field
+    like "Fix the A---B connector bug") is itself counted as a split point ahead of the real
+    closing fence, so the body ends up under-stripped: a fragment of that value plus the real
+    closing fence get prepended to it. That pollutes the dedup token vector, and (#521) can
+    silently revoke a decomposition child's marker exemption because the corrupted body's first
+    line is no longer the marker.
+
+    Written directly (not via `_local_base`, which only lets title/body vary) so the corrupting
+    `note:` field can carry the '---' while `title` stays IDENTICAL between the two goals -- that
+    similarity is what makes 0001/0002 a real 'duplicate' finding in the first place, the same way
+    every other exemption test in this file relies on `_GOAL` for both sides."""
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"
+        (base / "goals").mkdir(parents=True)
+        (base / "config.json").write_text(json.dumps(
+            {"backlog_check": {"dup_threshold": 0.4, "park_threshold": 0.8, "closed_window_days": 3650}}))
+        (base / "goals" / "0001.md").write_text(
+            f"---\nid: 0001\nstatus: pending\ntitle: {_GOAL}\n---\nalready shipped equivalent\n")
+        (base / "goals" / "0002.md").write_text(
+            f"---\nid: 0002\nstatus: pending\ntitle: {_GOAL}\nnote: Fix the A---B connector bug\n"
+            "---\nloopsmith:decomposed-from=0001\n\nchild details\n")
+
+        docs, _ = bc._build_corpus(str(base), {})
+        doc = next(doc for doc in docs if pathlib.Path(doc["ref"]).name == "0002.md")
+        assert doc["body"].lstrip().startswith("loopsmith:decomposed-from=0001")
+        assert "---" not in doc["body"]              # no leftover closing-fence fragment
+        assert "connector bug" not in doc["body"]     # no leftover note-field fragment either
+
+        goal = str(base / "goals" / "0002.md")
+        f = next(f for f in bc.cross_check(str(base), goal)["findings"]
+                 if pathlib.Path(f["ref"]).name == "0001.md")
+        assert f["confident"] is False           # the #521 exemption survives -- on unfixed code this is True
 
 
 def test_marker_constants_identical_across_modules():
