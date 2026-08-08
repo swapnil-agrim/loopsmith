@@ -153,6 +153,21 @@ def test_first_transition_creates_board_field_and_syncs_backlog():
     assert all(x["field"] == "F_status" and x["project"] == "PVT_new" for x in e)  # the BUILT-IN Status field
 
 
+def test_backlog_sync_pages_from_the_oldest_end_like_next_pending():
+    # _sync_backlog seeds the board from the SAME goal-labelled backlog next_pending picks from, so
+    # it has to page from the same end. A bare --limit 200 is created-DESC: over the cap it would
+    # seed the board with the newest goals and never card the ones actually being worked.
+    src = _mod("sources")
+    run = project_world(projects=[], issues=[{"number": 5, "labels": [{"name": "sdlc:goal"}]}])
+    gh = src.GitHubSource(_cfg(project={"enabled": True}), run=run)
+    gh.mark_in_progress("5")
+    listings = [c for c in run.calls if c[:2] == ["issue", "list"]
+                and _arg(c, "--state") == "open"]
+    assert listings, "no open-goal listing was issued at all"
+    for c in listings:
+        assert _arg(c, "--search") == "sort:created-asc"
+
+
 def test_complete_sets_done():
     src = _mod("sources")
     run = project_world(projects=[], issues=[{"number": 5, "labels": [{"name": "sdlc:goal"}]}])

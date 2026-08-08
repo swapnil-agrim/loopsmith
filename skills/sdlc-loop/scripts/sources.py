@@ -724,9 +724,15 @@ class GitHubSource:
 
     def _sync_backlog(self, owner, number, exclude):
         """Seed the board with any open goal issue not yet carded (as Todo), except the one being
-        actively transitioned. Cards already on the board keep their status — sync never clobbers."""
+        actively transitioned. Cards already on the board keep their status — sync never clobbers.
+
+        Pages from the OLDEST end (`sort:created-asc`, next_pending's own qualifier — see F12/#348
+        there): this reads the same goal-labelled backlog next_pending picks from, so a bare
+        created-DESC page would seed the board with the newest 200 goals and never card the ones
+        actually being worked."""
         out = self._run(["issue", "list", *self._repo_args(), "--label", self.goal_label,
-                         "--state", "open", "--json", "number", "--limit", "200"])
+                         "--state", "open", "--search", "sort:created-asc",
+                         "--json", "number", "--limit", "200"])
         backlog = self._status_options.get(self.col["backlog"])
         on_board = set(self._items or {})            # numbers already carded -> leave their status alone
         for it in json.loads(out or "[]"):

@@ -86,6 +86,22 @@ def test_assignee_scopes_the_open_query_only():
         assert not any("--state closed" in c and "--assignee" in c for c in joined)   # closed net is wide
 
 
+def test_open_query_pages_from_the_oldest_end_like_next_pending():
+    # F12/#348 one layer down: a plain `gh issue list --limit 200` is created-DESC, so on a backlog
+    # over the cap the mirror held the NEWEST 200 while `next_pending` picks the OLDEST — the goal
+    # just picked was systematically ABSENT from its own corpus and the cross-check silently no-opped
+    # on exactly the goals that had waited longest. Same qualifier, same end of the queue.
+    m = _mod("mirror")
+    with tempfile.TemporaryDirectory() as d:
+        base = pathlib.Path(d) / ".sdlc"; (base / "state").mkdir(parents=True)
+        run = _gh_runner([], [])
+        m.fetch_and_write(str(base), config=_github_cfg(), run=run, now=1.0)
+        joined = [" ".join(c) for c in run.calls]
+        assert any("--state open" in c and "--search sort:created-asc" in c for c in joined)
+        # the closed net keeps its OWN, deliberately different recency sort — not collateral damage
+        assert any("--state closed" in c and "--search sort:updated-desc" in c for c in joined)
+
+
 def test_local_mode_writes_no_mirror():
     m = _mod("mirror")
     with tempfile.TemporaryDirectory() as d:

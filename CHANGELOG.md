@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### fix(mirror): the board mirror and board sync now page from the OLDEST goals, like next_pending (#539)
+`mirror.py`'s open-issue fetch and `sources.py`'s `_sync_backlog` both ran a bare
+`gh issue list --limit 200`, which is created-DESC, while `next_pending` passes
+`--search "sort:created-asc"` for exactly this reason. Past 200 goal issues those are disjoint ends
+of the same set: the goal just picked was systematically absent from its own corpus, so
+`cross_check` returned `goal_not_in_corpus` and the check silently no-opped on the goals that had
+waited longest. Both queries now carry the same qualifier. `decide()` also surfaces
+`goal_not_in_corpus` as an advisory note instead of an indistinguishable bare proceed — it still
+never parks on it, since a missing goal is an absence of evidence, not evidence.
+
 ### fix(loop): decompose-check's strict-read guard now requires `comments` to be a LIST (#529)
 The file-mode idempotency guard parked on a strict read that was not a dict or lacked a `comments`
 key, but `{"comments": <non-list>}` passed — and the marker scan below skips non-dict elements, so a
