@@ -193,6 +193,48 @@ async function main() {
       `${managerMetricRootCount} metric-root elements rendered`,
     );
 
+    // 3b. issue #314 [E20.S3]. NEW block (not an upgrade of an existing one -- this file had zero
+    //    /leadership-specific assertions before this story, per .sdlc/plans/314.md §0 correction
+    //    2), labelled "3b" to avoid renumbering the rest of the file. Same shape as block 2/3
+    //    above: a role granted elsewhere but wrong here ("ic", mirroring block 2's own choice of
+    //    denial role) must get a real 403 with the whole body exactly {"error":"forbidden"}; a
+    //    real "leadership" session must be let through to a real, populated page.
+    const leadershipForbidden = await fetchAs(baseUrl, "/leadership", "ic");
+    assert.equal(
+      leadershipForbidden.status, 403,
+      `a real session with role "ic" hitting /leadership must get a real 403, got ${leadershipForbidden.status}`,
+    );
+    const leadershipForbiddenBody = await leadershipForbidden.json();
+    assert.deepEqual(
+      leadershipForbiddenBody, { error: "forbidden" },
+      `the real server's forbidden response body must be exactly {"error":"forbidden"}, got: ${JSON.stringify(leadershipForbiddenBody)}`,
+    );
+    console.log('OK: real session (role "ic") on /leadership -> real HTTP 403, body exactly {"error":"forbidden"}');
+
+    const leadershipAllowed = await fetchAs(baseUrl, "/leadership", "leadership");
+    assert.notEqual(leadershipAllowed.status, 403, 'a real "leadership" session must not be forbidden on /leadership');
+    assert.equal(
+      leadershipAllowed.status, 200,
+      `a real "leadership" session on /leadership must reach the real page (200), got ${leadershipAllowed.status}`,
+    );
+    const leadershipAllowedBody = await leadershipAllowed.text();
+    for (const label of ["Throughput", "Change failure rate", "Portfolio table"]) {
+      assert.ok(
+        leadershipAllowedBody.includes(label),
+        `leadership's /leadership page must contain the curated readout label ${JSON.stringify(label)}`,
+      );
+    }
+    const leadershipMetricRootCount = (leadershipAllowedBody.match(/data-testid="metric-root"/g) ?? []).length;
+    assert.ok(
+      leadershipMetricRootCount >= 9,
+      `leadership's /leadership page must render at least 9 metric-root elements (the curated id ` +
+      `list, LEADERSHIP_PRIMARY_READOUT_IDS.length), found ${leadershipMetricRootCount}`,
+    );
+    console.log(
+      `OK: real session (role "leadership") on /leadership -> real HTTP 200, curated labels present, ` +
+      `${leadershipMetricRootCount} metric-root elements rendered`,
+    );
+
     // 4. An unknown role string, through the REAL pipeline, denies -- not a crash, not a 500.
     const unknownRole = await fetchAs(baseUrl, "/manager", "owner");
     assert.equal(unknownRole.status, 403, `an unknown role must be forbidden through the real server too, got ${unknownRole.status}`);

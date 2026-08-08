@@ -159,7 +159,11 @@ export const ROLE_ROUTES: Readonly<Record<Role, readonly (RoutePattern & RouteMe
     { prefix: ["/delivery"], navLabel: "Delivery panel", implemented: true },
   ],
   leadership: [
-    { prefix: ["/leadership"], navLabel: "Leadership", implemented: false },
+    // issue #314 [E20.S3]: flipped true now that app/leadership/page.tsx is real. The ONE policy
+    // edit this story makes -- decide() already governed /leadership for the leadership role
+    // before this flip; `implemented` is nav-only metadata (this file's own RouteMeta doc
+    // comment), same discipline #313 [E20.S2] used for manager.
+    { prefix: ["/leadership"], navLabel: "Leadership", implemented: true },
     { prefix: ["/delivery"], navLabel: "Delivery panel", implemented: true },
   ],
   ic: [
