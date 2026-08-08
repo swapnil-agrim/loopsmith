@@ -616,6 +616,9 @@ blocked on two areas at once is two independent hand-offs, settled independently
 handoff.py ack .sdlc --goal <goal> --area <area> --state accepted
 ```
 
+Mixed versions on one ledger: an older LoopSmith reading an upgraded teammate's area-carrying `ack`
+ignores the area and settles the *whole* goal, so upgrade both sides before relying on per-area acks.
+
 `deferred` deliberately does *not* settle a hand-off — a promise to look later is not a resolution,
 so `ledger.py summary` keeps showing it. Override the roster per area with `ledger.owners` when your
 directory layout doesn't match your area vocabulary. Every step degrades honestly: no owner, no `gh`,

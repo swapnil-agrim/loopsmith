@@ -355,7 +355,7 @@ def _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now, exempt=Fal
     return out
 
 
-_EMBED_CACHE_REL = "state/embeddings.json"      # gitignored (.sdlc/state/), content-hash keyed
+_EMBED_CACHE_REL = "state/embeddings.json"      # gitignored (.sdlc/state/), keyed by (embedder identity, content)
 
 
 def _embed_enabled(config):
@@ -386,7 +386,7 @@ def _embedder_from_config(config):
 
 
 def _dense_channel(sdlc_dir, config, docs, goal_ref, embed_fn):
-    """Build {ref: embedding} for the corpus, cached by content-hash in gitignored .sdlc/state/ and
+    """Build {ref: embedding} for the corpus, cached by (embedder identity, content) in gitignored .sdlc/state/ and
     computed INCREMENTALLY (only new/changed texts are embedded). Returns (vectors, weight) when the
     dense channel is usable, else (None, 0.0) — not enabled, no embedder configured, or the goal's own
     text couldn't be embedded (can't fuse without it). Fully fail-open; never raises."""
