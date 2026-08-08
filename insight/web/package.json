@@ -15,6 +15,7 @@
     "prove:ic-no-leak": "node scripts/prove-ic-no-cross-actor-leak.mjs",
     "prove:delivery-bridge": "node scripts/prove-delivery-python-bridge-exit-codes.mjs",
     "prove:delivery-cold-start": "node scripts/prove-delivery-cold-start-no-numerals.mjs",
+    "prove:manager-cold-start": "node scripts/prove-manager-cold-start-no-numerals.mjs",
     "build": "next build"
   },
   "dependencies": {

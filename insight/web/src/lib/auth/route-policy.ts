@@ -152,7 +152,10 @@ export const SHARED_AUTHENTICATED_ROUTES: readonly (RoutePattern & RouteMeta)[] 
 // `.find()` -> `.filter()`+`.every()` fix in that script, same change).
 export const ROLE_ROUTES: Readonly<Record<Role, readonly (RoutePattern & RouteMeta)[]>> = {
   manager: [
-    { prefix: ["/manager"], navLabel: "Manager", implemented: false },
+    // issue #313 [E20.S2]: flipped true now that app/manager/page.tsx is real. The ONE policy
+    // edit this story makes -- decide() already governed /manager for the manager role before
+    // this flip; `implemented` is nav-only metadata (this file's own RouteMeta doc comment).
+    { prefix: ["/manager"], navLabel: "Manager", implemented: true },
     { prefix: ["/delivery"], navLabel: "Delivery panel", implemented: true },
   ],
   leadership: [

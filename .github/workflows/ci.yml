@@ -230,5 +230,11 @@ jobs:
       - name: prove the delivery panel's cold start renders no numerals anywhere (npm run prove:delivery-cold-start)
         run: npm run prove:delivery-cold-start
         working-directory: insight/web
+      # issue #313 [E20.S2] done-when 4: the manager page's own version of the same guarantee,
+      # same reasoning as prove:delivery-cold-start immediately above -- no new install step,
+      # python3/duckdb are already installed earlier in this job.
+      - name: prove the manager panel's cold start renders no numerals anywhere (npm run prove:manager-cold-start)
+        run: npm run prove:manager-cold-start
+        working-directory: insight/web
       - name: docker build (Dockerfile.web) -- the Dockerfile is proven to build, not just present
         run: docker build -f insight/Dockerfile.web -t insight-web-scaffold:ci insight/

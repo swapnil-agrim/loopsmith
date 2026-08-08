@@ -25,9 +25,9 @@
 // navItemsFor()), so the width/page loop below authenticates as the unknown-role sentinel "owner"
 // (mirrors prove-role-route-matrix.mjs's own edge case: an unknown role is a real, meaningful
 // session -- Home-only nav, still reachable on every shared route) instead of the arbitrary
-// "admin" default, and a SEPARATE per-role block afterward authenticates as "manager"
-// (implemented:false -- proves NO /manager link) and "ic" (implemented:true -- proves exactly one
-// role item plus Home), each asserted against navItemsFor()'s own computed output via
+// "admin" default, and a SEPARATE per-role block afterward authenticates as "manager" and "ic"
+// (both implemented:true as of issue #313 -- each proves exactly one role item plus Home renders
+// and is linked), each asserted against navItemsFor()'s own computed output via
 // prove-nav-items.mjs's loadNav() -- the SAME compiled module that file's own offline proofs run
 // against, so a rendering assertion here can never hardcode a count that silently drifts from the
 // real table.
@@ -263,9 +263,10 @@ async function main() {
     }
 
     // ---- role-aware nav rendering (issue #311 [E19.S3]) --------------------------------------
-    // "manager" -- implemented:false -- proves NO /manager link renders (the load-bearing outcome
-    // done-when 2 exists for) and no placeholder either (Task 2 deleted that branch). "ic" --
-    // implemented:true -- proves exactly one role item (IC) plus Home renders, both linked.
+    // "manager" and "ic" are both implemented:true (issue #313 flipped /manager) -- each proves
+    // exactly one role item plus Home renders, both linked. This computes its expectation live
+    // from navItemsFor(), so the assertion itself needed no change when /manager shipped -- only
+    // this comment did, to match reality.
     await assertRoleNavAtRoot(browser, baseUrl, "manager", navItemsFor);
     await assertRoleNavAtRoot(browser, baseUrl, "ic", navItemsFor);
 
