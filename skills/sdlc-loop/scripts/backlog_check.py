@@ -395,7 +395,19 @@ def _dense_channel(sdlc_dir, config, docs, goal_ref, embed_fn):
     fn = embed_fn or _embedder_from_config(config)
     if fn is None:
         return None, 0.0                                     # enabled but no command -> lexical-only
-    weight = _num((config.get("backlog_check") or {}).get("embed") or {}, "weight", 0.5)
+    embed_cfg = (config.get("backlog_check") or {}).get("embed") or {}
+    weight = _num(embed_cfg, "weight", 0.5)
+    # #542: the cache key used to be sha256(text) ALONE -- nothing tied a cached vector to the
+    # embedder that produced it, so swapping `embed.command` (a provider/model change) while the
+    # corpus text stayed the same silently served the OLD embedder's vectors into the NEW
+    # embedder's vector space (a meaningless cross-space cosine). Folding the command string into
+    # the key makes a swap self-invalidating: every doc misses the cache once under the new key and
+    # gets genuinely re-embedded, no separate "clear the cache" step required. `embed_fn` (test/CLI
+    # injection) has no command string of its own to identify it BY DESIGN -- the config's own
+    # `embed.command` is the caller-visible identity either way, exactly the value #542's fix sketch
+    # names ("sha of embed.command"), so callers that inject a function still get real invalidation
+    # as long as they set `command` to something meaningful for their embedder.
+    identity = (embed_cfg.get("command") or "").strip()
     try:
         cache_path = pathlib.Path(sdlc_dir) / _EMBED_CACHE_REL
         try:
@@ -405,7 +417,8 @@ def _dense_channel(sdlc_dir, config, docs, goal_ref, embed_fn):
             cache = {}
         vecs, dirty = {}, False
         for d in docs:
-            key = hashlib.sha256((d.get("raw") or "").encode("utf-8")).hexdigest()[:16]
+            key = hashlib.sha256(
+                (identity + "\x00" + (d.get("raw") or "")).encode("utf-8")).hexdigest()[:16]
             v = cache.get(key)
             if v is None:
                 v = fn(d.get("raw") or "")

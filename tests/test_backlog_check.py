@@ -840,6 +840,40 @@ def test_embed_cache_skips_reembedding_unchanged_texts():
         assert (pathlib.Path(base) / "state" / "embeddings.json").exists()
 
 
+def test_embed_cache_is_keyed_by_embedder_identity_not_just_text():
+    """#542: the embeddings cache used to key SOLELY on sha256(text) -- nothing tied a cached vector
+    to the `embed.command` that produced it. Swapping the embedder (a provider/model change) while
+    the corpus text stays exactly the same left the SECOND embedder silently served the FIRST
+    embedder's stale vectors from the shared gitignored cache -- a meaningless cross-space cosine.
+    The issue's own probe, reproduced directly: swap the injected embedder between two calls over
+    the same unchanged corpus and confirm the second embedder is actually invoked, not skipped."""
+    bc = _mod("backlog_check")
+    calls_a, calls_b = [], []
+    def emb_a(text):
+        calls_a.append(text)
+        return [1.0, 0.0]
+    def emb_b(text):
+        calls_b.append(text)
+        return [0.0, 1.0]
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _DUP)],
+                        embed={"enabled": True, "command": "embedder-a", "weight": 1.0},
+                        dup_threshold=0.4, closed_window_days=3650)
+        bc.cross_check(base, "1", embed_fn=emb_a)
+        assert len(calls_a) == 2                           # both docs embedded by embedder A
+
+        # SAME corpus text, SAME .sdlc/state/ (so the gitignored cache persists), only the
+        # embedder identity changes -- exactly a provider/model swap, config.json alone rewritten.
+        (pathlib.Path(base) / "config.json").write_text(json.dumps(
+            {"discovery": {"source": "github"},
+             "backlog_check": {"embed": {"enabled": True, "command": "embedder-b", "weight": 1.0},
+                               "dup_threshold": 0.4, "closed_window_days": 3650}}))
+        bc.cross_check(base, "1", embed_fn=emb_b)
+        # pre-fix: calls_b stays [] -- the cache (keyed on text alone) already has both docs from
+        # embedder A and silently serves those stale vectors to embedder B's run instead.
+        assert len(calls_b) == 2                           # embedder B is genuinely re-invoked, not skipped
+
+
 def test_embed_enabled_without_command_falls_back_to_lexical_with_degraded():
     bc = _mod("backlog_check")
     with tempfile.TemporaryDirectory() as d:
