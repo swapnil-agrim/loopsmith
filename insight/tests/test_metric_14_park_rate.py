@@ -26,7 +26,9 @@ def conn(tmp_path):
 def test_metric_14_counts_distinct_parked_goals_not_raw_events(conn):
     load_fixture_jsonl(conn, FIXTURE)
     registry = load_metrics(conn)
-    assert registry["14"]["extra"]["data_status"] == "dark"
+    # dark label cleared 2026-08-08 (condition verified met); pinned in
+    # test_dark_metrics_are_labelled.py::test_verified_metrics_no_longer_declare_themselves_dark
+    assert registry["14"]["extra"].get("data_status") is None
     rows = rows_as_dicts(conn.execute("SELECT * FROM metric_14"))
     assert rows == [{
         "parked_terminal_count": 2, "terminal_count": 4, "park_rate": 0.5,
@@ -45,7 +47,9 @@ def test_metric_14_a_class_2_park_event_does_not_inflate_park_rate(conn):
         "('p1','g1','2026-01-01T00:15:00','a9','parked',2)"
     )
     registry = load_metrics(conn)
-    assert registry["14"]["extra"]["data_status"] == "dark"
+    # dark label cleared 2026-08-08 (condition verified met); pinned in
+    # test_dark_metrics_are_labelled.py::test_verified_metrics_no_longer_declare_themselves_dark
+    assert registry["14"]["extra"].get("data_status") is None
     rows = rows_as_dicts(conn.execute("SELECT * FROM metric_14"))
     assert rows == [{
         "parked_terminal_count": 2, "terminal_count": 4, "park_rate": 0.5,
