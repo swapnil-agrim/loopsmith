@@ -104,22 +104,27 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-      # prove-login-form-issues-a-usable-session.mjs signs in through the REAL credential bridge --
-      # the Node tier shells out to `insight users verify`, which hashes with argon2id -- because
-      # that is the code path a browser sign-in actually takes. Every OTHER web proof stubs
-      # `python3` (see prove-python-bridge-exit-codes.mjs), which is why this job never needed a
-      # Python dependency before and why it could not have caught a real sign-in failing.
+      # This install MOVED UP to here (it used to sit just before prove:role-forbidden, further
+      # down) rather than being duplicated -- the same reasoning that block's own comment already
+      # gives for why it moves rather than duplicates.
       #
-      # actions/setup-python rather than `pip install --user` against the runner's system python3:
-      # ubuntu-latest is PEP 668 externally-managed, so installing into it needs
-      # --break-system-packages. This mirrors what the `insight` job above already does. Only
-      # argon2-cffi is installed, not `-e insight/` -- the proof puts the repo root on sys.path
-      # itself, so it needs the KDF and nothing else (no duckdb, no fastapi in this job).
+      # What forced the move: prove-login-form-issues-a-usable-session.mjs runs inside
+      # verify_web.py's `npm run test`, and it signs in through the REAL credential bridge -- the
+      # Node tier shells out to `insight users verify`, which hashes with argon2id -- then loads
+      # /delivery, which renders through the delivery python bridge and imports duckdb. Every
+      # OTHER proof in verify_web.py's CHECKS stubs `python3` (see
+      # prove-python-bridge-exit-codes.mjs), which is exactly why this job needed no Python
+      # dependency before, and exactly why none of those proofs could have caught a real sign-in
+      # failing. `-e insight/` supplies both halves at once (argon2-cffi and duckdb are both
+      # declared dependencies in insight/pyproject.toml).
+      #
+      # actions/setup-python rather than pip against the runner's own python3: ubuntu-latest is
+      # PEP 668 externally-managed. Mirrors what the `insight` job above already does.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: install argon2-cffi (the login proof signs in through the real credential bridge)
-        run: python -m pip install --upgrade pip argon2-cffi
+      - name: install insight/ and its own deps (argon2-cffi, duckdb) -- the login proof signs in through the real credential bridge, and prove:role-forbidden / prove:ic-no-leak need the same install later
+        run: python -m pip install -e insight/
 
       - name: web checks (type-check, lint, unit tests, build) via insight/verify_web.py
         run: python3 insight/verify_web.py
@@ -177,11 +182,10 @@ jobs:
       # already does. Reusing this SAME install (not a second one) is why it moves rather than
       # duplicates -- see prove-role-forbidden-real-server.mjs's own header comment for the full
       # "why this script gained a duckdb dependency" story.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: install insight/ and its own deps (duckdb) -- prove:role-forbidden's /delivery checks and prove:ic-no-leak's seed-ic-fixture.py both need it
-        run: python -m pip install -e insight/
+      # (The setup-python + `pip install -e insight/` that used to sit here now runs earlier, just
+      # before verify_web.py -- see that block's comment. It is still the SAME single install these
+      # proofs depend on; it simply had to be in place before `npm run test`, which now contains a
+      # proof that signs in for real and loads /delivery.)
       # issue #309 [E19.S1], .sdlc/plans/309.md item (b) (independent plan-review gap). Reuses the
       # SAME .next build the checks above already produced -- no rebuild. Deliberately NOT part of
       # verify_web.py's CHECKS/the always-on local gate, same reasoning as the three browser proofs
