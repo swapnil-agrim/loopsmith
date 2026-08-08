@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### fix(loop): delete the dead `_done_refusal` duplicate that shadowed its own alias (#538)
+`loop.py` aliased `_done_refusal = state.done_refusal` under a "both live in state.py" comment, then
+re-defined `def _done_refusal` further down the module — so the alias was overwritten during module
+exec and every call ran loop.py's own textual copy. A botched refactor: the commit that moved both
+helpers into `state.py` removed the local `_evidence_path` def but not this one. No drift on the day
+(verified identical across every input class, including the unsafe-goal `ValueError`), but any
+future fix to `state.done_refusal` — which has a real fix history — would silently never reach the
+record-done enforcement path. The duplicate is gone and an identity test pins both aliases, so a
+re-introduced copy fails immediately instead of rotting quietly.
+
 ### fix(doctor): standing-doc hygiene resolves a leading `/` against the repo, not the OS root (#545)
 `pathlib`'s `/` operator discards its left operand the moment the right side is absolute, so
 `repo_root / "/docs/architecture.md"` quietly became `/docs/architecture.md` — checked against the

@@ -282,6 +282,19 @@ def test_enforce_never_blocks_parked_or_failed():
 
 # --- in-process coverage of the CLI paths (subprocess runs don't count) ---
 
+def test_loop_verify_helpers_are_the_state_functions_not_local_copies():
+    """The alias block's own claim, enforced (#538). Both helpers live in state.py so work.py's
+    merge gate and loop.py's record-done path require the SAME evidence rule without importing each
+    other. A module-level `def _done_refusal` further down loop.py used to overwrite the alias
+    during module exec, so loop.py silently ran a textual duplicate: no drift on the day, but a fix
+    to `state.done_refusal` (F11/#341 was one) could never reach the record-done path. Identity, not
+    behavior, is the pin — a re-introduced duplicate would pass a behavioral test on the day it was
+    written and rot from there."""
+    lp = _mod("loop")
+    assert lp._done_refusal is lp.state.done_refusal
+    assert lp._evidence_path is lp.state.evidence_path     # the sibling the same refactor got right
+
+
 def test_verify_goal_and_refusal_in_process():
     with tempfile.TemporaryDirectory() as d:
         base, goal = _goal_backlog(d, verify_command="true", enforce=True)
@@ -298,11 +311,13 @@ def test_verify_goal_and_refusal_in_process():
 
 
 def test_done_refusal_in_process_rejects_sub_second_stale_evidence(monkeypatch):
-    """F11/#341: loop.py's own `_done_refusal` is a textual duplicate of state.done_refusal and
-    carried the identical whole-second-floor staleness hole (both `at` and `run_started_at` used
-    to be `int(time.time())`). Reproduces the issue's repro directly against loop.py's copy: a
-    verify evidence write that lands 0.1s into second T, this run starting 0.3s into that SAME
-    second T -- a genuine 0.2s of staleness that used to floor-collide and read as fresh."""
+    """F11/#341: the whole-second-floor staleness hole (both `at` and `run_started_at` used to be
+    `int(time.time())`). Reproduces the issue's repro through LOOP.PY's own entry point rather than
+    state.py's -- worth keeping distinct from the state.py unit tests even though #538 deleted
+    loop.py's textual duplicate and `_done_refusal` is now the alias: this pins that the record-done
+    path actually reaches the fixed rule. A verify evidence write that lands 0.1s into second T, this
+    run starting 0.3s into that SAME second T -- 0.2s of real staleness that used to floor-collide
+    and read as fresh."""
     with tempfile.TemporaryDirectory() as d:
         base, goal = _goal_backlog(d, verify_command="true", enforce=True)
         lp = _mod("loop")
