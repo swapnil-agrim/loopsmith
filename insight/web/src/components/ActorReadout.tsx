@@ -14,26 +14,15 @@
 // assert an exact value for one particular tile without disturbing the generic scan every other
 // proof already relies on -- see this file's own header note in .sdlc/plans/315.md Decision D2 for
 // the rejected alternative (a second testid) and why it was rejected.
-import { hatchBackgroundImage } from "@/lib/absence-hatch";
+import type { Metric as MetricType } from "@/lib/api/metric";
 import { FIX_TEXT } from "@/lib/metric-view";
+import { EDGE, HATCH } from "./Metric";
 
-export type ActorReadoutState = "measured" | "absent_no_data" | "absent_unbuilt";
-
-// Ported verbatim from Metric.tsx's own module-private EDGE/HATCH maps (not exported there, so
-// duplicated here rather than imported -- the two are proven byte-identical by inspection, not by
-// a shared constant, since Metric.tsx's own map is keyed on the catalog `MetricType["state"]`
-// union and this file's `ActorReadoutState` is a structurally identical but separate type).
-const EDGE: Record<ActorReadoutState, string> = {
-  measured: "panel-instrument",
-  absent_no_data: "panel-void-surface",
-  absent_unbuilt: "panel-void-surface [border-style:dotted] opacity-[.82]",
-};
-
-const HATCH: Record<ActorReadoutState, string | undefined> = {
-  measured: undefined,
-  absent_no_data: hatchBackgroundImage("--panel-hatch-soft"),
-  absent_unbuilt: hatchBackgroundImage("--panel-hatch-soft"),
-};
+// The SAME state union the catalog metrics use, aliased rather than re-declared: these tiles carry
+// no catalog id, but they render the identical absence contract, and a separately-typed copy is
+// exactly what lets the two drift. EDGE/HATCH come from Metric.tsx for the same reason -- a review
+// of #315 caught them hand-copied here and byte-identical, which holds only until someone edits one.
+export type ActorReadoutState = MetricType["state"];
 
 export function ActorReadout({
   label,
