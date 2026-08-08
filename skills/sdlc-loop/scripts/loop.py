@@ -955,27 +955,6 @@ def verify_goal(sdlc_dir, goal):
     return 0 if proc.returncode == 0 else 1
 
 
-def _done_refusal(sdlc_dir, goal):
-    """None when fresh passing evidence exists for this goal, else the reason to refuse.
-    Fresh = produced at/after this run's start (a stale green from yesterday proves nothing)."""
-    import json as _json
-    ev = _evidence_path(sdlc_dir, goal)
-    if not ev.exists():
-        return "no verify evidence for this goal"
-    try:
-        data = _json.loads(ev.read_text())
-    except Exception:
-        return "verify evidence is unreadable"
-    if data.get("exit") != 0:
-        return f"last verify FAILED (exit {data.get('exit')})"
-    # Sub-second float compare (F11/#341, kept in sync with state.done_refusal — see its comment
-    # for the full boundary walkthrough): whole-second flooring used to let a stale green from a
-    # PRIOR run collide with this run's start and pass as fresh.
-    if data.get("at", 0) < state.load_cursor(sdlc_dir)["run_started_at"]:
-        return "verify evidence predates this run"
-    return None
-
-
 def run_loop(sdlc_dir, run_goal):
     state.start_run(sdlc_dir)                       # reset per-run budget (resume-safe)
     config = state.load_config(sdlc_dir)
