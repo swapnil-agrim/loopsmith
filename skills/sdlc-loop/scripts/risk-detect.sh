@@ -82,7 +82,15 @@ git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { emit_
 # e.g. *migration* matches both migrations/001.sql and db/migrate/2_x.rb.
 MIGRATION_GLOBS='*migration* *migrate* *alembic* *.sql *schema.prisma *liquibase* *flyway*'
 CONTRACT_GLOBS='*openapi* *swagger* *.proto *.graphql *api/* *routes/* *controllers/* *.d.ts *.thrift'
-SENSITIVE_GLOBS='*auth* *login* *session* *permission* *rbac* *payment* *billing* .env* *.env *secret* *credential*'
+# `*/.env*` is the depth companion the two dotenv patterns needed to honour the at-any-depth rule
+# above: match_globs matches the WHOLE path, so `.env*` alone anchored at the repo root and `*.env`
+# alone required a path ENDING in ".env" — a nested backend/.env.local was the one silent gap in
+# these otherwise depth-free lists. One companion covers every depth (a case glob's `*` crosses
+# `/`). Normalizing match_globs to a basename instead would silently break CONTRACT_GLOBS'
+# slash-embedded patterns (*api/*, *routes/*, *controllers/*), so the fix is the pattern, not the
+# matcher. A project overriding SENSITIVE_GLOBS in .sdlc/risk-detect.conf replaces this whole line
+# and does not inherit the companion — the same all-or-nothing override this config has always had.
+SENSITIVE_GLOBS='*auth* *login* *session* *permission* *rbac* *payment* *billing* .env* *.env */.env* *secret* *credential*'
 # Optional glob overrides. Sourcing executes trusted repo-local bash — it lives in the harness-owned,
 # scan-excluded .sdlc/ dir (same trust as a .envrc), not the source tree this collector reports on.
 # shellcheck disable=SC1091
@@ -177,9 +185,14 @@ done < <(
         emit("contract","route")
       # Secret-shape patterns kept in lockstep with alignment-collect.sh scan_hardstops (F29
       # parity) — a parity test in tests/test_risk_detect.py enforces the two sets stay equal.
-      if (line ~ /(AWS_SECRET_ACCESS_KEY|aws_secret_access_key|api[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|access[_-]?token|password)[ \t]*[:=]/)
+      # DATABASE_URL/REDIS_URL are BARE names: this group appends its own [ \t]*[:=], so the
+      # literal "DATABASE_URL=" would demand a second separator and match nothing. Uppercase only
+      # is deliberate — that is the conventional spelling for these two, and the awk ERE is
+      # case-sensitive, so a lowercase variant would be a separate (noisier) decision.
+      # (No apostrophes in here: this whole awk program is one single-quoted shell string.)
+      if (line ~ /(AWS_SECRET_ACCESS_KEY|aws_secret_access_key|api[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|access[_-]?token|password|DATABASE_URL|REDIS_URL)[ \t]*[:=]/)
         emit("sensitive","secret")
-      else if (line ~ /(AKIA[0-9A-Z]{8}|ghp_[0-9A-Za-z]{8}|xox[baprs]-[0-9A-Za-z-]{8}|glpat-[0-9A-Za-z_-]{8}|AIza[0-9A-Za-z_-]{8}|-----BEGIN[ A-Z]*PRIVATE KEY-----)/)
+      else if (line ~ /(AKIA[0-9A-Z]{8}|ghp_[0-9A-Za-z]{8}|xox[baprs]-[0-9A-Za-z-]{8}|glpat-[0-9A-Za-z_-]{8}|AIza[0-9A-Za-z_-]{8}|-----BEGIN[ A-Z]*PRIVATE KEY-----|sk_live_[0-9A-Za-z]{8})/)
         emit("sensitive","token")
       else if (line ~ /(Authorization[ \t]*[:=]|[Bb]earer[ \t]+[A-Za-z0-9]|[ "_.]jwt|oauth)/)
         emit("sensitive","auth")

@@ -261,9 +261,14 @@ scan_hardstops() {
         line=$0; sub(/^\+/,"",line)
         # Secret-shape patterns kept in lockstep with risk-detect.sh content-scan (F29 parity) —
         # a parity test in tests/test_risk_detect.py enforces the two sets stay equal.
-        if (line ~ /(AWS_SECRET_ACCESS_KEY|aws_secret_access_key|api[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|access[_-]?token|password)[ \t]*[:=]/)
+        # DATABASE_URL/REDIS_URL are BARE names: this group appends its own [ \t]*[:=], so the
+        # literal "DATABASE_URL=" would demand a second separator and match nothing. Uppercase only
+        # is deliberate — that is the conventional spelling for these two, and the awk ERE is
+        # case-sensitive, so a lowercase variant would be a separate (noisier) decision.
+        # (No apostrophes in here: this whole awk program is one single-quoted shell string.)
+        if (line ~ /(AWS_SECRET_ACCESS_KEY|aws_secret_access_key|api[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|access[_-]?token|password|DATABASE_URL|REDIS_URL)[ \t]*[:=]/)
           emit("secret","secret_key")
-        else if (line ~ /(AKIA[0-9A-Z]{8}|ghp_[0-9A-Za-z]{8}|xox[baprs]-[0-9A-Za-z-]{8}|glpat-[0-9A-Za-z_-]{8}|AIza[0-9A-Za-z_-]{8}|-----BEGIN[ A-Z]*PRIVATE KEY-----)/)
+        else if (line ~ /(AKIA[0-9A-Z]{8}|ghp_[0-9A-Za-z]{8}|xox[baprs]-[0-9A-Za-z-]{8}|glpat-[0-9A-Za-z_-]{8}|AIza[0-9A-Za-z_-]{8}|-----BEGIN[ A-Z]*PRIVATE KEY-----|sk_live_[0-9A-Za-z]{8})/)
           emit("secret","generic_token")
         if (file ~ /\.env($|\.)/) emit("env_file","env_file")
         if (line ~ /(DROP[ \t]+(TABLE|DATABASE|SCHEMA)|TRUNCATE[ \t]+TABLE|DELETE[ \t]+FROM)/)
