@@ -156,6 +156,18 @@ PANEL = {
     "cyan": "#5ce0b0",     # a live reading
     "cyan-deep": "#2e8f6d",  # live-tick gradient foot
     "red": "#ff5f52",      # breach / p85 marker
+    # ---- health verdicts (panel visual system, 2026-08-08 spec section 3) ----------------
+    # The ONLY three chromatic verdicts, and the reason chroma was freed from meaning
+    # "measured vs absent": absence is already unmistakable from material (hatch, dashed edge,
+    # no numeral), so colour can carry the one thing material cannot -- is this reading GOOD.
+    #
+    # Deliberately DESATURATED against `amber`/`red` above. Those are annunciator colours, sized
+    # for a single alarm; a board carrying several verdicts at once must stay calm, and saturated
+    # alerting everywhere trains a reader to stop seeing it. `ok` reuses `cyan` exactly, so "live
+    # and healthy" is one colour rather than two that nearly match.
+    "ok": "#5ce0b0",
+    "watch": "#e0b45c",
+    "breach": "#e0715c",
     "void": "#171d1f",     # ABSENT fill -- achromatic, see above
     # ABSENT type -- achromatic, see above. #79868a, not the shipped #5a6467 (issue #303,
     # Decision f1): #5a6467 on #171d1f measures 2.80:1, failing even the 3:1 non-text floor let

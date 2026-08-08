@@ -22,5 +22,11 @@ export const missingCoverage: MeasuredMetric = {
   reliabilityClass: 2,
   state: "measured",
   value: 0.82,
+  // `proxy` is supplied so that `coverage` is the ONLY omission. It is a required field on
+  // MetricBase (a bool with a default, which Pydantic always serialises), and leaving it out too
+  // made tsc report TS2739 -- "missing the following properties: coverage, proxy" -- instead of
+  // TS2741 for a single missing member. The assertion in prove-metric-contract-safety.mjs is
+  // about COVERAGE specifically, so the fixture has to isolate it.
+  proxy: false,
   // coverage intentionally omitted
 };

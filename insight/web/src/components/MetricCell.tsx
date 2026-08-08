@@ -44,7 +44,7 @@ export function MetricCell({ metric, index = 0 }: { metric: MetricType; index?: 
       // header comment. Falls back to the label so a measured cell still names
       // itself on hover, where the label may be truncated by `truncate`.
       title={d.reasonText ?? metric.label}
-      className={`panel-rise flex h-[94px] w-[128px] flex-col justify-between px-2 py-1.5 ${EDGE[metric.state]}`}
+      className={`panel-accent panel-rise flex h-[94px] w-[128px] flex-col justify-between px-2 py-1.5 ${EDGE[metric.state]}`}
       style={{
         backgroundImage: HATCH[metric.state],
         // Ripple across the band rather than all-at-once: makes the board read

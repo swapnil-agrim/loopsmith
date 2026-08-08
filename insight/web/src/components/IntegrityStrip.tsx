@@ -15,10 +15,11 @@
 // the board below renders, so the strip cannot drift from what it summarises.
 import type { Metric as MetricType } from "@/lib/api/metric";
 
+import { Doughnut } from "./Doughnut";
+
 export function IntegrityStrip({ metrics }: { metrics: readonly MetricType[] }) {
   const total = metrics.length;
   const measured = metrics.filter((m) => m.state === "measured").length;
-  const pct = total > 0 ? Math.round((measured / total) * 100) : 0;
 
   return (
     <section
@@ -26,51 +27,27 @@ export function IntegrityStrip({ metrics }: { metrics: readonly MetricType[] }) 
       data-testid="integrity-strip"
       className="panel-rise flex flex-col gap-3"
     >
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="panel-label panel-label-accent">Panel integrity</span>
-        <span className="panel-num panel-num-live" style={{ fontSize: "var(--panel-text-head)" }}>
-          {measured}
-          <span className="text-panel-faint">/</span>
-          {total}
-        </span>
-        <span className="text-panel-dim" style={{ fontSize: "var(--panel-text-small)" }}>
-          metrics instrumented ({pct}%)
-        </span>
-        {/* Said in words as well as shape. The strip is the fast read; this is
-            the one that survives being described to somebody over a call. */}
-        <span
-          className="ml-auto text-panel-void-ink"
-          style={{ fontSize: "var(--panel-text-caption)" }}
-        >
-          {total - measured} not measured &mdash; absent, not zero
-        </span>
+      <div className="flex items-center gap-3">
+        <span className="panel-label panel-label-accent shrink-0">Panel integrity</span>
+        <span className="h-px min-w-4 flex-1 bg-panel-rule" aria-hidden="true" />
       </div>
 
-      <div className="flex gap-[3px]" role="img"
-           aria-label={`${measured} of ${total} metrics have a reading; ${total - measured} are absent`}>
-        {metrics.map((m, i) => {
-          const live = m.state === "measured";
-          return (
-            <span
-              key={m.id}
-              title={`${m.label} — ${live ? "measured" : "not measured"}`}
-              className="h-6 min-w-0 flex-1 rounded-[2px]"
-              style={{
-                // Lit segments carry the same mint the coverage meters use, so
-                // "live" means one colour everywhere on the page. Dark segments
-                // get the void surface and a hairline, never a mid-grey fill
-                // that could read as a dimmer reading.
-                background: live
-                  ? "linear-gradient(180deg, var(--panel-cyan), var(--panel-cyan-deep))"
-                  : "var(--panel-void)",
-                boxShadow: live ? "0 0 10px var(--panel-glow)" : "inset 0 0 0 1px var(--panel-void-edge)",
-                animation: `panel-rise 520ms cubic-bezier(0.16,1,0.3,1) both`,
-                animationDelay: `${Math.min(i, 42) * 14}ms`,
-              }}
-            />
-          );
-        })}
-      </div>
+      {/* A doughnut, because coverage genuinely IS a part-to-whole -- 6 of 42 instrumented.
+          Neutral tone on purpose: this is a statement of how much of the instrument is connected,
+          not a verdict about whether that is good. */}
+      <Doughnut
+        numerator={measured}
+        denominator={total}
+        label="Panel integrity"
+        tone="neutral"
+        caption={
+          <>
+            <span className="text-panel-bone">{total - measured} of {total}</span> metrics are
+            absent, not zero. A dark segment means the instrument is not connected &mdash; it is
+            not a healthy reading.
+          </>
+        }
+      />
     </section>
   );
 }

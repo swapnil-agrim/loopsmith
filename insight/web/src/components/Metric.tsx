@@ -61,7 +61,8 @@ export function Metric({ metric, index = 0 }: { metric: MetricType; index?: numb
     <div
       data-testid="metric-root"
       data-metric-state={metric.state}
-      className={`panel-rise flex min-w-[190px] flex-1 flex-col px-4 py-3.5 ${EDGE[metric.state]}`}
+      title={d.reasonText ?? undefined}
+      className={`panel-accent panel-rise flex min-w-[190px] flex-1 flex-col px-4 py-3.5 ${EDGE[metric.state]}`}
       style={{
         backgroundImage: HATCH[metric.state],
         // Staggered reveal. Capped so a long row never leaves the last card
@@ -73,18 +74,40 @@ export function Metric({ metric, index = 0 }: { metric: MetricType; index?: numb
         <span className="panel-label truncate">{metric.label}</span>
         {/* The live pip. Present only on a measured reading, so "is there a
             reading here?" is answerable from a single 5px dot. */}
-        {isMeasured && (
-          <span
-            aria-hidden="true"
-            className="h-[5px] w-[5px] shrink-0 rounded-full bg-panel-cyan"
-            style={{ boxShadow: "0 0 8px var(--panel-cyan)" }}
-          />
-        )}
+        <span className="flex shrink-0 items-baseline gap-1.5">
+          {/* PROXY and DARK are different claims and are shown differently on purpose. A proxy is
+              a real measurement that approximates by design -- permanent, and it may still carry
+              a verdict. DARK means the underlying data may be wrong, and is mutually exclusive
+              with a verdict: its presence is WHY there is no accent. */}
+          {metric.proxy && <span data-testid="metric-proxy-tag" className="panel-tag">Proxy</span>}
+          {metric.dataStatus === "dark" && (
+            <span data-testid="metric-dark-tag" className="panel-tag">Dark</span>
+          )}
+          {isMeasured && (
+            <span
+              aria-hidden="true"
+              className="h-[5px] w-[5px] rounded-full bg-panel-cyan"
+              style={{ boxShadow: "0 0 8px var(--panel-cyan)" }}
+            />
+          )}
+        </span>
       </div>
+
+      {/* The metric's own meaning, from its .sql header. min-height keeps a row of cards on one
+          baseline whether the question wraps to one line or two. */}
+      {d.question && (
+        <p
+          data-testid="metric-question"
+          className={isMeasured ? "mt-2 text-panel-dim" : "mt-2 text-panel-void-ink"}
+          style={{ fontSize: "var(--panel-text-small)", lineHeight: 1.45, minHeight: "2.9em" }}
+        >
+          {d.question}
+        </p>
+      )}
 
       <div
         data-testid="metric-numeral"
-        className={`panel-num mt-2.5 ${isMeasured ? "panel-num-live" : "text-panel-void-ink"}`}
+        className={`panel-num mt-1 ${isMeasured ? "panel-num-live" : "text-panel-void-ink"}`}
         style={{ fontSize: "var(--panel-text-display)" }}
       >
         {d.numeral ?? ""}
@@ -101,7 +124,12 @@ export function Metric({ metric, index = 0 }: { metric: MetricType; index?: numb
           {d.coverageText}
         </div>
       )}
-      {d.reasonText !== null && (
+      {/* The generic reason ("no value/coverage extractor registered yet") is suppressed when a
+          SPECIFIC gap hint exists, because the hint says the same thing and then says what to do
+          about it. Stacking both plus fixText put three near-identical sentences on every absent
+          card -- the clutter this redesign exists to remove. The reason stays in the DOM as the
+          card's title, so nothing is lost to a reader who wants it. */}
+      {d.reasonText !== null && d.gapHint === null && (
         <div
           data-testid="metric-reason"
           className="mt-1.5 text-panel-void-ink"
@@ -109,6 +137,15 @@ export function Metric({ metric, index = 0 }: { metric: MetricType; index?: numb
         >
           {d.reasonText}
         </div>
+      )}
+      {d.gapHint !== null && (
+        <p
+          data-testid="metric-gap-hint"
+          className="mt-1.5 text-panel-dim"
+          style={{ fontSize: "var(--panel-text-caption)", lineHeight: 1.45 }}
+        >
+          {d.gapHint}
+        </p>
       )}
       {d.fixText !== null && (
         <div

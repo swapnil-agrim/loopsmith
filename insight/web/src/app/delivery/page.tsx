@@ -12,6 +12,7 @@ import type { Metric as MetricType } from "@/lib/api/metric";
 import { Metric } from "@/components/Metric";
 import { MetricCell } from "@/components/MetricCell";
 import { IntegrityStrip } from "@/components/IntegrityStrip";
+import { BandBoard } from "@/components/BandBoard";
 import { fetchDeliveryMetrics, fetchDeliverySeries } from "@/lib/delivery/pythonBridge";
 import { HistogramChart, TraceChart, WeeklyBars } from "./charts";
 
@@ -117,30 +118,9 @@ export default async function DeliveryPage() {
 
       <section aria-label="Instrumentation board" className="flex flex-col gap-5">
         <SectionHeading eyebrow="03" title="Instrumentation board — all 42 metrics" />
-        <div className="flex flex-col gap-5">
-          {BANDS.map((band) => {
-            const live = band.ids.filter(
-              (id) => findMetric(metrics, id).state === "measured",
-            ).length;
-            return (
-              <div key={band.name} className="flex flex-col gap-2">
-                <div className="flex items-baseline gap-2">
-                  <span className="panel-label">{band.name}</span>
-                  {/* Per-band coverage, so the integrity headline above can be traced to WHERE
-                      the instrumentation is missing rather than only to how much. */}
-                  <span className="panel-num text-panel-faint" style={{ fontSize: "var(--panel-text-micro)" }}>
-                    {live}/{band.ids.length}
-                  </span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {band.ids.map((id, i) => (
-                    <MetricCell key={id} metric={findMetric(metrics, id)} index={i} />
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        {/* Collapsed to one row per band -- the same 42 cells, one interaction away. See
+            BandBoard for why nothing is dropped rather than filtered. */}
+        <BandBoard metrics={metrics} bands={BANDS} />
       </section>
     </main>
   );

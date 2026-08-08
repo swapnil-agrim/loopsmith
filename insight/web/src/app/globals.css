@@ -42,6 +42,9 @@
   --color-panel-hatch-soft: var(--panel-hatch-soft);
   --color-panel-grain: var(--panel-grain);
   --color-panel-glow: var(--panel-glow);
+  --color-panel-ok: var(--panel-ok);
+  --color-panel-watch: var(--panel-watch);
+  --color-panel-breach: var(--panel-breach);
   --color-panel-mix-0: var(--panel-mix-0);
   --color-panel-mix-1: var(--panel-mix-1);
   --color-panel-mix-2: var(--panel-mix-2);
@@ -209,6 +212,61 @@
     border: 1px dashed var(--panel-void-edge);
     border-radius: 6px;
     color: var(--panel-void-ink);
+  }
+
+  /* A small outlined marker -- PROXY / DARK. Achromatic on purpose: it qualifies a reading, it
+     is not a verdict about one, and giving it colour would compete with the accent that is. */
+  .panel-tag {
+    font-family: var(--panel-font-mono);
+    font-size: var(--panel-text-micro);
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--panel-void-ink);
+    border: 1px solid var(--panel-void-edge);
+    border-radius: 3px;
+    padding: 1px 5px;
+    white-space: nowrap;
+  }
+
+  /* ---- health accent (spec section 3, option A) ------------------------ */
+  /* A 2px left edge fading downward, driven ONLY by [data-verdict]. An element
+     without that attribute gets NO accent -- not a grey one. "No verdict" must
+     be visually distinct from every verdict, not a fourth colour, because most
+     cards legitimately have no defensible verdict and a neutral bar on all of
+     them would read as a rating.
+
+     ::after, NOT ::before, and that is load-bearing. `.panel-instrument::before`
+     already exists in this file (the amber top hairline), and a measured card
+     carries BOTH classes on one element. Declaring the accent on ::before would
+     inherit that rule's `height: 1px` and 12% inset -- rendering a half-opacity
+     sliver instead of a full-height bar -- and destroy the hairline. ::after is
+     free on .panel-instrument.
+
+     A pseudo-element rather than a background, too: prove-absence-primitives-
+     render.mjs asserts a measured card's computed background-image is `none`,
+     the negative control that keeps "absence is hatched" from being vacuous. */
+  .panel-accent { position: relative; }
+
+  .panel-accent[data-verdict]::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    pointer-events: none;
+  }
+
+  .panel-accent[data-verdict="ok"]::after {
+    background: linear-gradient(180deg, var(--panel-ok), transparent 85%);
+  }
+
+  .panel-accent[data-verdict="watch"]::after {
+    background: linear-gradient(180deg, var(--panel-watch), transparent 85%);
+  }
+
+  .panel-accent[data-verdict="breach"]::after {
+    background: linear-gradient(180deg, var(--panel-breach), transparent 85%);
   }
 
   /* ---- coverage meter -------------------------------------------------- */

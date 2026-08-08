@@ -12,6 +12,10 @@ export interface DescribedMetric {
   fixText: string | null;
   /** The same claim as `fixText`, short enough to survive board density. */
   fixShort: string | null;
+  /** The metric's own one-line meaning, straight from its .sql header. Null when it has none. */
+  question: string | null;
+  /** Unbuilt metrics only: the specific next step that would fill this gap. */
+  gapHint: string | null;
 }
 
 const FIX_TEXT: Record<"absent_no_data" | "absent_unbuilt", string> = {
@@ -91,6 +95,12 @@ export function describeMetric(metric: Metric): DescribedMetric {
       reasonText: null,
       fixText: null,
       fixShort: null,
+      question: metric.question ?? null,
+      // No gap hint on a measured metric -- there is no gap. Deliberately not written as a
+      // `state === "absent_unbuilt"` check here: in this arm `metric` is already narrowed to
+      // MeasuredMetric, whose `state` is the literal "measured", so that comparison is a
+      // TS2367 "types have no overlap" compile error.
+      gapHint: null,
     };
   }
   return {
@@ -99,5 +109,7 @@ export function describeMetric(metric: Metric): DescribedMetric {
     reasonText: metric.reason,
     fixText: FIX_TEXT[metric.state],
     fixShort: FIX_SHORT[metric.state],
+    question: metric.question ?? null,
+    gapHint: metric.state === "absent_unbuilt" ? (metric.gapHint ?? null) : null,
   };
 }
