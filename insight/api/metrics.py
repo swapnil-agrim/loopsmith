@@ -93,6 +93,73 @@ def _rework_ratio(row):
     return ratio, repeated, total_files
 
 
+def _review_cycle_cap_share(row):
+    """metric_16: (project_id, cap, looped_goal_count, goals_at_cap_count, mass_at_cap_share, ...).
+    How many looped goals hit the review-cycle cap. A one-row view -- the cap and the counts are
+    project-level, not per goal -- so this stays on the single-row path."""
+    looped, at_cap, share = row[2], row[3], row[4]
+    if share is None or at_cap is None or looped is None:
+        return None
+    return share, at_cap, looped
+
+
+# --------------------------------------------------------------------------- aggregates
+# Extractors that need EVERY row, not the first one.
+#
+# WHY A SECOND REGISTRY. `VALUE_EXTRACTORS` receives one row, which is right for a view whose
+# numbers are project-level constants. It is useless for a view with one row PER GOAL or PER GATE:
+# metric_23 carries a catch count for each of four gates, and the honest project figure is the sum
+# of the numerators over the sum of the denominators -- something no single row contains. Before
+# this, those metrics were unwirable and read as "no extractor registered" forever, which was
+# accurate and unhelpful.
+#
+# Each function takes the full row list and returns (value, numerator, denominator) or None. The
+# same absence rule applies: if the rows cannot yield a defensible denominator, return None rather
+# than inventing one.
+def _gate_catch_rate(rows):
+    """metric_23, one row per gate: (project_id, gate, late_catch, gate_event_count, catch_count,
+    ...). The project-wide catch rate is total catches over total gate events -- NOT the mean of
+    the per-gate rates, which would weight a gate that fired once the same as one that fired 75
+    times."""
+    caught = sum(r[4] for r in rows if r[4] is not None)
+    events = sum(r[3] for r in rows if r[3] is not None)
+    if not events:
+        return None
+    return caught / events, caught, events
+
+
+def _lease_contention_rate(rows):
+    """metric_35, one row per goal: (project_id, goal_id, contended, current_actor_id, claimed_ts).
+    The share of goals whose lease was contended. A population of all-False is a REAL measurement
+    of zero contention, not an absence -- which is why this counts rows rather than testing for
+    truthiness anywhere."""
+    known = [r for r in rows if r[2] is not None]
+    if not known:
+        return None
+    contended = sum(1 for r in known if r[2])
+    return contended / len(known), contended, len(known)
+
+
+def _interventions_p50(rows):
+    """metric_13, one row per goal: (goal_id, intervention_count, p50_interventions,
+    p85_interventions). p50 is broadcast across every row; the denominator is the goal population
+    the percentile was computed over, which is the row count itself."""
+    scored = [r for r in rows if r[1] is not None]
+    if not scored:
+        return None
+    p50 = scored[0][2]
+    if p50 is None:
+        return None
+    return p50, len(scored), len(rows)
+
+
+AGGREGATE_EXTRACTORS = {
+    23: _gate_catch_rate,
+    35: _lease_contention_rate,
+    13: _interventions_p50,
+}
+
+
 # Which catalog ids know how to turn their view's row into (value, numerator, denominator).
 #
 # ONLY metrics whose OWN VIEW carries both a value and the counts behind it are registered. Spec
@@ -119,6 +186,7 @@ VALUE_EXTRACTORS = {
     5: _change_failure_rate,
     12: _numerator_denominator_rate,
     14: _numerator_denominator_rate,   # identical (numerator, denominator, rate) shape to 12
+    16: _review_cycle_cap_share,
     20: _rework_ratio,
 }
 
@@ -137,8 +205,23 @@ VALUE_UNITS = {
     5: "ratio",     # change failure rate
     12: "ratio",    # autonomy rate
     14: "ratio",    # park rate
+    13: "count",    # interventions per goal, p50
+    16: "ratio",    # share of looped goals at the review-cycle cap
     20: "ratio",    # rework ratio
+    23: "ratio",    # gate catch rate
+    35: "ratio",    # lease contention rate
 }
+
+
+def _fetch_rows(conn, sql):
+    """Every row, or None on ANY failure -- same collapse-to-absence posture as `_fetch_row`
+    below, for the aggregate extractors that need the whole result set."""
+    if conn is None:
+        return None
+    try:
+        return conn.execute(sql).fetchall()
+    except Exception:
+        return None
 
 
 def _fetch_row(conn, sql):
@@ -247,7 +330,8 @@ def resolve_metric(conn, mid, metrics_dir=None):
         )
 
     extractor = VALUE_EXTRACTORS.get(mid)
-    if extractor is None:
+    aggregate = AGGREGATE_EXTRACTORS.get(mid)
+    if extractor is None and aggregate is None:
         # The .sql exists and may well have real rows -- this is deliberately NOT
         # absent_no_data, because no amount of ingest will ever populate a `value` for it; only
         # registering an extractor will. See Decision (b): this is the "built but unmapped" case.
@@ -258,9 +342,16 @@ def resolve_metric(conn, mid, metrics_dir=None):
             reason="no value/coverage extractor registered yet for this metric",
         )
 
-    row = _fetch_row(conn, f"SELECT * FROM metric_{mid} LIMIT 1")
+    # An aggregate reads every row; a single-value extractor reads the first. A metric is never in
+    # both registries -- the test below pins that, because two extractors for one id would make
+    # which number wins depend on dict ordering.
+    if aggregate is not None:
+        rows = _fetch_rows(conn, f"SELECT * FROM metric_{mid}")
+        row = rows if rows else None
+    else:
+        row = _fetch_row(conn, f"SELECT * FROM metric_{mid} LIMIT 1")
     try:
-        extracted = extractor(row) if row is not None else None
+        extracted = (aggregate(row) if aggregate is not None else extractor(row)) if row is not None else None
     except Exception:
         # A row the extractor cannot read at all -- the view exists but has the wrong column
         # count or order, so indexing it raises. Deliberately absent_UNBUILT, not absent_no_data:
