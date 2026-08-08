@@ -576,15 +576,19 @@ def test_decompose_of_marker_also_exempts_duplicate_path():
 
 
 def test_local_mode_lstrip_pin_marker_after_leading_blank_line_exempts():
-    # local-mode bodies always start with "\n" right after the frontmatter delimiter (_local_base
-    # below reproduces this exactly, matching _build_corpus's real local branch) -- without lstrip(),
-    # the "first line" would be "" and this marker would never be seen. local-mode ref ordering is by
-    # filename ("0001.md" < "0002.md"), so the LATER goal (0002) is the one that would park.
+    # local-mode bodies do NOT always start with "\n" right after the frontmatter delimiter (#544
+    # fixed `_build_corpus` to strip the fence itself via frontmatter.strip(), not leave an artifact
+    # newline behind) -- but a goal file AUTHORED with a blank line right after the closing fence (a
+    # common, legitimate markdown style) still produces one, since that blank line is real content the
+    # fence-stripping never touches. The explicit leading "\n" in 0002's body below reproduces exactly
+    # that authored-blank-line shape -- without lstrip(), the "first line" would be "" and this marker
+    # would never be seen. local-mode ref ordering is by filename ("0001.md" < "0002.md"), so the LATER
+    # goal (0002) is the one that would park.
     bc = _mod("backlog_check")
     with tempfile.TemporaryDirectory() as d:
         base = _local_base(d, [
             ("0001.md", "pending", _GOAL, "already shipped equivalent"),
-            ("0002.md", "pending", _GOAL, "loopsmith:decomposed-from=0001\n\nchild details"),
+            ("0002.md", "pending", _GOAL, "\nloopsmith:decomposed-from=0001\n\nchild details"),
         ], dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
         goal = str(pathlib.Path(base) / "goals" / "0002.md")
         f = next(f for f in bc.cross_check(base, goal)["findings"]
