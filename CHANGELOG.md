@@ -42,8 +42,12 @@ repo-root dotenv and `*.env` only a path ENDING in ".env". A nested `backend/.en
 ZERO sensitive signal while the identical file at the root flagged. Fixed by adding the depth
 companion `*/.env*` — deliberately NOT by basename-normalizing `match_globs`, which would have
 silently broken `CONTRACT_GLOBS`' slash-embedded `*api/*` / `*routes/*` / `*controllers/*` patterns.
-Note a project that overrides `SENSITIVE_GLOBS` in `.sdlc/risk-detect.conf` replaces the whole list
-and does not inherit the new pattern — that all-or-nothing override is pre-existing design.
+The companion also carries `.env*`'s existing over-match family — `.environment`, `.envrc`,
+`.env.sample` — from root-only to every depth. That is the same false-positive class the list
+already accepted at the root, it is unavoidable under a pattern-level fix, and it is arguably what
+you want from a tripwire; a name merely containing "env" (`backend/env.md`, `foo.envrc`) is still
+untouched. Note a project that overrides `SENSITIVE_GLOBS` in `.sdlc/risk-detect.conf` replaces the
+whole list and does not inherit the new pattern — that all-or-nothing override is pre-existing design.
 Separately, the content scan gained `DATABASE_URL` / `REDIS_URL` (bare names in the key:value group,
 which supplies its own separator) and the `sk_live_` key shape, added identically to
 `alignment-collect.sh` so the F29 parity test stays green. Uppercase-only for the two connection
