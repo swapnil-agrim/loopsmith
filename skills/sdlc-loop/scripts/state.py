@@ -1,5 +1,10 @@
 """Run state: config, STATE.md counters, goal status transitions, review-queue append. Zero-dep."""
-import json, pathlib, importlib.util, re, time
+import contextlib, json, os, pathlib, importlib.util, re, tempfile, time
+
+try:
+    import fcntl                    # POSIX only -- see _cursor_lock's docstring
+except ImportError:
+    fcntl = None
 
 _HERE = pathlib.Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("frontmatter", _HERE / "frontmatter.py")
@@ -65,12 +70,116 @@ def _state_file(sdlc_dir):
     `.sdlc/state/` is gitignored by design (it is per-machine runtime), so a teammate who CLONES an
     adopted repo has the committed config and goals but no state files at all — and every entry point
     here used to die on a raw FileNotFoundError before their first goal. Scaffolding on first read
-    costs nothing and is the difference between `/sdlc-loop` working on a fresh clone and not."""
+    costs nothing and is the difference between `/sdlc-loop` working on a fresh clone and not.
+
+    Exclusive-create (`O_CREAT | O_EXCL`), never a plain `if not exists: write_text(...)` (#531):
+    the old check-then-write had its own unlocked TOCTOU gap — this function is reachable from
+    `load_cursor`, deliberately lock-free, so a lock-free reader could see "not exists", lose a race
+    to a locked `add_tokens` that creates AND writes a real value in between, then still go ahead and
+    OVERWRITE that value with the blank template (reproduced: a locked writer publishes `run_tokens:
+    7`, then this function's old body clobbers it back to the template). `O_EXCL` makes "already
+    exists" a clean, atomic `FileExistsError` instead of a race to inspect-then-act — the losing side
+    just walks away instead of clobbering the winner."""
     f = pathlib.Path(sdlc_dir) / "state" / "STATE.md"
-    if not f.exists():
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(_STATE_TEMPLATE)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(f), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        pass                          # another writer already scaffolded it -- never truncate it
+    else:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(_STATE_TEMPLATE)
     return f
+
+
+@contextlib.contextmanager
+def _cursor_lock(sdlc_dir):
+    """Serializes every STATE.md cursor writer (`_patch_cursor`, and therefore `add_tokens` /
+    `start_run` / `advance_cursor`) across processes AND threads, with the same kernel-mediated
+    `fcntl.flock` primitive that closed the identical unlocked-RMW race in `_try_acquire_claim_lock`
+    (loop.py, #387) — flock is atomic at the kernel level, so there is no read-then-act gap of its
+    own for a second writer to land in.
+
+    Locks a SIBLING file, `state/STATE.md.lock` — never STATE.md itself. `_patch_cursor` publishes
+    via `os.replace`, which swaps the directory entry onto a NEW inode; a writer that flocked the OLD
+    inode (opened before the replace) would be locking a file nothing points at anymore, so a lock ON
+    STATE.md itself would stop actually excluding anyone the moment the first publish happens. A
+    separate, never-replaced lock file has no such lifetime problem.
+
+    BLOCKING (`LOCK_EX`, not `LOCK_NB`): unlike the claim lock (where "someone else already owns
+    this goal" is a normal, expected outcome to skip past), the only writers ever contending here are
+    cooperating cursor updates that both need to land — cursor writes are milliseconds, and silently
+    SKIPPING a budget update is the very bug this closes. There is deliberately no timeout: the
+    critical section (`_patch_cursor`'s read + the caller's `patch()` + temp-write + `os.replace`) is
+    pure, fast, local file I/O with nothing in it that can hang — the caller-supplied `patch`
+    callable must never do I/O of its own beyond computing from the text it is given, or that
+    contract breaks.
+
+    No fsync before `os.replace`: a torn publish is impossible either way (replace is atomic), the
+    worst a same-instant power loss can do is lose the last write entirely and leave the PREVIOUS
+    good file in place — an accepted trade-off already made the same way by `actionlog.py` and
+    `work.py`'s own publish paths in this repo. `os.replace` overwrites unconditionally on Windows
+    too (unlike bare `os.rename`), so the atomic-publish half of this fix needs no Windows-specific
+    branch — only the locking half does.
+
+    Fail-open, exactly mirroring `_try_acquire_claim_lock`'s documented reasoning: yields WITHOUT the
+    lock when `fcntl` doesn't exist (Windows), when the lock file can't even be opened, or on any
+    other OSError acquiring the flock (e.g. `ENOLCK` on a lock-less NFS mount) — a lock this call
+    cannot manage must never be what stops the loop. Crash-release is free: the kernel drops the
+    flock the instant the holding process's fd closes, for any reason, crash included."""
+    if fcntl is None:
+        yield                      # Windows / no fcntl at all -- fail open, identical posture to #387
+        return
+    lock_path = pathlib.Path(sdlc_dir) / "state" / "STATE.md.lock"
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+    except OSError:
+        yield                      # can't even open the lock file -- fail open, see docstring
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)              # BLOCKING (no LOCK_NB) -- see docstring
+    except OSError:
+        os.close(fd)
+        yield                      # e.g. ENOLCK on a lock-less NFS mount -- fail open, see docstring
+        return
+    try:
+        yield
+    finally:
+        os.close(fd)               # releases the flock too -- the kernel drops it the instant fd closes
+
+
+def _patch_cursor(sdlc_dir, patch):
+    """The one locked, atomically-published read-modify-write core every STATE.md cursor writer
+    (`add_tokens`, `start_run`, `advance_cursor`) goes through, replacing the unlocked
+    read-then-write each used to do on its own (#531). `patch(text) -> text` computes the new
+    content from the text read UNDER THE LOCK — never from a caller's own separately-read, possibly
+    stale text — so two concurrent callers never overwrite each other's increment.
+
+    Lock BEFORE scaffold, deliberately: `_cursor_lock` is acquired before `_state_file` is ever
+    called, so the scaffold-on-first-write and the read-modify-write share the same critical
+    section — hoisting the scaffold call out from under the lock would reopen exactly the race
+    `_state_file`'s own exclusive-create closed, just moved one level up.
+
+    Publishes via a `tempfile.mkstemp` temp file in the SAME directory (so `os.replace` stays on one
+    filesystem, the only case it's atomic), then `os.replace` onto STATE.md — a lock-free reader
+    (`load_cursor` is deliberately lock-free, see its own docstring) therefore only ever observes the
+    fully-old or fully-new file, never a truncated one. This holds even on the fail-open unlocked
+    path: `mkstemp` hands out a fresh unique name per call, so two unlocked writers racing here still
+    each publish through their OWN temp file, never a shared one — no worse than today's
+    last-writer-wins.
+
+    No nested locking: this is the ONLY function that acquires `_cursor_lock`, and it is never called
+    from inside another `_cursor_lock` block — `flock` blocks even a SECOND fd from the same
+    process, so re-entry here would self-deadlock. Every public writer below is a thin, single call
+    into this function."""
+    with _cursor_lock(sdlc_dir):
+        f = _state_file(sdlc_dir)                   # scaffold call stays INSIDE the lock -- see above
+        text = patch(f.read_text())
+        fd, tmp = tempfile.mkstemp(dir=str(f.parent))
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, f)
 
 
 def _read_int(text, key):
@@ -100,35 +209,49 @@ def _set_line(text, key, value):
     return line_re.sub(lambda _: new, text) if line_re.search(text) else text.rstrip() + f"\n{new}\n"
 
 
-def save_cursor(sdlc_dir, iteration, run_iteration, summary):
-    f = _state_file(sdlc_dir)
-    text = f.read_text()                                  # structure-preserving: patch lines, keep the rest
-    text = _set_line(text, "iteration", iteration)
-    text = _set_line(text, "run_iteration", run_iteration)
-    text = _set_line(text, "last_run", summary)
-    f.write_text(text)
-
-
 def start_run(sdlc_dir):
     """Reset the per-run budget counters at the start of a /sdlc-loop invocation.
     `_set_line` appends missing lines, so pre-0.6 STATE.md files upgrade in place.
     `run_started_at` keeps the raw `time.time()` float (F11/#341) — flooring it to a whole second
     (as before) let a verify's own `at` stamp land in the SAME second as a run that started just
     after it, so a stale green from the previous run could tie with (and pass as fresh for) this
-    one; sub-second precision closes that window without touching the done_refusal comparison."""
-    f = _state_file(sdlc_dir)
-    text = _set_line(f.read_text(), "run_iteration", 0)
-    text = _set_line(text, "run_started_at", time.time())
-    text = _set_line(text, "run_tokens", 0)
-    f.write_text(text)
+    one; sub-second precision closes that window without touching the done_refusal comparison.
+    `now` is captured BEFORE `_patch_cursor` (not inside its `patch` callable), so the timestamp
+    reflects the instant `start_run` was actually called, not however long a contended lock
+    acquisition might delay the write (#531; the callable itself must stay pure text-in/text-out,
+    see `_cursor_lock`'s docstring)."""
+    now = time.time()
+
+    def patch(text):
+        text = _set_line(text, "run_iteration", 0)
+        text = _set_line(text, "run_started_at", now)
+        return _set_line(text, "run_tokens", 0)
+    _patch_cursor(sdlc_dir, patch)
 
 
 def add_tokens(sdlc_dir, n):
     """Accumulate the host-reported token spend for this run (see loop.py `spend`).
-    The loop only ever RECEIVES this signal — it never measures spend itself."""
-    f = _state_file(sdlc_dir)
-    text = f.read_text()
-    f.write_text(_set_line(text, "run_tokens", _read_int(text, "run_tokens") + int(n)))
+    The loop only ever RECEIVES this signal — it never measures spend itself.
+    Routes through `_patch_cursor` (#531): the +n increment is computed from the text read UNDER
+    THE LOCK, not a separately (unlocked) read text, so concurrent `spend` calls — a real shape
+    under `parallel.goals` — no longer lose increments to each other."""
+    n = int(n)
+    _patch_cursor(sdlc_dir, lambda text: _set_line(text, "run_tokens", _read_int(text, "run_tokens") + n))
+
+
+def advance_cursor(sdlc_dir, summary):
+    """The atomic replacement for `_record`'s old two-call `load_cursor` + `save_cursor`
+    read-modify-write (#531; `save_cursor` itself is deleted — this was its only production
+    caller). One call reads iteration/run_iteration from the text UNDER THE LOCK and writes both
+    +1, plus `last_run`. Collapsing two calls into one closes the COMPOUNDING half of the original
+    race: even a per-call-locked `save_cursor` alone would still let two concurrent `_record`s each
+    read the SAME pre-increment cursor between their own separate load-then-save pair — a single
+    atomic patch has no such gap for a second caller to land in."""
+    def patch(text):
+        text = _set_line(text, "iteration", _read_int(text, "iteration") + 1)
+        text = _set_line(text, "run_iteration", _read_int(text, "run_iteration") + 1)
+        return _set_line(text, "last_run", summary)
+    _patch_cursor(sdlc_dir, patch)
 
 
 def _set_status(goal_path, status):
