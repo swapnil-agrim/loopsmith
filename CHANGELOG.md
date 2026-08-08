@@ -35,6 +35,24 @@ an unrecognized extension answers with a silent allow — the edit gate was simp
 repos while the Stop gate fired on them. The two inlined lists are now kept in lockstep by a
 parity test, the way `scrub.py`/`research_capture.py` already are.
 
+### fix(risk-detect): nested dotenv files now trip the sensitive tripwire, plus 3 keyword gaps (#537)
+`risk-detect.sh`'s glob lists are documented as substring globs that match at any depth, but the two
+dotenv patterns were the exception: `match_globs` matches the WHOLE path, so `.env*` only ever hit a
+repo-root dotenv and `*.env` only a path ENDING in ".env". A nested `backend/.env.local` produced
+ZERO sensitive signal while the identical file at the root flagged. Fixed by adding the depth
+companion `*/.env*` — deliberately NOT by basename-normalizing `match_globs`, which would have
+silently broken `CONTRACT_GLOBS`' slash-embedded `*api/*` / `*routes/*` / `*controllers/*` patterns.
+The companion also carries `.env*`'s existing over-match family — `.environment`, `.envrc`,
+`.env.sample` — from root-only to every depth. That is the same false-positive class the list
+already accepted at the root, it is unavoidable under a pattern-level fix, and it is arguably what
+you want from a tripwire; a name merely containing "env" (`backend/env.md`, `foo.envrc`) is still
+untouched. Note a project that overrides `SENSITIVE_GLOBS` in `.sdlc/risk-detect.conf` replaces the
+whole list and does not inherit the new pattern — that all-or-nothing override is pre-existing design.
+Separately, the content scan gained `DATABASE_URL` / `REDIS_URL` (bare names in the key:value group,
+which supplies its own separator) and the `sk_live_` key shape, added identically to
+`alignment-collect.sh` so the F29 parity test stays green. Uppercase-only for the two connection
+strings is deliberate: that is their conventional spelling and the awk ERE is case-sensitive.
+
 ### fix(scrub): a truncated private key no longer leaks its body (Security, #534)
 The fallback for a PEM key whose `-----END-----` never arrives replaced the HEADER ALONE, so every
 body line under it passed through verbatim — into the research breadcrumbs and, via a ledger or

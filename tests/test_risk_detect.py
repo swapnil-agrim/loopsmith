@@ -152,6 +152,88 @@ def test_secret_patterns_stay_in_sync_with_alignment_collect():
         assert shape in risk_text and shape in align_text
 
 
+# --- #537: dotenv globs were the only PATH-ANCHORED patterns in any of the three lists ----------
+# risk-detect.sh's own convention (the comment above the glob lists) is that every pattern is a
+# substring glob matched at any depth. `.env*` broke it: `match_globs` matches the WHOLE path, so
+# `.env*` only ever hit a repo-root dotenv and `*.env` only a path ENDING in ".env" — a nested
+# `backend/.env.local` produced zero sensitive signal while the identical root file flagged.
+#
+# Every fixture below is FORCE-staged (`git add -A -f`) on purpose. A contributor whose GLOBAL
+# gitignore excludes .env files would otherwise see these tests flake for a reason unrelated to
+# what they pin — and a plain `git add -A` does NOT rescue them, because add obeys gitignore just
+# as `git ls-files --others --exclude-standard` does. `-f` is what makes each fixture a TRACKED
+# file, and tracked files are reached by both of the scanner's paths whatever the ignore rules say.
+
+def test_nested_dotenv_signals_as_a_sensitive_path(tmp_path):
+    # Asserts the NAME-scan hit specifically. "sensitive" in matched would be vacuous here: any
+    # listed keyword in the fixture body makes it pass through the CONTENT scan even on the
+    # unfixed script, so the fixture is deliberately keyword-free and the pattern_id is pinned.
+    repo = _repo(tmp_path)
+    (repo / "backend").mkdir()
+    (repo / "backend" / ".env.local").write_text("PLACEHOLDER=1\n")
+    _git(repo, "add", "-A", "-f")
+    out = _run(repo)
+    assert any(h["file"] == "backend/.env.local" and h["pattern_id"] == "path" for h in out["hits"])
+
+
+def test_root_dotenv_still_signals_as_a_sensitive_path(tmp_path):
+    # the half that already worked — pinned so the fix is proven to ADD depth, not move the anchor
+    repo = _repo(tmp_path)
+    (repo / ".env").write_text("PLACEHOLDER=1\n")
+    _git(repo, "add", "-A", "-f")
+    out = _run(repo)
+    assert any(h["file"] == ".env" and h["pattern_id"] == "path" for h in out["hits"])
+
+
+def test_nested_dotenv_example_signals_as_a_sensitive_path(tmp_path):
+    # a checked-in template lives beside the real thing and is worth the same surfacing
+    repo = _repo(tmp_path)
+    (repo / "config").mkdir()
+    (repo / "config" / ".env.example").write_text("PLACEHOLDER=1\n")
+    _git(repo, "add", "-A", "-f")
+    out = _run(repo)
+    assert any(h["file"] == "config/.env.example" and h["pattern_id"] == "path" for h in out["hits"])
+
+
+def test_dotenv_lookalikes_do_not_signal(tmp_path):
+    # the over-match guard: widening to any depth must not start flagging files that merely have
+    # "env" in the name.
+    repo = _repo(tmp_path)
+    (repo / "backend").mkdir()
+    (repo / "backend" / "env.md").write_text("how to set up your environment\n")
+    (repo / "foo.envrc").write_text("layout python\n")
+    _git(repo, "add", "-A", "-f")
+    out = _run(repo)
+    assert out["matched"] == [], out["hits"]
+
+
+# --- #537: content-scan keyword gaps (connection strings + one key shape) -----------------------
+
+def test_connection_string_keys_are_sensitive_content(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "settings.py").write_text('DATABASE_URL = "postgres://u@h/db"\n')
+    (repo / "cache.py").write_text('REDIS_URL="redis://h:6379/0"\n')
+    _git(repo, "add", "-A", "-f")
+    out = _run(repo)
+    files = {h["file"] for h in out["hits"] if h["category"] == "sensitive"}
+    assert {"settings.py", "cache.py"} <= files, out["hits"]
+
+
+def test_stripe_live_key_shape_is_a_sensitive_token(tmp_path):
+    # pattern_id is pinned to "token", so the fixture carries NO key:value trigger word — the kv
+    # branch wins the else-if chain and would report "secret" instead.
+    repo = _repo(tmp_path)
+    (repo / "pay.js").write_text('const K = "sk_live_abcd1234efgh";\n')
+    # ...and the converse, pinned: a line carrying BOTH a kv trigger and the key shape reports
+    # "secret", not "token", because the kv branch comes first in that else-if chain. Reordering
+    # the branches would silently reclassify every such line; this makes it a test failure.
+    (repo / "cfg.rb").write_text('api_key = "sk_live_abcd1234efgh"\n')
+    _git(repo, "add", "-A", "-f")
+    out = _run(repo)
+    assert any(h["file"] == "pay.js" and h["pattern_id"] == "token" for h in out["hits"])
+    assert any(h["file"] == "cfg.rb" and h["pattern_id"] == "secret" for h in out["hits"])
+
+
 def test_review_and_research_skills_wire_the_detector():
     # the collector is only useful if the phases invoke it — guard the SKILL prose reference
     skills = SCRIPT.parent.parent.parent
