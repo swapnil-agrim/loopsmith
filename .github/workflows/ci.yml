@@ -104,6 +104,23 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+      # prove-login-form-issues-a-usable-session.mjs signs in through the REAL credential bridge --
+      # the Node tier shells out to `insight users verify`, which hashes with argon2id -- because
+      # that is the code path a browser sign-in actually takes. Every OTHER web proof stubs
+      # `python3` (see prove-python-bridge-exit-codes.mjs), which is why this job never needed a
+      # Python dependency before and why it could not have caught a real sign-in failing.
+      #
+      # actions/setup-python rather than `pip install --user` against the runner's system python3:
+      # ubuntu-latest is PEP 668 externally-managed, so installing into it needs
+      # --break-system-packages. This mirrors what the `insight` job above already does. Only
+      # argon2-cffi is installed, not `-e insight/` -- the proof puts the repo root on sys.path
+      # itself, so it needs the KDF and nothing else (no duckdb, no fastapi in this job).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install argon2-cffi (the login proof signs in through the real credential bridge)
+        run: python -m pip install --upgrade pip argon2-cffi
+
       - name: web checks (type-check, lint, unit tests, build) via insight/verify_web.py
         run: python3 insight/verify_web.py
       # Browser-dependent -- deliberately NOT part of verify_web.py's CHECKS, see this job's own
