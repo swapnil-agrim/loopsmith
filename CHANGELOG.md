@@ -139,6 +139,17 @@ line was no longer `loopsmith:decomposed-from=`/`loopsmith:decompose-of=`. Now r
 `frontmatter.strip()`, the same line-anchored fence `frontmatter.parse()` already uses two lines
 above it.
 
+### fix(backlog_check): the embeddings cache is now keyed by embedder identity, not text alone (#542)
+`_dense_channel()`'s cache (`state/embeddings.json`) keyed each vector on `sha256(text)` alone —
+nothing tied a cached entry to the `embed.command` that produced it. Swapping the embedder (a
+provider or model change) while the corpus text stayed the same silently served the OLD embedder's
+vectors into the NEW embedder's vector space, a meaningless cross-space cosine; at the shipped
+default `weight: 0.5` this could only pollute candidate ordering, but at an operator-raised weight
+it could park a goal as a confident duplicate of an unrelated issue. The cache key now folds in
+`embed.command`'s own text, so a swap is self-invalidating — every doc misses under the new key and
+is genuinely re-embedded, no separate "clear the cache" step needed (and nothing to document at
+adoption time either, since there is no manual step left to forget).
+
 ### fix(hooks): plan_gate no longer locks itself on, and gates Scala/Elixir like its sibling (#536)
 `plan_gate.sh` had drifted from the hardened `completion_gate.sh` on two counts. It printed the
 mode line BEFORE `int(plan_freshness_hours)` could raise inside the same `try`, so an unparseable
