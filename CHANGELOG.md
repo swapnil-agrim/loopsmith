@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### docs(init): the scaffolded config documented the board title with the wrong dash (#546)
+`config.json.tmpl` described the auto-generated board title as `<repo> - SDLC` with an ASCII hyphen,
+while `sources._proj_title()` builds it with an em-dash — and `_find_project` matches board titles
+BYTE-EXACTLY, so the separator is load-bearing rather than typography. The scaffolded config is the
+first place an adopter looks when a board fails to resolve, so the drift pointed exactly the person
+already debugging at a title that does not exist. The same one-character drift had spread to three
+more places describing the same string (a comment in `sources.py` six lines under the code that
+generates it, and two in `test_github_project.py`); all four now match. Documentation only — no
+behavior change, and the worst case was already bounded, since `_ensure_board` refuses to create a
+second board once one exists and doctor carries a dedicated duplicate-board-risk check. A test now
+derives the separator from `_proj_title()` itself and fails if any documented rendering drifts from
+it again.
+
 ### fix(loop): delete the dead `_done_refusal` duplicate that shadowed its own alias (#538)
 `loop.py` aliased `_done_refusal = state.done_refusal` under a "both live in state.py" comment, then
 re-defined `def _done_refusal` further down the module — so the alias was overwritten during module

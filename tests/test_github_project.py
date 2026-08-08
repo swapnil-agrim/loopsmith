@@ -394,9 +394,9 @@ def test_custom_fields_ignored_when_project_disabled():
 
 def test_refuses_to_create_a_duplicate_when_owner_already_has_a_board(capsys):
     """enabled + no project.number + a board that doesn't match our auto-title => loopsmith must NOT
-    create '<repo> - SDLC' as a second board; it warns loudly and leaves mirroring off (fail-open)."""
+    create '<repo> — SDLC' as a second board; it warns loudly and leaves mirroring off (fail-open)."""
     src = _mod("sources")
-    # owner 'acme' has a real board with a title that is NOT loopsmith's default 'widget - SDLC'
+    # owner 'acme' has a real board with a title that is NOT loopsmith's default 'widget — SDLC'
     existing = [{"number": 7, "id": "PVT_human", "title": "Acme Delivery Board"}]
     run = project_world(projects=existing, fields=[STATUS_FILLED],
                         issues=[{"number": 5, "labels": [{"name": "sdlc:goal"}]}])

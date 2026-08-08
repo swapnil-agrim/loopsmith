@@ -638,7 +638,7 @@ class GitHubSource:
         number, pid, created_now = self._find_project(owner, title)
         if number is None:
             # Auto-create ONLY when the owner has NO board at all (an unambiguous fresh setup). If the
-            # owner already has board(s) but none matched our number/title, creating "{repo} - SDLC"
+            # owner already has board(s) but none matched our number/title, creating "{repo} — SDLC"
             # would silently spawn a DUPLICATE and quietly manage the wrong one — the config is
             # under-specified, so refuse and say so loudly (fail-open: issues + labels still work).
             if self._owner_had_boards:

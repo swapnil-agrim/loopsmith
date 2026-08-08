@@ -71,3 +71,59 @@ def test_template_is_valid_json_once_comments_are_stripped():
     cfg = json.loads(TMPL)
     assert isinstance(cfg.get("gates"), dict)
     assert "decision_gate" in " ".join(cfg["gates"].keys())      # present as a key or a _comment
+
+
+# --- #546: the documented board title must be the one the code actually generates ---------------
+# `_find_project` matches a board title BYTE-EXACTLY, so the separator in the auto-generated title
+# is load-bearing, not typography. The scaffolded config is the first place an adopter looks when a
+# board fails to resolve — documenting it there with an ASCII hyphen while the code emits an em-dash
+# sends exactly the person who is already confused looking for the wrong string.
+
+def _generated_board_title():
+    """The real thing, from the code that builds it — never a literal copied into this test, or the
+    pin would drift the same way the prose did."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "sources", ROOT / "skills" / "sdlc-loop" / "scripts" / "sources.py")
+    sources = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sources)
+    src = sources.GitHubSource.__new__(sources.GitHubSource)
+    src.repo, src._project_cfg = "acme/widget", {}
+    return src._proj_title()
+
+
+def test_the_board_title_separator_pin_still_matches_something():
+    """Guard the guard: if `_proj_title` stops producing a `<name> <sep> SDLC` shape, the two tests
+    below would silently pass forever on a string they no longer describe."""
+    title = _generated_board_title()
+    assert title.endswith(" SDLC") and title.startswith("widget"), title
+
+
+def test_the_scaffolded_config_documents_the_title_the_code_generates():
+    separator = _generated_board_title()[len("widget"):-len("SDLC")]     # " — ", whatever it is
+    assert f"<repo>{separator}SDLC" in TMPL, (
+        "config.json.tmpl documents the default board title with a different separator than "
+        f"sources._proj_title() generates ({separator!r}); _find_project matches titles "
+        "byte-exactly, so an adopter reading their own config would search for a title that "
+        "does not exist")
+
+
+def test_no_shipped_prose_renders_the_board_title_with_an_ascii_hyphen():
+    """The same one-character drift had crept into FOUR separate places describing one string.
+    Pinned across the surfaces that document it so a future edit cannot reintroduce it in a corner
+    this test does not watch. Enumerates EVERY occurrence, not the first per file — the fourth site
+    sat one line below the third, and a first-match-only scan called that file clean."""
+    surfaces = ([ROOT / "skills" / "sdlc-init" / "templates" / "config.json.tmpl",
+                 ROOT / "README.md"]
+                + sorted(ROOT.glob("skills/*/scripts/*.py"))
+                + sorted(ROOT.glob("tests/*.py")))
+    wrong = re.compile(r"(?:repo|name|project|widget|\}|>)['\"`]?\s-\sSDLC")
+    offenders = []
+    for path in surfaces:
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        offenders += [f"{path.relative_to(ROOT)}:{text[:m.start()].count(chr(10)) + 1}"
+                      for m in wrong.finditer(text)]
+    assert not offenders, (
+        f"board title written with an ASCII hyphen instead of the generated em-dash: {offenders}")
