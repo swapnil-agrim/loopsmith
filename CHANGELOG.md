@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### fix(doctor): standing-doc hygiene resolves a leading `/` against the repo, not the OS root (#545)
+`pathlib`'s `/` operator discards its left operand the moment the right side is absolute, so
+`repo_root / "/docs/architecture.md"` quietly became `/docs/architecture.md` — checked against the
+machine's filesystem instead of the repo. Both hygiene scanners were wrong in both directions at
+once: the ordinary repo-root-relative citation form was reported STALE while the file sat right
+there in the repo, and conversely any absolute path that happened to exist on the box running
+doctor passed silently, making the verdict depend on the runner rather than on the repo. A leading
+`/` is now read as repo-root-relative in both the cited-path and markdown-link scanners; doc-dir
+relative links are unchanged. A genuinely OS-absolute reference is consequently reported too —
+deliberate, since a standing doc's cited paths are claims about THIS repo, and an occasionally
+over-strict check beats one whose answer changes with the machine. Advisory output only; `check`
+still exits 0 either way.
+
 ### fix(predict): security goals phrased as "insecure" now reach the opus/high tier (#543)
 `\b` anchors the whole keyword alternation, and there is no word boundary between the "n" and the
 "s" of "insecure" — so the plain `secure` term could never match it. "Fix the insecure default in
