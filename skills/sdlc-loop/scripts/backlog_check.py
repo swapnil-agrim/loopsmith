@@ -279,11 +279,16 @@ def _goal_comment_text(sdlc_dir, config, goal_doc, run=None):
         return ""
 
 
-def _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now, exempt=False):
+def _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now, exempt=False, config=None):
     """Team-wide signals from the shared ledger (read-only, no `enabled` needed): a SIMILAR goal a
     teammate is claiming right now (the race the exact-goal lease can't see), and an outstanding
     hand-off this goal FILED (a real, recorded blocker — it is waiting on the target it handed off,
     which is why the finding's `ref` is that target and not this goal).
+
+    The similarity branch reads the claim lease through the SAME TTL every other consumer uses
+    (#535): a claim the loop is already free to re-take cannot simultaneously be grounds for parking
+    a paraphrase of it — that would be an internal contradiction, and an abandoned claim would park
+    similar goals forever.
 
     `exempt` (#521): `goal_doc` is a decomposition child/meta-goal (see `cross_check`'s own
     precomputed `exempt`). Applies ONLY to the in-flight-elsewhere SIMILARITY branch below -- parallel
@@ -302,7 +307,10 @@ def _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now, exempt=Fal
     gvec = _vector(goal_doc["tokens"], idf)
     out = []
     try:
-        for cg, _actor in ledger.open_claims(entries, now=now).items():
+        # Inside the try on purpose: lease_ttl_seconds RAISES on a malformed `ttl_hours`, and that
+        # must degrade THIS channel only — outside, cross_check's own catch-all would empty the pack.
+        ttl = ledger.lease_ttl_seconds(config)
+        for cg, _actor in ledger.open_claims(entries, now=now, ttl_seconds=ttl).items():
             cg = str(cg)
             d = doc_by_ref.get(cg)
             if cg == goal_ref or not d:
@@ -497,7 +505,8 @@ def cross_check(sdlc_dir, goal, config=None, run=None, now=None, velocity_measur
         comment_text = _goal_comment_text(sdlc_dir, config, goal_doc, run=run)
         findings += _explicit_blockers(goal_doc, docs, comment_text)
         doc_by_ref = {d["ref"]: d for d in docs}
-        findings += _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now, exempt)
+        findings += _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now, exempt,
+                                     config=config)
         return _pack(goal_ref, _dedup_sort(findings), degraded)
     except Exception:
         return _pack(goal_ref, [], ["error"])

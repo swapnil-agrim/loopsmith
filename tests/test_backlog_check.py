@@ -25,9 +25,12 @@ def _rec(number, title, body="", state="open", closed_at=None, updated="2026-08-
             "state": state, "closed_at": closed_at, "updated_at": updated, "content_hash": "x"}
 
 
-def _gh_base(d, records, **bc):
+def _gh_base(d, records, ledger=None, **bc):
     base = pathlib.Path(d) / ".sdlc"; (base / "state").mkdir(parents=True)
-    (base / "config.json").write_text(json.dumps({"discovery": {"source": "github"}, "backlog_check": bc}))
+    cfg = {"discovery": {"source": "github"}, "backlog_check": bc}
+    if ledger is not None:
+        cfg["ledger"] = ledger              # the claim-lease TTL lives here: ledger.lease.ttl_hours
+    (base / "config.json").write_text(json.dumps(cfg))
     (base / "state" / "board-mirror.ndjson").write_text("".join(json.dumps(r) + "\n" for r in records))
     return str(base)
 
@@ -286,11 +289,66 @@ def _write_claim(base, actor, goal, kind="claimed", ts="2026-08-02T00:00:00Z", *
 
 def test_in_flight_elsewhere_from_ledger_claim():
     bc = _mod("backlog_check")
+    now = _epoch("2026-08-02T06:00:00Z")          # 6h after the fixture claim — inside any sane lease
     with tempfile.TemporaryDirectory() as d:
         base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _DUP)], **_LOOSE)
         _write_claim(base, "bob", "2")           # a teammate is already working the paraphrase #2
-        kinds = {(f["kind"], f["ref"]) for f in bc.cross_check(base, "1")["findings"]}
+        kinds = {(f["kind"], f["ref"]) for f in bc.cross_check(base, "1", now=now)["findings"]}
         assert ("in-flight-elsewhere", "2") in kinds
+
+
+# --- #535: the in-flight branch honors the claim-lease TTL --------------------------------------
+# The similarity channel reads the SAME lease `_next()` does, so these anchor `now` explicitly
+# against `_write_claim`'s fixture timestamp instead of the wall clock: a fixed fixture ts plus a
+# real clock silently ages past any TTL and the suite starts failing on a calendar date.
+_CLAIM_TS = "2026-08-02T00:00:00Z"                # _write_claim's own default, stated for the reader
+_FRESH = _epoch("2026-08-02T06:00:00Z")           # +6h  — inside the 12h default lease
+_STALE = _epoch("2026-08-04T00:00:00Z")           # +48h — beyond the default and beyond a 24h setting
+
+
+def test_in_flight_elsewhere_ignores_a_claim_past_its_lease_ttl():
+    # an abandoned claim (crashed session, yesterday's run) must stop parking new similar goals the
+    # moment the lease system itself would have released it
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _DUP)],
+                        ledger={"lease": {"ttl_hours": 24}}, **_LOOSE)
+        _write_claim(base, "bob", "2", ts=_CLAIM_TS)
+        kinds = {(f["kind"], f["ref"]) for f in bc.cross_check(base, "1", now=_STALE)["findings"]}
+        assert ("in-flight-elsewhere", "2") not in kinds
+
+
+def test_in_flight_elsewhere_still_fires_for_a_claim_inside_its_lease_ttl():
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _DUP)],
+                        ledger={"lease": {"ttl_hours": 24}}, **_LOOSE)
+        _write_claim(base, "bob", "2", ts=_CLAIM_TS)
+        kinds = {(f["kind"], f["ref"]) for f in bc.cross_check(base, "1", now=_FRESH)["findings"]}
+        assert ("in-flight-elsewhere", "2") in kinds
+
+
+def test_in_flight_elsewhere_never_expires_when_the_ttl_is_disabled():
+    """CONTRACT PIN (green before and after): `ttl_hours: 0`/false means never-expire in
+    `lease_ttl_seconds`, and this channel must read that setting with exactly the same meaning as
+    every other lease consumer — a disabled TTL keeps an old claim authoritative, by configuration."""
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _DUP)],
+                        ledger={"lease": {"ttl_hours": 0}}, **_LOOSE)
+        _write_claim(base, "bob", "2", ts=_CLAIM_TS)
+        kinds = {(f["kind"], f["ref"]) for f in bc.cross_check(base, "1", now=_STALE)["findings"]}
+        assert ("in-flight-elsewhere", "2") in kinds
+
+
+def test_in_flight_elsewhere_applies_the_default_ttl_with_no_ledger_config():
+    # no `ledger` key at all — the overwhelmingly common shape — must still get DEFAULT_LEASE_TTL_HOURS
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(1, _GOAL), _rec(2, _DUP)], **_LOOSE)
+        _write_claim(base, "bob", "2", ts=_CLAIM_TS)
+        kinds = {(f["kind"], f["ref"]) for f in bc.cross_check(base, "1", now=_STALE)["findings"]}
+        assert ("in-flight-elsewhere", "2") not in kinds
 
 
 # --- #532: a hand-off blocks the side that FILED it, never the side it was handed TO -------------
@@ -412,13 +470,14 @@ def test_in_flight_elsewhere_exemption_for_decomposition_child_marked_first_line
     # sibling execution is exactly what decomposition creates, so this is the same false-positive
     # family as duplicate/obsoleted-by, just at ledger similarity's lower (unconditional) bar.
     bc = _mod("backlog_check")
+    now = _epoch("2026-08-02T06:00:00Z")          # 6h after the fixture claim — inside any sane lease
     with tempfile.TemporaryDirectory() as d:
         base = _gh_base(d, [_rec(1, _GOAL),
                             _rec(2, _GOAL, body="loopsmith:decomposed-from=1"),
                             _rec(3, _GOAL)],
                         dup_threshold=0.4, park_threshold=0.8, closed_window_days=3650)
         _write_claim(base, "bob", "3")
-        f = next(f for f in bc.cross_check(base, "2")["findings"]
+        f = next(f for f in bc.cross_check(base, "2", now=now)["findings"]
                  if f["kind"] == "in-flight-elsewhere" and f["ref"] == "3")
         assert f["score"] >= 0.4
         assert f["confident"] is False           # PRESENT, downgraded -- on unfixed code this is True
