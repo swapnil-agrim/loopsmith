@@ -5,6 +5,28 @@
         "additionalProperties": false,
         "description": "The metric's SQL exists (or ran) and returned nothing to measure -- a missing view, a\nview with zero rows, or a row whose value is NULL are all this same shape (see\ninsight/api/metrics.py's `resolve_metric`, and `insight.dash.panel`'s `_metric_state`/\n`_scalar`, whose absence conventions this ports). Time, not a code change, fixes this.",
         "properties": {
+          "dataStatus": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Datastatus"
+          },
+          "guardrail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guardrail"
+          },
           "id": {
             "title": "Id",
             "type": "integer"
@@ -12,6 +34,22 @@
           "label": {
             "title": "Label",
             "type": "string"
+          },
+          "proxy": {
+            "default": false,
+            "title": "Proxy",
+            "type": "boolean"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question"
           },
           "reason": {
             "title": "Reason",
@@ -41,6 +79,39 @@
         "additionalProperties": false,
         "description": "There is no way to produce this metric yet -- no `.sql` file, or (this story's own scope-\ndown, Decision (b)) a `.sql` file with no registered value/coverage extractor. Only a code\nchange fixes this, never the passage of time.",
         "properties": {
+          "dataStatus": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Datastatus"
+          },
+          "gapHint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gaphint"
+          },
+          "guardrail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guardrail"
+          },
           "id": {
             "title": "Id",
             "type": "integer"
@@ -48,6 +119,22 @@
           "label": {
             "title": "Label",
             "type": "string"
+          },
+          "proxy": {
+            "default": false,
+            "title": "Proxy",
+            "type": "boolean"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question"
           },
           "reason": {
             "title": "Reason",
@@ -99,6 +186,28 @@
           "coverage": {
             "$ref": "#/components/schemas/Coverage"
           },
+          "dataStatus": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Datastatus"
+          },
+          "guardrail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guardrail"
+          },
           "id": {
             "title": "Id",
             "type": "integer"
@@ -106,6 +215,22 @@
           "label": {
             "title": "Label",
             "type": "string"
+          },
+          "proxy": {
+            "default": false,
+            "title": "Proxy",
+            "type": "boolean"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question"
           },
           "reliabilityClass": {
             "title": "Reliabilityclass",

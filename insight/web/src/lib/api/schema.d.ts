@@ -75,10 +75,21 @@ export interface components {
          *     `_scalar`, whose absence conventions this ports). Time, not a code change, fixes this.
          */
         AbsentNoDataMetric: {
+            /** Datastatus */
+            dataStatus?: string | null;
+            /** Guardrail */
+            guardrail?: string | null;
             /** Id */
             id: number;
             /** Label */
             label: string;
+            /**
+             * Proxy
+             * @default false
+             */
+            proxy: boolean;
+            /** Question */
+            question?: string | null;
             /** Reason */
             reason: string;
             /** Reliabilityclass */
@@ -96,10 +107,23 @@ export interface components {
          *     change fixes this, never the passage of time.
          */
         AbsentUnbuiltMetric: {
+            /** Datastatus */
+            dataStatus?: string | null;
+            /** Gaphint */
+            gapHint?: string | null;
+            /** Guardrail */
+            guardrail?: string | null;
             /** Id */
             id: number;
             /** Label */
             label: string;
+            /**
+             * Proxy
+             * @default false
+             */
+            proxy: boolean;
+            /** Question */
+            question?: string | null;
             /** Reason */
             reason: string;
             /** Reliabilityclass */
@@ -125,10 +149,21 @@ export interface components {
         /** MeasuredMetric */
         MeasuredMetric: {
             coverage: components["schemas"]["Coverage"];
+            /** Datastatus */
+            dataStatus?: string | null;
+            /** Guardrail */
+            guardrail?: string | null;
             /** Id */
             id: number;
             /** Label */
             label: string;
+            /**
+             * Proxy
+             * @default false
+             */
+            proxy: boolean;
+            /** Question */
+            question?: string | null;
             /** Reliabilityclass */
             reliabilityClass: number;
             /**

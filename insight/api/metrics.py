@@ -171,6 +171,64 @@ def _reliability_class(mid, metrics_dir):
     return header["reliability_class"]
 
 
+def _header_fields(mid, metrics_dir):
+    """The metric's own header metadata, or empty when there is no `.sql` to read.
+
+    Reads the file a SECOND time (`_reliability_class` above already read it). That is a known,
+    accepted cost, not an oversight: 42 small files, and `resolve_metric` is already file-bound.
+    Merging the two reads would mean threading a parsed header through a function whose contract
+    is "return an int, never raise", which is a worse trade than one extra stat+read.
+
+    Never raises, for the same reason `_reliability_class` never raises: this is context, not a
+    measurement. A malformed header degrades to "no metadata", exactly as a missing file does --
+    anything that escapes here would 500 all 42 metrics over a stray comment line."""
+    path = pathlib.Path(metrics_dir) / f"{mid}.sql"
+    if not path.exists():
+        return {}
+    try:
+        parsed = parse_header(path.read_text(encoding="utf-8"), source=str(path))
+    except (HeaderError, OSError, UnicodeDecodeError):
+        return {}
+    extra = parsed.get("extra") or {}
+    return {
+        "question": parsed.get("question") or None,
+        "guardrail": parsed.get("guardrail") or None,
+        # The header convention is the literal string "true" (issue #110). Anything else --
+        # including absence, "yes", or "1" -- is False, because a proxy claim should have to be
+        # spelled the one documented way rather than guessed at.
+        "proxy": str(extra.get("proxy", "")).strip().lower() == "true",
+        "data_status": (extra.get("data_status") or "").strip() or None,
+    }
+
+
+def _gap_hint(conn, mid, sql_exists):
+    """One sentence naming the next real step for an unbuilt metric.
+
+    Three cases, each distinguished by evidence rather than guessed:
+      * no `.sql`           -> the metric has not been written at all
+      * `.sql` + rows       -> the data is already there; only an extractor is missing
+      * `.sql` + empty view -> code cannot help; this one is waiting on data
+
+    The row count is claimed ONLY when it can actually be counted. With no store, or a view that
+    will not read, the hint falls back to the weaker but still-true statement -- asserting "0 rows
+    are waiting" when we simply could not look is the same class of fabrication as reporting a
+    value nobody measured."""
+    if not sql_exists:
+        return "No SQL written for this metric yet."
+    if conn is None:
+        return "No extractor registered yet for this metric."
+    try:
+        rows = conn.execute("SELECT count(*) FROM metric_%d" % mid).fetchone()[0]
+    except Exception:
+        return "No extractor registered yet for this metric."
+    if rows:
+        return (
+            "No extractor registered. %d row%s already waiting in metric_%d -- wiring one "
+            "would surface it." % (rows, "s are" if rows != 1 else " is", mid)
+        )
+    return "SQL exists but the view is empty -- this one needs data, not code."
+
+
 def resolve_metric(conn, mid, metrics_dir=None):
     """One catalog id -> one `Metric`. Never raises: a missing store, a missing view, a view
     with no rows, or a row whose value is NULL are all absence, not an exception."""
@@ -178,11 +236,13 @@ def resolve_metric(conn, mid, metrics_dir=None):
     label = CATALOG[mid]
     reliability_class = _reliability_class(mid, metrics_dir)
     sql_path = metrics_dir / f"{mid}.sql"
+    header = _header_fields(mid, metrics_dir)
 
     if not sql_path.exists():
         return AbsentUnbuiltMetric(
-            id=mid, label=label, reliabilityClass=reliability_class,
+            id=mid, label=label, reliabilityClass=reliability_class, **header,
             state="absent_unbuilt",
+            gapHint=_gap_hint(conn, mid, sql_path.exists()),
             reason=f"no {sql_path.name} exists yet -- only a code change can build this metric",
         )
 
@@ -192,8 +252,9 @@ def resolve_metric(conn, mid, metrics_dir=None):
         # absent_no_data, because no amount of ingest will ever populate a `value` for it; only
         # registering an extractor will. See Decision (b): this is the "built but unmapped" case.
         return AbsentUnbuiltMetric(
-            id=mid, label=label, reliabilityClass=reliability_class,
+            id=mid, label=label, reliabilityClass=reliability_class, **header,
             state="absent_unbuilt",
+            gapHint=_gap_hint(conn, mid, sql_path.exists()),
             reason="no value/coverage extractor registered yet for this metric",
         )
 
@@ -209,20 +270,21 @@ def resolve_metric(conn, mid, metrics_dir=None):
         # bad metric must never erase the other 41, which is the same "degrade, never crash"
         # posture _fetch_row already holds one line above.
         return AbsentUnbuiltMetric(
-            id=mid, label=label, reliabilityClass=reliability_class,
+            id=mid, label=label, reliabilityClass=reliability_class, **header,
             state="absent_unbuilt",
+            gapHint=_gap_hint(conn, mid, sql_path.exists()),
             reason=f"metric_{mid}'s rows do not match the shape its extractor expects",
         )
     if extracted is None:
         return AbsentNoDataMetric(
-            id=mid, label=label, reliabilityClass=reliability_class,
+            id=mid, label=label, reliabilityClass=reliability_class, **header,
             state="absent_no_data",
             reason=f"metric_{mid} has no value yet",
         )
 
     value, numerator, denominator = extracted
     return MeasuredMetric(
-        id=mid, label=label, reliabilityClass=reliability_class,
+        id=mid, label=label, reliabilityClass=reliability_class, **header,
         state="measured", value=value,
         coverage=Coverage(numerator=numerator, denominator=denominator),
         # .get, not [], on purpose: a metric can be wired for a value before anyone has declared

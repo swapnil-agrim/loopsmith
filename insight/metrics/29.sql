@@ -1,5 +1,5 @@
 -- name: Retro grade mix
--- question: Intent vs shipped
+-- question: Does what shipped match what was intended?
 -- personas: manager, leadership
 -- reliability_class: 2
 -- data_status: dark

@@ -44,6 +44,23 @@ class MetricBase(BaseModel):
     label: str
     reliability_class: int = Field(alias="reliabilityClass")
 
+    # Straight from the metric's own `.sql` header (insight/metrics/header.py). These are the
+    # card's MEANING -- `question` is a reviewed, one-line plain-English statement of what the
+    # metric answers ("How long does a goal take?"), and `guardrail` records what the metric
+    # CANNOT tell you. Both already existed in every header and were parsed only by tests, which
+    # is why the panel could show a number but never say what it meant.
+    #
+    # Optional because a catalog id with no `.sql` has no header to read, and inventing a question
+    # for it would be fabricating documentation -- the same rule the metrics themselves follow.
+    question: Optional[str] = None
+    guardrail: Optional[str] = None
+    # A bool, not Optional[bool]: "is this an approximation?" always has an answer, and False is
+    # the honest default for a header that makes no such claim.
+    proxy: bool = False
+    # "dark" today. Left a free string so a future header can add another status without a model
+    # change; None means the header made no claim.
+    data_status: Optional[str] = Field(default=None, alias="dataStatus")
+
 
 class MeasuredMetric(MetricBase):
     state: Literal["measured"]
@@ -79,6 +96,11 @@ class AbsentUnbuiltMetric(MetricBase):
     change fixes this, never the passage of time."""
     state: Literal["absent_unbuilt"]
     reason: str
+    # What would actually fill this gap, DERIVED from the store rather than authored per metric.
+    # "No extractor registered" tells a reader nothing they can act on; "2 rows are already
+    # waiting in metric_4" tells them the data has arrived and only the wiring is missing. Because
+    # it is derived, it cannot go stale as data lands.
+    gap_hint: Optional[str] = Field(default=None, alias="gapHint")
 
 
 # The discriminator ("state") lets Pydantic route a raw dict to the right concrete class without
