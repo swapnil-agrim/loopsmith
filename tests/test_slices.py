@@ -491,6 +491,24 @@ def test_flag_parser_handles_a_bare_switch():
     assert slices._flags(["--dry"]) == {"dry": "true"}
 
 
+def test_flags_consumes_max_value_that_starts_with_a_double_dash():
+    """#541: slices.py's own `_flags` copy gets the same fix -- `max` unconditionally consumes the
+    next token, and `--name=value` works for any flag, even one not in the known set."""
+    assert slices._flags(["--max", "--not-really-a-number"]) == {"max": "--not-really-a-number"}
+    assert slices._flags(["--max=4"]) == {"max": "4"}
+
+
+def test_flags_never_keeps_a_whitespace_bearing_leaked_key():
+    assert slices._flags(["--this looks like leaked prose, not a flag"]) == {}
+
+
+def test_flags_drops_a_whitespace_bearing_key_in_the_eq_form_too():
+    """#541 cycle 2: the `--name=value` branch bypassed the never-a-real-flag rule its
+    space-separated sibling applies, so leaked prose that happened to contain '=' still landed
+    as a whitespace-bearing key. Same shape in all four `_flags` copies, pinned in each."""
+    assert slices._flags(["--zzunknown", "--a b=c d"]) == {"zzunknown": "true"}
+
+
 # --------------------------------------------------------------------------- wiring
 
 

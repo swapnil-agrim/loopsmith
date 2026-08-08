@@ -150,3 +150,29 @@ def test_ignore_status_reports_the_mechanism(tmp_path):
     assert st[".sdlc/state/"] == "tracked"
     assert st[".sdlc/ledger/"] == "local"
     assert st[".sdlc/work/"] is None
+
+
+# ------------------------------------------------------------------ #541: flag parser
+
+
+def test_flag_parser_handles_a_bare_switch():
+    assert setup._flags(["--scope", "local"]) == {"scope": "local"}
+    assert setup._flags(["--auto-merge"]) == {"auto-merge": "true"}
+
+
+def test_flags_consumes_verify_value_that_starts_with_a_double_dash():
+    """#541: setup.py's own `_flags` copy gets the same fix -- `verify` (a free-form command
+    string) unconditionally consumes the next token, and `--name=value` works for any flag."""
+    assert setup._flags(["--verify", "--strict pytest"]) == {"verify": "--strict pytest"}
+    assert setup._flags(["--repo=acme/--weird-repo-name"]) == {"repo": "acme/--weird-repo-name"}
+
+
+def test_flags_never_keeps_a_whitespace_bearing_leaked_key():
+    assert setup._flags(["--this looks like leaked prose, not a flag"]) == {}
+
+
+def test_flags_drops_a_whitespace_bearing_key_in_the_eq_form_too():
+    """#541 cycle 2: the `--name=value` branch bypassed the never-a-real-flag rule its
+    space-separated sibling applies, so leaked prose that happened to contain '=' still landed
+    as a whitespace-bearing key. Same shape in all four `_flags` copies, pinned in each."""
+    assert setup._flags(["--zzunknown", "--a b=c d"]) == {"zzunknown": "true"}

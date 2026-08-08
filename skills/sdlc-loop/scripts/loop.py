@@ -999,21 +999,50 @@ def run_loop(sdlc_dir, run_goal):
             "iterations": state.load_cursor(sdlc_dir)["iteration"], "stopped": stopped}
 
 
+#: #541: the flags this module's own CLI verbs ever hand a real value to -- every EVENTS-stream
+#: field this file can emit (`spend`/`emit`, any `EVENT_FIELDS` kind) or log to the local action
+#: trace (`log`, any `AGENT_FIELDS` kind), plus the handful of narrow structured flags (`pid`,
+#: `thread`, `session-pid`, `skip`). Computed from `ledger.EVENT_FIELDS`/`actionlog.AGENT_FIELDS`
+#: themselves, not re-listed, so this set can never drift from the real field vocabulary.
+_VALUE_FLAGS = frozenset(
+    {"pid", "thread", "session-pid", "skip"}
+    | {f for fields in ledger.EVENT_FIELDS.values() for f in fields}
+    | {f for fields in actionlog.AGENT_FIELDS.values() for f in fields}
+)
+
+
 def _flags(argv):
-    """`--name value` / bare `--flag` (-> `"true"`) scanner. A local copy of `ledger.py`'s own
-    `_flags` idiom (ledger.py `_flags`), not an import: it's a ~10-line idiom and `loop.py` /
-    `ledger.py` stay decoupled — neither imports the other's private helpers today."""
+    """`--name value` / bare `--flag` (-> `"true"`) scanner, plus `--name=value` (unambiguous for
+    ANY flag) and unconditional-consume for this module's own known value-taking flags
+    (`_VALUE_FLAGS`) -- #541: a value that itself starts with '--' used to be silently swallowed:
+    the flag landed on the `"true"` sentinel and the value's own text was misparsed as a SECOND,
+    garbage flag. A flag name is never legitimately whitespace-bearing -- that shape is always
+    leaked prose from a value the old heuristic failed to consume, never a flag a caller meant to
+    pass, so it is dropped instead of kept as a nonsense key. A local copy of `ledger.py`'s own
+    `_flags` idiom, not an import: it's a small idiom and `loop.py`/`ledger.py` stay decoupled --
+    neither imports the other's private helpers today."""
     out = {}
     i = 0
     while i < len(argv):
         token = argv[i]
         if token.startswith("--"):
-            name = token[2:]
-            if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            name, eq, value = token[2:].partition("=")
+            if eq:                                       # --name=value: always unambiguous
+                if " " not in name:                       # same never-a-real-flag rule as below
+                    out[name] = value
+            elif name in _VALUE_FLAGS:                    # known value-taking flag: consume unconditionally
+                if i + 1 < len(argv):
+                    out[name] = argv[i + 1]
+                    i += 2
+                    continue
+                out[name] = "true"                        # nothing left to consume
+            elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
                 out[name] = argv[i + 1]
                 i += 2
                 continue
-            out[name] = "true"
+            elif " " not in name:
+                out[name] = "true"
+            # else: whitespace in `name` -- never a real flag; drop rather than keep a nonsense key
         i += 1
     return out
 
