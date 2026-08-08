@@ -808,13 +808,18 @@ def decompose_check(sdlc_dir, goal, config, source):
                 # meta-issue -- and never fall through to the outer catch's PROCEED either.
                 return _park("could not confirm whether a decomposition was already filed — "
                              "check comments")
-            if not isinstance(strict, dict) or "comments" not in strict:
+            if not isinstance(strict, dict) or not isinstance(strict.get("comments"), list):
                 # #522 review fix 2: `fetch_strict` is resolved via a bare `getattr` off whatever
                 # source we were given, not guaranteed to be a real GitHubSource -- a return value
                 # that ISN'T a well-shaped dict (None, a list, {}, a dict missing "comments"
                 # entirely) is exactly as untrustworthy as the read raising outright. Defaulting it
                 # to "no comments" here would silently re-open the fail-open hole this strict read
                 # exists to close, one layer down from the "raises" case just above.
+                # #529 extends that one level further, from the KEY to its VALUE: `{"comments":
+                # <non-list>}` used to pass, and the marker scan below then found nothing in it --
+                # a string yields characters, a dict yields keys, and both skip the isinstance(dict)
+                # filter, so an unreadable timeline read as "no marker" and the meta-issue was filed.
+                # The scan is only meaningful over a list, so requiring one IS the confirmation.
                 return _park("could not confirm whether a decomposition was already filed — "
                              "check comments")
             dg = _load("decompose_goal")

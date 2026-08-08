@@ -11,6 +11,8 @@ import pathlib
 import importlib.util
 import tempfile
 
+import pytest
+
 S = pathlib.Path(__file__).resolve().parent.parent / "skills" / "sdlc-loop" / "scripts"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -698,6 +700,37 @@ def test_file_mode_strict_read_missing_comments_key_fails_closed(tmp_path):
     cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
     src = _FakeSource(body=_EPIC_BODY,
                        fetch_comments_strict_return={"labels": [{"name": "area:engine"}]})
+
+    result = lp.decompose_check(base, "7", cfg, src)
+
+    assert result == ("PARKED could not confirm whether a decomposition was already filed — "
+                       "check comments")
+    assert not any(c[0] == "create_dependency" for c in src.calls)
+
+
+@pytest.mark.parametrize("comments", [
+    "a string",             # the shape the #527 review named: truthy, iterable, yields CHARACTERS
+    None,                   # present-but-null: `or []` used to launder this into "no comments"
+    {},                     # falsy non-list: same laundering
+    {"marker": "here"},     # truthy dict: iterating yields KEYS, so the marker scan sees nothing
+    ("t",),                 # a tuple is iterable but is NOT a list -- the check is the type, not duck-typing
+    5,                      # not iterable at all: parked before it can raise, with the RIGHT reason
+])
+def test_file_mode_strict_read_with_non_list_comments_fails_closed(tmp_path, comments):
+    """The key being PRESENT is not enough -- its value has to be a list, or the marker scan below is
+    meaningless and "no marker found" is a conclusion we never actually reached. Every shape here
+    read as "no marker" and went on to FILE the meta-issue: the marker scan skips non-dict elements,
+    so a string yields characters and a dict yields keys, each matching nothing. `5` was the one that
+    happened to fail closed already -- but only by raising TypeError into the outer catch, i.e. with
+    the wrong park reason and by accident. Unreachable through GitHubSource today (gh's schema always
+    returns an array), so this is the same fail-closed principle the guard already implements,
+    extended one level down from the key to its value."""
+    lp = _mod("loop")
+    base = _file_cfg(tmp_path)
+    cfg = json.loads((pathlib.Path(base) / "config.json").read_text())
+    src = _FakeSource(body=_EPIC_BODY,
+                       fetch_comments_strict_return={"comments": comments,
+                                                     "labels": [{"name": "area:engine"}]})
 
     result = lp.decompose_check(base, "7", cfg, src)
 
