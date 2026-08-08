@@ -150,8 +150,13 @@ def fetch_and_write(sdlc_dir, config=None, run=None, now=None, force=False):
         # The open query does NOT apply next_pending's extra parked-label exclusion. In practice `park`
         # also strips the goal label, so most parked issues fall out of this --label query anyway; one
         # that is parked-but-still-goal-labelled stays in the corpus as a valid dedup candidate.
+        # `sort:created-asc` for the same reason next_pending carries it (F12/#348): a plain
+        # `gh issue list` is created-DESC, so the `_OPEN_LIMIT` cap would take the NEWEST 200 while
+        # next_pending picks from the OLDEST. Over the cap those two sets are disjoint — the goal
+        # just picked would be missing from its own corpus, and cross_check would degrade to
+        # `goal_not_in_corpus` for exactly the goals that had waited longest.
         open_args = ["issue", "list", *repo_args, "--label", goal_label, "--state", "open",
-                     "--json", _FIELDS, "--limit", str(_OPEN_LIMIT)]
+                     "--search", "sort:created-asc", "--json", _FIELDS, "--limit", str(_OPEN_LIMIT)]
         if assignee:
             open_args += ["--assignee", assignee]
         open_raw = json.loads(run(open_args) or "[]")

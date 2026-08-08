@@ -860,6 +860,20 @@ def test_decide_proceeds_on_no_findings():
     assert bc.decide(_mkpack([]), {}) == {"action": "proceed", "reason": "", "note": ""}
 
 
+def test_decide_surfaces_a_goal_that_was_missing_from_the_corpus():
+    # `goal_not_in_corpus` means NO finding could be computed for this goal at all — decide() never
+    # read `degraded`, so that came back as a bare proceed with an empty note, indistinguishable from
+    # a check that ran and found nothing. The no-op has to be visible, in the same advisory channel.
+    bc = _mod("backlog_check")
+    pack = {"schema": "backlog-check/v1", "goal": "42", "findings": [],
+            "degraded": ["goal_not_in_corpus"]}
+    d = bc.decide(pack, {})
+    assert d["action"] == "proceed" and d["reason"] == ""     # never park: there is no evidence to park on
+    assert "42" in d["note"] and "advisory" in d["note"]
+    # ...and park mode does not turn a missing goal into a park either
+    assert bc.decide(pack, {"backlog_check": {"action": "park"}})["action"] == "proceed"
+
+
 def test_decide_flag_mode_never_parks_even_a_confident_hit():
     bc = _mod("backlog_check")
     d = bc.decide(_mkpack([_f("duplicate", "42", 0.95, True)]), {"backlog_check": {"action": "flag"}})

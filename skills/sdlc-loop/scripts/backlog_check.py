@@ -569,7 +569,16 @@ def decide(pack, config):
     CONFIDENT finding parks-with-proof; 'flag' (or only weak findings) annotates and proceeds. Returns
     {action: 'park'|'proceed', reason: <park-comment text>, note: <advisory text>}. Deterministic —
     findings are already sorted confident-first, score desc."""
-    findings = (pack or {}).get("findings") or []
+    pack = pack or {}
+    findings = pack.get("findings") or []
+    if "goal_not_in_corpus" in (pack.get("degraded") or []):
+        # The goal itself was absent from the corpus, so NO finding could be computed for it. That
+        # is not the same answer as "checked, found nothing", and a bare proceed reported it as if
+        # it were. Still PROCEED — there is no evidence to park on, in either action mode — but say
+        # so, in the advisory channel the loop already surfaces.
+        return {"action": "proceed", "reason": "",
+                "note": f"backlog cross-check: skipped — #{pack.get('goal')} is not in the backlog "
+                        "mirror, so nothing was compared; refresh the mirror if this repeats (advisory)"}
     if not findings:
         return {"action": "proceed", "reason": "", "note": ""}
     action = (config.get("backlog_check") or {}).get("action", "park")
