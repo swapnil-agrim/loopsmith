@@ -116,6 +116,22 @@
             "title": "State",
             "type": "string"
           },
+          "unit": {
+            "anyOf": [
+              {
+                "enum": [
+                  "seconds",
+                  "ratio",
+                  "count"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
           "value": {
             "title": "Value",
             "type": "number"

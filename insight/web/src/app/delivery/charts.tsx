@@ -1,58 +1,41 @@
 // SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
-// issue #312 [E20.S1] Goal B, Task B3 -- the author's own decision, closing what plan §7 left
-// open: the issue body names "the 42-metric instrumentation board, primary readouts, AND the flow
-// charts" as in scope; its Out-of-scope section defers only chart INTERACTIVITY to E21. Ports
-// insight/dash/panel.py's `_bars()` (panel.py:223-255) and `_strip()` (panel.py:258-320) as
-// static, zero-dependency inline SVG (no pan/zoom/tooltip/hover state, matching the Python
-// original's own hand-rolled-SVG-because-the-repo-is-zero-dep-by-policy framing,
-// panel.py:224-225) -- translated from f-string markup into JSX, same math, same layout.
 //
-// WHY BOTH CHARTS RENDER ABSENT TODAY, AND WHY THAT IS CORRECT, NOT A BUG. This story's transport
-// (Task B2) resolves through insight.api.metrics.collect_metrics() -- the SAME 42-metric union
-// GET /metrics serves -- not panel.py's own collect(), which pulls a SEPARATE, richer query set
-// (per-day merge counts for the bars chart, the full cycle-time spread for the strip chart) that
-// the Metric union has no field for. Wiring a new data channel for exactly these two charts is out
-// of this story's declared scope (.sdlc/plans/312.md §3a: the transport reuses the API's own
-// already-tested resolver rather than inventing a second one; §8: registering new extractors for
-// the other 41 metrics is explicitly out of scope, and the same "not this story's job" applies to
-// data these charts alone would need). page.tsx therefore calls both components with empty data,
-// and -- per the SAME absence rule as every other cell on this page -- they render the shared
-// achromatic, hatched material and NO axis/numeral, honestly naming what would fix it, exactly
-// like panel.py's own `_bars`/`_strip` already do for an empty `daily`/`spread`
-// (panel.py:226-227, 271-272: `NO SENSOR &mdash; ...`). This is the SAME "correct, not broken"
-// shape as 41 of the 42 board cells (insight/api/metrics.py:55-57: only metric id 12 has a
-// registered VALUE_EXTRACTOR) -- extending this story to also wire per-day/spread extractors is
-// explicitly out of scope (§8's own non-negotiable).
+// Hand-written SVG, no charting dependency. That is not asceticism: no chart library has a
+// first-class concept of "this series was never measured", so every one of them renders an absent
+// series as an empty axis -- a drawn zero, which is the single failure this product exists to
+// prevent. Owning the marks means absence gets its own material (NoSensor below) instead of an
+// empty grid that looks like a real measurement of nothing.
 //
-// The absence block below reuses the SAME hatch token (`--panel-hatch`) Task B1 just ported onto
-// MetricCell.tsx -- one absence material across the product, not a third local treatment.
-//
-// #312 retrospective gap closure: this used to hand-type its own copy of the gradient formula --
-// a THIRD independently-typed copy, after Metric.tsx's and MetricCell.tsx's, exactly the "second
-// absence vocabulary" the issue's own decision comment forbids ("Do not build a local hatched
-// treatment inside the delivery panel -- one absence material across the product is the entire
-// point"). It now calls the same `hatchBackgroundImage()` those two call, with the same token this
-// file already used -- see `@/lib/absence-hatch`'s header for the full story.
+// WHAT CHANGED AND WHY. These charts previously received hardcoded empty arrays from page.tsx and
+// therefore always drew NoSensor. For "goals landed" that was true. For cycle time it was NOT:
+// metric_2 held 50 of 50 non-null durations while the panel said "cycle time not measured". A
+// false absence is the same class of lie as a false reading, so the charts now take real series
+// from insight.api.series (see its module docstring) and only claim absence when the series
+// actually says so.
+import type { Distribution, WeeklyThroughput } from "@/lib/delivery/pythonBridge";
 import { hatchBackgroundImage } from "@/lib/absence-hatch";
 
 const HATCH_BACKGROUND_IMAGE = hatchBackgroundImage("--panel-hatch");
+const MONO = "var(--panel-font-mono, ui-monospace, monospace)";
 
+/** The absence material, unchanged in contract from the pre-redesign version: hatched, achromatic,
+ * carrying NO numeral of any kind. prove-delivery-cold-start-no-numerals.mjs asserts exactly that
+ * for a cold start, and it is the reason a chart may never fall back to an empty axis. */
 function NoSensor({ reason }: { reason: string }) {
   return (
     <div
       data-testid="chart-absent"
-      className="flex h-32 items-center justify-center rounded border-2 border-dotted border-panel-void-edge bg-panel-void text-panel-void-ink"
-      style={{ backgroundImage: HATCH_BACKGROUND_IMAGE, fontSize: "var(--panel-text-small)" }}
+      className="flex h-40 flex-col items-center justify-center gap-1.5 rounded border border-dotted border-panel-void-edge bg-panel-void px-4 text-center text-panel-void-ink"
+      style={{ backgroundImage: HATCH_BACKGROUND_IMAGE }}
     >
-      NO SENSOR &mdash; {reason}
+      <span className="panel-label" style={{ color: "var(--panel-void-ink)" }}>
+        No sensor
+      </span>
+      <span style={{ fontSize: "var(--panel-text-small)", lineHeight: 1.45 }}>{reason}</span>
     </div>
   );
 }
 
-const MONO = "var(--panel-font-mono, ui-monospace, monospace)";
-
-/** Seconds as the coarsest unit that still reads precisely -- ported verbatim (math and
- * thresholds unchanged) from panel.py's own `_dur()`. */
 function formatDuration(sec: number): string {
   if (sec < 90) return `${sec.toFixed(0)}s`;
   if (sec < 5400) return `${(sec / 60).toFixed(0)}m`;
@@ -60,146 +43,320 @@ function formatDuration(sec: number): string {
   return `${(sec / 86400).toFixed(1)}d`;
 }
 
-export interface DailyCount {
-  readonly date: string; // "YYYY-MM-DD"
-  readonly count: number;
+function formatValue(v: number, unit: string): string {
+  return unit === "seconds" ? formatDuration(v) : v.toFixed(0);
 }
 
-/** Goals landed per day. Ported from panel.py's `_bars()` -- identical padding/gridline/bar math,
- * translated from f-string SVG text into JSX. Renders the shared absence block, never an empty
- * axis, when `daily` is empty (mirrors panel.py:226-227's own `if not daily: return "NO SENSOR"`). */
-export function BarsChart({ daily }: { daily: readonly DailyCount[] }) {
-  if (daily.length === 0) {
-    return <NoSensor reason="no merge events ingested" />;
+/** Every observation, ranked ascending, drawn as a filled trace.
+ *
+ * A RANKED TRACE RATHER THAN EQUAL-WIDTH HISTOGRAM BINS, on purpose. This repo's own cycle times
+ * run 1,887s to 63,693s -- a 34x spread with a long thin tail. Linear bins pile ~90% of the goals
+ * into the first bar and say nothing, and the bin width is a free parameter that can be tuned until
+ * the shape flatters. A ranked trace has no such parameter: it plots one mark per observation, and
+ * the tail is visible as a tail.
+ *
+ * The Y AXIS is a separate question from the binning, and this component does switch it to log when
+ * the spread demands it -- see the `useLog` comment in the body for the rule and for why the chart
+ * says so out loud when it does. (An earlier version of this docstring lumped the two together and
+ * rejected log scales outright; that conflated "don't tune bins to flatter the data" with "don't
+ * use the axis that makes three decades legible", which are not the same claim.)
+ *
+ * p50/p85 are drawn as reference lines because a distribution without its quantiles invites the eye
+ * to read the maximum as typical. */
+export function TraceChart({
+  series,
+  label,
+  gradientId,
+}: {
+  series: Distribution;
+  label: string;
+  gradientId: string;
+}) {
+  if (series.state === "absent") {
+    return <NoSensor reason={series.reason} />;
   }
+
+  const { values, unit, p50, p85, min, max, measured, total } = series;
   const w = 620;
-  const h = 150;
-  const padL = 34;
-  const padB = 26;
-  const peak = Math.max(...daily.map((d) => d.count)) || 1;
-  const bw = (w - padL) / daily.length;
+  const h = 160;
+  const padL = 46;
+  const padB = 20;
+  const padT = 10;
+  const plotW = w - padL - 8;
+  const plotH = h - padB - padT;
+
+  // A LOG AXIS WHEN THE DATA DEMANDS ONE, chosen from the data rather than hardcoded.
+  //
+  // This repo's own cycle times span 1,887s to 63,693s -- 34x. On a linear axis 90% of the goals
+  // are pinned to the bottom pixel and the chart reads as "flat, then one spike", which is a
+  // worse description of the distribution than no chart at all. A log axis spreads those decades
+  // out and shows the actual shape.
+  //
+  // Applied only when it is BOTH valid and needed: every value strictly positive (log of zero is
+  // undefined, and the interventions series legitimately contains zeros) and a spread of at least
+  // 20x (below that a linear axis is honest and easier to read). The axis is labelled as log
+  // on-chart, because an unlabelled log scale flatters a bad tail into looking controlled.
+  const useLog = min > 0 && max / min >= 20;
+  const peak = max > 0 ? max : 1;
+  const logMin = Math.log10(min > 0 ? min : 1);
+  const logMax = Math.log10(peak);
+  const logSpan = logMax - logMin || 1;
+
+  const x = (i: number) =>
+    padL + (values.length === 1 ? plotW / 2 : (i / (values.length - 1)) * plotW);
+  const y = (v: number) =>
+    useLog
+      ? padT + plotH - ((Math.log10(Math.max(v, min)) - logMin) / logSpan) * plotH
+      : padT + plotH - (v / peak) * plotH;
+  /** Tick VALUE at each of the 5 gridlines, in data space -- linear or log as chosen above. */
+  const tickValue = (i: number) =>
+    useLog ? Math.pow(10, logMin + (logSpan * i) / 4) : (peak * i) / 4;
+
+  const line = values.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const area = `${line} L${x(values.length - 1).toFixed(1)},${padT + plotH} L${x(0).toFixed(1)},${padT + plotH} Z`;
+
+  const refs: Array<{ v: number; name: string }> = [];
+  if (p85 > 0) refs.push({ v: p85, name: "p85" });
+  if (p50 > 0) refs.push({ v: p50, name: "p50" });
 
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} role="img" aria-label="Goals landed per day">
-      {[0, 1, 2, 3, 4].map((i) => {
-        const y = h - padB - ((h - padB) * i) / 4;
-        const v = (peak * i) / 4;
-        return (
-          <g key={i}>
-            <line x1={padL} y1={y} x2={w} y2={y} stroke="var(--panel-grid)" strokeWidth={1} />
-            <text x={0} y={y - 3} fill="var(--panel-faint)" fontSize={9} fontFamily={MONO}>
-              {v.toFixed(0)}
+    <div className="flex flex-col gap-1.5">
+      <svg
+        viewBox={`0 0 ${w} ${h}`}
+        width="100%"
+        height={h}
+        role="img"
+        aria-label={`${label}: ${measured} observations, p50 ${formatValue(p50, unit)}, p85 ${formatValue(p85, unit)}`}
+        preserveAspectRatio="none"
+      >
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--panel-amber)" stopOpacity="0.42" />
+            <stop offset="100%" stopColor="var(--panel-amber)" stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+
+        {/* Graticule. Four lines, labelled in the series' own unit. */}
+        {[0, 1, 2, 3, 4].map((i) => {
+          const gy = padT + plotH - (plotH * i) / 4;
+          return (
+            <g key={i}>
+              <line x1={padL} y1={gy} x2={w - 8} y2={gy} stroke="var(--panel-grid)" strokeWidth={1} />
+              <text x={padL - 6} y={gy + 3} fill="var(--panel-faint)" fontSize={9} fontFamily={MONO} textAnchor="end">
+                {formatValue(tickValue(i), unit)}
+              </text>
+            </g>
+          );
+        })}
+
+        <path d={area} fill={`url(#${gradientId})`} />
+        <path d={line} fill="none" stroke="var(--panel-amber)" strokeWidth={1.75} strokeLinejoin="round" />
+
+        {refs.map((r) => (
+          <g key={r.name}>
+            <line
+              x1={padL} y1={y(r.v)} x2={w - 8} y2={y(r.v)}
+              stroke="var(--panel-cyan)" strokeWidth={1} strokeDasharray="4 3" opacity={0.75}
+            />
+            <text
+              x={w - 10} y={y(r.v) - 4} fill="var(--panel-cyan)"
+              fontSize={9.5} fontFamily={MONO} textAnchor="end"
+            >
+              {r.name} {formatValue(r.v, unit)}
             </text>
           </g>
-        );
-      })}
-      {daily.map((d, i) => {
-        const bh = (h - padB) * (d.count / peak);
-        const x = padL + i * bw + bw * 0.18;
-        const bwid = bw * 0.64;
-        const y = h - padB - bh;
-        return (
-          <g key={d.date}>
-            <rect x={x} y={y} width={bwid} height={bh} fill="var(--panel-amber)" rx={1} />
-            <text
-              x={x + bwid / 2} y={y - 5} fill="var(--panel-bone)" fontSize={10.5}
-              textAnchor="middle" fontFamily={MONO}
-            >
-              {d.count}
-            </text>
-            <text
-              x={x + bwid / 2} y={h - 8} fill="var(--panel-faint)" fontSize={9}
-              textAnchor="middle" fontFamily={MONO}
-            >
-              {d.date.slice(5)}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
+        ))}
+      </svg>
+
+      {/* Coverage stated under every chart, same contract as a scalar readout: the reader should
+          never have to guess how much of the population the trace is drawn from. */}
+      <div className="flex items-baseline justify-between">
+        <span className="panel-num text-panel-faint" style={{ fontSize: "var(--panel-text-micro)" }}>
+          ranked by value, {measured} observation{measured === 1 ? "" : "s"}
+          {/* Never silent about the axis: a log scale that is not announced makes a long tail
+              look like a gentle slope. */}
+          {useLog ? " · log scale" : ""}
+        </span>
+        <span className="panel-num text-panel-dim" style={{ fontSize: "var(--panel-text-micro)" }}>
+          {measured}/{total} measured
+        </span>
+      </div>
+    </div>
   );
 }
 
-const DURATION_TICKS = [60, 300, 900, 1800, 3600, 7200, 21600, 86400, 172800];
-
-/** Cycle-time distribution as a log-scale strip plot with p50/p85 marked -- ported from
- * panel.py's `_strip()`, including its log10-axis reasoning (a linear axis compresses the bulk of
- * the points into the leftmost fifth once one long-tail outlier exists, panel.py:263-266) and its
- * label-collision handling when p50/p85 render close together. Renders the shared absence block,
- * never an empty axis, when `spread` carries no positive value (mirrors panel.py:271-272's own
- * `if not vals: return "NO SENSOR"`). */
-export function StripChart({
-  spread, p50, p85,
-}: {
-  spread: readonly number[];
-  p50: number | null;
-  p85: number | null;
-}) {
-  const vals = spread.filter((v) => v > 0).sort((a, b) => a - b);
-  if (vals.length === 0) {
-    return <NoSensor reason="cycle time not measured" />;
+/** Weekly landed goals. Deliberately drawn even when it is only two weeks deep -- with the point
+ * count stated, so nobody reads two bars as a trend. Hiding a short real series would be the same
+ * dishonesty as padding it. */
+export function WeeklyBars({ series }: { series: WeeklyThroughput }) {
+  if (series.state === "absent") {
+    return <NoSensor reason={series.reason} />;
   }
+  const points = series.points;
   const w = 620;
-  const h = 132;
-  const padL = 10;
-  const iw = w - padL * 2;
-  const base = 74;
-  const lo = vals[0];
-  const hi = vals[vals.length - 1];
-  const llo = Math.log10(lo);
-  const lhi = Math.log10(hi);
-  const span = lhi - llo || 1;
-  const x = (v: number) => padL + iw * ((Math.log10(Math.max(v, 1)) - llo) / span);
-
-  const marks: { v: number; label: string; color: string }[] = [];
-  if (p50 !== null) marks.push({ v: p50, label: "p50", color: "var(--panel-amber)" });
-  if (p85 !== null) marks.push({ v: p85, label: "p85", color: "var(--panel-red)" });
-  const close = marks.length === 2 && Math.abs(x(marks[0].v) - x(marks[1].v)) < 76;
+  const h = 160;
+  const padL = 46;
+  const padB = 26;
+  const padT = 10;
+  const plotH = h - padB - padT;
+  const peak = Math.max(...points.map((p) => p.count)) || 1;
+  const slot = (w - padL - 8) / points.length;
+  // Bars stay readable whether there are 2 of them or 30: capped so a two-point series does not
+  // render as two enormous slabs.
+  const barW = Math.min(slot * 0.55, 72);
 
   return (
-    <svg
-      viewBox={`0 0 ${w} ${h}`} width="100%" height={h} role="img"
-      aria-label="Cycle time distribution, log scale"
-    >
-      {DURATION_TICKS.filter((t) => lo <= t && t <= hi).map((tick) => (
-        <g key={tick}>
-          <line x1={x(tick)} y1={34} x2={x(tick)} y2={base + 8} stroke="rgba(233,227,214,.08)" />
-          <text
-            x={x(tick)} y={h - 16} fill="var(--panel-faint)" fontSize={9}
-            textAnchor="middle" fontFamily={MONO}
-          >
-            {formatDuration(tick)}
-          </text>
-        </g>
-      ))}
-      <line x1={padL} y1={base} x2={w - padL} y2={base} stroke="rgba(233,227,214,.14)" />
-      {vals.map((v, i) => (
-        <line
-          key={i} x1={x(v)} y1={base - 16} x2={x(v)} y2={base + 8}
-          stroke="var(--panel-cyan)" strokeWidth={1.5} opacity={0.5}
-        />
-      ))}
-      {marks.map((m, i) => {
-        const anchor = close ? (i === 0 ? "end" : "start") : "middle";
-        const dx = close ? (i === 0 ? -4 : 4) : 0;
-        return (
-          <g key={m.label}>
-            <line x1={x(m.v)} y1={26} x2={x(m.v)} y2={base + 8} stroke={m.color} strokeWidth={1.5} />
-            <text
-              x={x(m.v) + dx} y={20} fill={m.color} fontSize={10}
-              textAnchor={anchor} fontFamily={MONO}
-            >
-              {m.label} {formatDuration(m.v)}
-            </text>
-          </g>
-        );
-      })}
-      <text x={padL} y={h - 3} fill="var(--panel-faint)" fontSize={9} fontFamily={MONO}>
-        fastest {formatDuration(lo)}
-      </text>
-      <text x={w - padL} y={h - 3} fill="var(--panel-faint)" fontSize={9} textAnchor="end" fontFamily={MONO}>
-        log scale &middot; slowest {formatDuration(hi)}
-      </text>
-    </svg>
+    <div className="flex flex-col gap-1.5">
+      <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} role="img"
+           aria-label={`Goals landed per week across ${points.length} weeks`} preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="weekly-bar" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--panel-cyan)" stopOpacity="0.95" />
+            <stop offset="100%" stopColor="var(--panel-cyan-deep)" stopOpacity="0.55" />
+          </linearGradient>
+        </defs>
+
+        {[0, 1, 2, 3, 4].map((i) => {
+          const gy = padT + plotH - (plotH * i) / 4;
+          return (
+            <g key={i}>
+              <line x1={padL} y1={gy} x2={w - 8} y2={gy} stroke="var(--panel-grid)" strokeWidth={1} />
+              <text x={padL - 6} y={gy + 3} fill="var(--panel-faint)" fontSize={9} fontFamily={MONO} textAnchor="end">
+                {((peak * i) / 4).toFixed(0)}
+              </text>
+            </g>
+          );
+        })}
+
+        {points.map((p, i) => {
+          const bh = plotH * (p.count / peak);
+          const cx = padL + slot * i + slot / 2;
+          const bx = cx - barW / 2;
+          const by = padT + plotH - bh;
+          return (
+            <g key={p.week}>
+              <rect x={bx} y={by} width={barW} height={bh} fill="url(#weekly-bar)" rx={2} />
+              <text x={cx} y={by - 5} fill="var(--panel-bone)" fontSize={11} fontFamily={MONO} textAnchor="middle">
+                {p.count}
+              </text>
+              <text x={cx} y={h - 8} fill="var(--panel-faint)" fontSize={9} fontFamily={MONO} textAnchor="middle">
+                {p.week}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+
+      <span className="panel-num text-panel-faint" style={{ fontSize: "var(--panel-text-micro)" }}>
+        {points.length} week{points.length === 1 ? "" : "s"} of history
+      </span>
+    </div>
+  );
+}
+
+/** How many observations sat at each distinct value.
+ *
+ * WHY A HISTOGRAM AND NOT A RANKED TRACE, for this series specifically. Interventions per goal on
+ * this repo's own store are small integers, and 45 of 52 goals sat at zero. Ranked, that is a flat
+ * line along the axis with a single spike at the right edge -- technically the truth, and useless.
+ * Binned by value it says the thing a reader actually wants: most goals needed no intervention at
+ * all, and the handful that did are countable.
+ *
+ * Bins are the DISTINCT OBSERVED VALUES, not equal-width buckets, which is only legitimate because
+ * this series is discrete and low-cardinality -- there is no binning parameter to tune and so no
+ * opportunity to flatter the shape by choosing one. Falls back to the ranked trace when that
+ * assumption does not hold, rather than silently drawing a misleading chart. */
+export function HistogramChart({
+  series,
+  label,
+  gradientId,
+}: {
+  series: Distribution;
+  label: string;
+  gradientId: string;
+}) {
+  if (series.state === "absent") {
+    return <NoSensor reason={series.reason} />;
+  }
+
+  const distinct = Array.from(new Set(series.values)).sort((a, b) => a - b);
+  const allIntegers = series.values.every((v) => Number.isInteger(v));
+  if (!allIntegers || distinct.length > 16) {
+    // Not the discrete, low-cardinality shape this chart assumes -- draw the ranked trace instead
+    // of forcing a binning choice this component has no basis to make.
+    return <TraceChart series={series} label={label} gradientId={gradientId} />;
+  }
+
+  const counts = distinct.map((v) => ({
+    value: v,
+    n: series.values.filter((x) => x === v).length,
+  }));
+  const peak = Math.max(...counts.map((c) => c.n)) || 1;
+
+  const w = 620;
+  const h = 160;
+  const padL = 46;
+  const padB = 26;
+  const padT = 10;
+  const plotH = h - padB - padT;
+  const slot = (w - padL - 8) / counts.length;
+  const barW = Math.min(slot * 0.62, 56);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <svg
+        viewBox={`0 0 ${w} ${h}`}
+        width="100%"
+        height={h}
+        role="img"
+        aria-label={`${label}: ${counts.map((c) => `${c.n} at ${c.value}`).join(", ")}`}
+        preserveAspectRatio="none"
+      >
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--panel-amber)" stopOpacity="0.9" />
+            <stop offset="100%" stopColor="var(--panel-amber-deep)" stopOpacity="0.45" />
+          </linearGradient>
+        </defs>
+
+        {[0, 1, 2, 3, 4].map((i) => {
+          const gy = padT + plotH - (plotH * i) / 4;
+          return (
+            <g key={i}>
+              <line x1={padL} y1={gy} x2={w - 8} y2={gy} stroke="var(--panel-grid)" strokeWidth={1} />
+              <text x={padL - 6} y={gy + 3} fill="var(--panel-faint)" fontSize={9} fontFamily={MONO} textAnchor="end">
+                {((peak * i) / 4).toFixed(0)}
+              </text>
+            </g>
+          );
+        })}
+
+        {counts.map((c, i) => {
+          const bh = plotH * (c.n / peak);
+          const cx = padL + slot * i + slot / 2;
+          const by = padT + plotH - bh;
+          return (
+            <g key={c.value}>
+              <rect x={cx - barW / 2} y={by} width={barW} height={bh} fill={`url(#${gradientId})`} rx={2} />
+              <text x={cx} y={by - 5} fill="var(--panel-bone)" fontSize={10} fontFamily={MONO} textAnchor="middle">
+                {c.n}
+              </text>
+              <text x={cx} y={h - 8} fill="var(--panel-faint)" fontSize={9} fontFamily={MONO} textAnchor="middle">
+                {c.value}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+
+      <div className="flex items-baseline justify-between">
+        <span className="panel-num text-panel-faint" style={{ fontSize: "var(--panel-text-micro)" }}>
+          goals per value &middot; p50 {series.p50} &middot; max {series.max}
+        </span>
+        <span className="panel-num text-panel-dim" style={{ fontSize: "var(--panel-text-micro)" }}>
+          {series.measured}/{series.total} measured
+        </span>
+      </div>
+    </div>
   );
 }

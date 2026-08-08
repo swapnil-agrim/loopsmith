@@ -136,6 +136,8 @@ export interface components {
              * @enum {string}
              */
             state: "measured";
+            /** Unit */
+            unit?: ("seconds" | "ratio" | "count") | null;
             /** Value */
             value: number;
         };

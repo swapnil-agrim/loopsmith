@@ -248,6 +248,24 @@ def build_parser():
              "semantics as dash's/web ic's own --db)",
     )
 
+    # `web delivery-series`: the row-level distributions behind the scalars `web delivery` returns
+    # (insight.api.series.collect_series). A SEPARATE action, not a flag on `delivery` and not a
+    # change to its response shape, because that shape is contract-tested as a bare JSON array
+    # (insight/tests/test_cli_web_delivery.py) with a generated TypeScript consumer -- widening it
+    # to an object would be a breaking change to buy nothing. Additive instead: callers that want
+    # charts ask for charts.
+    web_series_parser = web_subparsers.add_parser(
+        "delivery-series",
+        help="print the row-level series behind the delivery metrics (distributions, weekly "
+             "throughput) as a JSON object on stdout, for the /delivery charts -- each series is "
+             "either measured with its rows or absent with a reason, never an empty array",
+    )
+    web_series_parser.add_argument(
+        "--db", dest="db", default=None,
+        help="path to the DuckDB store file (default: .sdlc/insight.duckdb under CWD; same "
+             "semantics as `web delivery`'s own --db)",
+    )
+
     # the stub loop now has nothing left in it -- kept as an empty tuple rather than deleted, so
     # a FUTURE new stub subcommand has an obvious place to land, mirroring how this loop already
     # shrank from {"gaps", "dash"} to {"dash"} in #122 without changing shape
@@ -767,6 +785,29 @@ def main(argv=None):
         finally:
             conn.close()
         print(_json.dumps([m.model_dump(by_alias=True) for m in metrics]))
+        return 0
+
+    if args.command == "web" and args.action == "delivery-series":
+        # Lazy import, same reason as every sibling branch: keeps duckdb out of the import graph
+        # for --help and every other subcommand.
+        import json as _json
+        from insight.ingest.store import open_store_read_only
+        from insight.api.series import collect_series
+
+        try:
+            conn = open_store_read_only(args.db)
+        except FileNotFoundError:
+            # Same convention as `web delivery` directly above: a missing store is a normal,
+            # successful response. collect_series(None) degrades every series to an honest
+            # absence with a reason, never to an empty array that would draw as a real zero.
+            print(_json.dumps(collect_series(None)))
+            return 0
+
+        try:
+            series = collect_series(conn)
+        finally:
+            conn.close()
+        print(_json.dumps(series))
         return 0
     issue = _TRACKING_ISSUE[args.command]
     print(

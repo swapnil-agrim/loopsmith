@@ -122,6 +122,24 @@ VALUE_EXTRACTORS = {
     20: _rework_ratio,
 }
 
+# What each wired metric's value is counted in, so a client can render it for humans instead of
+# printing raw seconds. Kept immediately beside VALUE_EXTRACTORS, and pinned to it by the test
+# below's sibling in test_api_metrics_extractors.py, because the two are the same decision made
+# twice: whoever teaches a metric to produce a value is the only person who knows what that value
+# means. A registry declared anywhere else drifts the first time an extractor changes.
+#
+# "ratio" is a 0..1 fraction (autonomy rate, park rate, change failure rate, rework ratio);
+# "seconds" is a duration; "count" is a bare tally. A metric absent from this map serves
+# `unit: null` -- honest "nobody has said", never a guess.
+VALUE_UNITS = {
+    2: "seconds",   # cycle time p50
+    3: "seconds",   # lead time for change p50
+    5: "ratio",     # change failure rate
+    12: "ratio",    # autonomy rate
+    14: "ratio",    # park rate
+    20: "ratio",    # rework ratio
+}
+
 
 def _fetch_row(conn, sql):
     """One row, or None on ANY failure -- a missing store (`conn is None`), a missing view, or a
@@ -207,6 +225,10 @@ def resolve_metric(conn, mid, metrics_dir=None):
         id=mid, label=label, reliabilityClass=reliability_class,
         state="measured", value=value,
         coverage=Coverage(numerator=numerator, denominator=denominator),
+        # .get, not [], on purpose: a metric can be wired for a value before anyone has declared
+        # what that value is counted in, and `unit: null` is the honest way to say so. Raising
+        # here would make an undeclared unit break a reading that is otherwise perfectly good.
+        unit=VALUE_UNITS.get(mid),
     )
 
 
