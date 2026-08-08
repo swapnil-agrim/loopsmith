@@ -20,7 +20,13 @@ import re, sys, pathlib
 
 # Ordered high -> low; first tier whose signal appears wins (so hard beats trivial on a mixed goal).
 _PATTERNS = [
-    ("opus",  r"\b(migrat|architect|redesign|securit|secure|authenticat|authoriz|crypto|concurren|"
+    # `(?:in)?secur` covers secure/security AND insecure/insecurity. The plain `secure` it replaces
+    # could never match the latter: `\b` anchors the whole alternation, and there is no word
+    # boundary between the "n" and the "s" of "insecure" — so the most common phrasing of a security
+    # goal, naming the DEFECT rather than the property, missed this tier entirely. Kept in lockstep
+    # with the effort list below; the two disagreeing is its own bug (#543). Non-capturing because
+    # these patterns are only ever truth-tested, never read for groups.
+    ("opus",  r"\b(migrat|architect|redesign|(?:in)?secur|authenticat|authoriz|crypto|concurren|"
               r"distribut|race condition|performance|breaking change|complex|scalab|scaling|"
               r"multi-service|data loss|backward compat|threat model|financial|payment)"),
     ("fable", r"\b(vision|narrativ|storytell|blog|marketing copy|prose|tagline|creative writing)"),
@@ -31,7 +37,10 @@ _DEFAULT = "sonnet"
 
 # Effort is its own axis: a hard-model goal can still contain low-effort steps. First match wins.
 _EFFORT_PATTERNS = [
-    ("high", r"\b(migrat|architect|redesign|securit|threat model|concurren|race condition|"
+    # `(?:in)?secur`, not `securit`: the model list above already routed "secure by default" to
+    # opus while this one left it at medium — a goal reaching the hardest tier and the middle effort
+    # at once. The two lists carry the same security term so they cannot disagree again (#543).
+    ("high", r"\b(migrat|architect|redesign|(?:in)?secur|threat model|concurren|race condition|"
              r"distribut|breaking change|data loss|backward compat|debug|root.?cause|diagnos)"),
     ("low",  r"\b(typo|renam|whitespace|reformat|formatting|lint|docstring|changelog|spelling|"
              r"dead code|comment|run (the )?tests?|re-?run|watch|watcher|monitor|poll|status check)"),

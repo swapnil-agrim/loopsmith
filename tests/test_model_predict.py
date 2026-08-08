@@ -130,3 +130,44 @@ def test_resolve_cli_output_stays_backward_compatible(tmp_path, capsys):
     assert capsys.readouterr().out.strip() == "haiku"                  # bare tier, no pair
     assert m.main(["predict.py", "resolve-step", "fix a typo", str(base)]) == 0
     assert capsys.readouterr().out.strip() == "model=haiku effort=low"
+
+
+# --- #543: security routing across the in- prefix, on BOTH axes ---------------------------------
+# `\b(...|secure|...)` cannot match inside "insecure": `n` and `s` are both word characters, so
+# there is no boundary between them. The most common way a security goal is actually phrased —
+# naming the DEFECT rather than the property — therefore missed the opus tier entirely. Separately,
+# `_EFFORT_PATTERNS` carried `securit` but not `secure`, so even a goal that DID reach opus could
+# come back at medium effort: an internal inconsistency between the two lists, independent of the
+# boundary question. Both directions contradict the module's own stated bias that over-powering is
+# cheaper than under-powering.
+
+
+def test_insecure_phrasing_routes_like_security_phrasing():
+    p = _mod().predict
+    for g in ("Fix the insecure default in the token store",
+              "Fix the insecurity in the session handler",
+              "Harden the security of the token store",
+              "Make the token store secure by default"):
+        assert p(g) == "opus", g
+
+
+def test_security_phrasings_all_get_high_effort():
+    """The two lists have to agree: a goal that reaches opus on the model axis must not come back
+    at medium on the effort axis just because it said "secure" instead of "security"."""
+    effort = _mod().predict_effort
+    for g in ("Fix the insecure default in the token store",
+              "Fix the insecurity in the session handler",
+              "Harden the security of the token store",
+              "Make the token store secure by default"):
+        assert effort(g) == "high", g
+
+
+def test_the_in_prefix_widening_stays_anchored_at_a_word_boundary():
+    """Widening to `(in)?secur` admits exactly ONE prefix, not any prefix: "resecuring" still has no
+    word boundary before its "secur", so it must not fire. Same discipline the revision/provision
+    pin above enforces for the fable tier — asserted on BOTH axes, since both lists changed."""
+    m = _mod()
+    for g in ("schedule the resecuring of the vault", "update the revision history",
+              "improve the provision logic"):
+        assert m.predict(g) == "sonnet", g
+        assert m.predict_effort(g) == "medium", g
