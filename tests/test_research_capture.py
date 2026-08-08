@@ -112,6 +112,30 @@ def test_secret_inside_json_response_is_redacted():
     assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" not in md and "[REDACTED" in md
 
 
+# --- unterminated / oversized private keys (#534) ---
+# `_PEM_LINE` is non-secret filler shaped like a real PEM body line (a 64-char base64 run).
+_PEM_LINE = "MIIBVwIBADANBgkqhkiG9w0BAQEFAASCATkwggI1AgEAAoIBAQDBn4t3sQ2K9xVq"
+
+
+def test_unterminated_private_key_in_a_json_response_is_redacted():
+    # the dominant carrier: a dict response is json.dumps'd, so the key's newlines arrive as literal
+    # \n ESCAPES rather than real ones — a fallback that only walked real whitespace stopped dead at
+    # the first escape and published the entire body.
+    _, md = _mod().build_breadcrumb("WebFetch", {"url": "https://example.com"},
+                                    {"text": "-----BEGIN PRIVATE KEY-----\n" + _PEM_LINE + "\n" + _PEM_LINE})
+    assert _PEM_LINE not in md and "[REDACTED:private-key]" in md
+
+
+def test_terminated_key_straddling_the_old_pre_slice_boundary_leaves_no_body():
+    # a key big enough that its END marker falls beyond the 4000-char pre-slice the hook used to take
+    # BEFORE scrubbing: truncating first manufactured an unterminated key out of a well-formed one,
+    # and the header-only fallback then let its body through into the excerpt.
+    body = ("intro\n-----BEGIN PRIVATE KEY-----\n" + "\n".join([_PEM_LINE] * 70)
+            + "\n-----END PRIVATE KEY-----\n")
+    _, md = _mod().build_breadcrumb("WebFetch", {"url": "https://example.com"}, body)
+    assert _PEM_LINE not in md and "[REDACTED:private-key]" in md
+
+
 def test_excerpt_is_capped_far_below_the_raw_body():
     _, md = _mod().build_breadcrumb("WebSearch", {"query": "q"}, "x" * 10000)
     excerpt = md.split("---\n\n", 1)[1].split("\n\n", 1)[1]   # everything after the "# heading" line

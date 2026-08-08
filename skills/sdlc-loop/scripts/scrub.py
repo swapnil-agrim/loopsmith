@@ -15,7 +15,35 @@ import re
 _SECRET_PATTERNS = (
     (re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----.*?-----END[ A-Z]*PRIVATE KEY-----", re.DOTALL),
      "[REDACTED:private-key]"),
-    (re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----"), "[REDACTED:private-key]"),
+    #: Fallback for a key whose END marker never arrives — truncated at the source, or cut mid-capture.
+    #: It has to consume the BODY, not just the header: replacing the header alone published every line
+    #: underneath it. Whitespace is `(?:\\[rn]|\s)` because the dominant carriers serialize first —
+    #: json.dumps()/str() turn the key's newlines into literal \n ESCAPES, and a real-whitespace pattern
+    #: stops dead at the first one. Proc-Type:/DEK-Info: are the RFC1421 encrypted-PEM headers that sit
+    #: between header and body; that list is closed and colon-anchored (Subject:/Version:/Comment: are
+    #: deliberately absent — they open ordinary prose). The body is a run of long base64 lines, so
+    #: `{16,}` stops at short prose and a document merely DISCUSSING the marker keeps its text; the
+    #: `{1,15}` tail then takes a mid-line truncation fragment ONLY at end-of-input.
+    #:
+    #: WHAT THIS DOES AND DOES NOT COVER — the residual is NOT bounded to a fixed number of characters:
+    #: consumption walks recognized headers and long base64 runs and STOPS at the first sub-16-char run
+    #: or any non-base64 byte inside the body. Everything from that gap onward SURVIVES, however much
+    #: of it there is. So a CANONICAL unterminated key — a clean body cut short at the source, which is
+    #: the case this fallback exists for — is consumed in full; a MANGLED body (a foreign byte or a
+    #: short run partway down) is redacted only as far as the gap, and complete key lines after it are
+    #: published. Terminated keys never reach here at all: the DOTALL BEGIN..END pattern above owns
+    #: them outright. The same stop rule is why an UNRECOGNIZED header line (e.g. `Comment:`) between
+    #: BEGIN and the body halts consumption immediately and leaves the whole body — accepted on
+    #: purpose, because the alternative is open-ended header matching that would eat ordinary prose.
+    #: Both costs are pinned by test so the next reader meets the real behavior, not a comforting
+    #: bound. Widening the run rule, or opening the header list, is a deliberate decision with its own
+    #: false-positive price — not a typo to fix in passing.
+    #: No possessive/atomic groups: those are 3.11+, and CI still runs 3.10.
+    (re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----"
+                r"(?:(?:\\[rn]|\s)*(?:Proc-Type|DEK-Info):[^\n]{0,120})*"
+                r"(?:(?:\\[rn]|\s)*[A-Za-z0-9+/=]{16,})*"
+                r"(?:(?:\\[rn]|\s)*[A-Za-z0-9+/=]{1,15}(?=(?:\\[rn]|\s)*$))?"),
+     "[REDACTED:private-key]"),
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:aws-key]"),
     (re.compile(r"gh[pousr]_[0-9A-Za-z]{20,}"), "[REDACTED:gh-token]"),
     (re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"), "[REDACTED:jwt]"),
