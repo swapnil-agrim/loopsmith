@@ -12,7 +12,7 @@
 
 - **`insight/` must stay independently extractable.** No import of, or path reference to, anything outside `insight/`. `insight/tests/test_standalone_extraction.py` enforces this and must stay green.
 - **ABSENT != PASS.** An absent metric renders no numeral, ever. `prove-delivery-cold-start-no-numerals.mjs` enforces this.
-- **A measured card carries NO `background-image`.** The hatch is exclusive to absence; this is the negative control in `prove-absence-primitives-render.mjs` that keeps "absent states are hatched" non-vacuous. The accent must be a `::before` bar, never a background.
+- **A measured card carries NO `background-image`.** The hatch is exclusive to absence; this is the negative control in `prove-absence-primitives-render.mjs` that keeps "absent states are hatched" non-vacuous. The accent must be an `::after` bar, never a background — `::before` is already taken by `.panel-instrument`'s amber hairline on the same element.
 - **No raw hex outside tokens.** New colours go in `insight/dash/colors.py` and are regenerated into `tokens.generated.css`; `test_web_tokens_fresh.py` and `test_globals_css_theme_matches_colors_py.py` pin this. The `@theme` block accepts ONLY lines matching `--color-panel-X: var(--panel-X);`.
 - **Contract changes are additive.** New model fields are `Optional` with a `None` default. After any model change: `python3 -m insight.api.export_openapi` then `node scripts/generate-schema.mjs` (cwd `insight/web`), and commit both.
 - **`data_status: dark` and `proxy: true` live in the header's `extra` dict**, not as top-level parsed fields.
@@ -32,7 +32,7 @@
 
 **Interfaces:**
 - Consumes: `insight.metrics.header.parse_header(text, source)` → dict with `name`, `question`, `personas` (list), `reliability_class` (int), `guardrail`, plus `extra` (dict).
-- Produces: `MetricBase.question: Optional[str]`, `.guardrail: Optional[str]`, `.proxy: bool`, `.dataStatus: Optional[str]`. Task 3 regenerates TS from these; Task 4 renders `question`.
+- Produces: `MetricBase.question: Optional[str]`, `.guardrail: Optional[str]`, `.proxy: bool`, `.data_status: Optional[str]` (wire name `dataStatus`). Task 3 regenerates TS from these; Task 4 renders `question`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -59,14 +59,21 @@ def test_every_metric_with_sql_carries_its_question():
         assert m.question.endswith("?"), f"metric {m.id}: question must read as a question"
 
 
+# NOTE FOR THE IMPLEMENTER: metric 29's header currently reads `-- question: Intent vs shipped`,
+# which is a NOUN PHRASE, not a question, and fails the assertion above. Fix the DATA, not the
+# test -- every other one of the 34 headers is already phrased as a question, so 29 is the
+# outlier. In insight/metrics/29.sql line 2, change it to:
+#     -- question: Does what shipped match what was intended?
+
+
 def test_dark_and_proxy_flags_are_surfaced():
     dark = resolve_metric(None, 12, metrics_dir=REAL)     # data_status: dark
     proxy = resolve_metric(None, 20, metrics_dir=REAL)    # proxy: true
     clean = resolve_metric(None, 3, metrics_dir=REAL)     # neither
-    assert dark.dataStatus == "dark"
+    assert dark.data_status == "dark"
     assert dark.proxy is False
     assert proxy.proxy is True
-    assert clean.dataStatus is None and clean.proxy is False
+    assert clean.data_status is None and clean.proxy is False
 
 
 def test_a_metric_with_no_sql_has_no_metadata_rather_than_invented_metadata():
@@ -97,8 +104,15 @@ In `insight/api/models.py`, inside `class MetricBase`, after the existing fields
     proxy: bool = False
     # `dark` today; left as a free string so a future header can add another status without a
     # model change. None means the header made no claim.
-    dataStatus: Optional[str] = None
+    # NOTE the alias: models.py's own convention is snake_case in Python, camelCase on the wire
+    # via Field(alias=...). `populate_by_name=True` (already set on the base config) keeps the
+    # `**header` spread working with the Python name.
+    data_status: Optional[str] = Field(default=None, alias="dataStatus")
 ```
+
+Verify before writing: confirm `MetricBase`'s model config actually sets `populate_by_name=True`.
+If it does not, either add it or key the `_header_fields` dict on `dataStatus` instead — do not
+leave the spread silently dropping the field.
 
 - [ ] **Step 4: Add the parser helper and wire it**
 
@@ -125,11 +139,15 @@ def _header_fields(mid, metrics_dir):
         # The header convention is the literal string "true" (issue #110); anything else,
         # including absence, is False.
         "proxy": str(extra.get("proxy", "")).strip().lower() == "true",
-        "dataStatus": (extra.get("data_status") or "").strip() or None,
+        "data_status": (extra.get("data_status") or "").strip() or None,
     }
 ```
 
-Add `from insight.metrics.header import parse_header` to the imports at the top of the file.
+**Do NOT add an import.** `parse_header` is already imported at `insight/api/metrics.py:26`, and
+`_reliability_class()` (line ~157) already reads and parses the same file. Adding `_header_fields`
+means the header is read TWICE per metric per request. That is acceptable for now (42 small files,
+and `resolve_metric` is already file-bound), but note it in the docstring so a future reader knows
+it is a known, accepted cost rather than an oversight.
 
 Then in `resolve_metric`, immediately after `sql_path = metrics_dir / f"{mid}.sql"`:
 
@@ -137,7 +155,12 @@ Then in `resolve_metric`, immediately after `sql_path = metrics_dir / f"{mid}.sq
     header = _header_fields(mid, metrics_dir)
 ```
 
-and spread `**header` into **every one of the five** `AbsentUnbuiltMetric(...)`, `AbsentNoDataMetric(...)` and `MeasuredMetric(...)` constructor calls in the function, e.g.:
+and spread `**header` into **every one of the five** constructor calls — verified count: THREE
+`AbsentUnbuiltMetric(...)` sites (`metrics.py:183`, `:194`, `:211`), one `AbsentNoDataMetric(...)`,
+one `MeasuredMetric(...)`. Miss the third `AbsentUnbuiltMetric` (the shape-mismatch branch) and it
+ships without metadata. Original text follows:
+
+spread `**header` into every `AbsentNoDataMetric(...)` and `MeasuredMetric(...)` constructor calls in the function, e.g.:
 
 ```python
         return AbsentUnbuiltMetric(
@@ -155,15 +178,26 @@ and spread `**header` into **every one of the five** `AbsentUnbuiltMetric(...)`,
 Run: `python3 -m pytest -q insight/tests/test_api_metric_metadata.py`
 Expected: PASS (3 passed)
 
-- [ ] **Step 6: Run the full Python suite**
+- [ ] **Step 6: Regenerate the contract BEFORE running the suite**
+
+`insight/tests/test_openapi_schema_fresh.py` diffs the committed `insight/web/openapi.json` against
+a live `build_schema()`. Adding model fields makes it stale, so the suite goes red until this runs:
+
+```bash
+python3 -m insight.api.export_openapi
+cd insight/web && node scripts/generate-schema.mjs && cd ..
+```
+
+- [ ] **Step 7: Run the full Python suite**
 
 Run: `python3 -m pytest -q insight/tests/`
 Expected: all pass. If `test_api_metrics_route.py` fails on an exact-payload comparison, update it to expect the new keys — do not remove the assertion.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add insight/api/models.py insight/api/metrics.py insight/tests/test_api_metric_metadata.py
+git add insight/api/models.py insight/api/metrics.py insight/tests/test_api_metric_metadata.py \
+        insight/metrics/29.sql insight/web/openapi.json insight/web/src/lib/api/schema.d.ts
 git commit -m "feat(insight): surface each metric's own question, guardrail, proxy and data_status
 
 The .sql headers have carried a reviewed one-line `question:` for every metric since the
@@ -279,7 +313,8 @@ def _gap_hint(conn, mid, sql_exists):
     return "SQL exists but the view is empty -- this one needs data, not code."
 ```
 
-Then pass it at both `AbsentUnbuiltMetric` construction sites:
+Then pass it at **all THREE** `AbsentUnbuiltMetric` construction sites (`metrics.py:183`, `:194`,
+`:211`) — the third is the view-shape-mismatch branch and is easy to miss:
 
 ```python
             gapHint=_gap_hint(conn, mid, sql_path.exists()),
@@ -290,9 +325,24 @@ Then pass it at both `AbsentUnbuiltMetric` construction sites:
 Run: `python3 -m pytest -q insight/tests/test_api_gap_hint.py`
 Expected: PASS (4 passed)
 
-- [ ] **Step 6: Mutation-check the fallback**
+- [ ] **Step 6: Mutation-check the fallback (target the branch the test actually reaches)**
 
-Temporarily change the `except Exception:` branch to `return "0 rows are already waiting"`. Run the suite — `test_gap_hint_never_claims_rows_it_cannot_count` must FAIL. Revert.
+`test_gap_hint_never_claims_rows_it_cannot_count` passes `conn=None`, which returns at
+`if conn is None:` **before** the `try`. Mutating the `except` branch therefore proves nothing.
+Mutate the reachable one instead: change the `if conn is None:` return to
+`return "0 rows are already waiting in metric_%d" % mid`. That test must FAIL. Revert.
+
+Then add the case that does reach the `except`, so the fallback is covered too:
+
+```python
+def test_gap_hint_survives_a_view_it_cannot_read(tmp_path):
+    conn = duckdb.connect(str(tmp_path / "s.duckdb"))
+    conn.execute("CREATE VIEW metric_7 AS SELECT 1 AS wip_count")
+    conn.execute("DROP VIEW metric_7")          # the name resolves, the object does not
+    m = resolve_metric(conn, 7, metrics_dir=REAL)
+    conn.close()
+    assert "rows are already waiting" not in m.gapHint
+```
 
 Run: `python3 -m pytest -q insight/tests/test_api_gap_hint.py`
 Expected after revert: PASS
@@ -300,7 +350,9 @@ Expected after revert: PASS
 - [ ] **Step 7: Commit**
 
 ```bash
-git add insight/api/models.py insight/api/metrics.py insight/tests/test_api_gap_hint.py
+python3 -m insight.api.export_openapi && (cd insight/web && node scripts/generate-schema.mjs)
+git add insight/api/models.py insight/api/metrics.py insight/tests/test_api_gap_hint.py \
+        insight/web/openapi.json insight/web/src/lib/api/schema.d.ts
 git commit -m "feat(insight): tell an absent card what would actually fill it
 
 Derived from the store, not authored per metric, so the hint cannot go stale as data lands.
@@ -377,9 +429,14 @@ In `insight/dash/colors.py`, add to the `PANEL` dict:
 Then regenerate and mirror into the `@theme` block:
 
 ```bash
-python3 -c "from insight.dash.colors import web_tokens_css; \
-open('insight/web/src/app/tokens.generated.css','w').write(web_tokens_css())"
+python3 -m insight.dash.generate_web_tokens
 ```
+
+> **Do NOT write `web_tokens_css()` alone into that file.** The committed artefact is
+> `_BANNER + web_tokens_css() + font_vars + _FONT_FACES + _BASE_TYPOGRAPHY`
+> (`insight/dash/generate_web_tokens.py:83`). Writing only the colour block deletes the
+> `@font-face` rules and the `--panel-font-sans/-mono` custom properties, which silently breaks
+> EVERY `var(--panel-font-mono)` in the app and fails `prove:fonts`.
 
 Add these three lines to `globals.css`'s `@theme` block (they match the required shape exactly):
 
@@ -403,23 +460,30 @@ Append inside the existing `@layer components` block:
      colour. Phase A never sets the attribute; the rules ship now so Phase C is a data change
      rather than a styling change. */
   .panel-accent { position: relative; }
-  .panel-accent[data-verdict]::before {
-    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  .panel-accent[data-verdict]::after {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; pointer-events: none;
   }
-  .panel-accent[data-verdict="ok"]::before {
+  .panel-accent[data-verdict="ok"]::after {
     background: linear-gradient(180deg, var(--panel-ok), transparent 85%);
   }
-  .panel-accent[data-verdict="watch"]::before {
+  .panel-accent[data-verdict="watch"]::after {
     background: linear-gradient(180deg, var(--panel-watch), transparent 85%);
   }
-  .panel-accent[data-verdict="breach"]::before {
+  .panel-accent[data-verdict="breach"]::after {
     background: linear-gradient(180deg, var(--panel-breach), transparent 85%);
   }
 ```
 
-> `::before` and not a background: `prove-absence-primitives-render.mjs` asserts a measured card's
-> computed `background-image` is `none`, which is the negative control keeping "absence is hatched"
-> meaningful. An accent painted as a background would silently defeat it.
+> **`::after`, not `::before`, and this is load-bearing.** `.panel-instrument::before` already
+> exists in this file — the amber top hairline (`inset-inline: 12%; top: -1px; height: 1px;
+> opacity: .5`) — and the measured card root carries BOTH classes (`Metric.tsx:20`,
+> `MetricCell.tsx:21`). One element has one `::before`. Declaring the accent there would inherit
+> `height: 1px` and the 12% right inset, rendering a 1px half-opacity sliver instead of a 2px full-
+> height bar, AND destroying the hairline. `::after` is unused on `.panel-instrument` and is free.
+>
+> And a pseudo-element rather than a background: `prove-absence-primitives-render.mjs` asserts a
+> measured card's computed `background-image` is `none` — the negative control that keeps "absence
+> is hatched" from being vacuous. An accent painted as a background would silently defeat it.
 
 - [ ] **Step 3: Write the failing render expectation**
 
@@ -432,9 +496,18 @@ Add to `insight/web/src/lib/metric-view.ts`'s `DescribedMetric` interface:
   gapHint: string | null;
 ```
 
-and return them from both arms of `describeMetric`:
+and return them from both arms of `describeMetric` — **with different bodies**. In the measured
+arm `metric` is already narrowed to `MeasuredMetric`, whose `state` is the literal `"measured"`, so
+comparing it to `"absent_unbuilt"` is a TS2367 *"types have no overlap"* compile error:
 
 ```ts
+    // measured arm
+    question: metric.question ?? null,
+    gapHint: null,
+```
+
+```ts
+    // absent arm — `gapHint` exists only on AbsentUnbuiltMetric, so narrow before reading it
     question: metric.question ?? null,
     gapHint: metric.state === "absent_unbuilt" ? (metric.gapHint ?? null) : null,
 ```
@@ -455,7 +528,7 @@ Add `panel-accent` to the root `className` (no `data-verdict` yet), and insert a
       )}
 ```
 
-and replace the existing `fixText` block with the gap hint when present:
+and ADD the gap hint **alongside** the existing `fixText` block — do not replace it. `prove-absence-primitives-render.mjs:209-212` requires exactly one non-empty `metric-fix`; removing it fails that proof. The two say different things: `fixText` is the CLASS of fix (time vs code), `gapHint` is the specific next step for this metric.
 
 ```tsx
       {d.gapHint && (
@@ -568,7 +641,10 @@ export function Doughnut({
            aria-label={`${label}: ${numerator} of ${denominator}`} className="shrink-0">
         <circle cx="21" cy="21" r="15.9155" fill="none" stroke="var(--panel-void)" strokeWidth="4" />
         <circle cx="21" cy="21" r="15.9155" fill="none" stroke={stroke} strokeWidth="4"
-                strokeDasharray={`${pct} ${CIRC - pct}`} strokeDashoffset="25" strokeLinecap="round" />
+                strokeDasharray={`${pct} ${CIRC - pct}`} strokeDashoffset="25"
+                // butt at zero: a round cap paints a visible dot even at 0%, which on a cold-start
+                // panel reads as a sliver of measurement that was never taken.
+                strokeLinecap={pct > 0 ? "round" : "butt"} />
         <text x="21" y="20.6" textAnchor="middle" fill="var(--panel-bone)"
               fontSize="6.6" fontFamily="var(--panel-font-mono)">
           {pct.toFixed(1)}%
@@ -625,10 +701,11 @@ git commit -m "feat(insight): add a doughnut primitive that refuses a whole it c
 // is instrumented in that band, and expands to the cells on click. NOTHING is removed -- the same
 // 42 cells are one interaction away, which is the difference between decluttering and hiding.
 //
-// A Client Component only because <details> open state is interactive. It receives an
-// already-resolved metric list and derives everything from it, so it cannot disagree with the
-// integrity strip above it about what is measured.
-"use client";
+// A SERVER Component. <details>/<summary> toggles natively with no JavaScript and this component
+// holds no state, so marking it "use client" would buy nothing and would push MetricCell plus 42
+// metric objects into the client bundle. It receives an already-resolved metric list and derives
+// everything from it, so it cannot disagree with the integrity strip above it about what is
+// measured.
 
 import type { Metric as MetricType } from "@/lib/api/metric";
 import { MetricCell } from "./MetricCell";
@@ -644,7 +721,15 @@ export function BandBoard({
   return (
     <div className="flex flex-col gap-2">
       {bands.map((band) => {
-        const present = band.ids.map((id) => byId.get(id)).filter(Boolean) as MetricType[];
+        // Throw, never drop. delivery/page.tsx's findMetric already treats a missing id as "a
+        // transport bug, not a legitimate absence state", and silently shortening the board would
+        // also push prove-delivery-cold-start-no-numerals.mjs's `numerals.length >= 46` floor
+        // below threshold with a misleading message about empty slots.
+        const present = band.ids.map((id) => {
+          const m = byId.get(id);
+          if (!m) throw new Error(`BandBoard: catalog id ${id} missing from the metrics payload`);
+          return m;
+        });
         const live = present.filter((m) => m.state === "measured").length;
         return (
           <details key={band.name} className="group rounded border border-panel-rule bg-panel-panel">
@@ -780,6 +865,11 @@ Expected: every proof prints OK, exit 0.
 ```bash
 cd insight/web && mv .env.local /tmp/env.local.bak
 export INSIGHT_DEV_ROUTES=1
+# REQUIRED: /dev/absence-states calls notFound() unless this var is "1", and it is resolved at
+# BUILD time (that page is statically analysed) -- not at runtime. The last build was Task 7 with
+# the var unset, so without this rebuild prove:absence-states 404s and reports a misleading
+# "0 metric-numeral slots" failure.
+npx next build >/dev/null
 for p in prove:fonts prove:absence-states prove:shell-responsive prove:role-forbidden \
          prove:ic-bridge prove:ic-no-leak prove:delivery-bridge prove:delivery-cold-start; do
   npm run $p >/tmp/$p.log 2>&1 && echo "PASS $p" || echo "FAIL $p"
@@ -791,7 +881,17 @@ Expected: eight `PASS` lines.
 - [ ] **Step 4: Confirm the cold-start invariant still holds**
 
 Run: `cd insight/web && INSIGHT_DEV_ROUTES=1 npm run prove:delivery-cold-start`
-Expected: `cold-start /delivery renders no numerals anywhere`. The doughnut must NOT render on a cold start — `denominator` is 42 but `measured` is 0, which is a legitimate ring of zero; confirm the proof's numeral scan still passes, and if it fails, gate the doughnut on `measured > 0` rather than weakening the proof.
+Expected: `cold-start /delivery renders no numerals anywhere`.
+
+**Do NOT gate the doughnut on `measured > 0`.** An earlier draft of this plan pre-authorised that
+as a fix for a risk that does not exist: `NUMERAL_SLOT_RE` (line 126) scans ONLY
+`data-testid="metric-numeral"` slots, never the page body, so the doughnut's `0.0%` cannot trip it.
+Hiding the integrity readout at exactly 0/42 would delete the reading precisely when it matters
+most, contradicting spec §7 and `IntegrityStrip.tsx`'s own thesis. The strip already renders `0/42`
+cold today.
+
+The real risk in this proof is different: it asserts `numerals.length >= 46`. `BandBoard` must
+therefore render a cell for every id in every band — see Task 6 Step 1.
 
 - [ ] **Step 5: Lint and typecheck**
 
