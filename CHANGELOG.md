@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### fix(loop): decompose-check's strict-read guard now requires `comments` to be a LIST (#529)
+The file-mode idempotency guard parked on a strict read that was not a dict or lacked a `comments`
+key, but `{"comments": <non-list>}` passed — and the marker scan below skips non-dict elements, so a
+string yielded characters and a dict yielded keys, each matching nothing. An unconfirmable timeline
+therefore read as "no marker found" and the meta-issue was filed anyway, the exact fail-open the
+strict read exists to close. The guard now checks the value, not just the key. Not reachable through
+`GitHubSource` (gh's schema always returns an array), so this is hardening: `fetch_comments_strict`
+is resolved by a bare `getattr` off whatever source the checker is handed, which is precisely why
+the shape cannot be assumed.
+
 ### fix(backlog_check): the in-flight-elsewhere signal now honors the claim-lease TTL (#535)
 `_ledger_signals()` read `ledger.open_claims()` with no `ttl_seconds`, so a claim the lease system
 had already expired — a crashed session, yesterday's run — kept generating `in-flight-elsewhere`
