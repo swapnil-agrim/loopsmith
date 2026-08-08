@@ -112,7 +112,7 @@ def main():
                 "0.15 AS change_failure_rate"
             )
         if args.populate_metric_23:
-            # Mirrors insight/metrics/23.sql's own 13-column SELECT list, in order, so
+            # Mirrors insight/metrics/23.sql's own 14-column SELECT list, in order, so
             # `SELECT * FROM metric_23` matches `_gate_catch_rate`'s positional reads
             # (insight/api/metrics.py:120-129: r[3]=gate_event_count, r[4]=catch_count, summed
             # across every row). gate_event_count=10, catch_count=4 gives a real
@@ -121,7 +121,8 @@ def main():
             conn.execute(
                 "CREATE VIEW metric_23 AS SELECT "
                 "'p1' AS project_id, 'post_review' AS gate, TRUE AS late_catch, "
-                "10 AS gate_event_count, 4 AS catch_count, 120.0 AS avg_catch_cycle, "
+                "10 AS gate_event_count, 4 AS catch_count, 0.4 AS catch_rate, "
+                "120.0 AS avg_catch_cycle, "
                 "4 AS project_catch_count, 2 AS project_late_catch_count, "
                 "0.5 AS project_late_catch_share, 8 AS class1_count, 2 AS class2_count, "
                 "10 AS total_count, 0.8 AS coverage_pct"
