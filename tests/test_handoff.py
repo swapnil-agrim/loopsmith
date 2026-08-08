@@ -420,7 +420,7 @@ def test_cli_open_reports_what_it_did(tmp_path, capsys, monkeypatch):
     assert handoff.main(["handoff.py", "open", str(sdlc), "g.md", "--area", "engine",
                          "--why", "needs a flag", "--priority", "P0"]) == 0
     out = capsys.readouterr().out
-    assert "eng-owner" in out and "#61" in out and f"ledger amy:{os.getpid()}:1" in out
+    assert "eng-owner" in out and "#61" in out and f"ledger amy:{ledger._instance_token()}:1" in out
 
 
 def test_cli_track_requires_the_three_value_flags(tmp_path, capsys):
@@ -455,7 +455,7 @@ def test_cli_track_reports_what_it_did(tmp_path, capsys, monkeypatch):
                          "--why", "found something mid-goal", "--queue", "queued",
                          "--assignee", "same-area", "--blocks", "no"]) == 0
     out = capsys.readouterr().out
-    assert "amy" in out and "#61" in out and f"ledger amy:{os.getpid()}:1" in out
+    assert "amy" in out and "#61" in out and f"ledger amy:{ledger._instance_token()}:1" in out
 
     entry = ledger.read_all(sdlc)[0]
     assert entry["kind"] == "note" and entry["to"] == "amy"
@@ -541,7 +541,7 @@ def test_cli_ack_validates_the_state(tmp_path, capsys):
     assert handoff.main(["handoff.py", "ack", str(sdlc), "--issue", "61", "--state", "maybe"]) == 2
     assert "--state" in capsys.readouterr().err
     assert handoff.main(["handoff.py", "ack", str(sdlc), "--issue", "61", "--state", "declined"]) == 0
-    assert capsys.readouterr().out.strip() == f"amy:{os.getpid()}:1"
+    assert capsys.readouterr().out.strip() == f"amy:{ledger._instance_token()}:1"
 
 
 def test_cli_ack_requires_issue_or_goal(tmp_path, capsys):
@@ -571,7 +571,7 @@ def test_cli_ack_by_goal_settles_an_issueless_handoff(tmp_path, capsys):
 
     assert handoff.main(["handoff.py", "ack", str(sdlc), "--goal", "g.md",
                          "--state", "resolved", "--why", "handled locally"]) == 0
-    assert capsys.readouterr().out.strip() == f"amy:{os.getpid()}:2"     # :2 -- the handoff was :1
+    assert capsys.readouterr().out.strip() == f"amy:{ledger._instance_token()}:2"     # :2 -- the handoff was :1
     assert ledger.outstanding(ledger.read_all(sdlc)) == []                # settled by goal alone
 
 
@@ -610,7 +610,7 @@ def test_cli_ack_unmatched_area_still_writes_and_warns(tmp_path, capsys):
                        "--state", "resolved"])
     out, err = capsys.readouterr()
     assert rc == 0
-    assert out.strip() == f"amy:{os.getpid()}:2"
+    assert out.strip() == f"amy:{ledger._instance_token()}:2"
     assert "matched no outstanding hand-off" in err and "engine" in err
     entry = ledger.read_all(sdlc)[-1]
     assert entry["area"] == "typo-area"          # written anyway -- never refused

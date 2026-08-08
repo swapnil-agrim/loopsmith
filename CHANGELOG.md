@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### fix(ledger): writer identity now carries the HOST, so two machines cannot collide (#540)
+Writer files were named `<actor>-<pid>.jsonl` and entry ids were `<actor>:<pid>:<seq>`. Several
+hosts authenticating as one shared login all resolve to the same actor, and a fresh container pid
+namespace hands out low pids, so two of them routinely drew the SAME pid — identical filenames,
+identical ids. `entries/*.jsonl merge=union` lands both with no conflict and exit 0, so nothing
+surfaced it. The damage was silent and permanent: `watch_classify.classify()` skips
+`seq <= cursor[writer][stream]` BEFORE the signature check, so once host A's seq 1 was seen, host
+B's seq 1 was dropped for good and its hand-off never reached the recipient; `claim_belongs_to_me()`
+short-circuited on equal writers, re-opening the #374 claim race across machines. The writer
+instance is now `<host>.<pid>`, shared verbatim by the filename, the id and `my_writer()`, where
+`<host>` is a short hash of the hostname. Relatedly, a claim from a DIFFERENT host is no longer
+liveness-checked at all — a pid only means something on the machine that issued it, and a "dead"
+answer about someone else's live claim is exactly the wrong one.
+
+Compatible with ledgers already on the shared branch: entries written before this keep their
+`<actor>:<pid>:<seq>` ids, `files_for()` accepts both filename shapes, and `writer_pid()` still
+reads a bare pid. A pre-#540 claim carrying no host keeps its old always-mine behavior rather than
+being reinterpreted. Deriving the host from the hostname rather than a uuid persisted under
+`.sdlc/state/` keeps this a pure function — no I/O to fail, no create race between concurrent
+processes, no migration — at the cost that two hosts deliberately given the SAME hostname and the
+same pid still collide; a persisted per-clone uuid is the stronger option if that ever bites.
+
 ### fix(mirror): the board mirror and board sync now page from the OLDEST goals, like next_pending (#539)
 `mirror.py`'s open-issue fetch and `sources.py`'s `_sync_backlog` both ran a bare
 `gh issue list --limit 200`, which is created-DESC, while `next_pending` passes

@@ -19,9 +19,11 @@ Default OFF: with no `ledger` block in config.json every entry point is a no-op,
 that has not opted in behaves exactly as it did before this module existed. Zero deps.
 """
 import calendar
+import hashlib
 import json
 import os
 import pathlib
+import socket
 
 try:                    # portable output: force UTF-8 so the plugin's own non-ASCII (arrows, em-dashes)
     import sys as _sys  # doesn't garble to '?' or crash on a non-UTF-8 console (the Windows cp1252
@@ -372,6 +374,43 @@ def entries_dir(sdlc_dir, stream=ENTRIES):
     return ledger_dir(sdlc_dir) / stream
 
 
+def _host_token():
+    """A short, stable per-MACHINE component of the writer identity (#540).
+
+    A pid alone stopped being unique the moment two machines shared one login. Several hosts
+    authenticating as the same bot account all resolve to the same `who`, and a fresh container pid
+    namespace hands out low pids, so two of them routinely draw the SAME pid — at which point their
+    filenames, their entry `id`s and their `my_writer()` strings were all byte-identical. The
+    `entries/*.jsonl merge=union` attribute lands both files' lines with no conflict and exit 0, so
+    nothing anywhere surfaced the collision; it showed up only as a hand-off that never arrived.
+
+    Derived from the hostname rather than a uuid persisted under `.sdlc/state/`: this is a pure
+    function needing no I/O, so it cannot race two concurrent processes into two different answers,
+    cannot fail on a read-only or missing state dir, and needs no migration for existing clones —
+    all properties this module's fail-open posture wants. The cost is honest: two hosts that have
+    been given the SAME hostname AND draw the same pid still collide. That is a much narrower window
+    than today's (any two containers, since the default container hostname is the container id), and
+    a persisted per-clone uuid is the strictly stronger option if that window ever bites.
+
+    Never raises — an unresolvable hostname hashes the empty string, which is stable, so the worst
+    case degrades to exactly the pre-#540 behavior rather than to an error."""
+    try:
+        name = socket.gethostname() or ""
+    except Exception:                # noqa: BLE001 - identity must never be what breaks an append
+        name = ""
+    return hashlib.sha256(name.encode("utf-8", "replace")).hexdigest()[:8]
+
+
+def _instance_token():
+    """`<host>.<pid>` — the ONE writer-instance string, shared verbatim by the filename
+    (`entry_file`), the entry `id` (`append`) and the read-side writer identity (`my_writer`), so
+    the three can never drift apart again. The `.` separator is deliberate: `files_for()` splits a
+    filename on its LAST `-` to recover the actor, and an actor name may itself contain `-`, so
+    adding a second `-`-delimited segment would have made that split ambiguous. A `.` keeps the
+    actor recoverable by the same exact-match rule as before."""
+    return f"{_host_token()}.{os.getpid()}"
+
+
 def entry_file(sdlc_dir, who, stream=ENTRIES):
     """F10: the filename carries the WRITING PROCESS, not just the actor. The per-author-file design
     assumed one writer per file, but the actor resolves to the authenticated `gh` login — and several
@@ -383,8 +422,13 @@ def entry_file(sdlc_dir, who, stream=ENTRIES):
     dir and attribute by the `actor` FIELD inside each entry (never the filename), so THOSE needed no
     change. `sync.py`'s `publish()`/`bootstrap()` are the exception: they name a specific file to
     stage rather than reading via `read_all()`, so they go through `files_for()` below to find every
-    file a given actor (any pid) has written."""
-    return entries_dir(sdlc_dir, stream) / f"{_safe_name(who)}-{os.getpid()}.jsonl"
+    file a given actor (any writer instance) has written.
+
+    #540 extends the same reasoning one dimension out: a pid distinguishes two processes on ONE
+    machine, but not two machines sharing a login, so the writer instance is `<host>.<pid>` (see
+    `_host_token`). Legacy `<actor>-<pid>.jsonl` files stay readable — nothing re-reads by
+    filename, and `files_for()` accepts both shapes."""
+    return entries_dir(sdlc_dir, stream) / f"{_safe_name(who)}-{_instance_token()}.jsonl"
 
 
 def files_for(directory, who):
@@ -421,13 +465,22 @@ def files_for(directory, who):
     safe_lower = safe.lower()
     out = []
     for p in d.glob("*.jsonl"):
-        name, _, pid = p.stem.rpartition("-")
-        if name.lower() == safe_lower and pid.isdigit():
+        name, _, instance = p.stem.rpartition("-")
+        if name.lower() == safe_lower and _is_instance_token(instance):
             out.append(p)
     legacy = d / f"{safe}.jsonl"
     if legacy.exists():
         out.append(legacy)
     return sorted(out)
+
+
+def _is_instance_token(text):
+    """Does this trailing filename segment name a writer INSTANCE? `<host>.<pid>` (#540) or a bare
+    `<pid>` (pre-#540, still on disk in any clone that has not re-published since). Anything else
+    means the `-` we split on belongs to the actor's own name, not to a writer instance, so the file
+    is not a match — which is what keeps `files_for("team")` from claiming `team-bot`'s files."""
+    host, dot, pid = str(text).rpartition(".")
+    return text.isdigit() if not dot else bool(host) and pid.isdigit()
 
 
 def _safe_name(who):
@@ -671,13 +724,14 @@ def append(sdlc_dir, config, kind, goal, run=None, now=None, stream=ENTRIES, **f
     seq = _line_count(path) + 1
 
     entry = {
-        # F10: the pid rides in `id` too, not just the filename — `watch_classify.py`'s cursor
-        # tracks a per-WRITER (not per-actor) high-water seq, and needs the pid to key on. Every
+        # F10: the writer instance rides in `id` too, not just the filename — `watch_classify.py`'s
+        # cursor tracks a per-WRITER (not per-actor) high-water seq, and needs it to key on. Every
         # existing `id` consumer (`_seq()` here and in watch_classify.py, and the 3 call sites that
         # just print `entry["id"]` verbatim) takes the LAST `:`-segment or the whole string, so a
         # 3-part id is a no-op for all of them — confirmed by reading every "id" reference in the
-        # plugin.
-        "id": f"{who}:{os.getpid()}:{seq}",
+        # plugin. #540 puts the host INSIDE that middle segment rather than adding a fourth one, so
+        # both `_writer()` copies (which take the first two `:`-segments) keep working untouched.
+        "id": f"{who}:{_instance_token()}:{seq}",
         "ts": _stamp(now),
         "actor": who,
         "kind": kind,
@@ -1000,21 +1054,39 @@ def _writer(entry):
 
 
 def my_writer(config):
-    """This process's own writer identity, in the exact `who:pid` shape `_writer()` parses out of
-    a live entry's `id` — what `open_claims_detailed()`'s per-claim writer is compared against to
-    tell "my own current process" apart from "a different process of mine" (F10/#337 already made
-    every entry this process writes carry this pid; this is the read-side counterpart). Computed
+    """This process's own writer identity, in the exact shape `_writer()` parses out of a live
+    entry's `id` — what `open_claims_detailed()`'s per-claim writer is compared against to tell
+    "my own current process" apart from "a different process of mine" (F10/#337 already made every
+    entry this process writes carry this identity; this is the read-side counterpart). Computed
     fresh every call, never cached — `os.getpid()` is the one thing riskier to cache than `actor`."""
-    return f"{actor(config)}:{os.getpid()}"
+    return f"{actor(config)}:{_instance_token()}"
 
 
 def writer_pid(writer):
-    """The pid embedded in a `writer` string from `open_claims_detailed()` (`actor:pid`), or None
-    for a legacy bare-actor writer (pre-#337, no pid to extract) or anything else unparseable. A
-    `gh` login can never itself contain `:` (GitHub's own username rules), so a writer with exactly
-    one `:` is unambiguously `actor:pid`, never an actor name that happens to look like one."""
-    _, sep, tail = str(writer).rpartition(":")
-    return int(tail) if sep and tail.isdigit() else None
+    """The pid embedded in a `writer` string from `open_claims_detailed()`, or None for a legacy
+    bare-actor writer (pre-#337, no pid to extract) or anything else unparseable. A `gh` login can
+    never itself contain `:` (GitHub's own username rules), so everything after the last `:` is the
+    writer instance, never part of an actor name that happens to look like one. That instance is
+    `<host>.<pid>` (#540) or a bare `<pid>` (pre-#540) — both still appear in a ledger mid-upgrade,
+    since entries written by an older clone stay in the shared branch forever."""
+    _, sep, instance = str(writer).rpartition(":")
+    if not sep:
+        return None
+    host, dot, pid = instance.rpartition(".")
+    if dot:
+        return int(pid) if host and pid.isdigit() else None
+    return int(instance) if instance.isdigit() else None
+
+
+def writer_host(writer):
+    """The host component of a `writer` string, or None for any pre-#540 writer (bare actor, or
+    `actor:pid` with no host to extract). `None` means "cannot tell which machine", which every
+    caller must treat as the legacy case rather than as a mismatch."""
+    _, sep, instance = str(writer).rpartition(":")
+    if not sep:
+        return None
+    host, dot, pid = instance.rpartition(".")
+    return host if dot and host and pid.isdigit() else None
 
 
 def claim_belongs_to_me(holder_actor, holder_writer, me, my_writer):
@@ -1042,6 +1114,15 @@ def claim_belongs_to_me(holder_actor, holder_writer, me, my_writer):
         return False
     if holder_writer == my_writer:
         return True
+    # #540: a pid only means something on the machine that issued it. Once the writer carries a
+    # host, a claim from a DIFFERENT one is never mine and must never be liveness-checked here —
+    # `pid_alive` would be answering about some unrelated local process, and a "dead" answer would
+    # hand me a claim another machine is actively working. Same fail-toward-"not mine" posture the
+    # docstring above sets out for an unresolvable pid. A writer with no host is pre-#540 and falls
+    # through to exactly the old behavior.
+    holder_host = writer_host(holder_writer)
+    if holder_host is not None and holder_host != _host_token():
+        return False
     pid = writer_pid(holder_writer)
     if pid is None:
         return True                          # legacy 2-part claim: degenerately always "mine"

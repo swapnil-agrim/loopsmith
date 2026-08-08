@@ -15,6 +15,7 @@ def _load(name):
 work = _load("work")
 state = _load("state")
 actionlog = _load("actionlog")
+ledger = _load("ledger")            # #540: _claim() below builds a writer instance the real way
 
 ON = {"work": {"enabled": True}}
 ACTIONLOG = {"action_log": {"enabled": True}}
@@ -197,10 +198,16 @@ LEDGER_ON = {"work": {"enabled": True},
 
 
 def _claim(sdlc_dir, actor, goal, pid, seq=1):
+    """A claim written by a process ON THIS HOST — every caller below means a local sibling (live,
+    dead, or my own current process). #540 put a per-host component in the writer instance, so this
+    fixture has to carry this host's own token; without it the claim reads as ANOTHER machine's,
+    which is a different case with its own test in test_ledger.py. The pre-#337 legacy shape is
+    written inline by the one test that actually exercises it, never through here."""
+    instance = f"{ledger._host_token()}.{pid}"
     ent = pathlib.Path(sdlc_dir) / "ledger" / "entries"
     ent.mkdir(parents=True, exist_ok=True)
-    (ent / f"{actor}-{pid}.jsonl").write_text(json.dumps(
-        {"id": f"{actor}:{pid}:{seq}", "ts": "2026-08-05T09:00:00Z", "actor": actor,
+    (ent / f"{actor}-{instance}.jsonl").write_text(json.dumps(
+        {"id": f"{actor}:{instance}:{seq}", "ts": "2026-08-05T09:00:00Z", "actor": actor,
          "kind": "claimed", "goal": goal}) + "\n")
 
 
