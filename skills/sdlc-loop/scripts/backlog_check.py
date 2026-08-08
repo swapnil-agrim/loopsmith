@@ -187,7 +187,11 @@ def _build_corpus(sdlc_dir, config):
             continue                                    # a README etc. — not a goal
         status = meta.get("status")
         title = meta.get("title") or ""
-        body = scrub(text.split("---", 2)[-1])          # local bodies aren't pre-scrubbed like the mirror
+        # #544: NOT text.split("---", 2) -- a bare '---' substring inside a frontmatter VALUE (e.g. a
+        # title like "Fix the A---B connector bug") counts as a split point ahead of the real closing
+        # fence, under-stripping the body (a title fragment + the real fence get prepended to it).
+        # fm.strip() reuses the same line-anchored _FENCE regex fm.parse() already applies above.
+        body = scrub(fm.strip(text))                    # local bodies aren't pre-scrubbed like the mirror
         docs.append({"ref": str(p), "title": scrub(title), "raw": scrub(title) + "\n" + body,
                      "body": body, "tokens": _doc_tokens(scrub(title), body),
                      "open": status not in disc._SKIP, "completed": status == "done",

@@ -68,6 +68,16 @@ itself. `ttl_hours: 0`/`false` still means never-expire, and a malformed value d
 channel instead of emptying the whole pack. The recorded hand-off branch is untouched: a hand-off
 is an explicit blocker with its own settlement lifecycle, not a lease.
 
+### fix(backlog_check): local-mode body no longer splits on a bare '---' substring (#544)
+`_build_corpus()`'s local branch computed the body as `text.split("---", 2)[-1]` — a frontmatter
+VALUE containing a literal `---` (e.g. a title like "Fix the A---B connector bug") counted as a
+split point ahead of the real closing fence, under-stripping the body: a fragment of that value
+plus the real fence landed prepended to it. That polluted the dedup token vector, and could
+silently revoke a decomposition child's #521 marker exemption, since the corrupted body's first
+line was no longer `loopsmith:decomposed-from=`/`loopsmith:decompose-of=`. Now routes through
+`frontmatter.strip()`, the same line-anchored fence `frontmatter.parse()` already uses two lines
+above it.
+
 ### fix(hooks): plan_gate no longer locks itself on, and gates Scala/Elixir like its sibling (#536)
 `plan_gate.sh` had drifted from the hardened `completion_gate.sh` on two counts. It printed the
 mode line BEFORE `int(plan_freshness_hours)` could raise inside the same `try`, so an unparseable
