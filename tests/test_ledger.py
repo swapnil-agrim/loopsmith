@@ -409,11 +409,12 @@ def test_flag_parser_handles_a_bare_switch():
 # with a flag-like dash". `--why "--the CLI is missing a --verbose flag"` parsed to
 # `{"why": "true", "the CLI is missing a --verbose flag": "true"}`: the real reason was replaced by
 # the literal string "true", and its own text leaked in as a second, nonsense flag key. Fixed by (1)
-# unconditionally consuming the next token for this module's OWN known value-taking flags
-# (`OPTIONAL_FIELDS`, plus `actor` for the `mine` verb) regardless of its shape, (2) `--name=value`
-# syntax for ANY flag (unambiguous by construction), and (3) never keeping a whitespace-bearing
-# "flag name" as a key -- that shape is always leaked prose from an unconsumed value, never a flag
-# a caller meant to pass.
+# unconditionally consuming the next token for every known value-taking flag of every CLI that uses
+# this parser -- `OPTIONAL_FIELDS` plus `actor` for ledger's own verbs, AND handoff.py's vocabulary,
+# since handoff's open/track/ack all call this same function (see `_VALUE_FLAGS`' own note) --
+# regardless of the value's shape, (2) `--name=value` syntax for ANY flag (unambiguous by
+# construction), and (3) never keeping a whitespace-bearing "flag name" as a key, in EITHER form --
+# that shape is always leaked prose from an unconsumed value, never a flag a caller meant to pass.
 
 
 def test_flags_consumes_a_why_value_that_starts_with_a_double_dash_the_issues_own_repro():
@@ -451,6 +452,13 @@ def test_flags_drops_the_leaked_key_end_to_end_for_an_unregistered_flag():
     # value-taking), but the garbage second key that used to appear is gone.
     out = ledger._flags(["--notaknownflag", "--this text used to leak as a fake key"])
     assert out == {"notaknownflag": "true"}
+
+
+def test_flags_drops_a_whitespace_bearing_key_in_the_eq_form_too():
+    """#541 cycle 2: the `--name=value` branch bypassed the never-a-real-flag rule its
+    space-separated sibling applies, so leaked prose that happened to contain '=' still landed
+    as a whitespace-bearing key. Same shape in all four `_flags` copies, pinned in each."""
+    assert ledger._flags(["--zzunknown", "--a b=c d"]) == {"zzunknown": "true"}
 
 
 def test_flags_backward_compatible_for_unregistered_flags_and_normal_values():

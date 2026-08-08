@@ -88,10 +88,16 @@ string `"true"` and leaking the reason's own text in as a second, nonsense flag 
 unconditionally consumes the next token for that module's own known value-taking flags (sourced
 live from `OPTIONAL_FIELDS`/`EVENT_FIELDS`/`AGENT_FIELDS` where those already exist, so the known
 set can never drift from the real field vocabulary), supports `--name=value` for any flag
-(unambiguous by construction), and never keeps a whitespace-bearing "flag name" as a key — that
-shape is always leaked prose from an unconsumed value, never a flag a caller meant to pass.
-`handoff.py`'s `open`/`track`/`ack` verbs needed no changes of their own: they call `ledger._flags`
-directly and inherit the fix for `--why`/`--area`/etc. automatically.
+(unambiguous by construction), and never keeps a whitespace-bearing "flag name" as a key — in
+BOTH the space-separated and the `=` form — since that shape is always leaked prose from an
+unconsumed value, never a flag a caller meant to pass.
+
+`ledger._flags` is not only ledger's parser: `handoff.py`'s `open`/`track`/`ack` verbs all call it,
+so the known-value set covers handoff's vocabulary too (`title`, `goal`, `label`, `body-file`,
+`queue`, `assignee`, `blocks`). Scoping it to ledger's own field names would have left 7 of
+handoff's 12 value-taking flags still swallowing a `--`-leading value — including `--title`, where
+the failure was loudest: a hand-off whose title text began with `--` filed a real GitHub issue
+literally TITLED "true". An end-to-end test now pins that title through the real CLI path.
 
 ### fix(mirror): the board mirror and board sync now page from the OLDEST goals, like next_pending (#539)
 `mirror.py`'s open-issue fetch and `sources.py`'s `_sync_backlog` both ran a bare

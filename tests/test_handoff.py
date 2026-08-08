@@ -427,13 +427,22 @@ def test_cli_open_preserves_a_why_value_that_starts_with_a_double_dash(tmp_path,
     """#541 end-to-end: the issue's own repro through the real CLI path -- a hand-off's `--why` text
     that itself starts with '--' used to be silently replaced by the literal string "true" (ledger's
     shared `_flags()` parser could not tell "no value was given" from "the value looks flag-shaped").
-    The reason now survives intact."""
+    The reason now survives intact.
+
+    `--title` rides the SAME assertion on purpose. `ledger._flags` is not only ledger's own parser:
+    handoff's open/track/ack all call it, so the fix has to cover handoff's vocabulary too, not just
+    the names ledger.append() happens to know. Before that, `--title` landed on the "true" sentinel
+    and this hand-off filed a real GitHub issue literally TITLED "true" -- the flag most visible to
+    a human, silently destroyed."""
     sdlc = _project(tmp_path)
-    monkeypatch.setattr(handoff.sources, "get_source", lambda *a, **k: FakeSource())
+    src = FakeSource()
+    monkeypatch.setattr(handoff.sources, "get_source", lambda *a, **k: src)
     assert handoff.main(["handoff.py", "open", str(sdlc), "g.md", "--area", "engine",
+                         "--title", "--verbose flag is missing from the CLI",
                          "--why", "--the CLI is missing a --verbose flag"]) == 0
     entry = ledger.read_all(sdlc)[-1]
     assert entry["why"] == "--the CLI is missing a --verbose flag"
+    assert src.created["title"] == "--verbose flag is missing from the CLI"
 
 
 def test_cli_track_requires_the_three_value_flags(tmp_path, capsys):

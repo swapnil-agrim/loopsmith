@@ -186,7 +186,8 @@ def _flags(argv):
         if argv[i].startswith("--"):
             name, eq, value = argv[i][2:].partition("=")
             if eq:                                       # --name=value: always unambiguous
-                out[name] = value
+                if " " not in name:                       # same never-a-real-flag rule as below
+                    out[name] = value
             elif name in _VALUE_FLAGS:                    # known value-taking flag: consume unconditionally
                 if i + 1 < len(argv):
                     out[name] = argv[i + 1]; i += 2; continue

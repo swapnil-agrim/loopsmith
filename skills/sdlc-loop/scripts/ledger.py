@@ -1259,12 +1259,19 @@ def _cell(text):
 
 # --------------------------------------------------------------------------- CLI
 
-#: #541: the flags this module's own CLI verbs (append/mine) ever hand a real value to -- every
-#: `append()` OPTIONAL_FIELDS name (any of them can be free text a caller types, not just `why`)
-#: plus `mine`'s own `--actor`. Sourced from OPTIONAL_FIELDS itself rather than re-listed, so the
-#: two can never drift apart the way the four independent `_flags` copies already had to be
-#: reconciled by hand once.
-_VALUE_FLAGS = frozenset(OPTIONAL_FIELDS) | {"actor"}
+#: #541: every flag that a CLI parsed by `_flags()` below ever hands a real value to -- which is NOT
+#: only this module's own `append`/`mine`. `handoff.py`'s open, track and ack verbs are all
+#: CONSUMERS of this same parser (handoff.py:329/:346/:395), so handoff's vocabulary belongs here
+#: too. Scoping this set to ledger's own names left 7 of handoff's 12 value-taking flags still
+#: swallowing a `--`-leading value, and `--title` is the one a human actually sees: a hand-off whose
+#: title text began with `--` filed a real GitHub issue literally TITLED "true".
+#: The `append()` names come from OPTIONAL_FIELDS itself rather than being re-listed, so those two
+#: can never drift; handoff's are named explicitly because they are another module's vocabulary, and
+#: an end-to-end test pins the coupling instead (tests/test_handoff.py's `--title` case).
+#: Over-inclusion is the SAFE direction: a name here only ever means "consume the next token", and
+#: every verb still validates what it actually received.
+_VALUE_FLAGS = frozenset(OPTIONAL_FIELDS) | {"actor", "goal", "title", "label", "body-file",
+                                             "queue", "assignee", "blocks"}
 
 
 def _flags(argv):
@@ -1283,7 +1290,8 @@ def _flags(argv):
         if token.startswith("--"):
             name, eq, value = token[2:].partition("=")
             if eq:                                       # --name=value: always unambiguous
-                out[name] = value
+                if " " not in name:                       # same never-a-real-flag rule as below
+                    out[name] = value
             elif name in _VALUE_FLAGS:                    # known value-taking flag: consume unconditionally
                 if i + 1 < len(argv):
                     out[name] = argv[i + 1]

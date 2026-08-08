@@ -682,6 +682,14 @@ def test_flags_never_keeps_a_whitespace_bearing_leaked_key():
     assert lp._flags(["--this looks like leaked prose, not a flag"]) == {}
 
 
+def test_flags_drops_a_whitespace_bearing_key_in_the_eq_form_too():
+    """#541 cycle 2: the `--name=value` branch bypassed the never-a-real-flag rule its
+    space-separated sibling applies, so leaked prose that happened to contain '=' still landed
+    as a whitespace-bearing key. Same shape in all four `_flags` copies, pinned in each."""
+    lp = _loop()
+    assert lp._flags(["--zzunknown", "--a b=c d"]) == {"zzunknown": "true"}
+
+
 def test_next_batch_extra_skip_excludes_a_goal_this_call_never_picked_itself():
     """The whole point: a goal skipped via `extra_skip` here was NOT claimed by this call at all --
     unlike the internal accumulation test above, which skips goals THIS batch just picked. This is

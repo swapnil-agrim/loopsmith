@@ -502,6 +502,13 @@ def test_flags_never_keeps_a_whitespace_bearing_leaked_key():
     assert slices._flags(["--this looks like leaked prose, not a flag"]) == {}
 
 
+def test_flags_drops_a_whitespace_bearing_key_in_the_eq_form_too():
+    """#541 cycle 2: the `--name=value` branch bypassed the never-a-real-flag rule its
+    space-separated sibling applies, so leaked prose that happened to contain '=' still landed
+    as a whitespace-bearing key. Same shape in all four `_flags` copies, pinned in each."""
+    assert slices._flags(["--zzunknown", "--a b=c d"]) == {"zzunknown": "true"}
+
+
 # --------------------------------------------------------------------------- wiring
 
 
