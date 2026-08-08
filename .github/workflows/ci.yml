@@ -236,5 +236,19 @@ jobs:
       - name: prove the manager panel's cold start renders no numerals anywhere (npm run prove:manager-cold-start)
         run: npm run prove:manager-cold-start
         working-directory: insight/web
+      # issue #314 [E20.S3] done-when 4: the leadership page's own version of the same guarantee,
+      # same reasoning as prove:delivery-cold-start/prove:manager-cold-start immediately above --
+      # no new install step, python3/duckdb are already installed earlier in this job. Also
+      # exercises Decision A's class-2 positive proof (metric 23 measured, with its coverage
+      # denominator) via its own populated-fixture assertion.
+      - name: prove the leadership panel's cold start renders no numerals anywhere (npm run prove:leadership-cold-start)
+        run: npm run prove:leadership-cold-start
+        working-directory: insight/web
+      # issue #314 [E20.S3] done-when 5: leadership's own zero-individual-grain guarantee, proven
+      # against a real booted server, whole raw response body, with an executed negative control --
+      # same family/reasoning as prove:ic-no-leak above, no new install step.
+      - name: prove no individual-grain leak anywhere on /leadership (npm run prove:leadership-no-leak)
+        run: npm run prove:leadership-no-leak
+        working-directory: insight/web
       - name: docker build (Dockerfile.web) -- the Dockerfile is proven to build, not just present
         run: docker build -f insight/Dockerfile.web -t insight-web-scaffold:ci insight/

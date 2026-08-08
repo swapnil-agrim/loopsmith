@@ -16,6 +16,8 @@
     "prove:delivery-bridge": "node scripts/prove-delivery-python-bridge-exit-codes.mjs",
     "prove:delivery-cold-start": "node scripts/prove-delivery-cold-start-no-numerals.mjs",
     "prove:manager-cold-start": "node scripts/prove-manager-cold-start-no-numerals.mjs",
+    "prove:leadership-cold-start": "node scripts/prove-leadership-cold-start-no-numerals.mjs",
+    "prove:leadership-no-leak": "node scripts/prove-leadership-no-individual-grain-leak.mjs",
     "build": "next build"
   },
   "dependencies": {

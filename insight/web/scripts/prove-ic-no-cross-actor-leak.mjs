@@ -27,12 +27,13 @@
 // been capable of catching a real leak.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { proofServerEnv, sessionCookieHeader } from "./lib/proof-session.mjs";
+import { makeStripBuildArtifacts } from "./lib/strip-build-artifacts.mjs";
 
 const WEB = path.resolve(fileURLToPath(import.meta.url), "..", "..");
 const REPO_ROOT = path.resolve(WEB, "..", "..");
@@ -143,34 +144,14 @@ const ALICE_EXCLUSIVE_NEEDLES = ["g-alice-1", "9101"];
 
 // ---- build-artifact noise ------------------------------------------------------------------
 //
-// Next.js's OWN per-build random buildId -- freshly generated on every `next build`, unrelated to
-// source content (verified empirically: two consecutive `next build`s of the byte-identical
-// source produced two different `.next/BUILD_ID` values, e.g. "za1F0ONaTZKv3Db0BWHXS" vs
-// "ihF9HFtKw3mBPIdwTgJ0l") -- is inlined into EVERY authenticated page's raw HTML via the RSC
-// flight payload's own router-state field (literally `\"b\":\"<buildId>\"` in the raw response
-// text). Turbopack's content-hashed chunk/asset filenames under `_next/static/chunks/` are the
-// same kind of noise: effectively-random alphanumeric strings, identical for every actor's page
-// in a given server boot, carrying no application data at all. A short bare-digit needle like
-// carol's own "303" (her fact_handoff issue number) can land as a SUBSTRING of either one by pure
-// chance. That is exactly what happened in CI on PR #517 (an unrelated CSS-constant refactor that
-// only changed which module a string lived in, which was enough to reshuffle Turbopack's chunk
-// hashes / this build's buildId): `assertCarolNeedlesAbsent` tripped on "303" appearing inside a
-// build artifact, not inside carol's data -- a false positive, reproduced by inspecting the raw
-// dumped HTML (no occurrence of "303" tied to carol's actual payload; every random-length hash
-// string in the page is a candidate collision surface for a 3-character bare-digit needle).
-//
-// Stripping these two KNOWN, proven noise sources before the needle check runs removes exactly
-// that false-positive surface -- and nothing else. In particular this does NOT restrict the
-// haystack to the extracted `insight-ic-data` payload or to visible rendered text: the RSC flight
-// script's own DATA fields (where a "hide it in the client" leak would actually surface, per step
-// 2's own comment above) are left completely untouched, so the assertion's power to catch a REAL
-// leak is unchanged.
-const BUILD_ID = readFileSync(path.join(WEB, ".next", "BUILD_ID"), "utf-8").trim();
-const NEXT_STATIC_ASSET_RE = /_next\/static\/[^"'\\)\s]+/g;
-
-function stripBuildArtifacts(body) {
-  return body.split(BUILD_ID).join("<build-id>").replace(NEXT_STATIC_ASSET_RE, "_next/static/<asset>");
-}
+// issue #314 [E20.S3], .sdlc/plans/314.md Step 10: this file's own BUILD_ID/NEXT_STATIC_ASSET_RE/
+// stripBuildArtifacts (a random per-build Next.js buildId plus Turbopack's content-hashed chunk
+// filenames, both proven live on PR #517 to collide with a short needle like carol's own "303")
+// were extracted to scripts/lib/strip-build-artifacts.mjs -- see that file's own header comment
+// for the full PR #517 incident and why stripping is required, verbatim, unchanged behaviour.
+// This is the rule-of-two extraction: prove-leadership-no-individual-grain-leak.mjs (Step 12) is
+// the second consumer.
+const stripBuildArtifacts = makeStripBuildArtifacts(WEB);
 
 /** The SAME check step 2 below relies on, factored out so section 5 (the executed negative
  * control) can run it a second time against a body where it MUST fail -- shared, so the positive
