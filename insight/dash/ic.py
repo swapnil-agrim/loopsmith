@@ -46,10 +46,37 @@ every clause legitimately empty, with no signal that the identity itself might b
 `render_ic_view` renders a distinct banner naming the suspect config key, instead of the ordinary
 per-clause empty states. Separately, and unchanged from the plan's own Decision 8,
 `_handoff_ever_ingested` distinguishes "no hand-off has ever been recorded for this project" from
-"hand-offs exist, none outstanding for you right now" for the blocked-on-me clause specifically --
-my parks and my gate verdicts given do NOT get this treatment, because both read real base-table
-rows directly and both have confirmed-nonzero rows on the live store today, so a `0` for a specific
-actor is a trustworthy, measured zero (Decision 8/9), not a masked absence.
+"hand-offs exist, none outstanding for you right now" for the blocked-on-me clause specifically.
+
+issue #315 [E20.S4] D1 (BLOCKING plan-review round-2 correction): `_actor_ever_appeared` answers
+"is this identity known to the store AT ALL," a `UNION ALL` across four structurally unrelated
+sources -- it does NOT answer "has THIS SPECIFIC readout's own table ever received a row for
+ANYONE." Those are not the same fact: `test_actor_ever_appeared_true_via_fact_pr_review_only`
+proves an actor known only via `fact_pr_review` makes `_actor_ever_appeared` `True` while
+`fact_event`/`fact_handoff` remain completely untouched. The web view (`/ic`, `page.tsx`) therefore
+does NOT gate my-queue/my-parks/my-gate-verdicts' numerals on `actor_ever_appeared` alone --
+`collect_ic_payload` below now also exposes `my_queue_ever_ingested`/`park_ever_ingested`/
+`verdicts_ever_ingested` (each a per-table "has ANYONE's row for this exact predicate ever landed"
+signal, mirroring `_handoff_ever_ingested`'s own shape), and the web page combines
+`actor_ever_appeared AND <the readout's own ever_ingested flag>` before rendering a numeral instead
+of a hatch. My parks and my gate verdicts DO now get an ever-ingested signal in the payload -- the
+one thing that does NOT change is `render_ic_view`/this module's own HTML output below, which
+continues to render `park_count`/`len(verdict_rows)` directly as it always has (a real, measured
+count on a base-table scan, per Decision 8/9's original reasoning) and never consults the three new
+keys -- see the cross-reference paragraph immediately below for why the two surfaces are allowed to
+differ here.
+
+issue #315 [E20.S4] D7 cross-reference (does NOT close #583): the IC *web* catalog cards
+(`IC_PRIMARY_READOUT_IDS`, six catalog metrics rendered by `/ic`'s `<Metric>` grid) and this
+module's own five actor-scoped panels (my queue, blocked on me, my parks, my gate verdicts, my
+cost) are two different surfaces by design -- the former is the shared 42-metric catalog filtered
+to IC-tagged ids, the latter is bespoke, actor-bound SQL with no catalog id at all -- and a reader
+comparing "what does IC see" between `insight dash` (this module, Python-rendered) and `/ic` (the
+web page) should expect the SAME five bespoke panels plus the web page's ADDITIONAL six catalog
+cards this module has no equivalent for (the Python CLI path never composed from the shared
+42-metric catalog). #583's actual ask -- a *decision* about whether the web view and the Python
+view of the same persona should converge on one canonical list -- remains OPEN; this paragraph only
+records a third instance of the same divergence so it does not go silently undocumented again.
 """
 import datetime
 import html
@@ -118,6 +145,24 @@ def _my_queue_rows(conn, actor):
     return _rows_as_dicts(conn.execute(_MY_QUEUE_SQL, [actor]))
 
 
+def _my_queue_kind_ever_ingested(conn, project_id=None):
+    """issue #315 [E20.S4] D1: True iff at least one `fact_event` row exists (scoped to
+    `project_id` when given) matching the SAME `kind IN ('claimed', 'done', 'parked', 'failed')
+    AND reliability_class = 1` predicate `_MY_QUEUE_SQL` above already filters by -- unscoped to
+    any actor. Mirrors `_handoff_ever_ingested`'s own shape exactly: an ever-any-row signal for
+    THIS readout's own table, distinct from `_actor_ever_appeared` (which can be true via a
+    completely different table, per this module's own docstring)."""
+    predicate = "kind IN ('claimed', 'done', 'parked', 'failed') AND reliability_class = 1"
+    if project_id is not None:
+        return bool(conn.execute(
+            f"SELECT EXISTS(SELECT 1 FROM fact_event WHERE {predicate} AND project_id = ?)",
+            [project_id],
+        ).fetchone()[0])
+    return bool(
+        conn.execute(f"SELECT EXISTS(SELECT 1 FROM fact_event WHERE {predicate})").fetchone()[0]
+    )
+
+
 # --------------------------------------------------------------------------- blocked on me
 
 _BLOCKED_ON_ME_SQL = """
@@ -165,6 +210,22 @@ def _park_count(conn, actor):
     ).fetchone()[0]
 
 
+def _park_ever_ingested(conn, project_id=None):
+    """issue #315 [E20.S4] D1: True iff at least one `fact_event` row with `kind = 'parked' AND
+    reliability_class = 1` exists (scoped to `project_id` when given) -- the same predicate
+    `_park_count` above filters by, minus the `actor_id = ?` bound, unscoped to any actor. Mirrors
+    `_handoff_ever_ingested`'s own shape."""
+    predicate = "kind = 'parked' AND reliability_class = 1"
+    if project_id is not None:
+        return bool(conn.execute(
+            f"SELECT EXISTS(SELECT 1 FROM fact_event WHERE {predicate} AND project_id = ?)",
+            [project_id],
+        ).fetchone()[0])
+    return bool(
+        conn.execute(f"SELECT EXISTS(SELECT 1 FROM fact_event WHERE {predicate})").fetchone()[0]
+    )
+
+
 # --------------------------------------------------------------------------- my gate verdicts (given)
 
 def _verdicts_given_rows(conn, actor):
@@ -175,6 +236,17 @@ def _verdicts_given_rows(conn, actor):
         "SELECT pr_number, verdict, event_ts FROM fact_pr_review WHERE actor = ? "
         "ORDER BY event_ts ASC", [actor],
     ))
+
+
+def _verdicts_ever_ingested(conn, project_id=None):
+    """issue #315 [E20.S4] D1: True iff at least one `fact_pr_review` row exists (scoped to
+    `project_id` when given) -- unscoped to any actor. Mirrors `_handoff_ever_ingested`'s own
+    shape."""
+    if project_id is not None:
+        return bool(conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM fact_pr_review WHERE project_id = ?)", [project_id],
+        ).fetchone()[0])
+    return bool(conn.execute("SELECT EXISTS(SELECT 1 FROM fact_pr_review)").fetchone()[0])
 
 
 # --------------------------------------------------------------------------- my cost
@@ -281,10 +353,13 @@ def collect_ic_payload(conn, actor, project_id=None, now=None):
 
     actor_ever_appeared = _actor_ever_appeared(conn, actor)
     my_queue_rows = _my_queue_rows(conn, actor)
+    my_queue_ever_ingested = _my_queue_kind_ever_ingested(conn, project_id)
     handoff_ever_ingested = _handoff_ever_ingested(conn, project_id)
     blocked_rows = _blocked_on_me_rows(conn, actor)
     park_count = _park_count(conn, actor)
+    park_ever_ingested = _park_ever_ingested(conn, project_id)
     verdict_rows = _verdicts_given_rows(conn, actor)
+    verdicts_ever_ingested = _verdicts_ever_ingested(conn, project_id)
     cost_row = _cost_row(conn, actor)
 
     return {
@@ -292,10 +367,18 @@ def collect_ic_payload(conn, actor, project_id=None, now=None):
         "actor": actor,
         "actor_ever_appeared": actor_ever_appeared,
         "my_queue": my_queue_rows,
+        # issue #315 [E20.S4] D1: per-table "ever ingested for anyone" signals, one per bespoke
+        # readout below (mirroring handoff_ever_ingested's own pre-existing shape) -- NOT consumed
+        # by render_ic_view/this module's own HTML output (see the module docstring's D1/D7 notes),
+        # only by the web page (page.tsx), which gates each readout's numeral on
+        # `actor_ever_appeared AND <its own flag>` instead of `actor_ever_appeared` alone.
+        "my_queue_ever_ingested": my_queue_ever_ingested,
         "blocked_on_me": blocked_rows,
         "handoff_ever_ingested": handoff_ever_ingested,
         "park_count": park_count,
+        "park_ever_ingested": park_ever_ingested,
         "verdicts_given": verdict_rows,
+        "verdicts_ever_ingested": verdicts_ever_ingested,
         "cost": {
             "tokens_in": cost_row[0], "tokens_out": cost_row[1],
             "cost_cents": cost_row[2], "n": cost_row[3],

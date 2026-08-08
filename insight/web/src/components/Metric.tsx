@@ -16,7 +16,12 @@ import type { Metric as MetricType } from "@/lib/api/metric";
 import { hatchBackgroundImage } from "@/lib/absence-hatch";
 import { describeMetric } from "@/lib/metric-view";
 
-const EDGE: Record<MetricType["state"], string> = {
+// Exported for ActorReadout.tsx, /ic's hero-density readout for counts that have no catalog id
+// (issue #315). It renders the SAME absence contract at the SAME density, so it must read these
+// maps rather than re-type them -- a second copy is how the hatch and the dotted edge start
+// disagreeing about what an absence looks like. MetricCell.tsx deliberately does NOT share them:
+// its board-cell variant carries its own opacity, a real density difference, not a drifted copy.
+export const EDGE: Record<MetricType["state"], string> = {
   measured: "panel-instrument",
   absent_no_data: "panel-void-surface",
   // Dotted, not dashed: `absent_unbuilt` is a different KIND of absence (no code
@@ -26,7 +31,7 @@ const EDGE: Record<MetricType["state"], string> = {
   absent_unbuilt: "panel-void-surface [border-style:dotted] opacity-[.82]",
 };
 
-const HATCH: Record<MetricType["state"], string | undefined> = {
+export const HATCH: Record<MetricType["state"], string | undefined> = {
   measured: undefined,
   absent_no_data: hatchBackgroundImage("--panel-hatch-soft"),
   absent_unbuilt: hatchBackgroundImage("--panel-hatch-soft"),

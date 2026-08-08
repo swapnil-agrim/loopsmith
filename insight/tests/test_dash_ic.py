@@ -18,9 +18,12 @@ from insight.dash.ic import (  # noqa: E402
     _blocked_on_me_rows,
     _cost_row,
     _handoff_ever_ingested,
+    _my_queue_kind_ever_ingested,
     _my_queue_rows,
     _park_count,
+    _park_ever_ingested,
     _verdicts_given_rows,
+    _verdicts_ever_ingested,
     collect_ic_payload,
     render_ic_view,
 )
@@ -247,6 +250,85 @@ def test_genuinely_idle_actor_who_has_appeared_does_not_get_the_suspect_banner(c
     html_text, summary = render_ic_view(conn, "idle-actor", now=NOW)
     assert summary["actor_ever_appeared"] is True
     assert "has never appeared in this project" not in html_text
+
+
+# --------------------------------------------------------------------------- issue #315 [E20.S4] D1:
+# per-table ever-ingested signals are NOT the same fact as actor_ever_appeared
+
+
+def test_actor_known_only_via_fact_pr_review_does_not_ever_ingest_my_queue_or_park(conn):
+    """Mirrors test_actor_ever_appeared_true_via_fact_pr_review_only's own fixture exactly: an
+    actor known ONLY via fact_pr_review makes _actor_ever_appeared True while fact_event stays
+    completely untouched. Under the (rejected) round-1 single-gate design, "My queue" and "My
+    parks" would render a confident, measured 0 for a table nobody has ever written a row to for
+    ANY actor -- the exact ABSENT-reads-as-PASS bug done-when 4 exists to prevent, recurring at
+    table granularity. The corrected per-table signals must stay False here."""
+    conn.execute(
+        "INSERT INTO fact_pr_review (project_id, pr_number, source, event_id, actor, verdict, "
+        "event_ts) VALUES ('p1', 1, 'gh', 'e1', 'alice', 'approved', ?)", [NOW],
+    )
+    assert _actor_ever_appeared(conn, "alice") is True
+    assert _my_queue_kind_ever_ingested(conn) is False
+    assert _park_ever_ingested(conn) is False
+
+
+def test_actor_known_only_via_fact_event_does_not_ever_ingest_verdicts(conn):
+    """The mirror case: an actor known ONLY via fact_event (a plain 'claimed' row) makes
+    _actor_ever_appeared True while fact_pr_review stays completely untouched -- "My gate verdicts
+    given" must not render a measured 0 in that state either."""
+    _insert_event(conn, "p1", "g1", NOW, "alice", "claimed")
+    assert _actor_ever_appeared(conn, "alice") is True
+    assert _verdicts_ever_ingested(conn) is False
+
+
+def test_ever_ingested_flags_go_true_once_the_matching_table_has_any_row_for_anyone(conn):
+    """The positive case, so the three new signals are proven to actually light up and not just
+    stay permanently False: once a fact_event row exists for ANY actor (not necessarily the
+    resolved one) and the resolved actor has separately appeared, the corresponding ever_ingested
+    flag is True -- these are table-wide facts, not actor-scoped ones, mirroring
+    _handoff_ever_ingested's own already-established semantics exactly."""
+    # bob's row makes the tables "ever ingested" -- alice never appears in either yet.
+    _insert_event(conn, "p1", "g-bob-1", NOW, "bob", "claimed")
+    _insert_event(conn, "p1", "g-bob-2", NOW, "bob", "parked")
+    assert _my_queue_kind_ever_ingested(conn) is True
+    assert _park_ever_ingested(conn) is True
+
+    # alice appears via a route unrelated to fact_event (fact_pr_review), so
+    # actor_ever_appeared(alice) is now True too -- both halves of the AND are satisfied.
+    conn.execute(
+        "INSERT INTO fact_pr_review (project_id, pr_number, source, event_id, actor, verdict, "
+        "event_ts) VALUES ('p1', 2, 'gh', 'e2', 'alice', 'approved', ?)", [NOW],
+    )
+    assert _actor_ever_appeared(conn, "alice") is True
+    assert _verdicts_ever_ingested(conn) is True
+
+    payload = collect_ic_payload(conn, "alice", now=NOW)
+    assert payload["actor_ever_appeared"] is True
+    assert payload["my_queue_ever_ingested"] is True
+    assert payload["park_ever_ingested"] is True
+    assert payload["verdicts_ever_ingested"] is True
+    # alice herself has no open claim and no park -- her own counts are real, measured
+    # zeros/empties, not because the tables were never ingested. Her verdict IS real (she is the
+    # one who gave it, via the fact_pr_review insert immediately above).
+    assert payload["my_queue"] == []
+    assert payload["park_count"] == 0
+    assert [r["pr_number"] for r in payload["verdicts_given"]] == [2]
+
+
+def test_ever_ingested_flags_are_project_scoped_when_project_id_is_given(conn):
+    """Mirrors test_handoff_ever_ingested_distinguishes_never_measured_from_nothing_outstanding's
+    own project-scoping discipline for the three new signals."""
+    _insert_event(conn, "p1", "g1", NOW, "bob", "claimed")
+    assert _my_queue_kind_ever_ingested(conn, "p1") is True
+    assert _my_queue_kind_ever_ingested(conn, "p2") is False
+    assert _park_ever_ingested(conn, "p1") is False
+
+    conn.execute(
+        "INSERT INTO fact_pr_review (project_id, pr_number, source, event_id, actor, verdict, "
+        "event_ts) VALUES ('p1', 1, 'gh', 'e1', 'bob', 'approved', ?)", [NOW],
+    )
+    assert _verdicts_ever_ingested(conn, "p1") is True
+    assert _verdicts_ever_ingested(conn, "p2") is False
 
 
 # --------------------------------------------------------------------------- render_ic_view shell

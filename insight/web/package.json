@@ -18,6 +18,7 @@
     "prove:manager-cold-start": "node scripts/prove-manager-cold-start-no-numerals.mjs",
     "prove:leadership-cold-start": "node scripts/prove-leadership-cold-start-no-numerals.mjs",
     "prove:leadership-no-leak": "node scripts/prove-leadership-no-individual-grain-leak.mjs",
+    "prove:ic-cold-start": "node scripts/prove-ic-cold-start-no-numerals.mjs",
     "build": "next build"
   },
   "dependencies": {

@@ -22,7 +22,7 @@ export interface DescribedMetric {
   verdictNote: string | null;
 }
 
-const FIX_TEXT: Record<"absent_no_data" | "absent_unbuilt", string> = {
+export const FIX_TEXT: Record<"absent_no_data" | "absent_unbuilt", string> = {
   absent_no_data: "Time and usage will fix this -- no code change is needed.",
   absent_unbuilt: "Only a code change will fix this -- no amount of time or usage will.",
 };
