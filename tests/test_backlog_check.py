@@ -347,6 +347,26 @@ def test_ledger_handoff_block_on_the_filer_clears_once_the_target_issue_is_close
         assert "blocked-by" not in kinds
 
 
+# --- #533: area-qualified settlement cross-guard with #532 --------------------------------------
+# #533 only changes WHICH hand-offs ledger.outstanding() reports as live; _ledger_signals() (#532,
+# above) blocks the FILER goal on any such entry. An issue-less goal handed off to two areas must
+# therefore stay blocked once only ONE area's ack lands -- the wrongly-settle-both bug #533 fixes,
+# now proven at the level a real park decision is made from, not just against the raw ledger helpers.
+
+def test_ledger_area_qualified_settlement_keeps_the_filer_blocked_until_every_area_is_acked():
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(5, _GOAL)], **_LOOSE)
+        _write_claim(base, "amy", "5", kind="handoff", state="open", area="engine", to="bob",
+                     ts="2026-08-02T00:00:00Z")
+        _write_claim(base, "amy", "5", kind="handoff", state="open", area="ui", to="cara",
+                     ts="2026-08-02T00:01:00Z")
+        _write_claim(base, "bob", "5", kind="ack", state="resolved", area="engine",
+                     ts="2026-08-02T01:00:00Z")
+        kinds = {f["kind"] for f in bc.cross_check(base, "5")["findings"]}
+        assert "blocked-by" in kinds          # the ui hand-off is still outstanding
+
+
 # --- #521: decomposition-marker dedup exemption -------------------------------------------------
 # A goal whose BODY's first line carries `loopsmith:decomposed-from=`/`loopsmith:decompose-of=` (the
 # same markers loop.py's decompose_check already exempts, single-sourced in goal_size.py) is a

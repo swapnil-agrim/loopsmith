@@ -390,6 +390,21 @@ def test_deferred_ack_does_not_settle_the_handoff(tmp_path):
     assert ledger.outstanding(ledger.read_all(sdlc)) == []
 
 
+# ------------------------------------------------------------------ #533: --area on ack
+
+
+def test_acknowledge_writes_the_area_when_given(tmp_path):
+    sdlc = _project(tmp_path)
+    entry = handoff.acknowledge(sdlc, ON, None, "resolved", "done", goal="g.md", area="engine")
+    assert entry["area"] == "engine"
+
+
+def test_acknowledge_omits_area_when_not_given(tmp_path):
+    sdlc = _project(tmp_path)
+    entry = handoff.acknowledge(sdlc, ON, "61", "accepted", "picking it up")
+    assert "area" not in entry
+
+
 # ------------------------------------------------------------------ CLI
 
 
@@ -558,6 +573,70 @@ def test_cli_ack_by_goal_settles_an_issueless_handoff(tmp_path, capsys):
                          "--state", "resolved", "--why", "handled locally"]) == 0
     assert capsys.readouterr().out.strip() == f"amy:{os.getpid()}:2"     # :2 -- the handoff was :1
     assert ledger.outstanding(ledger.read_all(sdlc)) == []                # settled by goal alone
+
+
+def test_cli_ack_by_goal_and_area_settles_only_that_areas_handoff(tmp_path, capsys):
+    """#533 CLI twin of the ledger-level settlement test: two issue-less hand-offs on one goal to
+    different areas, ack --area engine leaves exactly the ui one outstanding. Driven through argv
+    like a real caller, not a direct acknowledge() call, so this proves the flag is actually WIRED
+    end to end -- red-first on HEAD: --area is parsed by _flags() and silently dropped, so this
+    settles BOTH instead of one."""
+    sdlc = _project(tmp_path)
+
+    class Local:
+        pass                                      # no create_dependency -- mirrors a local backlog
+
+    handoff.hand_off(sdlc, ON, "g.md", "engine", "needs a flag", source=Local())
+    handoff.hand_off(sdlc, ON, "g.md", "ui", "needs a review", source=Local())
+    assert len(ledger.outstanding(ledger.read_all(sdlc))) == 2
+
+    assert handoff.main(["handoff.py", "ack", str(sdlc), "--goal", "g.md", "--area", "engine",
+                         "--state", "resolved"]) == 0
+    remaining = ledger.outstanding(ledger.read_all(sdlc))
+    assert [h["area"] for h in remaining] == ["ui"]
+
+
+def test_cli_ack_unmatched_area_still_writes_and_warns(tmp_path, capsys):
+    """#533 amendment: ack validation NEVER refuses -- a typo'd --area still writes the ack (exit 0,
+    stdout stays the bare entry id, matching this file's existing dangling-ack-writes-freely
+    precedent at test_cli_ack_validates_the_state), just warns on stderr naming the live areas."""
+    sdlc = _project(tmp_path)
+
+    class Local:
+        pass
+
+    handoff.hand_off(sdlc, ON, "g.md", "engine", "needs a flag", source=Local())
+    rc = handoff.main(["handoff.py", "ack", str(sdlc), "--goal", "g.md", "--area", "typo-area",
+                       "--state", "resolved"])
+    out, err = capsys.readouterr()
+    assert rc == 0
+    assert out.strip() == f"amy:{os.getpid()}:2"
+    assert "matched no outstanding hand-off" in err and "engine" in err
+    entry = ledger.read_all(sdlc)[-1]
+    assert entry["area"] == "typo-area"          # written anyway -- never refused
+
+
+def test_cli_ack_area_less_on_a_multi_area_goal_warns_it_settled_more_than_one(tmp_path, capsys):
+    """The other #533 warning shape: an area-LESS ack on a goal with more than one live area still
+    settles all of them (the deliberate backward-compat fallback), but warns so the caller notices
+    it was not as targeted as they may have intended."""
+    sdlc = _project(tmp_path)
+
+    class Local:
+        pass
+
+    handoff.hand_off(sdlc, ON, "g.md", "engine", "x", source=Local())
+    handoff.hand_off(sdlc, ON, "g.md", "ui", "y", source=Local())
+    rc = handoff.main(["handoff.py", "ack", str(sdlc), "--goal", "g.md", "--state", "resolved"])
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "settled 2 hand-offs" in err and "--area" in err
+    assert ledger.outstanding(ledger.read_all(sdlc)) == []       # still settles both -- just warns
+
+
+def test_cli_ack_usage_mentions_area(capsys):
+    assert handoff.main(["handoff.py", "ack", "irrelevant"]) == 2
+    assert "--area" in capsys.readouterr().err
 
 
 def test_cli_usage(capsys):
@@ -732,3 +811,21 @@ def test_readme_documents_track_body_file():
 def test_skill_documents_track_body_file():
     skill = (ROOT / "skills" / "sdlc-loop" / "SKILL.md").read_text(encoding="utf-8")
     assert "--body-file" in skill
+
+
+# ------------------------------------------------------------------ #533: agent-facing docs mention --area
+
+
+def test_readme_documents_ack_area():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "--goal <goal> --area <area>" in readme
+
+
+def test_loop_skill_documents_ack_area():
+    skill = (ROOT / "skills" / "sdlc-loop" / "SKILL.md").read_text(encoding="utf-8")
+    assert "--goal <goal> --area <area>" in skill
+
+
+def test_ledger_skill_documents_ack_area():
+    skill = (ROOT / "skills" / "sdlc-ledger" / "SKILL.md").read_text(encoding="utf-8")
+    assert "--goal <goal> --area <area>" in skill

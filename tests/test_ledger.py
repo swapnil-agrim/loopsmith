@@ -591,6 +591,75 @@ def test_render_shows_the_reply_state_per_row():
     assert "| accepted |" in answered and "no reply" not in answered
 
 
+# --------------------------------------------------------------------- #533: area-qualified settlement
+# `handoff_key` (issue-or-goal) is also what SETTLED an issue-less hand-off: a goal handed off to TWO
+# areas filed two hand-offs that both fall back to the same bare goal, so one terminal ack for either
+# one settled BOTH. `settlement_key`/`_settlement_matches` below are the tolerant matcher that fixes
+# this -- `handoff_key` itself is untouched (still the PAIRING/display key backlog_check.py's #532 fix
+# reads for its finding `ref`; see its own docstring).
+
+
+def _issueless_handoff(goal, area, to="bob"):
+    return {"kind": "handoff", "goal": goal, "area": area, "to": to}
+
+
+def test_outstanding_area_qualifies_issueless_handoffs_so_one_ack_does_not_collapse_both():
+    """The issue's own repro, pinned as a regression: a goal handed off to two areas used to collapse
+    to zero outstanding on ANY one terminal ack, because handoff_key falls back to the bare goal for
+    both. Settlement now reads (goal, area); acking one area leaves the other outstanding."""
+    engine = _issueless_handoff("g", "engine")
+    ui = _issueless_handoff("g", "ui")
+    entries = [engine, ui, {"kind": "ack", "goal": "g", "area": "engine", "state": "resolved"}]
+    assert [h["area"] for h in ledger.outstanding(entries)] == ["ui"]
+
+
+def test_outstanding_area_less_ack_still_settles_every_area_on_the_goal():
+    """The deliberate backward-compat fallback: an ack with NO area (the shape every ack this kit has
+    ever WRITTEN takes -- no ack writer emits `area`) settles every outstanding hand-off on that goal,
+    exactly like pre-#533 -- old ledger history replays to an identical settlement outcome."""
+    engine = _issueless_handoff("g", "engine")
+    ui = _issueless_handoff("g", "ui")
+    entries = [engine, ui, {"kind": "ack", "goal": "g", "state": "resolved"}]        # no area
+    assert ledger.outstanding(entries) == []
+
+
+def test_outstanding_still_settles_only_the_matching_issue_in_github_mode():
+    """#533 must not touch github-mode precision: two hand-offs with DISTINCT issues, a terminal ack
+    for one, only that one settles -- extends test_outstanding_closes_on_a_terminal_ack_only (which
+    only ever used a single issue) to the multi-issue shape the new matcher must also preserve."""
+    a = {"kind": "handoff", "issue": 61, "goal": "g", "to": "bo"}
+    b = {"kind": "handoff", "issue": 62, "goal": "g", "to": "bo"}
+    entries = [a, b, {"kind": "ack", "issue": 61, "state": "resolved"}]
+    assert ledger.outstanding(entries) == [b]
+
+
+def test_handoff_states_and_unanswered_split_by_area_for_issueless_handoffs():
+    """The display-layer half of #533: after acking just `engine`, handoff_states shows `engine`
+    accepted while `ui` stays absent (open); unanswered() -- built on the same matcher -- still lists
+    the ui hand-off as truly stuck, mirroring the existing issue-mode split test above."""
+    engine = _issueless_handoff("g", "engine")
+    ui = _issueless_handoff("g", "ui")
+    entries = [engine, ui, {"kind": "ack", "goal": "g", "area": "engine", "state": "accepted"}]
+    states = ledger.handoff_states(entries)
+    assert states[ledger.settlement_key(engine)] == "accepted"
+    assert ledger.settlement_key(ui) not in states
+    assert ledger.unanswered(entries) == [ui]            # accepted isn't stuck; ui is still unanswered
+
+
+def test_render_shows_the_reply_state_per_area_for_issueless_handoffs():
+    """Render-layer regression pin, beside test_render_shows_the_reply_state_per_row above: pre-fix,
+    render() looked up the display state by the bare-goal handoff_key, so acking one area's hand-off
+    made BOTH rows show 'accepted' -- wrong for the row that is still genuinely open."""
+    engine = {"ts": "t", "actor": "amy", "kind": "handoff", "goal": "g", "to": "bob", "area": "engine"}
+    ui = {"ts": "t", "actor": "amy", "kind": "handoff", "goal": "g", "to": "cara", "area": "ui"}
+    ack = {"kind": "ack", "goal": "g", "area": "engine", "state": "accepted"}
+    out = ledger.render([engine, ui, ack])
+    engine_row = next(line for line in out.splitlines() if "| bob |" in line)
+    ui_row = next(line for line in out.splitlines() if "| cara |" in line)
+    assert "| accepted |" in engine_row
+    assert "**open — no reply**" in ui_row
+
+
 def test_summary_line_calls_out_unanswered_handoffs(tmp_path, capsys):
     d = _sdlc(tmp_path, ON)
     ledger.append(d, ON, "handoff", "g.md", to="bo", issue=61)

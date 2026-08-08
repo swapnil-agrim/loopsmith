@@ -836,48 +836,101 @@ def addressed_to(entries, who):
 
 
 def handoff_key(entry):
-    """What pairs a hand-off with its answers. The issue when there is one, else the goal — a local
-    backlog has no issue numbers but still needs the two halves to find each other."""
+    """What NAMES a hand-off — the issue when there is one, else the goal — for PAIRING/display
+    purposes (e.g. backlog_check.py's #532 blocked-by finding reads this for its `ref`). This is
+    NOT the settlement-matching key: see `settlement_key()` below for what actually decides whether
+    an `ack` answers a given hand-off (#533). A local backlog has no issue numbers but still needs a
+    stable label, which is all this function has ever promised."""
     return str(entry.get("issue") or entry.get("goal"))
 
 
+def settlement_key(entry):
+    """The actual pairing identity `outstanding()`/`unanswered()`/`handoff_states()`/`render()`
+    match a hand-off against an ack with (#533) — NOT `handoff_key()`, whose own value stays
+    unchanged and is still used elsewhere (see its docstring).
+
+    github mode (entry carries an `issue`): `str(issue)` — byte-identical to `handoff_key()`'s own
+    value for this case, so every existing exact-string/exact-dict assertion in this codebase over
+    issue-keyed entries is unaffected.
+
+    Issue-less (local) mode: `(str(goal), entry.get("area"))` — AREA-QUALIFIED, UNCONDITIONALLY (not
+    just when two hand-offs on one goal would otherwise collide): a goal blocked on two areas is two
+    independent hand-offs, not one. This tuple is never rendered directly — `render()` prints
+    `entry.get("issue")` for the issue column and looks entries up in a dict keyed by this value, so
+    the shape only has to be internally consistent, not human-readable. A bare string (github mode)
+    and a 2-tuple (issue-less mode) can never collide as dict/set keys, so the two shapes coexist in
+    the same settled-set/states-dict without a discriminator tag.
+
+    An ack with NO area (`entry.get("area")` is `None`) matches a hand-off in ANY area on the same
+    goal — see `_settlement_matches()` — deliberately: it is what keeps EVERY ack this kit has ever
+    WRITTEN (no ack writer emits `area`) replaying to the identical settlement outcome on old ledger
+    history, and keeps the common one-hand-off-per-goal workflow zero-friction.
+
+    RESIDUAL (state this, do not silently narrow the promise further than it is): `(goal, area)`
+    does NOT separate two hand-offs from the SAME goal to the SAME area — that shape is still
+    ambiguous, narrowed but not eliminated, the same way `handoff_key()`'s bare-goal collapse always
+    was before this fix existed at all."""
+    issue = entry.get("issue")
+    if issue:
+        return str(issue)
+    return (str(entry.get("goal")), entry.get("area"))
+
+
+def _settlement_matches(hoff_key, ack_key):
+    """True iff an ack whose own `settlement_key()` is `ack_key` answers a hand-off whose
+    `settlement_key()` is `hoff_key`. Issue mode: exact match, unchanged from before #533 (github
+    settlement was always exact-by-issue). Issue-less mode: same goal, and either the SAME area or
+    an AREA-LESS ack — see `settlement_key()`'s own docstring for why that fallback exists and what
+    it still does not separate."""
+    if isinstance(hoff_key, tuple):
+        return isinstance(ack_key, tuple) and ack_key[0] == hoff_key[0] and ack_key[1] in (hoff_key[1], None)
+    return ack_key == hoff_key
+
+
+def _handoff_settled(handoff, settled):
+    """True iff some terminal ack in `settled` (a set of `settlement_key()` values collected from
+    `declined`/`resolved` acks) answers `handoff` under `_settlement_matches()`."""
+    key = settlement_key(handoff)
+    return any(_settlement_matches(key, sk) for sk in settled)
+
+
 def handoff_states(entries):
-    """{key: the latest ack state}, `open` where nobody has answered.
+    """{settlement_key(hand-off): the latest matching ack's state}, absent where nobody has
+    answered. Built PER HAND-OFF (#533), not per ack: for each hand-off, scan every ack with a
+    `state` in `entries` order and keep the LAST one that matches under `_settlement_matches()` —
+    latest wins, regardless of whether that latest match is area-specific or an area-less fallback.
+    An issue-less goal with two hand-offs to different areas therefore shows two independent
+    states; an area-less ack still fans out to (and can overwrite the state of) every hand-off on
+    its goal, exactly like `outstanding()`'s settled-set below.
 
     A lead has to tell "nobody has even looked at this" from "someone took it and is working on it".
     Both are outstanding — the blocker is still real until it is `resolved` — but only the first one
     needs chasing, and a bare count cannot say which is which."""
-    latest = {}
+    acks = [e for e in entries if e.get("kind") == "ack" and e.get("state")]
+    out = {}
     for entry in entries:
-        if entry.get("kind") == "ack" and entry.get("state"):
-            latest[handoff_key(entry)] = entry["state"]
-    return latest
+        if entry.get("kind") != "handoff":
+            continue
+        key = settlement_key(entry)
+        for ack in acks:
+            if _settlement_matches(key, settlement_key(ack)):
+                out[key] = ack["state"]        # keep overwriting -- the last match in read order wins
+    return out
 
 
 def unanswered(entries):
     """Outstanding hand-offs nobody has replied to at all — the ones that are actually stuck."""
     states = handoff_states(entries)
-    return [e for e in outstanding(entries) if handoff_key(e) not in states]
+    return [e for e in outstanding(entries) if settlement_key(e) not in states]
 
 
 def outstanding(entries):
-    """Hand-offs nobody has closed out. A hand-off is settled once an `ack` for the same issue
-    reaches a terminal state; `deferred` deliberately stays outstanding — a promise to look
-    later is not a resolution."""
-    settled = set()
-    for entry in entries:
-        if entry.get("kind") == "ack" and entry.get("state") in ("declined", "resolved"):
-            key = entry.get("issue") or entry.get("goal")
-            if key is not None:
-                settled.add(str(key))
-    open_ones = []
-    for entry in entries:
-        if entry.get("kind") != "handoff":
-            continue
-        key = str(entry.get("issue") or entry.get("goal"))
-        if key not in settled:
-            open_ones.append(entry)
-    return open_ones
+    """Hand-offs nobody has closed out. A hand-off is settled once a terminal ack (`declined` or
+    `resolved`) matches it under `settlement_key()`'s area-qualified pairing rule (#533); `deferred`
+    deliberately stays outstanding — a promise to look later is not a resolution."""
+    settled = {settlement_key(e) for e in entries
+               if e.get("kind") == "ack" and e.get("state") in ("declined", "resolved")}
+    return [e for e in entries if e.get("kind") == "handoff" and not _handoff_settled(e, settled)]
 
 
 def counts(entries):
@@ -1085,7 +1138,8 @@ def render(entries, recent=25):
                     issue=_cell(entry.get("issue", "-")),
                     # `open` = nobody has replied. Shown per row because a count of "outstanding"
                     # cannot distinguish a stuck hand-off from one someone is already working.
-                    state=_cell(states.get(handoff_key(entry), "**open — no reply**")),
+                    # settlement_key(), not handoff_key() -- #533: area-qualified for issue-less rows.
+                    state=_cell(states.get(settlement_key(entry), "**open — no reply**")),
                     why=_cell(entry.get("why") or entry.get("goal", "")),
                 )
             )

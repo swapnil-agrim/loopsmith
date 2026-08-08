@@ -608,6 +608,14 @@ answer — taking it, needing time, declining, or closing it out:
 handoff.py ack .sdlc --issue 61 --state accepted --why "after the current slice"
 ```
 
+No `gh`, or a local backlog: the hand-off has no issue number to answer by, so key on the goal
+instead — `--area` narrows to one hand-off when that goal carries more than one outstanding (a goal
+blocked on two areas at once is two independent hand-offs, settled independently):
+
+```bash
+handoff.py ack .sdlc --goal <goal> --area <area> --state accepted
+```
+
 `deferred` deliberately does *not* settle a hand-off — a promise to look later is not a resolution,
 so `ledger.py summary` keeps showing it. Override the roster per area with `ledger.owners` when your
 directory layout doesn't match your area vocabulary. Every step degrades honestly: no owner, no `gh`,

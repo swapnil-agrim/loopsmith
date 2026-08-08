@@ -301,20 +301,26 @@ def hand_off(sdlc_dir, config, goal, area, why, priority=DEFAULT_PRIORITY,
                                  source=source, run=run)
 
 
-def acknowledge(sdlc_dir, config, issue, state, why="", goal=None):
+def acknowledge(sdlc_dir, config, issue, state, why="", goal=None, area=None):
     """The other half. Reading a hand-off obliges an answer: taking it, needing time, declining it,
     or closing it out. `deferred` deliberately does NOT settle the hand-off — a promise to look later
     is not a resolution, and the team view keeps showing it.
 
     F22/#347: `issue` cannot key a LOCAL hand-off — `hand_off()` writes `issue=None` for one (no
-    `gh`, or a local backlog), so `ledger.handoff_key()` falls back to `goal`. Settling that hand-off
-    means writing an `ack` whose own key falls back the same way, which is why `goal` is accepted
-    here: leaving `issue` falsy makes the line below store `issue=None` on the entry, so
-    `handoff_key()` reads `goal` on BOTH sides and the two halves meet. Passing an `issue` still wins
-    when present, matching `handoff_key`'s own precedence exactly."""
+    `gh`, or a local backlog), so `ledger.settlement_key()` falls back to `goal`. Settling that
+    hand-off means writing an `ack` whose own key falls back the same way, which is why `goal` is
+    accepted here: leaving `issue` falsy makes the line below store `issue=None` on the entry, so
+    `settlement_key()` reads `goal` on BOTH sides and the two halves meet. Passing an `issue` still
+    wins when present, matching `settlement_key()`'s own precedence exactly.
+
+    `area` (#533, optional): narrows an issue-less ack to the ONE hand-off on `goal` carrying that
+    area, instead of the default settle-every-area-on-this-goal fallback — see
+    `ledger.settlement_key()`'s own docstring for the matching rule. Written as given, never
+    validated here (the CLI dispatcher owns the warn-don't-refuse UX around a typo'd or ambiguous
+    value; this function's only job is to write the entry)."""
     return ledger.safe_append(sdlc_dir, "ack", goal or f"issue-{issue}", config=config,
                               issue=int(issue) if str(issue).isdigit() else None,
-                              state=state, why=why)
+                              state=state, why=why, area=area)
 
 
 def main(argv):
@@ -387,23 +393,40 @@ def main(argv):
     if len(argv) >= 3 and argv[1] == "ack":
         sdlc_dir = argv[2]
         flags = ledger._flags(argv[3:])
-        issue, goal, state = flags.get("issue"), flags.get("goal"), flags.get("state")
+        issue, goal, state, area = (flags.get("issue"), flags.get("goal"), flags.get("state"),
+                                    flags.get("area"))
         # F22/#347: a local/issue-less hand-off has no `<n>` to give — requiring --issue
         # unconditionally made it unanswerable forever. --goal is the symmetric alternative
         # (see acknowledge()); at least one of the two must identify which hand-off this answers.
         if not (issue or goal) or state not in ledger.STATES:
-            print("handoff.py ack needs --issue <n> (or --goal <goal> for a local/issue-less "
-                  f"hand-off) --state {'|'.join(ledger.STATES)}", file=sys.stderr)
+            print("handoff.py ack needs --issue <n> (or --goal <goal> [--area A] for a "
+                  f"local/issue-less hand-off) --state {'|'.join(ledger.STATES)}", file=sys.stderr)
             return 2
+        # #533: --area only means anything for an issue-less (goal-keyed) ack -- github mode settles
+        # exactly by issue, unambiguous either way. NEVER refuses (a typo'd/ambiguous --area still
+        # writes -- see acknowledge()'s own docstring and the module's dangling-ack-writes-freely
+        # precedent): a hard refusal here would make every --area either a silent bypass or a hard
+        # stop on the git-synced-but-not-yet-pulled path F22/#347 already had to solve once. Just
+        # warn on stderr so a caller notices; stdout stays the bare entry id either way.
+        if not issue:
+            live = sorted({h.get("area") for h in ledger.outstanding(ledger.read_all(sdlc_dir))
+                          if not h.get("issue") and str(h.get("goal")) == str(goal)})
+            if area:
+                if area not in live:
+                    print(f"handoff: --area {area!r} matched no outstanding hand-off on {goal} "
+                          f"(live: {', '.join(live) or 'none'})", file=sys.stderr)
+            elif len(live) > 1:
+                print(f"handoff: settled {len(live)} hand-offs on {goal} ({', '.join(live)}) — "
+                      "pass --area to settle one", file=sys.stderr)
         entry = acknowledge(sdlc_dir, ledger._config(sdlc_dir), issue, state, flags.get("why", ""),
-                            goal=goal)
+                            goal=goal, area=area)
         print(entry["id"] if entry else "OFF (config: \"ledger\": {\"enabled\": true})")
         return 0
     print("usage: handoff.py open <dir> <goal> --area A --why TEXT [--priority P --title T] | "
           "track <dir> <goal> --area A --why TEXT --queue actionable|queued "
           "--assignee same-area|cross-area --blocks yes|no "
           "[--priority P --title T --label L --body-file F] | "
-          f"ack <dir> --issue N | --goal G --state {'|'.join(ledger.STATES)} [--why TEXT]",
+          f"ack <dir> --issue N | --goal G [--area A] --state {'|'.join(ledger.STATES)} [--why TEXT]",
           file=sys.stderr)
     return 2
 

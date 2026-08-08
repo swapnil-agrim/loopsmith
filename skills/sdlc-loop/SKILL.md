@@ -285,8 +285,10 @@ Then repeat until the helper says stop:
    automatically — never record those by hand. Record anything a TEAMMATE needs to see with
    `python3 "${CLAUDE_SKILL_DIR}/scripts/ledger.py" append .sdlc note "$goal" --to <login> --why "…"`.
    `loop.py next` prints a **LEDGER INBOX** block on stderr when a teammate needs you: read it,
-   answer each item with `handoff.py ack .sdlc --issue <n> --state accepted|deferred|declined|resolved`,
-   and take a `P0` next rather than interrupting the goal you are in.
+   answer each item with `handoff.py ack .sdlc --issue <n> --state accepted|deferred|declined|resolved`
+   (no issue — a local/issue-less hand-off — use `--goal <goal> --area <area>` in place of `--issue`;
+   the inbox spells out the exact command per item), and take a `P0` next rather than interrupting
+   the goal you are in.
 7. Loop.
 
 **Self-improving (optional, gated):** when the backlog is empty (`next` → `DONE`) but the knowledge
