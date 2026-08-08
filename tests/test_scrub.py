@@ -88,15 +88,48 @@ def test_scrub_terminated_key_is_still_owned_by_the_first_pattern():
     assert out == "[REDACTED:private-key]\ntrailer"
 
 
-def test_scrub_accepted_limitation_a_short_run_mid_document_survives():
-    """ACCEPTED, BOUNDED LIMITATION (#534): a <16-char base64 run that is NOT at end-of-input still
-    passes. Consuming it would eat the ordinary short words that follow a header mid-document, and the
-    exposure is capped at 15 characters — only reachable when a key was truncated at exactly that point
-    AND more text follows. Pinned so a future widening of the run rule is a deliberate decision."""
+# --- ACCEPTED LIMITATIONS of the fallback (#534) ------------------------------------------------
+# Consumption walks recognized headers and long base64 runs and STOPS at the first sub-16-char run or
+# non-base64 byte inside the body; everything from that gap onward survives, and it is NOT bounded to
+# a fixed number of characters. The three tests below pin that honestly — including the part that
+# stings — so the next reader meets the real behavior instead of a comforting bound. All three are
+# pins on CURRENT behavior, not red-first: each documents an exposure being accepted, and each must
+# be revisited deliberately if the run rule or the header list is ever widened.
+
+def test_scrub_accepted_limitation_a_short_run_mid_document_stops_consumption():
+    """A <16-char base64 run that is NOT at end-of-input stops the walk. Consuming it would eat the
+    ordinary short words that follow a header mid-document. Here the remainder happens to be small —
+    the next test covers the case where it is not, which is the one that matters."""
     scrub = _mod("scrub").scrub
     out = scrub("-----BEGIN PRIVATE KEY-----\n" + _B64_LINE + "\nSHORTFRAG\nmore prose here.")
-    assert _B64_LINE not in out                 # the bulk of the body is gone...
-    assert "SHORTFRAG" in out                   # ...the <16-char remainder is the accepted residual
+    assert _B64_LINE not in out                 # consumed up to the gap...
+    assert "SHORTFRAG" in out                   # ...and the walk stops there
+
+
+def test_scrub_accepted_limitation_a_mangled_body_publishes_everything_after_the_gap():
+    """THE RESIDUAL IS UNBOUNDED, and this is the test that says so. A foreign byte partway down the
+    body splits a line into two sub-16-char runs, the walk stops at the first of them, and every
+    COMPLETE key line after that point is published — 128 bytes of body here, arbitrarily more in a
+    longer key. So the fallback's real guarantee is narrower than "an unterminated key is redacted":
+    it fully consumes a CANONICAL unterminated key (a clean body cut short at the source — the case
+    it exists for, pinned above), and a MANGLED body only as far as the gap."""
+    scrub = _mod("scrub").scrub
+    mangled = _B64_LINE[:8] + "!" + _B64_LINE[8:]        # one non-base64 byte, mid-line
+    out = scrub("-----BEGIN PRIVATE KEY-----\n" + _B64_LINE + "\n" + mangled
+                + "\n" + _B64_LINE + "\n" + _B64_LINE + "\n")
+    assert out.startswith("[REDACTED:private-key]")      # header + PRE-gap body ARE consumed
+    assert out.count(_B64_LINE) == 2                     # the two POST-gap lines SURVIVE — accepted
+
+
+def test_scrub_accepted_limitation_an_unrecognized_header_line_stops_consumption():
+    """The header list is closed on purpose: RFC1421 defines only Proc-Type and DEK-Info, and OpenSSH
+    keys carry no headers at all, so matching `Word:` open-endedly would eat ordinary prose. The cost
+    is that an unrecognized header between BEGIN and the body — `Comment:` is the one seen in the
+    wild — halts the walk and leaves the entire body behind it."""
+    scrub = _mod("scrub").scrub
+    out = scrub("-----BEGIN PRIVATE KEY-----\nComment: my key\n" + _B64_LINE + "\n" + _B64_LINE + "\n")
+    assert out.startswith("[REDACTED:private-key]")      # the marker is still replaced...
+    assert out.count(_B64_LINE) == 2                     # ...but the body survives — accepted
 
 
 def test_secret_patterns_stay_in_sync_with_the_research_capture_hook():

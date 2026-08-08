@@ -15,7 +15,7 @@ an unrecognized extension answers with a silent allow — the edit gate was simp
 repos while the Stop gate fired on them. The two inlined lists are now kept in lockstep by a
 parity test, the way `scrub.py`/`research_capture.py` already are.
 
-### fix(scrub): an unterminated private key no longer leaks its body (Security, #534)
+### fix(scrub): a truncated private key no longer leaks its body (Security, #534)
 The fallback for a PEM key whose `-----END-----` never arrives replaced the HEADER ALONE, so every
 body line under it passed through verbatim — into the research breadcrumbs and, via a ledger or
 action-log `why=`, into a pushed branch. It now consumes the key body: the RFC1421 `Proc-Type:`/
@@ -26,6 +26,14 @@ Prose after a bare header still survives — the run rule stops at short words �
 is still owned by the terminated pattern above it. `research_capture` now also scrubs the WHOLE body
 before capping it, matching `mirror.py`'s order: truncating first could cut a sound key in half and
 manufacture exactly the degraded input this fallback exists to catch.
+
+Scope, stated precisely because this is a security control: consumption stops at the first
+sub-16-char base64 run or non-base64 byte in the body, and whatever follows that gap survives — an
+amount that is NOT bounded to a fixed number of characters. So a CANONICAL truncated key (a clean
+body cut short at the source, the case this exists for) is consumed in full, while a MANGLED body,
+or one carrying an unrecognized header line such as `Comment:`, is redacted only as far as the gap.
+Both limits are pinned by test rather than left to be rediscovered. `scrub` remains best-effort by
+design and is not the only defense: everything it feeds is gitignored.
 
 ### fix(backlog_check): a recorded hand-off now blocks the side that FILED it, not the target (#532)
 `_ledger_signals()` matched an outstanding hand-off with `ledger.handoff_key()`, which resolves to

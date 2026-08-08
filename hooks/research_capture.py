@@ -30,8 +30,19 @@ _SECRET_PATTERNS = (
     # real-whitespace pattern stops at the first one and publishes the rest. Proc-Type:/DEK-Info: are
     # the RFC1421 encrypted-PEM headers between header and body (closed, colon-anchored list). `{16,}`
     # stops the body run at short prose, so a page discussing the marker keeps its text; the `{1,15}`
-    # tail takes a truncation fragment ONLY at end-of-input. Keep this tuple identical to scrub.py's
-    # (tests/test_scrub.py enforces it); comments may differ.
+    # tail takes a truncation fragment ONLY at end-of-input.
+    #
+    # WHAT THIS DOES AND DOES NOT COVER — the residual is NOT bounded to a fixed number of characters:
+    # consumption walks recognized headers and long base64 runs and STOPS at the first sub-16-char run
+    # or any non-base64 byte inside the body, and everything from that gap onward SURVIVES, however
+    # much of it there is. A CANONICAL unterminated key (a clean body cut short at the source — the
+    # case this fallback exists for) is consumed in full; a MANGLED body (foreign byte or short run
+    # partway down) is redacted only as far as the gap. Terminated keys never reach here — the DOTALL
+    # BEGIN..END pattern above owns them. The same stop rule means an UNRECOGNIZED header line (e.g.
+    # `Comment:`) between BEGIN and the body halts consumption and leaves the whole body: accepted on
+    # purpose, since open-ended header matching would eat ordinary prose. Both costs are pinned in
+    # tests/test_scrub.py. Keep this tuple identical to scrub.py's (that file's parity test enforces
+    # it); comments may differ.
     (re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----"
                 r"(?:(?:\\[rn]|\s)*(?:Proc-Type|DEK-Info):[^\n]{0,120})*"
                 r"(?:(?:\\[rn]|\s)*[A-Za-z0-9+/=]{16,})*"
@@ -81,7 +92,7 @@ def build_breadcrumb(tool_name, tool_input, tool_response):
     """Pure: (relative_path, markdown) for a web tool with a subject, else None.
 
     Security: we persist a provenance breadcrumb — source, subject, and a SHORT, scrubbed excerpt —
-    never the raw response body. Raw web bodies can carry tokens/PII; dumping any of one verbatim into
+    never the raw response body. Raw web bodies can carry tokens/PII; dumping any of it verbatim into
     a git-tracked dir is the leak this closes. The excerpt is scrubbed of secret-shaped substrings and
     THEN capped at `_EXCERPT_CHARS`; `.sdlc/knowledge/` is also gitignored by /sdlc-setup, so even a
     scrubbed breadcrumb stays local unless the adopter deliberately commits it (defense in depth)."""

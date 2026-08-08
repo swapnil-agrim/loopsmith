@@ -23,9 +23,22 @@ _SECRET_PATTERNS = (
     #: between header and body; that list is closed and colon-anchored (Subject:/Version:/Comment: are
     #: deliberately absent — they open ordinary prose). The body is a run of long base64 lines, so
     #: `{16,}` stops at short prose and a document merely DISCUSSING the marker keeps its text; the
-    #: `{1,15}` tail then takes a mid-line truncation fragment ONLY at end-of-input — the exact artifact
-    #: of a capped capture. A shorter run mid-document is an accepted, bounded residual (≤15 chars,
-    #: pinned by test). No possessive/atomic groups: those are 3.11+, and CI still runs 3.10.
+    #: `{1,15}` tail then takes a mid-line truncation fragment ONLY at end-of-input.
+    #:
+    #: WHAT THIS DOES AND DOES NOT COVER — the residual is NOT bounded to a fixed number of characters:
+    #: consumption walks recognized headers and long base64 runs and STOPS at the first sub-16-char run
+    #: or any non-base64 byte inside the body. Everything from that gap onward SURVIVES, however much
+    #: of it there is. So a CANONICAL unterminated key — a clean body cut short at the source, which is
+    #: the case this fallback exists for — is consumed in full; a MANGLED body (a foreign byte or a
+    #: short run partway down) is redacted only as far as the gap, and complete key lines after it are
+    #: published. Terminated keys never reach here at all: the DOTALL BEGIN..END pattern above owns
+    #: them outright. The same stop rule is why an UNRECOGNIZED header line (e.g. `Comment:`) between
+    #: BEGIN and the body halts consumption immediately and leaves the whole body — accepted on
+    #: purpose, because the alternative is open-ended header matching that would eat ordinary prose.
+    #: Both costs are pinned by test so the next reader meets the real behavior, not a comforting
+    #: bound. Widening the run rule, or opening the header list, is a deliberate decision with its own
+    #: false-positive price — not a typo to fix in passing.
+    #: No possessive/atomic groups: those are 3.11+, and CI still runs 3.10.
     (re.compile(r"-----BEGIN[ A-Z]*PRIVATE KEY-----"
                 r"(?:(?:\\[rn]|\s)*(?:Proc-Type|DEK-Info):[^\n]{0,120})*"
                 r"(?:(?:\\[rn]|\s)*[A-Za-z0-9+/=]{16,})*"
