@@ -53,13 +53,23 @@ export interface IcPayload {
   generated_at: string;
   actor_ever_appeared: boolean;
   my_queue: { actor_id: string; goal_id: string; claimed_ts: string }[];
+  // issue #315 [E20.S4] D1 (plan-review round-2 BLOCKING correction): per-table "ever ingested for
+  // anyone" signals, one per bespoke readout -- `actor_ever_appeared` alone answers "is this
+  // identity known to the store at all," not "has THIS readout's own table ever received a row
+  // for anyone" (insight/dash/ic.py's own module docstring proves the two are not the same fact).
+  // page.tsx gates each readout's numeral on `actor_ever_appeared && <its own flag>`, never
+  // `actor_ever_appeared` alone. Project-wide/table-wide facts, never actor-scoped data -- they
+  // carry nothing a cross-actor leak proof needs to worry about (D4).
+  my_queue_ever_ingested: boolean;
   blocked_on_me: {
     from_actor: string; to_actor: string; area: string; issue: number | null;
     priority: string; opened_ts: string;
   }[];
   handoff_ever_ingested: boolean;
   park_count: number;
+  park_ever_ingested: boolean;
   verdicts_given: { pr_number: number; verdict: string; event_ts: string }[];
+  verdicts_ever_ingested: boolean;
   cost: {
     tokens_in: number | null; tokens_out: number | null; cost_cents: number | null; n: number;
   };

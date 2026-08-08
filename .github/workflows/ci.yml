@@ -250,5 +250,15 @@ jobs:
       - name: prove no individual-grain leak anywhere on /leadership (npm run prove:leadership-no-leak)
         run: npm run prove:leadership-no-leak
         working-directory: insight/web
+      # issue #315 [E20.S4] done-when 4: /ic's own cold-start guarantee, extended (D1) with an
+      # executed negative control proving a readout whose OWN source table was never ingested
+      # stays hatched even when the actor and other readouts are real -- same
+      # family/reasoning as prove:delivery-cold-start/prove:manager-cold-start/
+      # prove:leadership-cold-start above, no new install step. Depends on the widened
+      # scripts/lib/cold-start-proof.mjs (D5) -- placed after every OTHER caller of that shared
+      # harness has already run above, so a regression there would already have failed sooner.
+      - name: prove the IC panel's cold start renders no numerals anywhere, including the per-table asymmetry (npm run prove:ic-cold-start)
+        run: npm run prove:ic-cold-start
+        working-directory: insight/web
       - name: docker build (Dockerfile.web) -- the Dockerfile is proven to build, not just present
         run: docker build -f insight/Dockerfile.web -t insight-web-scaffold:ci insight/

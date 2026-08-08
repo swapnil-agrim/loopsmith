@@ -57,14 +57,18 @@
 // 3 below) now also renders a real page backed by fetchDeliveryMetrics(), so it needs the same
 // duckdb install too -- it is no longer exempt the way this paragraph originally described.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdirSync, rmSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { mintSessionToken, proofServerEnv, SESSION_COOKIE_NAME } from "./lib/proof-session.mjs";
+import {
+  mintSessionToken, proofServerEnv, sessionCookieHeader, SESSION_COOKIE_NAME,
+} from "./lib/proof-session.mjs";
 
 const WEB = path.resolve(fileURLToPath(import.meta.url), "..", "..");
+const REPO_ROOT = path.resolve(WEB, "..", "..");
 const NEXT_BIN = path.join(WEB, "node_modules", ".bin", "next");
 
 // ---- server lifecycle (identical pattern to prove-absence-primitives-render.mjs / --------------
@@ -119,6 +123,59 @@ async function startNext() {
   return { proc, baseUrl };
 }
 
+/** issue #315 [E20.S4] D6, found live rather than assumed: unlike `insight web delivery` (the
+ * bridge manager/leadership/delivery all use, which degrades a MISSING store to an honest, all-
+ * absent catalog on exit 0 -- insight/__main__.py's own "web delivery" branch comment), `insight
+ * web ic` fails CLOSED on a missing store (exit 2, `store_unavailable` -- the SAME ABSENT-!=-PASS
+ * doctrine applied harder to actor-scoped data, ic.py's own module docstring). page.tsx has never
+ * caught that error (pre-existing since #310, unchanged by this story), so hitting /ic against
+ * THIS job's real project store -- which a fresh `actions/checkout@v4` never ingests (`.sdlc/` is
+ * gitignored repo-wide) -- would make the whole page 500, not render a real, structurally-
+ * checkable page the way manager/leadership/delivery's own real-store positive controls do.
+ * Verified live in this story's own worktree before writing this function this way, not assumed
+ * from the plan text (which originally proposed reusing the real, no-override store the way
+ * manager/leadership/delivery's blocks already do -- that assumption does not hold for /ic
+ * specifically, because its own bridge behaves differently on a missing store).
+ *
+ * The fix: block 3c below boots its OWN, separate, throwaway server against a small seeded
+ * fixture (the SAME alice/bob/carol fixture prove-ic-no-cross-actor-leak.mjs already uses, via
+ * the SAME seed-ic-fixture.py), so the "ic" role's granted request reaches a real, populated page
+ * -- exactly the guarantee D6 wants (role-gating reaches a real page, not a stub) -- without
+ * touching startNext()/fetchAs() or any of blocks 1-7's own server or assertions. */
+async function seedIcFixture(scratchDir) {
+  const dbPath = path.join(scratchDir, "role-forbidden-ic.duckdb");
+  const result = spawnSync(
+    "python3",
+    [path.join(WEB, "scripts", "lib", "seed-ic-fixture.py"), "--db", dbPath],
+    { cwd: REPO_ROOT, encoding: "utf-8" },
+  );
+  assert.equal(
+    result.status, 0,
+    `seed-ic-fixture.py must exit 0 (is duckdb installed?):\n${result.stdout}\n${result.stderr}`,
+  );
+  return dbPath;
+}
+
+async function startNextWithDb(dbPath) {
+  const port = await getFreePort();
+  const proc = spawn(NEXT_BIN, ["start", "-p", String(port)], {
+    cwd: WEB,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...proofServerEnv(), INSIGHT_DB_PATH: dbPath },
+  });
+  let out = "";
+  proc.stdout.on("data", (d) => (out += d.toString()));
+  proc.stderr.on("data", (d) => (out += d.toString()));
+  const baseUrl = `http://127.0.0.1:${port}`;
+  try {
+    await waitForServer(`${baseUrl}/`);
+  } catch (err) {
+    proc.kill();
+    throw new Error(`${err.message}\n-- next start output --\n${out}`);
+  }
+  return { proc, baseUrl };
+}
+
 // ---- session-carrying fetch ----------------------------------------------------------------
 
 /** GETs `pathname` on the real running server, optionally carrying a REAL Auth.js session cookie
@@ -132,6 +189,20 @@ async function fetchAs(baseUrl, pathname, role) {
     headers.cookie = `${SESSION_COOKIE_NAME}=${token}`;
   }
   return fetch(`${baseUrl}${pathname}`, { headers, redirect: "manual" });
+}
+
+/** issue #315 [E20.S4] D6: a small, LOCAL, additive-only helper just for the new /ic block below --
+ * fetchAs() above is never touched or widened (every existing assertion in this file keeps calling
+ * it, byte-identical). /ic's own page.tsx calls auth() itself, and a Server Component's own
+ * no-argument auth() call always looks for the `__Secure-`-prefixed cookie name regardless of the
+ * server's real scheme (see proof-session.mjs's own SECURE_SESSION_COOKIE_NAME comment) -- so this
+ * helper mints BOTH cookie names via sessionCookieHeader(), the same fix D5 makes to
+ * scripts/lib/cold-start-proof.mjs's own fetchRouteAs(), applied here as a second, independent,
+ * additive fix rather than a shared one (this file's fetchAs() has its own callers that must stay
+ * unaffected). */
+async function fetchIcAs(baseUrl, role, actor = "proof-user") {
+  const cookie = await sessionCookieHeader(role, actor);
+  return fetch(`${baseUrl}/ic`, { headers: { cookie }, redirect: "manual" });
 }
 
 async function main() {
@@ -234,6 +305,76 @@ async function main() {
       `OK: real session (role "leadership") on /leadership -> real HTTP 200, curated labels present, ` +
       `${leadershipMetricRootCount} metric-root elements rendered`,
     );
+
+    // 3c. issue #315 [E20.S4] D6. Same shape as blocks 2/3/3b above -- labelled "3c" to avoid
+    //    renumbering the rest of the file. A role granted elsewhere but wrong here ("leadership",
+    //    mirroring block 2/3b's own choice of a plausible-but-wrong denial role) must get a real
+    //    403 with the whole body exactly {"error":"forbidden"} (route-policy.ts grants /ic to "ic"
+    //    only) -- proxy.ts denies BEFORE ic.py's own bridge is ever invoked, so this half runs
+    //    against the SAME primary server every other block in this file uses, unaffected by
+    //    whether the real project store has been ingested. Uses fetchIcAs() (not fetchAs())
+    //    because /ic's own page.tsx calls auth() itself -- see that helper's own comment.
+    const icForbidden = await fetchIcAs(baseUrl, "leadership");
+    assert.equal(
+      icForbidden.status, 403,
+      `a real session with role "leadership" hitting /ic must get a real 403, got ${icForbidden.status}`,
+    );
+    const icForbiddenBody = await icForbidden.json();
+    assert.deepEqual(
+      icForbiddenBody, { error: "forbidden" },
+      `the real server's forbidden response body must be exactly {"error":"forbidden"}, got: ${JSON.stringify(icForbiddenBody)}`,
+    );
+    console.log('OK: real session (role "leadership") on /ic -> real HTTP 403, body exactly {"error":"forbidden"}');
+
+    // The ALLOWED half deliberately does NOT reuse the primary server/store the way blocks
+    // 2/3/3b's own positive controls do (found live, not assumed -- see seedIcFixture()'s own
+    // comment): unlike `insight web delivery` (manager/leadership/delivery's shared bridge, which
+    // degrades a missing store to an honest all-absent catalog on exit 0), `insight web ic` fails
+    // CLOSED on a missing store (exit 2), and page.tsx has never caught that -- so against a
+    // fresh CI checkout's real, un-ingested project store, this positive control would 500, not
+    // 200, for a reason that has nothing to do with role-gating. A small, throwaway, dedicated
+    // server against a real seeded fixture (the SAME alice/bob/carol fixture
+    // prove-ic-no-cross-actor-leak.mjs already uses) gives this block the SAME "real, populated
+    // page" guarantee manager/leadership/delivery's own positive controls get for free from their
+    // more forgiving bridge.
+    const icScratchDir = path.join(REPO_ROOT, ".sdlc-proof-scratch-role-forbidden-ic");
+    rmSync(icScratchDir, { recursive: true, force: true });
+    mkdirSync(icScratchDir, { recursive: true });
+    const icDbPath = await seedIcFixture(icScratchDir);
+    const icServer = await startNextWithDb(icDbPath);
+    try {
+      const icAllowed = await fetchIcAs(icServer.baseUrl, "ic", "alice");
+      assert.notEqual(icAllowed.status, 403, 'a real "ic" session must not be forbidden on /ic');
+      assert.equal(
+        icAllowed.status, 200,
+        `a real "ic" session on /ic must reach the real page (200), got ${icAllowed.status}`,
+      );
+      const icAllowedBody = await icAllowed.text();
+      // Labels that render unconditionally regardless of measured/absent state: "Cycle time"/
+      // "Merge frequency" are two of the six IC_PRIMARY_READOUT_IDS catalog labels (a <Metric>
+      // always shows metric.label); "My queue"/"My parks" are two of the five fixed ActorReadout
+      // tiles (an ActorReadout always shows its own label) -- see src/lib/ic/curation.ts and
+      // src/app/ic/page.tsx.
+      for (const label of ["Cycle time", "Merge frequency", "My queue", "My parks"]) {
+        assert.ok(
+          icAllowedBody.includes(label),
+          `ic's /ic page must contain the readout label ${JSON.stringify(label)}`,
+        );
+      }
+      const icMetricRootCount = (icAllowedBody.match(/data-testid="metric-root"/g) ?? []).length;
+      assert.ok(
+        icMetricRootCount >= 11,
+        "ic's /ic page must render at least 11 metric-root elements (6 curated catalog cards + 5 " +
+        `fixed ActorReadout tiles, IC_PRIMARY_READOUT_IDS.length + 5), found ${icMetricRootCount}`,
+      );
+      console.log(
+        `OK: real session (role "ic") on /ic -> real HTTP 200, curated labels present, ` +
+        `${icMetricRootCount} metric-root elements rendered`,
+      );
+    } finally {
+      icServer.proc.kill();
+      rmSync(icScratchDir, { recursive: true, force: true });
+    }
 
     // 4. An unknown role string, through the REAL pipeline, denies -- not a crash, not a 500.
     const unknownRole = await fetchAs(baseUrl, "/manager", "owner");

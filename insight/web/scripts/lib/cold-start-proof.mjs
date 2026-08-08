@@ -23,7 +23,9 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { mintSessionToken, proofServerEnv, SESSION_COOKIE_NAME } from "./proof-session.mjs";
+import {
+  mintSessionToken, proofServerEnv, sessionCookieHeader, SESSION_COOKIE_NAME,
+} from "./proof-session.mjs";
 
 // This file lives at scripts/lib/cold-start-proof.mjs -- three ".." from here (lib/ -> scripts/
 // -> web/) reaches insight/web/, the same derivation tsc-scratch.mjs's own WEB constant uses for
@@ -103,8 +105,27 @@ export async function startNext(dbPath) {
 /** GETs `route` carrying a real Auth.js session for `role` -- none of delivery/manager/leadership
  * page.tsx calls auth() itself (all aggregate-only, no actor), so only proxy.ts's own cookie
  * lookup matters here; the plain (non `__Secure-`-prefixed) cookie name is enough, same as
- * prove-role-forbidden-real-server.mjs's own fetchAs(). */
-async function fetchRouteAs(baseUrl, route, role) {
+ * prove-role-forbidden-real-server.mjs's own fetchAs().
+ *
+ * issue #315 [E20.S4] D5: `actor` is a NEW, ADDITIVE, OPTIONAL fourth parameter. When omitted
+ * (every existing caller -- delivery/manager/leadership never pass a fourth argument), this
+ * function takes the EXACT branch it always has: mintSessionToken(role, "proof-user") and a
+ * single, plain SESSION_COOKIE_NAME cookie -- byte-identical behaviour, proven by this story's own
+ * required regression run (`prove:delivery-cold-start`/`prove:manager-cold-start`/
+ * `prove:leadership-cold-start`, all still green). Only when a caller passes `actor` does this
+ * switch to sessionCookieHeader(role, actor), which mints BOTH the plain and the
+ * `__Secure-`-prefixed cookie names -- required for /ic specifically, because its own page.tsx
+ * calls auth() itself (a Server Component's own no-argument auth() call always looks for the
+ * `__Secure-`-prefixed cookie name regardless of the server's real scheme -- see
+ * proof-session.mjs's own SECURE_SESSION_COOKIE_NAME comment for the live-found reason). Without
+ * this, /ic would render its resolvedActor === null fail-closed branch every time, passing the
+ * cold-start "no numerals" check for the wrong reason (no identity resolved at all, not "identity
+ * resolved, correctly hatched"). */
+async function fetchRouteAs(baseUrl, route, role, actor) {
+  if (actor !== undefined) {
+    const cookie = await sessionCookieHeader(role, actor);
+    return fetch(`${baseUrl}${route}`, { headers: { cookie }, redirect: "manual" });
+  }
   const token = await mintSessionToken(role, "proof-user");
   return fetch(`${baseUrl}${route}`, {
     headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
@@ -158,9 +179,14 @@ export function makeAssertNoNumeralsAnywhere(floor) {
  *   mandatory negative control's `assert.throws` -- e.g. leadership's own assertion that metric
  *   23's numeral AND its coverage denominator both actually render (Decision A's class-2 positive
  *   proof). Defaults to a no-op so delivery and manager, which need no such check, are unaffected
- *   by its addition. */
+ *   by its addition.
+ * - `actor` (issue #315 [E20.S4] D5) is a NEW, ADDITIVE, OPTIONAL field, threaded to both
+ *   `fetchRouteAs` calls below (cold + populated sections), defaulted to `undefined` -- every
+ *   existing caller (delivery/manager/leadership) omits it and keeps its exact previous
+ *   behaviour; only /ic's own new call site (the one page.tsx that calls auth() itself) passes
+ *   one. */
 export async function runColdStartNoNumeralsProof({
-  proofName, route, role, populateFlags, floor, assertPopulated,
+  proofName, route, role, actor, populateFlags, floor, assertPopulated,
 }) {
   const t0 = Date.now();
   const numeralFloor = typeof floor === "function" ? await floor() : floor;
@@ -176,7 +202,7 @@ export async function runColdStartNoNumeralsProof({
     let server = await startNext(coldDbPath);
     let coldBody;
     try {
-      const res = await fetchRouteAs(server.baseUrl, route, role);
+      const res = await fetchRouteAs(server.baseUrl, route, role, actor);
       assert.equal(
         res.status, 200,
         `${role} on ${route} (cold-start store) must succeed, got ${res.status}`,
@@ -197,7 +223,7 @@ export async function runColdStartNoNumeralsProof({
     const populatedDbPath = seedFixture(scratchDir, "populated.duckdb", populateFlags);
     server = await startNext(populatedDbPath);
     try {
-      const res = await fetchRouteAs(server.baseUrl, route, role);
+      const res = await fetchRouteAs(server.baseUrl, route, role, actor);
       assert.equal(
         res.status, 200,
         `${role} on ${route} (populated store) must succeed, got ${res.status}`,
