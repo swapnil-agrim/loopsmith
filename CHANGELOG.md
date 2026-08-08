@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### fix(backlog_check): the in-flight-elsewhere signal now honors the claim-lease TTL (#535)
+`_ledger_signals()` read `ledger.open_claims()` with no `ttl_seconds`, so a claim the lease system
+had already expired — a crashed session, yesterday's run — kept generating `in-flight-elsewhere`
+findings forever, and under `action: park` kept parking new similar goals against it. It now reads
+the TTL through `ledger.lease_ttl_seconds()`, the same setting `loop.py`, `work.py` and both
+watchers already share, so a claim the loop is free to re-take can no longer park a paraphrase of
+itself. `ttl_hours: 0`/`false` still means never-expire, and a malformed value degrades this one
+channel instead of emptying the whole pack. The recorded hand-off branch is untouched: a hand-off
+is an explicit blocker with its own settlement lifecycle, not a lease.
+
 ### fix(hooks): plan_gate no longer locks itself on, and gates Scala/Elixir like its sibling (#536)
 `plan_gate.sh` had drifted from the hardened `completion_gate.sh` on two counts. It printed the
 mode line BEFORE `int(plan_freshness_hours)` could raise inside the same `try`, so an unparseable
