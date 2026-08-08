@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### fix(backlog_check): a recorded hand-off now blocks the side that FILED it, not the target (#532)
+`_ledger_signals()` matched an outstanding hand-off with `ledger.handoff_key()`, which resolves to
+the TARGET issue — so the recipient's loop parked the very issue it had just been handed ("blocked
+by #11" against #11 itself), while the genuinely-blocked filer never matched and walked straight
+into the work it was waiting on. The block now matches the entry's own `goal`, and the finding's
+`ref` names the target that has to land first — the same the-other-item meaning `ref` already
+carries in the duplicate/obsoleted-by findings. `handoff_key()` is unchanged: pairing a hand-off
+with its `ack` answers is a different question, and that conversation does live on the target issue.
+A CLOSED target no longer blocks either — an `ack` is skippable (the recipient's normal path is
+merge-and-close) and `outstanding()` settles only on ack `resolved`/`declined`, so without that
+release rule the filer would park forever. A target missing from the corpus still blocks: unknown
+is not finished.
+
 ### fix(state): serialize STATE.md cursor writers with a kernel flock + atomic replace (#531)
 `save_cursor`/`add_tokens` were unlocked read-modify-write over a file shared across the whole run,
 compounded by a `_state_file` scaffold-on-demand with its own unlocked clobber window; under
