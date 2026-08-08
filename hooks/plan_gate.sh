@@ -43,12 +43,18 @@ case "$fresh_hours" in ''|*[!0-9]*) fresh_hours=24 ;; esac   # defensive: never 
 # Deliberate-override sentinel.
 [ -f "$PROJECT/.sdlc/.allow-direct-edits" ] && exit 0
 
-# The file being edited (fail-open on unreadable input).
+# The file being edited (fail-open on unreadable input). All three spellings are read, matching
+# decision_gate.py's own extraction points byte for byte: this hook is wired on NotebookEdit too
+# (hooks.json), and a NotebookEdit payload carries `notebook_path`, not `file_path`. Reading only
+# `file_path` left the value empty and the `-n` guard below then fail-opened before any gating logic
+# ran — so that matcher entry was dead wiring, and a repo with the gate ON was never gated on a
+# notebook edit, with nothing to say so (#553).
 input="$(cat 2>/dev/null || true)"
 file_path="$(printf '%s' "$input" | python3 -c '
 import sys, json
 try:
-    print((json.load(sys.stdin).get("tool_input") or {}).get("file_path") or "")
+    ti = json.load(sys.stdin).get("tool_input") or {}
+    print(ti.get("file_path") or ti.get("filePath") or ti.get("notebook_path") or "")
 except Exception:
     print("")
 ' 2>/dev/null || true)"
@@ -60,9 +66,12 @@ case "$file_path" in
   *.md|*.markdown|*.json|*.yaml|*.yml|*.toml|*.txt|*.csv|*.lock) exit 0 ;;
 esac
 # Kept in lockstep with completion_gate.sh's identical list (each hook inlines its own copy so it
-# stays path-independent); tests/test_plan_gate.py asserts the two sets are equal.
+# stays path-independent); tests/test_plan_gate.py asserts the two sets are equal. `*.ipynb` joined
+# it with #553: reading a NotebookEdit's path is inert while the extension it always carries is
+# unrecognized, and an unrecognized extension exits 0 — the gate would have kept fail-opening on
+# exactly the file type the NotebookEdit matcher exists for. A notebook is code an engineer edits.
 case "$file_path" in
-  *.py|*.ts|*.tsx|*.js|*.jsx|*.sh|*.go|*.rs|*.java|*.rb|*.c|*.cc|*.cpp|*.h|*.hpp|*.swift|*.kt|*.php|*.scala|*.ex|*.exs) ;;
+  *.py|*.ts|*.tsx|*.js|*.jsx|*.sh|*.go|*.rs|*.java|*.rb|*.c|*.cc|*.cpp|*.h|*.hpp|*.swift|*.kt|*.php|*.scala|*.ex|*.exs|*.ipynb) ;;
   *) exit 0 ;;   # not a recognized source extension → allow
 esac
 

@@ -6,11 +6,14 @@ HOOK = pathlib.Path(__file__).resolve().parent.parent / "hooks" / "plan_gate.sh"
 COMPLETION_HOOK = HOOK.parent / "completion_gate.sh"
 
 
-def _run(project_dir, file_path):
+def _run(project_dir, file_path, key="file_path"):
+    """`key` selects which spelling of the path the payload carries (#553): Edit/Write/MultiEdit
+    send `file_path`, NotebookEdit sends `notebook_path`, and `filePath` is the camelCase variant
+    decision_gate.py already tolerates. All three have to reach the same verdict."""
     env = {**os.environ, "CLAUDE_PROJECT_DIR": str(project_dir)}
     proc = subprocess.run(
         ["bash", str(HOOK)],
-        input=json.dumps({"tool_input": {"file_path": file_path}}),
+        input=json.dumps({"tool_input": {key: file_path}}),
         capture_output=True, text=True, env=env,
     )
     assert proc.returncode == 0, proc.stderr
@@ -167,5 +170,53 @@ def test_source_extension_lists_stay_in_sync_with_the_completion_gate():
     comp_exts = _source_extensions(COMPLETION_HOOK.read_text(encoding="utf-8"), "completion_gate.sh")
     assert plan_exts == comp_exts, "plan_gate.sh and completion_gate.sh source extensions drifted"
     # and the shared set really did grow to the sibling's, rather than the two meeting in the middle
-    for ext in ("scala", "ex", "exs"):
+    # ("ipynb" added by #553, which had to land in BOTH copies to keep this equality true)
+    for ext in ("scala", "ex", "exs", "ipynb"):
         assert ext in plan_exts and ext in comp_exts
+
+
+# --- #553: hooks.json matches NotebookEdit, but the script only read tool_input.file_path --------
+# A NotebookEdit payload carries `notebook_path`. Reading only `file_path` left it empty, and the
+# `[ -n "$file_path" ] || exit 0` guard then fail-opened before any gating logic ran — so the
+# NotebookEdit entry in the matcher (hooks.json) was dead wiring: a repo that turned the hard plan
+# gate ON was still never gated on a notebook edit, and nothing said so. decision_gate.py already
+# reads all three spellings at both of its extraction points; this brings the gate in line.
+#
+# Two halves, tested apart on purpose. The READ fix is what makes a notebook payload reach the
+# pipeline at all; the EXTENSION addition is what makes `.ipynb` gated once it gets there. Either
+# one alone leaves the matcher's promise unmet, so each has its own test.
+
+def test_a_notebook_edit_payload_reaches_the_same_verdict_as_an_edit():
+    """The acceptance criterion, isolated from the extension question by using a path that was
+    already gated: the same file denied through `file_path` must be denied through `notebook_path`.
+    Pre-fix this returned "" — a silent allow — while the Edit form denied."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        _project(root)
+        edit = _run(root, str(root / "app.py"))
+        notebook = _run(root, str(root / "app.py"), key="notebook_path")
+        assert "deny" in edit                      # the reference verdict
+        assert notebook == edit                    # same payload, different spelling, same answer
+
+
+def test_the_camel_case_file_path_spelling_is_read_too():
+    """`filePath` rides the same fallback chain decision_gate.py uses, so the two hooks cannot
+    disagree about which spellings of one field they understand."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        _project(root)
+        assert _run(root, str(root / "app.py"), key="filePath") == _run(root, str(root / "app.py"))
+
+
+def test_notebooks_are_gated_source():
+    """The other half: reading the path is useless while `.ipynb` is not a recognized source
+    extension — an unrecognized extension exits 0, so the gate stayed inert for the very file type
+    the matcher entry exists for. A notebook is code an engineer edits, so it is source."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        root = pathlib.Path(d)
+        _project(root)
+        assert "deny" in _run(root, str(root / "analysis.ipynb"), key="notebook_path")
+        assert "deny" in _run(root, str(root / "analysis.ipynb"))   # and via a plain Edit too

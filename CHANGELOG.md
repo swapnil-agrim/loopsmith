@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### fix(hooks): plan_gate now actually sees a NotebookEdit, and gates notebooks (#553)
+`hooks.json` wires the hard plan gate on `Edit|Write|MultiEdit|NotebookEdit`, but the script read
+only `tool_input.file_path`. A NotebookEdit payload carries `notebook_path`, so the value came back
+empty and the `[ -n "$file_path" ]` guard fail-opened before any gating logic ran — that matcher
+entry was dead wiring, and a repo with the gate switched ON was never gated on a notebook edit, with
+nothing to say so. The path is now read through the same `file_path` / `filePath` / `notebook_path`
+chain `decision_gate.py` already uses at both of its extraction points, so the two hooks agree on
+which spellings of one field they understand.
+
+Reading the path is inert on its own, though: `*.ipynb` was in neither gate's source-extension list,
+and an unrecognized extension exits 0 — the gate would have kept fail-opening on exactly the file
+type the NotebookEdit matcher exists for. So `*.ipynb` joins that list in BOTH gates, per the
+lockstep convention their parity test enforces; a notebook is code an engineer edits. The Stop gate
+consequently also counts a changed notebook as changed source — the same judgment applied
+consistently, not a second decision. Both gates remain off by default.
+
 ## 1.0.8 — the hardening release
 
 ### chore(repo): remove the stray zero-byte `err` file from the repo root (#530)

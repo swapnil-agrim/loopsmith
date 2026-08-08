@@ -92,10 +92,13 @@ changed="$( {
 } | sort -u )" || allow
 
 source_changed=0
+# Kept in lockstep with plan_gate.sh's identical list (tests/test_plan_gate.py asserts the two sets
+# are equal); `*.ipynb` joined it with #553 — the edit gate had to recognize it, and letting the two
+# lists disagree is the drift that test exists to prevent.
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   case "$f" in
-    *.py|*.ts|*.tsx|*.js|*.jsx|*.sh|*.go|*.rs|*.java|*.rb|*.c|*.cc|*.cpp|*.h|*.hpp|*.swift|*.kt|*.php|*.scala|*.ex|*.exs)
+    *.py|*.ts|*.tsx|*.js|*.jsx|*.sh|*.go|*.rs|*.java|*.rb|*.c|*.cc|*.cpp|*.h|*.hpp|*.swift|*.kt|*.php|*.scala|*.ex|*.exs|*.ipynb)
       source_changed=1; break ;;
   esac
 done <<EOF
