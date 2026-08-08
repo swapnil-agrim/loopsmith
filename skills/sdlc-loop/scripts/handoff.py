@@ -149,13 +149,15 @@ def create_tracked_issue(sdlc_dir, config, goal, area, why, *,
     `same_area` (PR #466 review finding): `backlog_check._ledger_signals()` is a SECOND, independent
     blocking mechanism from the body-marker/`_explicit_blockers()` channel above — it treats any
     `ledger.outstanding()` entry (`kind == "handoff"`, not yet acked) as a confident block against
-    whatever `ledger.handoff_key()` resolves to, and `handoff_key()` FALLS BACK TO THE FILING GOAL'S
-    OWN REF whenever no real issue number was recorded (the default outcome for any source without
-    `create_dependency`, e.g. `LocalSource` — not a rare failure). Writing `kind="handoff"`
-    unconditionally for every `same_area=False` call — including `blocks_goal=False`, a fully
-    sanctioned "cross-area FYI, not a blocker" combination — let a degraded/local source's unresolved
-    entry confident-block the FILING goal against itself, exactly the false-blocking bug this whole
-    axis exists to prevent, one layer deeper than the body marker:
+    the entry's own `goal` — the side that filed it (`handoff_key()` only supplies the finding's
+    `ref`, i.e. which target has to land first; #532). That makes THIS gate strictly MORE
+    load-bearing than it was when the block landed on `handoff_key()`: every `kind="handoff"` row
+    now blocks the goal it names, in github and local mode alike, with no accidental miss to soften
+    a wrongly-written one. Writing `kind="handoff"` unconditionally for every `same_area=False`
+    call — including `blocks_goal=False`, a fully sanctioned "cross-area FYI, not a blocker"
+    combination — would therefore park the FILING goal on a finding that was never a blocker,
+    exactly the false-blocking bug this whole axis exists to prevent, one layer deeper than the
+    body marker:
       `(not same_area) and blocks_goal` (a genuine cross-area BLOCKING dependency) → `kind="handoff"`,
         `to=<resolved owner>`, `state="open"` — byte-identical to `hand_off()`'s pre-existing write
         (`hand_off()` always pins `blocks_goal=True`, so its behavior is completely unchanged), so it

@@ -282,7 +282,8 @@ def _goal_comment_text(sdlc_dir, config, goal_doc, run=None):
 def _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now, exempt=False):
     """Team-wide signals from the shared ledger (read-only, no `enabled` needed): a SIMILAR goal a
     teammate is claiming right now (the race the exact-goal lease can't see), and an outstanding
-    hand-off whose target is this goal (a real, recorded blocker).
+    hand-off this goal FILED (a real, recorded blocker — it is waiting on the target it handed off,
+    which is why the finding's `ref` is that target and not this goal).
 
     `exempt` (#521): `goal_doc` is a decomposition child/meta-goal (see `cross_check`'s own
     precomputed `exempt`). Applies ONLY to the in-flight-elsewhere SIMILARITY branch below -- parallel
@@ -314,8 +315,29 @@ def _ledger_signals(sdlc_dir, goal_doc, idf, doc_by_ref, dup_th, now, exempt=Fal
         pass
     try:
         for h in ledger.outstanding(entries):
-            if ledger.handoff_key(h) == goal_ref:
-                out.append(_finding("blocked-by", goal_ref, 1.0, "ledger", ["handoff"], True))
+            # The entry's `goal` is the side that RECORDED "I am blocked"; its `issue` is the target
+            # it opened in the owner's area. Matching on `handoff_key` (issue-or-goal) parked the
+            # TARGET against itself and let the genuinely-blocked filer walk straight into the work
+            # it was waiting on (#532). `handoff_key` itself stays exactly as it is — pairing a
+            # hand-off with its `ack` answers is a different question, and that conversation really
+            # does live on the target issue.
+            if str(h.get("goal")) != goal_ref:
+                continue
+            key = ledger.handoff_key(h)
+            # A closed target is not a blocker — the same precision rule `_explicit_blockers()`
+            # applies to its own `#N` refs. An `ack` is skippable (the recipient's normal path is
+            # merge-and-close) and `outstanding()` settles only on ack resolved/declined, so without
+            # this an unacked hand-off would outlive the issue it waited on and park the filer
+            # forever. A target absent from the corpus still blocks: unknown is not finished.
+            d = doc_by_ref.get(key)
+            if d and d["completed"]:
+                continue
+            # `ref` is the TARGET that must land first — the same the-other-item meaning `ref`
+            # carries in the duplicate/obsoleted-by findings, instead of the self-reference the
+            # pre-fix branch emitted. In local mode `handoff_key` falls back to the goal itself:
+            # there is no separate target artifact to point at, and the `[handoff]` term still says
+            # what kind of block it is.
+            out.append(_finding("blocked-by", key, 1.0, "ledger", ["handoff"], True))
     except Exception:
         pass
     return out

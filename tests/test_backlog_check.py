@@ -293,12 +293,58 @@ def test_in_flight_elsewhere_from_ledger_claim():
         assert ("in-flight-elsewhere", "2") in kinds
 
 
-def test_ledger_outstanding_handoff_is_a_blocker():
+# --- #532: a hand-off blocks the side that FILED it, never the side it was handed TO -------------
+# The ledger `handoff` entry carries goal=<the filing goal> and issue=<the target it opened in the
+# owner's area>. Every fixture below therefore keeps those two DISTINCT (filer #5, target #11) --
+# the predecessor test used goal==issue==1, which matches under either rule and so could not see
+# the inversion at all. Both issues live in the mirror on purpose: `cross_check` short-circuits on
+# `goal_not_in_corpus` before any ledger signal runs, which would make the target-side assert
+# vacuously green.
+
+def test_ledger_outstanding_handoff_blocks_the_filer_and_names_the_target():
     bc = _mod("backlog_check")
     with tempfile.TemporaryDirectory() as d:
-        base = _gh_base(d, [_rec(1, _GOAL)], **_LOOSE)
-        _write_claim(base, "amy", "1", kind="handoff", state="open", issue=1, to="amy")
-        assert any(f["kind"] == "blocked-by" for f in bc.cross_check(base, "1")["findings"])
+        base = _gh_base(d, [_rec(5, _GOAL), _rec(11, _DISTINCT)], **_LOOSE)
+        _write_claim(base, "amy", "5", kind="handoff", state="open", issue=11, to="bob")
+        kinds = {(f["kind"], f["ref"]) for f in bc.cross_check(base, "5")["findings"]}
+        # ref is the TARGET that must land first -- the same the-other-item meaning `ref` carries
+        # in every other finding, not the self-reference the pre-fix branch emitted.
+        assert ("blocked-by", "11") in kinds
+
+
+def test_ledger_outstanding_handoff_does_not_block_the_handed_off_target():
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(5, _GOAL), _rec(11, _DISTINCT)], **_LOOSE)
+        _write_claim(base, "amy", "5", kind="handoff", state="open", issue=11, to="bob")
+        kinds = {f["kind"] for f in bc.cross_check(base, "11")["findings"]}
+        assert "blocked-by" not in kinds          # #11 IS the work; parking it strands both sides
+
+
+def test_ledger_handoff_block_on_the_filer_clears_once_the_target_is_acked_resolved():
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(5, _GOAL), _rec(11, _DISTINCT)], **_LOOSE)
+        _write_claim(base, "amy", "5", kind="handoff", state="open", issue=11, to="bob")
+        assert any(f["kind"] == "blocked-by" for f in bc.cross_check(base, "5")["findings"])
+        # the ack pairs on the TARGET issue (`handoff_key`), which this fix deliberately leaves
+        # alone -- only the side the block is ASSERTED against moved.
+        _write_claim(base, "bob", "5", kind="ack", state="resolved", issue=11,
+                     ts="2026-08-02T01:00:00Z")
+        assert not any(f["kind"] == "blocked-by" for f in bc.cross_check(base, "5")["findings"])
+
+
+def test_ledger_handoff_block_on_the_filer_clears_once_the_target_issue_is_closed():
+    # An `ack` is skippable -- the recipient's normal path is merge-and-close. Without this release
+    # rule the filer would park forever, since `outstanding()` settles only on ack resolved/declined.
+    bc = _mod("backlog_check")
+    with tempfile.TemporaryDirectory() as d:
+        base = _gh_base(d, [_rec(5, _GOAL),
+                            _rec(11, _DISTINCT, state="closed", closed_at="2026-08-01T00:00:00Z")],
+                        **_LOOSE)
+        _write_claim(base, "amy", "5", kind="handoff", state="open", issue=11, to="bob")
+        kinds = {f["kind"] for f in bc.cross_check(base, "5")["findings"]}
+        assert "blocked-by" not in kinds
 
 
 # --- #521: decomposition-marker dedup exemption -------------------------------------------------
@@ -359,12 +405,14 @@ def test_in_flight_elsewhere_exemption_for_decomposition_child_marked_first_line
 
 
 def test_ledger_handoff_blocker_stays_confident_for_a_marked_child():
-    # the never-exempt pin: a RECORDED hand-off targeting the marked child itself is a real,
-    # explicit blocker -- must stay confident True regardless of the child's own marker.
+    # the never-exempt pin: a RECORDED hand-off the marked child itself FILED is a real, explicit
+    # blocker -- must stay confident True regardless of the child's own marker. Filer and target
+    # are distinct (#532) so this pins the filer side; the target (#11) is absent from the mirror
+    # on purpose, the fail-closed case of the closed-target release rule.
     bc = _mod("backlog_check")
     with tempfile.TemporaryDirectory() as d:
         base = _gh_base(d, [_rec(2, _GOAL, body="loopsmith:decomposed-from=1")], **_LOOSE)
-        _write_claim(base, "amy", "2", kind="handoff", state="open", issue=2, to="amy")
+        _write_claim(base, "amy", "2", kind="handoff", state="open", issue=11, to="bob")
         f = next(f for f in bc.cross_check(base, "2")["findings"] if f["kind"] == "blocked-by")
         assert f["confident"] is True
 
@@ -829,14 +877,13 @@ def test_create_tracked_issue_non_blocking_cross_area_finding_never_parks_the_fi
     """PR #466 independent review: backlog_check._ledger_signals() is a SECOND, independent blocking
     mechanism from the body-marker/_explicit_blockers() channel the test above covers.
     _ledger_signals() treats any ledger.outstanding() entry (kind="handoff", not yet acked) as a
-    confident block against whatever ledger.handoff_key() resolves to -- and handoff_key() falls back
-    to the FILING goal's own ref whenever no real issue number was recorded (the default outcome for
-    any source without create_dependency, e.g. LocalSource -- discovery.source: local-goals is the
-    kit's own default). same_area=False, blocks_goal=False is a fully sanctioned "cross-area FYI, not
-    a blocker" combination; before the fix it still wrote kind="handoff", so a degraded/local source
-    let the ledger confident-block the FILING goal against its own unresolved entry -- exactly the
-    false-blocking bug blocks_goal exists to prevent, reproduced here end-to-end with the real ledger
-    and real backlog_check (not mocked), mirroring the reviewer's own repro."""
+    confident block against the entry's own goal -- the side that filed it (#532). That makes this
+    gate MORE load-bearing than when the block landed on handoff_key(): every kind="handoff" row now
+    blocks the goal it names, so nothing softens a wrongly-written one. same_area=False,
+    blocks_goal=False is a fully sanctioned "cross-area FYI, not a blocker" combination; before the
+    fix it still wrote kind="handoff", so the ledger confident-blocked the FILING goal against its
+    own unresolved entry -- exactly the false-blocking bug blocks_goal exists to prevent, reproduced
+    here end-to-end with the real ledger and real backlog_check (not mocked)."""
     handoff = _mod("handoff")
     bc = _mod("backlog_check")
 
