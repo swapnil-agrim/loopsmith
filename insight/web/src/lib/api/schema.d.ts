@@ -146,6 +146,29 @@ export interface components {
             /** Numerator */
             numerator: number;
         };
+        /**
+         * Health
+         * @description A verdict about a reading, which is a stronger claim than the reading itself.
+         *
+         *     Only ever attached to a measured metric, and only when every gate in insight.api.health
+         *     passes. Its ABSENCE is the default and means "no defensible verdict" -- never "fine".
+         */
+        Health: {
+            /**
+             * Basis
+             * @enum {string}
+             */
+            basis: "baseline" | "benchmark";
+            /** Explanation */
+            explanation: string;
+            /** Source */
+            source?: string | null;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "healthy" | "watch" | "breach";
+        };
         /** MeasuredMetric */
         MeasuredMetric: {
             coverage: components["schemas"]["Coverage"];
@@ -153,6 +176,7 @@ export interface components {
             dataStatus?: string | null;
             /** Guardrail */
             guardrail?: string | null;
+            health?: components["schemas"]["Health"] | null;
             /** Id */
             id: number;
             /** Label */

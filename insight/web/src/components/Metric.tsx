@@ -61,6 +61,9 @@ export function Metric({ metric, index = 0 }: { metric: MetricType; index?: numb
     <div
       data-testid="metric-root"
       data-metric-state={metric.state}
+      // Absent attribute = no accent at all. See globals.css: "no verdict" is
+      // deliberately not a fourth colour.
+      data-verdict={d.verdict ?? undefined}
       title={d.reasonText ?? undefined}
       className={`panel-accent panel-rise flex min-w-[190px] flex-1 flex-col px-4 py-3.5 ${EDGE[metric.state]}`}
       style={{
@@ -83,7 +86,19 @@ export function Metric({ metric, index = 0 }: { metric: MetricType; index?: numb
           {metric.dataStatus === "dark" && (
             <span data-testid="metric-dark-tag" className="panel-tag">Dark</span>
           )}
-          {isMeasured && (
+          {d.verdict && (
+            <span
+              data-testid="metric-verdict"
+              className="panel-label"
+              style={{
+                color: `var(--panel-${d.verdict === "ok" ? "ok" : d.verdict})`,
+                letterSpacing: "0.12em",
+              }}
+            >
+              {d.verdict === "ok" ? "Healthy" : d.verdict === "watch" ? "Watch" : "Breach"}
+            </span>
+          )}
+          {isMeasured && !d.verdict && (
             <span
               aria-hidden="true"
               className="h-[5px] w-[5px] rounded-full bg-panel-cyan"
@@ -137,6 +152,15 @@ export function Metric({ metric, index = 0 }: { metric: MetricType; index?: numb
         >
           {d.reasonText}
         </div>
+      )}
+      {d.verdictNote !== null && (
+        <p
+          data-testid="metric-verdict-note"
+          className="mt-1.5 text-panel-dim"
+          style={{ fontSize: "var(--panel-text-caption)", lineHeight: 1.45 }}
+        >
+          {d.verdictNote}
+        </p>
       )}
       {d.gapHint !== null && (
         <p

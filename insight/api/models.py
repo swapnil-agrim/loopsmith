@@ -62,6 +62,21 @@ class MetricBase(BaseModel):
     data_status: Optional[str] = Field(default=None, alias="dataStatus")
 
 
+class Health(BaseModel):
+    """A verdict about a reading, which is a stronger claim than the reading itself.
+
+    Only ever attached to a measured metric, and only when every gate in insight.api.health
+    passes. Its ABSENCE is the default and means "no defensible verdict" -- never "fine"."""
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    verdict: Literal["healthy", "watch", "breach"]
+    # Where the judgement came from, so a reader can weigh it. "baseline" is the metric's own
+    # earlier window; "benchmark" is an external band and carries its citation in `source`.
+    basis: Literal["baseline", "benchmark"]
+    explanation: str
+    source: Optional[str] = None
+
+
 class MeasuredMetric(MetricBase):
     state: Literal["measured"]
     value: float
@@ -79,6 +94,11 @@ class MeasuredMetric(MetricBase):
     # of a measured metric keeps working, and a metric whose unit nobody has declared yet says so
     # by omission rather than by guessing "count" and being wrong.
     unit: Optional[Literal["seconds", "ratio", "count"]] = None
+    # None means NO VERDICT, and that is the safe default rather than a neutral one: most metrics
+    # legitimately have no defensible basis, insufficient coverage, or a dark data status, and the
+    # panel renders no accent at all for them. A "neutral" verdict value would be a fourth colour
+    # competing with the three that mean something.
+    health: Optional[Health] = None
 
 
 class AbsentNoDataMetric(MetricBase):

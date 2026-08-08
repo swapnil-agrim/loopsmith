@@ -40,6 +40,7 @@ export function MetricCell({ metric, index = 0 }: { metric: MetricType; index?: 
     <div
       data-testid="metric-root"
       data-metric-state={metric.state}
+      data-verdict={d.verdict ?? undefined}
       // The reason is the tooltip rather than truncated body text -- see the
       // header comment. Falls back to the label so a measured cell still names
       // itself on hover, where the label may be truncated by `truncate`.

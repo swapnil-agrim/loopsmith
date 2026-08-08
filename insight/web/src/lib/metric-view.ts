@@ -16,6 +16,10 @@ export interface DescribedMetric {
   question: string | null;
   /** Unbuilt metrics only: the specific next step that would fill this gap. */
   gapHint: string | null;
+  /** "ok" | "watch" | "breach", or null for NO verdict -- never a neutral one. */
+  verdict: "ok" | "watch" | "breach" | null;
+  /** Why the verdict says what it says, e.g. "holding against its earlier window (1.6h)". */
+  verdictNote: string | null;
 }
 
 const FIX_TEXT: Record<"absent_no_data" | "absent_unbuilt", string> = {
@@ -96,6 +100,13 @@ export function describeMetric(metric: Metric): DescribedMetric {
       fixText: null,
       fixShort: null,
       question: metric.question ?? null,
+      // The API's vocabulary is healthy/watch/breach; the CSS attribute's is ok/watch/breach.
+      // Mapped in this one place so the stylesheet and the model can each keep their own naming.
+      verdict:
+        metric.health?.verdict === "healthy"
+          ? "ok"
+          : (metric.health?.verdict as "watch" | "breach" | undefined) ?? null,
+      verdictNote: metric.health?.explanation ?? null,
       // No gap hint on a measured metric -- there is no gap. Deliberately not written as a
       // `state === "absent_unbuilt"` check here: in this arm `metric` is already narrowed to
       // MeasuredMetric, whose `state` is the literal "measured", so that comparison is a
@@ -111,5 +122,8 @@ export function describeMetric(metric: Metric): DescribedMetric {
     fixShort: FIX_SHORT[metric.state],
     question: metric.question ?? null,
     gapHint: metric.state === "absent_unbuilt" ? (metric.gapHint ?? null) : null,
+    // An absent metric has no reading, so it can never carry a verdict about one.
+    verdict: null,
+    verdictNote: null,
   };
 }

@@ -180,6 +180,51 @@
         "title": "Coverage",
         "type": "object"
       },
+      "Health": {
+        "additionalProperties": false,
+        "description": "A verdict about a reading, which is a stronger claim than the reading itself.\n\nOnly ever attached to a measured metric, and only when every gate in insight.api.health\npasses. Its ABSENCE is the default and means \"no defensible verdict\" -- never \"fine\".",
+        "properties": {
+          "basis": {
+            "enum": [
+              "baseline",
+              "benchmark"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "explanation": {
+            "title": "Explanation",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "verdict": {
+            "enum": [
+              "healthy",
+              "watch",
+              "breach"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "verdict",
+          "basis",
+          "explanation"
+        ],
+        "title": "Health",
+        "type": "object"
+      },
       "MeasuredMetric": {
         "additionalProperties": false,
         "properties": {
@@ -207,6 +252,16 @@
               }
             ],
             "title": "Guardrail"
+          },
+          "health": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Health"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "title": "Id",

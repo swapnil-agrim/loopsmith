@@ -23,6 +23,7 @@ from insight.api.models import (
     MeasuredMetric,
 )
 from insight.metrics.catalog import CATALOG
+from insight.api import health as _health
 from insight.metrics.header import HeaderError, parse_header
 
 # CWD-relative, matching insight.dash.panel's own documented convention (and its own pre-existing
@@ -312,6 +313,68 @@ def _gap_hint(conn, mid, sql_exists):
     return "SQL exists but the view is empty -- this one needs data, not code."
 
 
+# Which metrics can be compared against their OWN earlier window, and the SQL that splits the
+# population in two at its median completion time.
+#
+# Only metrics whose underlying facts carry a time dimension can have a baseline at all -- most
+# views are a single project-level row with no history in them, and inventing a "previous value"
+# for those would be exactly the fabrication this module refuses everywhere else. Cycle time
+# qualifies because fact_goal carries claimed_ts and terminal_ts per goal.
+_BASELINE_SQL = {
+    2: """
+        WITH d AS (
+            SELECT terminal_ts,
+                   date_diff('second', claimed_ts, terminal_ts) AS secs
+            FROM fact_goal
+            WHERE terminal_ts IS NOT NULL AND claimed_ts IS NOT NULL
+              AND terminal_ts >= claimed_ts
+        ), m AS (SELECT median(epoch(terminal_ts)) AS mid FROM d)
+        SELECT
+            (SELECT median(secs) FROM d, m WHERE epoch(d.terminal_ts) <  m.mid),
+            (SELECT count(*)     FROM d, m WHERE epoch(d.terminal_ts) <  m.mid),
+            (SELECT count(*)     FROM d, m WHERE epoch(d.terminal_ts) >= m.mid)
+    """,
+    # NO BASELINE FOR METRIC 14 (park rate), deliberately. A first attempt split fact_goal on
+    # `outcome = 'parked'` and always returned 0 -- because that outcome does not exist: the real
+    # vocabulary is {done, failed, NULL}, and 14.sql derives its parked population differently.
+    # A baseline computed over a DIFFERENT population than the metric it judges is worse than no
+    # baseline: it would have rendered a confident verdict against a number that measures
+    # something else. Restore this only alongside a query that matches 14.sql's own definition.
+    # Gate catch rate: split the GATE EVENTS themselves, not goals -- the denominator this metric
+    # is computed over is gate firings, and splitting a different population would compare the
+    # current rate against a baseline drawn from something else.
+    23: """
+        WITH d AS (
+            SELECT ts, CASE WHEN verdict IN ('block', 'warn') THEN 1.0 ELSE 0.0 END AS caught
+            FROM fact_event
+            WHERE kind = 'gate' AND verdict IS NOT NULL AND ts IS NOT NULL
+        ), m AS (SELECT median(epoch(ts)) AS mid FROM d)
+        SELECT
+            (SELECT avg(caught) FROM d, m WHERE epoch(d.ts) <  m.mid),
+            (SELECT count(*)    FROM d, m WHERE epoch(d.ts) <  m.mid),
+            (SELECT count(*)    FROM d, m WHERE epoch(d.ts) >= m.mid)
+    """,
+}
+
+
+def _baseline(conn, mid):
+    """The metric's earlier window, or None when it has no derivable history.
+
+    Splitting at the MEDIAN completion time rather than a fixed calendar window is deliberate: a
+    fixed window ("last 7 days") produces an empty half the moment the loop pauses for a week, and
+    an empty half is not a baseline -- it is a comparison against nothing that would still render a
+    confident verdict. A median split always yields two non-empty halves when there is any data at
+    all, and health.py's own per-window minimum rejects the case where those halves are too small
+    to mean anything."""
+    sql = _BASELINE_SQL.get(mid)
+    if sql is None or conn is None:
+        return None
+    row = _fetch_row(conn, sql)
+    if not row or row[0] is None:
+        return None
+    return {"earlier": float(row[0]), "earlier_n": int(row[1]), "recent_n": int(row[2])}
+
+
 def resolve_metric(conn, mid, metrics_dir=None):
     """One catalog id -> one `Metric`. Never raises: a missing store, a missing view, a view
     with no rows, or a row whose value is NULL are all absence, not an exception."""
@@ -382,6 +445,14 @@ def resolve_metric(conn, mid, metrics_dir=None):
         # what that value is counted in, and `unit: null` is the honest way to say so. Raising
         # here would make an undeclared unit break a reading that is otherwise perfectly good.
         unit=VALUE_UNITS.get(mid),
+        # None whenever any gate fails -- see insight.api.health. A dark metric never reaches a
+        # verdict, which is why the header's data_status is passed in rather than checked here.
+        health=_health.evaluate(
+            mid, value, numerator, denominator,
+            data_status=header.get("data_status"),
+            baseline=_baseline(conn, mid),
+            unit=VALUE_UNITS.get(mid),
+        ),
     )
 
 
