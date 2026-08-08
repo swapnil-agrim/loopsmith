@@ -75,10 +75,21 @@ export interface components {
          *     `_scalar`, whose absence conventions this ports). Time, not a code change, fixes this.
          */
         AbsentNoDataMetric: {
+            /** Datastatus */
+            dataStatus?: string | null;
+            /** Guardrail */
+            guardrail?: string | null;
             /** Id */
             id: number;
             /** Label */
             label: string;
+            /**
+             * Proxy
+             * @default false
+             */
+            proxy: boolean;
+            /** Question */
+            question?: string | null;
             /** Reason */
             reason: string;
             /** Reliabilityclass */
@@ -96,10 +107,23 @@ export interface components {
          *     change fixes this, never the passage of time.
          */
         AbsentUnbuiltMetric: {
+            /** Datastatus */
+            dataStatus?: string | null;
+            /** Gaphint */
+            gapHint?: string | null;
+            /** Guardrail */
+            guardrail?: string | null;
             /** Id */
             id: number;
             /** Label */
             label: string;
+            /**
+             * Proxy
+             * @default false
+             */
+            proxy: boolean;
+            /** Question */
+            question?: string | null;
             /** Reason */
             reason: string;
             /** Reliabilityclass */
@@ -122,13 +146,48 @@ export interface components {
             /** Numerator */
             numerator: number;
         };
+        /**
+         * Health
+         * @description A verdict about a reading, which is a stronger claim than the reading itself.
+         *
+         *     Only ever attached to a measured metric, and only when every gate in insight.api.health
+         *     passes. Its ABSENCE is the default and means "no defensible verdict" -- never "fine".
+         */
+        Health: {
+            /**
+             * Basis
+             * @enum {string}
+             */
+            basis: "baseline" | "benchmark";
+            /** Explanation */
+            explanation: string;
+            /** Source */
+            source?: string | null;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "healthy" | "watch" | "breach";
+        };
         /** MeasuredMetric */
         MeasuredMetric: {
             coverage: components["schemas"]["Coverage"];
+            /** Datastatus */
+            dataStatus?: string | null;
+            /** Guardrail */
+            guardrail?: string | null;
+            health?: components["schemas"]["Health"] | null;
             /** Id */
             id: number;
             /** Label */
             label: string;
+            /**
+             * Proxy
+             * @default false
+             */
+            proxy: boolean;
+            /** Question */
+            question?: string | null;
             /** Reliabilityclass */
             reliabilityClass: number;
             /**
@@ -136,6 +195,8 @@ export interface components {
              * @enum {string}
              */
             state: "measured";
+            /** Unit */
+            unit?: ("seconds" | "ratio" | "count") | null;
             /** Value */
             value: number;
         };

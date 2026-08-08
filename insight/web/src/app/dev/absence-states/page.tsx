@@ -35,6 +35,8 @@ const MEASURED: Metric = {
   id: 101,
   label: "Autonomy rate",
   reliabilityClass: 2,
+  proxy: false,
+  question: "How often does the loop finish unaided?",
   state: "measured",
   value: 0.82,
   coverage: { numerator: 41, denominator: 50 },
@@ -44,6 +46,8 @@ const ABSENT_NO_DATA: Metric = {
   id: 102,
   label: "Cycle time",
   reliabilityClass: 1,
+  proxy: false,
+  question: "How long does a goal take?",
   state: "absent_no_data",
   reason: "metric_102 has no value yet",
 };
@@ -52,6 +56,8 @@ const ABSENT_UNBUILT: Metric = {
   id: 103,
   label: "Escape rate",
   reliabilityClass: 2,
+  proxy: false,
+  question: "How often does a change escape to production?",
   state: "absent_unbuilt",
   reason: "no escape_rate.sql exists yet -- only a code change can build this metric",
 };

@@ -1,97 +1,181 @@
 // SPDX-License-Identifier: BUSL-1.1 - LoopSmith Insight. NOT MIT. See insight/LICENSE.
-// issue #304 [E17.S3], .sdlc/plans/304.md Decision (a)/(f), Step 3.
 //
-// The primary metric readout (analogous to insight/dash/instrument.py's `.ro`). A thin JSX layer
-// over describeMetric() (src/lib/metric-view.ts): no `state` narrowing or absence logic of its
-// own -- that is proven once, browser-free, by prove-metric-view-behavior.mjs, and this
-// component only maps the already-narrowed result onto markup.
+// The hero readout: one large instrument, used for the handful of metrics a
+// manager reads first. MetricCell.tsx is the same contract at board density.
 //
-// Two rendering details are load-bearing for Step 6's Playwright proof, not incidental:
-//   1. The numeral lives in an element carrying `data-testid="metric-numeral"` UNCONDITIONALLY
-//      across all three states -- empty for the two absent states, never omitted from the DOM.
-//      A selector that matches nothing would make "no digit in it" pass vacuously; a selector
-//      that always matches something is what makes that assertion mean anything.
-//   2. Absent-state markup carries a STRUCTURAL (border-style), not opacity-only, distinction:
-//      `border-dashed` for absent_no_data, `border-dotted` for absent_unbuilt (Decision (d)).
-//
-// issue #312 [E20.S1] Goal B, Task B1: the hatch fill, ported VERBATIM from
-// insight/dash/instrument.py's `.ro.absent` rule (instrument.py:84-85) -- the author's own spec
-// defect (decision (b) on the issue), not #304's: "hatched, achromatic" was written into every
-// E20 story's done-when without the primitive ever painting with `--panel-hatch`/
-// `--panel-hatch-soft` (both already defined, tokens.generated.css:9, unreferenced until now).
-// The base fill (`bg-panel-panel`) and BORDER_CLASS are UNCHANGED: hatch is a second background
-// LAYER (an inline `backgroundImage`, matching this file's own existing convention of mixing
-// Tailwind classes with `style={{ fontSize: "var(--panel-text-*)" }}` for CSS-var-driven values),
-// not a replacement for the dashed/dotted border distinction.
-//
-// #312 retrospective gap closure: the gradient formula itself is typed exactly once now, in
-// `@/lib/absence-hatch`'s `hatchBackgroundImage()` -- MetricCell.tsx and delivery/charts.tsx's
-// NoSensor both call the same function (with the token each already used) instead of each hand-
-// typing their own copy of this string. See that module's header for the full story.
+// THE INVARIANT THIS COMPONENT EXISTS TO HOLD: a measured reading and an absent
+// one must not be distinguishable only by reading the text. They differ in
+// SURFACE (lifted gradient vs flat hatched void), in EDGE (solid vs dashed vs
+// dotted), in CHROMA (bone numerals with a live glow vs achromatic graphite),
+// and in BEHAVIOUR (an absent instrument does not respond to hover, because it
+// has nothing to inspect). Any one of those alone would be a caption; together
+// they are legible at a glance and across a room, which is the actual product
+// claim. describeMetric() remains the single source of what text may appear --
+// this file styles that decision and never re-derives it.
 import type { Metric as MetricType } from "@/lib/api/metric";
 import { hatchBackgroundImage } from "@/lib/absence-hatch";
 import { describeMetric } from "@/lib/metric-view";
 
-const BORDER_CLASS: Record<MetricType["state"], string> = {
-  measured: "border-2 border-solid border-panel-rule-hard",
-  absent_no_data: "border-2 border-dashed border-panel-void-edge",
-  absent_unbuilt: "border-2 border-dotted border-panel-void-edge",
+const EDGE: Record<MetricType["state"], string> = {
+  measured: "panel-instrument",
+  absent_no_data: "panel-void-surface",
+  // Dotted, not dashed: `absent_unbuilt` is a different KIND of absence (no code
+  // exists to measure it) from `absent_no_data` (code exists, nothing to read),
+  // and the pre-redesign board already encoded that distinction in the border
+  // style. Keeping it means the two absences stay tellable apart without prose.
+  absent_unbuilt: "panel-void-surface [border-style:dotted] opacity-[.82]",
 };
 
-// `undefined` for `measured` -- React omits a `backgroundImage` style property entirely when its
-// value is `undefined`, so `getComputedStyle(root).backgroundImage` reads "none" for a measured
-// readout, the exact negative control prove-absence-primitives-render.mjs asserts (hatch is
-// state-gated, not always-on).
 const HATCH: Record<MetricType["state"], string | undefined> = {
   measured: undefined,
   absent_no_data: hatchBackgroundImage("--panel-hatch-soft"),
   absent_unbuilt: hatchBackgroundImage("--panel-hatch-soft"),
 };
 
-export function Metric({ metric }: { metric: MetricType }) {
+/** Coverage rendered as a shape, not only as "47/52". A reading whose
+ * denominator is small is a weaker claim than one whose denominator is the
+ * whole population, and that difference should survive being skimmed. Returns
+ * null when there is no coverage to draw -- never a zero-width bar, which would
+ * read as "measured, and zero". */
+function CoverageMeter({ metric }: { metric: MetricType }) {
+  if (metric.state !== "measured") return null;
+  const { numerator, denominator } = metric.coverage;
+  if (!denominator || denominator <= 0) return null;
+  const pct = Math.max(0, Math.min(1, numerator / denominator));
+  return (
+    <div
+      className="panel-meter mt-2"
+      role="img"
+      aria-label={`coverage ${numerator} of ${denominator}`}
+    >
+      <span className="panel-meter-fill" style={{ width: `${pct * 100}%` }} />
+    </div>
+  );
+}
+
+export function Metric({ metric, index = 0 }: { metric: MetricType; index?: number }) {
   const d = describeMetric(metric);
+  const isMeasured = metric.state === "measured";
+
   return (
     <div
       data-testid="metric-root"
       data-metric-state={metric.state}
-      className={
-        "inline-block rounded bg-panel-panel px-4 py-3 text-panel-bone " + BORDER_CLASS[metric.state]
-      }
-      style={{ backgroundImage: HATCH[metric.state] }}
+      // Absent attribute = no accent at all. See globals.css: "no verdict" is
+      // deliberately not a fourth colour.
+      data-verdict={d.verdict ?? undefined}
+      title={d.reasonText ?? undefined}
+      className={`panel-accent panel-rise flex min-w-[190px] flex-1 flex-col px-4 py-3.5 ${EDGE[metric.state]}`}
+      style={{
+        backgroundImage: HATCH[metric.state],
+        // Staggered reveal. Capped so a long row never leaves the last card
+        // arriving noticeably after the reader has started reading the first.
+        animationDelay: `${Math.min(index, 8) * 55}ms`,
+      }}
     >
-      <div className="text-panel-dim" style={{ fontSize: "var(--panel-text-caption)" }}>
-        {metric.label}
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="panel-label truncate">{metric.label}</span>
+        {/* The live pip. Present only on a measured reading, so "is there a
+            reading here?" is answerable from a single 5px dot. */}
+        <span className="flex shrink-0 items-baseline gap-1.5">
+          {/* PROXY and DARK are different claims and are shown differently on purpose. A proxy is
+              a real measurement that approximates by design -- permanent, and it may still carry
+              a verdict. DARK means the underlying data may be wrong, and is mutually exclusive
+              with a verdict: its presence is WHY there is no accent. */}
+          {metric.proxy && <span data-testid="metric-proxy-tag" className="panel-tag">Proxy</span>}
+          {metric.dataStatus === "dark" && (
+            <span data-testid="metric-dark-tag" className="panel-tag">Dark</span>
+          )}
+          {d.verdict && (
+            <span
+              data-testid="metric-verdict"
+              className="panel-label"
+              style={{
+                color: `var(--panel-${d.verdict === "ok" ? "ok" : d.verdict})`,
+                letterSpacing: "0.12em",
+              }}
+            >
+              {d.verdict === "ok" ? "Healthy" : d.verdict === "watch" ? "Watch" : "Breach"}
+            </span>
+          )}
+          {isMeasured && !d.verdict && (
+            <span
+              aria-hidden="true"
+              className="h-[5px] w-[5px] rounded-full bg-panel-cyan"
+              style={{ boxShadow: "0 0 8px var(--panel-cyan)" }}
+            />
+          )}
+        </span>
       </div>
+
+      {/* The metric's own meaning, from its .sql header. min-height keeps a row of cards on one
+          baseline whether the question wraps to one line or two. */}
+      {d.question && (
+        <p
+          data-testid="metric-question"
+          className={isMeasured ? "mt-2 text-panel-dim" : "mt-2 text-panel-void-ink"}
+          style={{ fontSize: "var(--panel-text-small)", lineHeight: 1.45, minHeight: "2.9em" }}
+        >
+          {d.question}
+        </p>
+      )}
+
       <div
         data-testid="metric-numeral"
-        className="font-mono"
+        className={`panel-num mt-1 ${isMeasured ? "panel-num-live" : "text-panel-void-ink"}`}
         style={{ fontSize: "var(--panel-text-display)" }}
       >
         {d.numeral ?? ""}
       </div>
+
+      <CoverageMeter metric={metric} />
+
       {d.coverageText !== null && (
         <div
           data-testid="metric-coverage"
-          className="text-panel-dim"
-          style={{ fontSize: "var(--panel-text-small)" }}
+          className="panel-num mt-1.5 text-panel-dim"
+          style={{ fontSize: "var(--panel-text-caption)" }}
         >
           {d.coverageText}
         </div>
       )}
-      {d.reasonText !== null && (
+      {/* The generic reason ("no value/coverage extractor registered yet") is suppressed when a
+          SPECIFIC gap hint exists, because the hint says the same thing and then says what to do
+          about it. Stacking both plus fixText put three near-identical sentences on every absent
+          card -- the clutter this redesign exists to remove. The reason stays in the DOM as the
+          card's title, so nothing is lost to a reader who wants it. */}
+      {d.reasonText !== null && d.gapHint === null && (
         <div
           data-testid="metric-reason"
-          className="text-panel-void-ink"
-          style={{ fontSize: "var(--panel-text-small)" }}
+          className="mt-1.5 text-panel-void-ink"
+          style={{ fontSize: "var(--panel-text-small)", lineHeight: 1.45 }}
         >
           {d.reasonText}
         </div>
       )}
+      {d.verdictNote !== null && (
+        <p
+          data-testid="metric-verdict-note"
+          className="mt-1.5 text-panel-dim"
+          style={{ fontSize: "var(--panel-text-caption)", lineHeight: 1.45 }}
+        >
+          {d.verdictNote}
+        </p>
+      )}
+      {d.gapHint !== null && (
+        <p
+          data-testid="metric-gap-hint"
+          className="mt-1.5 text-panel-dim"
+          style={{ fontSize: "var(--panel-text-caption)", lineHeight: 1.45 }}
+        >
+          {d.gapHint}
+        </p>
+      )}
       {d.fixText !== null && (
         <div
           data-testid="metric-fix"
-          className="text-panel-void-ink"
-          style={{ fontSize: "var(--panel-text-caption)" }}
+          className="mt-1 text-panel-faint"
+          style={{ fontSize: "var(--panel-text-caption)", lineHeight: 1.4 }}
         >
           {d.fixText}
         </div>

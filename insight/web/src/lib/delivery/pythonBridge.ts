@@ -101,3 +101,92 @@ export function fetchDeliveryMetrics(): Promise<Metric[]> {
     child.stdin.end();
   });
 }
+
+/** A series is measured (its rows are present) or absent (they are not, and it says why). There is
+ * no third shape and, critically, no empty-array shape: `values` exists ONLY on the measured arm,
+ * so a consumer cannot render "we looked and found nothing" for a series that was never measured.
+ * That is the same discriminated-union discipline `Metric` uses for scalars, applied to charts --
+ * see insight/api/series.py's module docstring for the bug that motivated it. */
+export type Distribution =
+  | {
+      state: "measured";
+      unit: string;
+      values: number[];
+      p50: number;
+      p85: number;
+      min: number;
+      max: number;
+      measured: number;
+      total: number;
+    }
+  | { state: "absent"; reason: string };
+
+export type WeeklyThroughput =
+  | { state: "measured"; points: Array<{ week: string; count: number }> }
+  | { state: "absent"; reason: string };
+
+export interface DeliverySeries {
+  cycleTime: Distribution;
+  interventions: Distribution;
+  weeklyThroughput: WeeklyThroughput;
+}
+
+/** Sibling of fetchDeliveryMetrics() against `insight web delivery-series`. Same transport, same
+ * single failure class, same no-actor contract -- see this file's header. Kept as a second call
+ * rather than folded into the first because the two CLI actions are deliberately separate (the
+ * metrics response shape is contract-tested as a bare array); the page issues both concurrently,
+ * so this costs a process, not a round of latency. */
+export function fetchDeliverySeries(): Promise<DeliverySeries> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "python3",
+      ["-m", "insight", "web", "delivery-series", ...dbPathArgs()],
+      { cwd: REPO_ROOT },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf-8");
+    child.stderr.setEncoding("utf-8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", (err) => {
+      reject(
+        new DeliveryBridgeUnavailableError(
+          `python3 was not found or failed to start: ${err.message}`,
+        ),
+      );
+    });
+    child.on("close", (status) => {
+      if (status === 0) {
+        try {
+          const parsed = JSON.parse(stdout) as DeliverySeries;
+          // An object, not an array -- the inverse of fetchDeliveryMetrics()'s own guard, and for
+          // the same reason: a shape mismatch must fail loudly here rather than reaching a chart
+          // as `undefined` and rendering as a blank panel that looks like measured emptiness.
+          if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+            throw new Error("response was not a JSON object");
+          }
+          resolve(parsed);
+        } catch (e) {
+          reject(
+            new DeliveryBridgeUnavailableError(
+              `insight web delivery-series exited 0 but printed an unparseable response: ${e}`,
+            ),
+          );
+        }
+        return;
+      }
+      reject(
+        new DeliveryBridgeUnavailableError(
+          `insight web delivery-series exited ${status}: ${stderr}`,
+        ),
+      );
+    });
+
+    child.stdin.end();
+  });
+}

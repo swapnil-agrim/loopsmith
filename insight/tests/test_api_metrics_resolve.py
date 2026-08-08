@@ -109,16 +109,23 @@ def test_metric_with_no_sql_file_resolves_to_absent_unbuilt(tmp_path):
 
 
 def test_metric_with_sql_file_but_no_extractor_resolves_to_absent_unbuilt(tmp_path):
-    """id 2 (cycle time) has a real .sql file but is not in VALUE_EXTRACTORS -- this story's own
-    Decision (b) scope-down. The reason text must differ in substance from the no-file case
-    above so the two are told apart in prose, per Decision (b)."""
+    """id 7 (flow load / WIP) has a real .sql file but is not in VALUE_EXTRACTORS. The reason text
+    must differ in substance from the no-file case above so the two are told apart in prose, per
+    Decision (b).
+
+    This originally used id 2 (cycle time), which was wired later. A fixture whose premise the
+    codebase has outgrown fails loudly, which is right -- but the fix is to move to a metric that
+    is unwired *for a reason*, not to whichever one happens to be unwired today. id 7's view is
+    (week_start, wip_count): a count with no denominator, so it cannot become `measured` without
+    inventing coverage. test_api_metrics_extractors.py pins it, and the rest of that list, OUT of
+    the registry, so this fixture and that guard fail together if the decision is ever reversed."""
     conn = duckdb.connect(str(tmp_path / "s.duckdb"))
-    metric = resolve_metric(conn, 2, metrics_dir=REAL_METRICS_DIR)
+    metric = resolve_metric(conn, 7, metrics_dir=REAL_METRICS_DIR)
     conn.close()
 
     assert metric.state == "absent_unbuilt"
     assert "extractor" in metric.reason
-    assert "2.sql" not in metric.reason
+    assert "7.sql" not in metric.reason
 
 
 def test_absent_no_data_and_absent_unbuilt_are_distinct_states(tmp_path):

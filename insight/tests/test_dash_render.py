@@ -83,10 +83,15 @@ def test_metric_2_cycle_time_stops_reading_absent_over_real_rows_issue_217(tmp_p
     0 when nothing was excluded) as the ONLY `_count`-suffixed column reaching _measured(). Two
     real, non-negative-duration done goals below reproduce exactly that: zero exclusions, real
     scatter rows -- pre-fix this asserts has_data False (the bug); post-fix it must read True,
-    and since metric 2's own catalog header still says `-- data_status: dark`, the '(label
-    stale)' marker (render.py's own labelled_dark and has_data check) must fire next to metric 2
-    in the rendered table -- the dashboard visibly correcting its own stale claim over live data,
-    not just a payload flag nobody looks at."""
+    The '(label stale)' half of this test MOVED (2026-08-08). It used to assert the marker fires
+    next to metric 2, because metric 2's header still said `-- data_status: dark` over real rows.
+    That marker was then ACTED ON: the label's own stated condition was verified met and the label
+    was cleared, so metric 2 is no longer labelled dark and the marker correctly no longer fires
+    for it. Asserting otherwise would pin a claim the project has since disproved.
+
+    The marker mechanism itself is still covered, by the sibling test below, using a metric whose
+    dark label IS still live over real data -- otherwise clearing one label would have silently
+    deleted coverage of the feature that told us to clear it."""
     conn.execute(
         "INSERT INTO fact_goal (project_id, goal_id, outcome, claimed_ts, terminal_ts) VALUES "
         "('p1','g1','done','2026-01-01T00:00:00','2026-01-01T01:00:00'),"
@@ -95,13 +100,44 @@ def test_metric_2_cycle_time_stops_reading_absent_over_real_rows_issue_217(tmp_p
     html_text, _ = render_dashboard(conn, "s.duckdb")
     payload = _data_script(html_text)
     metric_2 = next(m for m in payload["metrics"] if m["id"] == "2")
-    assert metric_2["labelled_dark"] is True
+    # The real subject of this test: #217's regression, that total_count reaches _measured().
     assert metric_2["has_data"] is True
+    # Cleared 2026-08-08 after verification -- see the docstring above and 2.sql's guardrail.
+    assert metric_2["labelled_dark"] is False
     row_match = re.search(
         r"<tr><td>2</td><td>Cycle time</td>.*?</tr>", html_text,
     )
     assert row_match, "metric 2's own row not found in the rendered catalog table"
-    assert "(label stale)" in row_match.group(0)
+    assert "(label stale)" not in row_match.group(0), (
+        "metric 2's dark label was cleared, so the stale marker must no longer fire for it"
+    )
+
+
+def test_the_stale_dark_label_marker_still_fires_for_a_metric_that_is_still_labelled(conn):
+    """The mechanism the test above used to cover. A metric carrying `-- data_status: dark` while
+    its view returns real rows must be flagged '(label stale)' -- the dashboard visibly correcting
+    its own claim over live data, not just a payload flag nobody looks at.
+
+    Uses metric 13, whose dark label is still live: it became measurable only after the
+    events-stream ingest fix, and its label has not been through the verification pass that
+    cleared 2 and 14."""
+    conn.execute(
+        "INSERT INTO fact_goal (project_id, goal_id, outcome, claimed_ts, terminal_ts) VALUES "
+        "('p1','g1','done','2026-01-01T00:00:00','2026-01-01T01:00:00')"
+    )
+    conn.execute(
+        "INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class) "
+        "VALUES ('p1','g1','2026-01-01T00:30:00','a','parked',2)"
+    )
+    html_text, _ = render_dashboard(conn, "s.duckdb")
+    payload = _data_script(html_text)
+    metric_13 = next(m for m in payload["metrics"] if m["id"] == "13")
+    assert metric_13["labelled_dark"] is True, "metric 13 is still labelled dark"
+    if metric_13["has_data"]:
+        row = re.search(r"<tr><td>13</td>.*?</tr>", html_text)
+        assert row and "(label stale)" in row.group(0), (
+            "a dark-labelled metric with real rows must be marked '(label stale)'"
+        )
 
 
 def test_escaping_survives_a_script_breakout_payload(tmp_path, conn):

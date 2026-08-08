@@ -42,6 +42,9 @@
   --color-panel-hatch-soft: var(--panel-hatch-soft);
   --color-panel-grain: var(--panel-grain);
   --color-panel-glow: var(--panel-glow);
+  --color-panel-ok: var(--panel-ok);
+  --color-panel-watch: var(--panel-watch);
+  --color-panel-breach: var(--panel-breach);
   --color-panel-mix-0: var(--panel-mix-0);
   --color-panel-mix-1: var(--panel-mix-1);
   --color-panel-mix-2: var(--panel-mix-2);
@@ -49,4 +52,293 @@
   --color-panel-mix-4: var(--panel-mix-4);
   --color-panel-mix-5: var(--panel-mix-5);
   --color-panel-mix-6: var(--panel-mix-6);
+}
+
+/* ============================================================================
+   FLIGHT-DECK LAYER  (issue: dashboard visual redesign)
+
+   Everything below is hand-written presentation, deliberately OUTSIDE the
+   `@theme` block above -- that block is colour-only by contract
+   (insight/tests/test_globals_css_theme_matches_colors_py.py asserts every one
+   of its lines matches `--color-panel-X: var(--panel-X);`), so font wiring and
+   atmosphere have no business in it. Every value here resolves to a token from
+   tokens.generated.css; no raw hex is introduced.
+
+   THE ONE RULE THIS DESIGN ENCODES: chroma means signal. A measured reading is
+   allowed colour (bone numerals, a mint meter). Anything unmeasured is
+   achromatic graphite and hatched -- it can never be mistaken for a reading
+   from across the room, which is this product's entire thesis expressed as
+   design rather than as a caption.
+   ============================================================================ */
+
+@layer base {
+  html {
+    /* The type system was declared in tokens.generated.css and then never
+       applied: `--panel-font-mono` (IBM Plex Mono) was loaded on every page and
+       used by nothing, because Tailwind's `font-mono` utility resolves to its
+       OWN default stack, not this one. Measured in the browser before changing
+       it -- numerals were rendering in the platform mono, not the shipped face. */
+    font-family: var(--panel-font-sans);
+    background-color: var(--panel-ground);
+    color: var(--panel-bone);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    position: relative;
+    min-height: 100vh;
+    background-color: var(--panel-ground);
+  }
+
+  /* Atmosphere, in two fixed layers that never intercept a click.
+     Layer 1: the instrument's own faint graticule + a low amber bloom, as if
+     something behind the panel is lit. Layer 2: film grain, which is what stops
+     a near-black background from banding on a real display. */
+  body::before,
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  body::before {
+    background-image:
+      radial-gradient(120% 80% at 15% -10%, var(--panel-glow) 0%, transparent 55%),
+      radial-gradient(90% 60% at 95% 105%, var(--panel-glow) 0%, transparent 60%),
+      linear-gradient(to right, var(--panel-grid) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--panel-grid) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 72px 72px, 72px 72px;
+    /* The graticule fades out toward the bottom so it reads as depth rather
+       than as a wallpaper the content is sitting on top of. */
+    -webkit-mask-image: linear-gradient(to bottom, black 0%, black 45%, transparent 92%);
+    mask-image: linear-gradient(to bottom, black 0%, black 45%, transparent 92%);
+    opacity: 0.85;
+  }
+
+  body::after {
+    background-image: repeating-linear-gradient(
+      0deg, var(--panel-grain) 0 1px, transparent 1px 3px
+    );
+    opacity: 0.55;
+  }
+
+  /* Content rides above both atmosphere layers. */
+  body > * {
+    position: relative;
+    z-index: 1;
+  }
+}
+
+@layer components {
+  /* ---- numerals -------------------------------------------------------- */
+  /* Tabular figures are not decoration here: a column of readings that shifts
+     horizontally as digits change is unreadable at a glance, which is the only
+     way this panel is ever read. */
+  .panel-num {
+    font-family: var(--panel-font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    line-height: 1;
+  }
+
+  /* Applied ONLY to a measured reading. The glow is the "this is live" cue and
+     is deliberately unavailable to any absent state. */
+  .panel-num-live {
+    color: var(--panel-bone);
+    text-shadow: 0 0 18px var(--panel-glow);
+  }
+
+  /* ---- labels ---------------------------------------------------------- */
+  .panel-label {
+    font-family: var(--panel-font-mono);
+    font-size: var(--panel-text-micro);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--panel-dim);
+  }
+
+  .panel-label-accent {
+    color: var(--panel-amber);
+  }
+
+  /* ---- surfaces -------------------------------------------------------- */
+  /* A measured instrument sits proud of the panel: a lit hairline at the top
+     edge, a soft inner lift, and a real shadow beneath it. */
+  /* THE LIFT IS BUILT FROM box-shadow, NEVER background-image, AND THAT IS LOAD-BEARING.
+     `background-image` is reserved for the absence hatch. An earlier version of this rule used a
+     `linear-gradient(...)` for the vertical lift, which put a background-image on the MEASURED
+     surface and was caught by prove-absence-primitives-render.mjs's negative control -- the
+     assertion that a measured readout carries NO background-image at all, which is what stops
+     "absent states are hatched" from being a vacuous claim about a property everything has.
+     The inset shadows below reproduce the same lift (lit top edge, shaded base) while leaving
+     background-image untouched, so the control keeps its teeth. */
+  .panel-instrument {
+    position: relative;
+    background-color: var(--panel-raised);
+    border: 1px solid var(--panel-rule-hard);
+    border-radius: 6px;
+    box-shadow:
+      inset 0 1px 0 var(--panel-rule),
+      inset 0 -28px 26px -26px var(--panel-void),
+      0 12px 28px -18px var(--panel-void);
+    transition: border-color 180ms ease, box-shadow 220ms ease, transform 220ms ease;
+  }
+
+  .panel-instrument::before {
+    content: "";
+    position: absolute;
+    inset-inline: 12%;
+    top: -1px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--panel-amber), transparent);
+    opacity: 0.5;
+  }
+
+  .panel-instrument:hover {
+    border-color: var(--panel-void-edge);
+    box-shadow:
+      inset 0 1px 0 var(--panel-rule-hard),
+      inset 0 -28px 26px -26px var(--panel-void),
+      0 18px 36px -20px var(--panel-void);
+    transform: translateY(-1px);
+  }
+
+  /* The absent surface. No gradient lift, no top highlight, no hover response:
+     it must not behave like something with a reading in it. */
+  .panel-void-surface {
+    background-color: var(--panel-void);
+    border: 1px dashed var(--panel-void-edge);
+    border-radius: 6px;
+    color: var(--panel-void-ink);
+  }
+
+  /* A small outlined marker -- PROXY / DARK. Achromatic on purpose: it qualifies a reading, it
+     is not a verdict about one, and giving it colour would compete with the accent that is. */
+  .panel-tag {
+    font-family: var(--panel-font-mono);
+    font-size: var(--panel-text-micro);
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--panel-void-ink);
+    border: 1px solid var(--panel-void-edge);
+    border-radius: 3px;
+    padding: 1px 5px;
+    white-space: nowrap;
+  }
+
+  /* ---- health accent (spec section 3, option A) ------------------------ */
+  /* A 2px left edge fading downward, driven ONLY by [data-verdict]. An element
+     without that attribute gets NO accent -- not a grey one. "No verdict" must
+     be visually distinct from every verdict, not a fourth colour, because most
+     cards legitimately have no defensible verdict and a neutral bar on all of
+     them would read as a rating.
+
+     ::after, NOT ::before, and that is load-bearing. `.panel-instrument::before`
+     already exists in this file (the amber top hairline), and a measured card
+     carries BOTH classes on one element. Declaring the accent on ::before would
+     inherit that rule's `height: 1px` and 12% inset -- rendering a half-opacity
+     sliver instead of a full-height bar -- and destroy the hairline. ::after is
+     free on .panel-instrument.
+
+     A pseudo-element rather than a background, too: prove-absence-primitives-
+     render.mjs asserts a measured card's computed background-image is `none`,
+     the negative control that keeps "absence is hatched" from being vacuous. */
+  .panel-accent { position: relative; }
+
+  .panel-accent[data-verdict]::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    pointer-events: none;
+  }
+
+  .panel-accent[data-verdict="ok"]::after {
+    background: linear-gradient(180deg, var(--panel-ok), transparent 85%);
+  }
+
+  .panel-accent[data-verdict="watch"]::after {
+    background: linear-gradient(180deg, var(--panel-watch), transparent 85%);
+  }
+
+  .panel-accent[data-verdict="breach"]::after {
+    background: linear-gradient(180deg, var(--panel-breach), transparent 85%);
+  }
+
+  /* ---- coverage meter -------------------------------------------------- */
+  /* Coverage is the honest half of every reading, so it gets a shape rather
+     than being buried in "50/50" prose. Width is set inline from real counts. */
+  .panel-meter {
+    position: relative;
+    height: 3px;
+    width: 100%;
+    border-radius: 2px;
+    background-color: var(--panel-void);
+    overflow: hidden;
+  }
+
+  .panel-meter-fill {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--panel-cyan-deep), var(--panel-cyan));
+    transform-origin: left center;
+    animation: panel-meter-grow 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  /* ---- masthead sweep -------------------------------------------------- */
+  .panel-sweep {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .panel-sweep::after {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    width: 22%;
+    background: linear-gradient(90deg, transparent, var(--panel-glow), transparent);
+    animation: panel-sweep-move 9s linear infinite;
+    pointer-events: none;
+  }
+}
+
+/* ---- one orchestrated page load ---------------------------------------- */
+/* A single staggered reveal beats scattered micro-interactions: the panel reads
+   as powering up once, then holds still so it can actually be read. */
+@keyframes panel-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes panel-meter-grow {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+
+@keyframes panel-sweep-move {
+  from { transform: translateX(-120%); }
+  to   { transform: translateX(560%); }
+}
+
+.panel-rise {
+  animation: panel-rise 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Motion is an enhancement, never a requirement to read a value. Everything
+   above collapses to its final state, immediately, when the user has asked for
+   less motion -- including the two infinite animations, which are the ones that
+   actually cause harm. */
+@media (prefers-reduced-motion: reduce) {
+  .panel-rise,
+  .panel-meter-fill,
+  .panel-sweep::after {
+    animation: none !important;
+  }
+  .panel-instrument { transition: none; }
+  .panel-sweep::after { display: none; }
 }

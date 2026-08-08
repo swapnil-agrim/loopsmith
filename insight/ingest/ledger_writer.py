@@ -268,19 +268,63 @@ def _advance_cursor(conn, project_id, actor_key, writer_key, stream_key, seq):
 # --------------------------------------------------------------------------- fact_event
 
 
-_EVENT_INSERT_SQL = """
-    INSERT INTO fact_event (project_id, goal_id, ts, actor_id, kind, reliability_class)
-    VALUES (?, ?, ?, ?, ?, ?)
-"""
+# Ledger field -> fact_event column, for the payload the EVENTS stream actually carries.
+#
+# AN ALLOW-LIST, NOT A BLIND COPY, and that is the security-shaped half of this mapping: a ledger
+# line is a hand-editable file in a worktree, so a record carrying `cost_cents` or `grade` must not
+# be able to inject a measurement nobody took. Only the nine fields below are ever read; every
+# other fact_event column stays NULL no matter what a record claims.
+#
+# WHY THIS EXISTS AT ALL. The earlier version of this function inserted six columns into a
+# twenty-column table and justified it as "spec vocabulary for a stream ledger.py does not populate
+# yet". That was true of `ledger/entries/`, the lifecycle stream. It was never true of
+# `ledger/events/`, the agent-emitted stream, which this repo's own loop had been writing the whole
+# time: measured on the real ledger, 387 event records carrying verdict x151, phase x125, ms x105,
+# ok x105, exit x105, why x69, reason_class x6 and cycle x11 -- all dropped. Six metrics read as
+# "no data" while the answer sat in the ledger, including gate records carrying the full text of
+# why a merge was refused.
+#
+# DELIBERATELY NOT MAPPED:
+#   * `state` (on 125 phase records) has no column in fact_event's spec-given schema. Dropped
+#     rather than smuggled into a column that means something else.
+#   * `tokens_in`/`tokens_out`/`cost_cents`/`model`/`grade` have NO ledger source today. They stay
+#     NULL until something actually emits them -- that is a Core emitter gap, not an ingest one,
+#     and filling them from an arbitrary record field would fabricate a measurement.
+_EVENT_PAYLOAD_MAP = (
+    ("phase", "phase"),
+    ("gate", "gate"),
+    ("verdict", "verdict"),
+    ("cycle", "cycle"),
+    ("ms", "ms"),
+    ("ok", "ok"),
+    ("exit", "exit_code"),        # the ledger spells it `exit`; the column is `exit_code`
+    ("reason_class", "reason_class"),
+    ("why", "why"),
+)
+
+_EVENT_BASE_COLUMNS = ("project_id", "goal_id", "ts", "actor_id", "kind", "reliability_class")
+_EVENT_COLUMNS = _EVENT_BASE_COLUMNS + tuple(col for _field, col in _EVENT_PAYLOAD_MAP)
+
+# Built from the tuples above rather than hand-written, so the column list and the value list
+# cannot drift out of order -- the classic way a widened INSERT starts writing `verdict` into
+# `gate`.
+_EVENT_INSERT_SQL = "INSERT INTO fact_event (%s) VALUES (%s)" % (
+    ", ".join(_EVENT_COLUMNS),
+    ", ".join(["?"] * len(_EVENT_COLUMNS)),
+)
 
 
 def _write_event(conn, project_id, record):
-    """One ledger record (any kind other than handoff/ack) -> one fact_event row. Only the six
-    columns ledger.py's own record shape actually has a value for are populated -- see the
-    module docstring's "what today's ledger.py actually carries" section; every other fact_event
-    column (phase, gate, verdict, cycle, ms, tokens_in, tokens_out, cost_cents, reason_class,
-    ok, exit_code) is spec vocabulary for a stream ledger.py does not populate yet and stays
-    NULL, honestly, rather than guessed."""
+    """One ledger record (any kind other than handoff/ack) -> one fact_event row.
+
+    The six envelope columns come from every record; the nine payload columns come from the
+    allow-list above and are NULL on any record that does not carry them -- which is every record
+    in the lifecycle `entries/` stream, so that stream's behaviour is unchanged.
+
+    `_blank_to_none` is safe for the payload despite `ok: False` and `exit: 0` being falsy: it
+    tests `value in (None, "")` by EQUALITY, and neither `False == None` nor `0 == ""` holds, so a
+    genuine False or 0 survives. That matters -- a failed verify recorded as NULL instead of False
+    would read as unmeasured and quietly inflate every pass rate computed over it."""
     conn.execute(_EVENT_INSERT_SQL, [
         project_id,
         _blank_to_none(record.get("goal")),
@@ -288,7 +332,7 @@ def _write_event(conn, project_id, record):
         _blank_to_none(record.get("actor")),
         record.get("kind"),
         record.get("reliability_class"),
-    ])
+    ] + [_blank_to_none(record.get(field)) for field, _col in _EVENT_PAYLOAD_MAP])
 
 
 # --------------------------------------------------------------------------- fact_handoff

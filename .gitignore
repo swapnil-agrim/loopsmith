@@ -42,3 +42,7 @@ next-env.d.ts
 # the same reason: unanchored would also swallow a real insight/metrics/dist/ or similar.
 /insight/build/
 /insight/dist/
+
+# personal Claude Code permissions (loop automation) — not team-wide
+.claude/settings.local.json
+.sdlc-debt/

@@ -63,7 +63,9 @@ def conn(tmp_path):
 def test_metric_2_returns_six_scatter_rows_excluding_parked_and_null_claimed(conn):
     load_fixture_jsonl(conn, FIXTURE)
     registry = load_metrics(conn)
-    assert registry["2"]["extra"]["data_status"] == "dark"
+    # dark label cleared 2026-08-08 (condition verified met); pinned in
+    # test_dark_metrics_are_labelled.py::test_verified_metrics_no_longer_declare_themselves_dark
+    assert registry["2"]["extra"].get("data_status") is None
     rows = rows_as_dicts(conn.execute("SELECT * FROM metric_2 ORDER BY goal_id"))
     # g9 (terminal_ts BEFORE claimed_ts -- clock skew) must also be excluded, alongside the
     # pre-existing parked (g7) and null-claimed_ts (g8) exclusions.
