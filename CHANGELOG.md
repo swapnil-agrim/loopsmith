@@ -15,6 +15,18 @@ an unrecognized extension answers with a silent allow — the edit gate was simp
 repos while the Stop gate fired on them. The two inlined lists are now kept in lockstep by a
 parity test, the way `scrub.py`/`research_capture.py` already are.
 
+### fix(scrub): an unterminated private key no longer leaks its body (Security, #534)
+The fallback for a PEM key whose `-----END-----` never arrives replaced the HEADER ALONE, so every
+body line under it passed through verbatim — into the research breadcrumbs and, via a ledger or
+action-log `why=`, into a pushed branch. It now consumes the key body: the RFC1421 `Proc-Type:`/
+`DEK-Info:` headers of an encrypted PEM, the base64 run, and a short final fragment when the capture
+was cut mid-line. It matches escaped `\n`/`\r` as well as real whitespace, because the dominant
+carriers (`json.dumps()` of a tool response, `str()` of a value) serialize those newlines first.
+Prose after a bare header still survives — the run rule stops at short words — and a well-formed key
+is still owned by the terminated pattern above it. `research_capture` now also scrubs the WHOLE body
+before capping it, matching `mirror.py`'s order: truncating first could cut a sound key in half and
+manufacture exactly the degraded input this fallback exists to catch.
+
 ### fix(backlog_check): a recorded hand-off now blocks the side that FILED it, not the target (#532)
 `_ledger_signals()` matched an outstanding hand-off with `ledger.handoff_key()`, which resolves to
 the TARGET issue — so the recipient's loop parked the very issue it had just been handed ("blocked
