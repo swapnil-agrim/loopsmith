@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### chore(repo): remove the stray zero-byte `err` file from the repo root (#530)
+Committed by accident in `aab822c` and tracked ever since, so it shipped in the public plugin — the
+manifest carries no file list, which makes the repo tree itself the shipped surface. Nothing
+referenced the path (no code, config, packaging manifest or test), so this is a pure removal.
+
 ### docs(init): the scaffolded config documented the board title with the wrong dash (#546)
 `config.json.tmpl` described the auto-generated board title as `<repo> - SDLC` with an ASCII hyphen,
 while `sources._proj_title()` builds it with an em-dash — and `_find_project` matches board titles
