@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### fix(hooks): plan_gate no longer locks itself on, and gates Scala/Elixir like its sibling (#536)
+`plan_gate.sh` had drifted from the hardened `completion_gate.sh` on two counts. It printed the
+mode line BEFORE `int(plan_freshness_hours)` could raise inside the same `try`, so an unparseable
+window ("24h") emitted a third line and the by-position read handed `off` to `$(( ))` — under
+`set -u` the arithmetic died, the freshness check never ran, and EVERY source edit was denied
+despite a fresh plan, with an unbound-variable diagnostic on stderr. A negative window (-5) was a
+second, entirely silent lockout: it parses as an int, so only a numeric guard catches it. Both now
+mirror the sibling (independent inner `try` + `''|*[!0-9]*` case guard placed before any
+interpolation). Separately, the source-extension list was missing `*.scala`/`*.ex`/`*.exs`, which
+an unrecognized extension answers with a silent allow — the edit gate was simply inert for those
+repos while the Stop gate fired on them. The two inlined lists are now kept in lockstep by a
+parity test, the way `scrub.py`/`research_capture.py` already are.
+
 ### fix(backlog_check): a recorded hand-off now blocks the side that FILED it, not the target (#532)
 `_ledger_signals()` matched an outstanding hand-off with `ledger.handoff_key()`, which resolves to
 the TARGET issue — so the recipient's loop parked the very issue it had just been handed ("blocked
