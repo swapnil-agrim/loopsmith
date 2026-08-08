@@ -8,12 +8,12 @@
 // thirty-six are fine, and a reader who sees "6/42 instrumented" first cannot.
 export const dynamic = "force-dynamic";
 
-import type { Metric as MetricType } from "@/lib/api/metric";
 import { Metric } from "@/components/Metric";
 import { MetricCell } from "@/components/MetricCell";
 import { IntegrityStrip } from "@/components/IntegrityStrip";
 import { BandBoard } from "@/components/BandBoard";
 import { fetchDeliveryMetrics, fetchDeliverySeries } from "@/lib/delivery/pythonBridge";
+import { findMetric } from "@/lib/api/findMetric";
 import { HistogramChart, TraceChart, WeeklyBars } from "./charts";
 
 const PRIMARY_READOUT_IDS: readonly number[] = [1, 2, 3, 12, 14, 20];
@@ -25,18 +25,6 @@ const BANDS: ReadonlyArray<{ name: string; ids: readonly number[] }> = [
   { name: "Collaboration", ids: [31, 32, 33, 34, 35, 36, 37, 38] },
   { name: "Portfolio", ids: [39, 40, 41, 42] },
 ];
-
-function findMetric(metrics: readonly MetricType[], id: number): MetricType {
-  const metric = metrics.find((m) => m.id === id);
-  if (!metric) {
-    throw new Error(
-      `insight web delivery did not return catalog id ${id} -- collect_metrics() is contract-` +
-      "guaranteed to return all 42 catalog entries (test_api_metrics_route.py's own contract " +
-      "test); a missing id here is a transport bug, not a legitimate absence state.",
-    );
-  }
-  return metric;
-}
 
 function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) {
   return (

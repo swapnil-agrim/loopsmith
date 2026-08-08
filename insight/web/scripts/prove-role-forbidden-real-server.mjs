@@ -21,14 +21,15 @@
 // this). No DOM assertion is needed, so no browser dependency is added at all -- even a CI-only
 // one -- for this specific proof.
 //
-// "/manager" is used as the forbidden/allowed route under test even though no such PAGE exists yet
-// (E20 hasn't shipped one) -- and that absence is exactly why this proof works cleanly: proxy.ts
-// runs BEFORE Next.js resolves the matched route to a page at all (the same fact Decision 5 relies
-// on), so the 403 for a role-mismatched request never depends on a page existing. The one case
-// where a request IS allowed through (a real "manager" session hitting "/manager") is asserted by
-// its absence of a 403 AND a concrete 404 -- proving the proxy passed it through to Next's own
-// routing, which then correctly finds no page there, rather than by assuming "not 403" alone means
-// "worked as intended."
+// "/manager" is used as the forbidden/allowed route under test. issue #313 [E20.S2]: app/manager/
+// page.tsx is now real, so the one case where a request IS allowed through (a real "manager"
+// session hitting "/manager") is asserted below by a real HTTP 200 plus a content-level positive
+// control (representative curated labels present, a minimum count of metric-root cards) --
+// mirroring /delivery's own Task B5 upgrade (see that block's comment a few lines down) -- rather
+// than the pre-#313 "not 403, then a concrete 404" shape this comment used to describe. The
+// role-mismatch and unknown-role denial cases below are unaffected: proxy.ts still runs BEFORE
+// Next.js resolves the matched route to a page at all (the same fact Decision 5 relies on), so
+// their 403 never depended on whether a page existed either before or after this story.
 //
 // issue #312 [E20.S1] Goal A: the same pattern is reused verbatim, unchanged, for "/delivery" --
 // granted to manager/leadership/ic, denied to cross-functional, no page shipped in Goal A either
@@ -52,8 +53,9 @@
 // BEFORE it runs, unlike its pre-Goal-B self -- ci.yml's `web` job moves the existing
 // `actions/setup-python` + `pip install -e insight/` steps (Decision 7, previously positioned
 // just before prove:ic-bridge) to run BEFORE this step instead, reusing the exact same install
-// rather than adding a second one. The /manager assertions above this comment are unaffected --
-// no page exists at /manager, so they never touch python3 at all.
+// rather than adding a second one. issue #313 [E20.S2]: the /manager positive control (assertion
+// 3 below) now also renders a real page backed by fetchDeliveryMetrics(), so it needs the same
+// duckdb install too -- it is no longer exempt the way this paragraph originally described.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import net from "node:net";
@@ -163,17 +165,33 @@ async function main() {
     );
     console.log('OK: real session (role "ic") on /manager -> real HTTP 403, body exactly {"error":"forbidden"}');
 
-    // 3. A real session whose role DOES match /manager must be let through by the proxy -- proven
-    //    by the ABSENCE of a 403 and a concrete 404 (no /manager page exists yet), which shows the
-    //    request reached Next's own route resolution rather than being forbidden at the proxy.
+    // 3. issue #313 [E20.S2]: a real session whose role DOES match /manager must be let through by
+    //    the proxy AND land on a real, populated page -- not merely "not 403". Mirrors /delivery's
+    //    own positive control below: the raw HTML body must contain a representative subset of the
+    //    curated labels, and at least 10 metric-root cards (MANAGER_PRIMARY_READOUT_IDS.length).
     const allowed = await fetchAs(baseUrl, "/manager", "manager");
     assert.notEqual(allowed.status, 403, 'a real "manager" session must not be forbidden on /manager');
     assert.equal(
-      allowed.status, 404,
-      `a real "manager" session on /manager (no page exists yet) must reach Next's own 404, got ${allowed.status} -- ` +
-      "a non-404 here would mean this assertion needs updating once an actual /manager page ships",
+      allowed.status, 200,
+      `a real "manager" session on /manager must reach the real page (200), got ${allowed.status}`,
     );
-    console.log('OK: real session (role "manager") on /manager -> past the proxy (404, no page yet), not forbidden');
+    const allowedBody = await allowed.text();
+    for (const label of ["Throughput", "Park rate", "Flow load (WIP)", "Handoff response time"]) {
+      assert.ok(
+        allowedBody.includes(label),
+        `manager's /manager page must contain the curated readout label ${JSON.stringify(label)}`,
+      );
+    }
+    const managerMetricRootCount = (allowedBody.match(/data-testid="metric-root"/g) ?? []).length;
+    assert.ok(
+      managerMetricRootCount >= 10,
+      `manager's /manager page must render at least 10 metric-root elements (the curated id ` +
+      `list), found ${managerMetricRootCount}`,
+    );
+    console.log(
+      `OK: real session (role "manager") on /manager -> real HTTP 200, curated labels present, ` +
+      `${managerMetricRootCount} metric-root elements rendered`,
+    );
 
     // 4. An unknown role string, through the REAL pipeline, denies -- not a crash, not a 500.
     const unknownRole = await fetchAs(baseUrl, "/manager", "owner");

@@ -23,7 +23,8 @@ export interface NavItem {
  *  either), then the SAME unconditional shared-route allowance decide() gives every session
  *  regardless of role, then the SAME per-role gate. An item is included ONLY when its table entry
  *  both HAS a navLabel and IS implemented -- an entry allowed by policy but not yet built (e.g.
- *  ROLE_ROUTES.manager today) is never emitted, which is what keeps nav free of dead links to E20
+ *  ROLE_ROUTES.leadership today; ROLE_ROUTES.manager was this example until #313 [E20.S2] built the
+ *  page) is never emitted, which is what keeps nav free of dead links to E20
  *  routes that don't exist yet. Every item this function returns therefore always has an `href` --
  *  there is no "placeholder" case left; an item nav cannot yet link to is simply never returned,
  *  not returned hrefless. */

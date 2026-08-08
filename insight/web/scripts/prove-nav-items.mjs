@@ -175,8 +175,8 @@ async function main() {
     "an anonymous /login visitor must see NO nav items at all",
   );
   assert.ok(
-    !navItemsFor(true, "manager").some((item) => item.label === "Manager"),
-    "a manager's nav must not link to /manager -- no page exists there yet (E20)",
+    navItemsFor(true, "manager").some((item) => item.label === "Manager" && item.href === "/manager"),
+    "a manager's nav must link to /manager now that the page is real (issue #313)",
   );
   assert.ok(
     !navItemsFor(true, "ic").some((item) => item.href.includes("dev")),
