@@ -168,14 +168,34 @@ def ensure_ignore(repo_root, scope="tracked", targets=RUNTIME_IGNORES):
 # --------------------------------------------------------------------------- CLI
 
 
+#: #541: the flags this module's own CLI (`configure`/`ignore`) ever hands a real value to --
+#: `verify` in particular is a free-form command string a caller could plausibly start with '--'.
+_VALUE_FLAGS = frozenset({"repo", "source", "verify", "auto-merge", "scope"})
+
+
 def _flags(argv):
+    """`--name value` / bare `--flag` (-> `"true"`) scanner, plus `--name=value` (unambiguous for
+    ANY flag) and unconditional-consume for this module's own known value-taking flags
+    (`_VALUE_FLAGS`) -- #541: a value that itself starts with '--' used to be silently swallowed:
+    the flag landed on the `"true"` sentinel and the value's own text was misparsed as a SECOND,
+    garbage flag. A flag name is never legitimately whitespace-bearing -- that shape is always
+    leaked prose from a value the old heuristic failed to consume, never a flag a caller meant to
+    pass, so it is dropped instead of kept as a nonsense key."""
     out, i = {}, 0
     while i < len(argv):
         if argv[i].startswith("--"):
-            name = argv[i][2:]
-            if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            name, eq, value = argv[i][2:].partition("=")
+            if eq:                                       # --name=value: always unambiguous
+                out[name] = value
+            elif name in _VALUE_FLAGS:                    # known value-taking flag: consume unconditionally
+                if i + 1 < len(argv):
+                    out[name] = argv[i + 1]; i += 2; continue
+                out[name] = "true"                        # nothing left to consume
+            elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
                 out[name] = argv[i + 1]; i += 2; continue
-            out[name] = "true"
+            elif " " not in name:
+                out[name] = "true"
+            # else: whitespace in `name` -- never a real flag; drop rather than keep a nonsense key
         i += 1
     return out
 

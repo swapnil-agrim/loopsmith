@@ -403,6 +403,64 @@ def test_flag_parser_handles_a_bare_switch():
     assert ledger._flags(["--to", "rae", "--write"]) == {"to": "rae", "write": "true"}
 
 
+# --------------------------------------------------------------------- #541: _flags swallowed a
+# value that itself starts with '--' -- the OLD heuristic ("consume the next token unless IT also
+# starts with --") could never distinguish "no value was given" from "the value happens to start
+# with a flag-like dash". `--why "--the CLI is missing a --verbose flag"` parsed to
+# `{"why": "true", "the CLI is missing a --verbose flag": "true"}`: the real reason was replaced by
+# the literal string "true", and its own text leaked in as a second, nonsense flag key. Fixed by (1)
+# unconditionally consuming the next token for this module's OWN known value-taking flags
+# (`OPTIONAL_FIELDS`, plus `actor` for the `mine` verb) regardless of its shape, (2) `--name=value`
+# syntax for ANY flag (unambiguous by construction), and (3) never keeping a whitespace-bearing
+# "flag name" as a key -- that shape is always leaked prose from an unconsumed value, never a flag
+# a caller meant to pass.
+
+
+def test_flags_consumes_a_why_value_that_starts_with_a_double_dash_the_issues_own_repro():
+    assert ledger._flags(["--why", "--the CLI is missing a --verbose flag"]) == {
+        "why": "--the CLI is missing a --verbose flag"}
+
+
+def test_flags_consumes_other_known_ledger_fields_that_start_with_a_double_dash():
+    # OPTIONAL_FIELDS beyond `why` get the same unconditional-consume treatment -- not a special
+    # case wired for one field name.
+    assert ledger._flags(["--ref", "--looks-like-a-flag-but-isnt"]) == {
+        "ref": "--looks-like-a-flag-but-isnt"}
+    assert ledger._flags(["--area", "--engine"]) == {"area": "--engine"}
+
+
+def test_flags_supports_name_equals_value_syntax_for_any_flag():
+    # unambiguous by construction -- works even for a flag NOT in this module's known set.
+    assert ledger._flags(["--why=--the CLI is missing a --verbose flag"]) == {
+        "why": "--the CLI is missing a --verbose flag"}
+    assert ledger._flags(["--totally-unregistered=--still works"]) == {
+        "totally-unregistered": "--still works"}
+
+
+def test_flags_never_keeps_a_whitespace_bearing_leaked_key():
+    # direct pin of the "reject unknown keys" half of the fix: a token whose post-'--' text
+    # contains a space is never a real flag name (no legitimate caller ever passes one) -- it is
+    # always leaked prose from an unconsumed value, so it is dropped, not kept as a nonsense key.
+    assert ledger._flags(["--this looks like leaked prose, not a flag"]) == {}
+
+
+def test_flags_drops_the_leaked_key_end_to_end_for_an_unregistered_flag():
+    # the full pre-fix cascade shape, for a flag name NOT in the known set (so the unconditional-
+    # consume path does not apply and the old lookahead heuristic still runs first): the unknown
+    # flag itself still lands on the "true" sentinel (unchanged, since nothing marks it as
+    # value-taking), but the garbage second key that used to appear is gone.
+    out = ledger._flags(["--notaknownflag", "--this text used to leak as a fake key"])
+    assert out == {"notaknownflag": "true"}
+
+
+def test_flags_backward_compatible_for_unregistered_flags_and_normal_values():
+    # nothing about the fix changes parsing for a flag outside the known set whose value does NOT
+    # start with '--', or for a bare unknown flag followed by another flag -- both match the
+    # pre-#541 heuristic exactly.
+    assert ledger._flags(["--foo", "bar baz"]) == {"foo": "bar baz"}
+    assert ledger._flags(["--foo", "--bar"]) == {"foo": "true", "bar": "true"}
+
+
 # --------------------------------------------------------------------- loop integration
 
 

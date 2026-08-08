@@ -1259,19 +1259,44 @@ def _cell(text):
 
 # --------------------------------------------------------------------------- CLI
 
+#: #541: the flags this module's own CLI verbs (append/mine) ever hand a real value to -- every
+#: `append()` OPTIONAL_FIELDS name (any of them can be free text a caller types, not just `why`)
+#: plus `mine`'s own `--actor`. Sourced from OPTIONAL_FIELDS itself rather than re-listed, so the
+#: two can never drift apart the way the four independent `_flags` copies already had to be
+#: reconciled by hand once.
+_VALUE_FLAGS = frozenset(OPTIONAL_FIELDS) | {"actor"}
+
 
 def _flags(argv):
+    """`--name value` / bare `--flag` (-> `"true"`) scanner, plus `--name=value` (unambiguous for
+    ANY flag) and unconditional-consume for this module's own known value-taking flags
+    (`_VALUE_FLAGS`) -- #541: a value that itself starts with '--' (e.g. `--why "--the CLI is
+    missing a --verbose flag"`) used to be silently swallowed: the flag landed on the `"true"`
+    sentinel and the value's own text was misparsed as a SECOND, garbage flag. A flag name is never
+    legitimately whitespace-bearing -- that shape is always leaked prose from a value the old
+    heuristic failed to consume, never a flag a caller meant to pass, so it is dropped instead of
+    kept as a nonsense key."""
     out = {}
     i = 0
     while i < len(argv):
         token = argv[i]
         if token.startswith("--"):
-            name = token[2:]
-            if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            name, eq, value = token[2:].partition("=")
+            if eq:                                       # --name=value: always unambiguous
+                out[name] = value
+            elif name in _VALUE_FLAGS:                    # known value-taking flag: consume unconditionally
+                if i + 1 < len(argv):
+                    out[name] = argv[i + 1]
+                    i += 2
+                    continue
+                out[name] = "true"                        # nothing left to consume
+            elif i + 1 < len(argv) and not argv[i + 1].startswith("--"):
                 out[name] = argv[i + 1]
                 i += 2
                 continue
-            out[name] = "true"
+            elif " " not in name:
+                out[name] = "true"
+            # else: whitespace in `name` -- never a real flag; drop rather than keep a nonsense key
         i += 1
     return out
 

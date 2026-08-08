@@ -79,6 +79,20 @@ being reinterpreted. Deriving the host from the hostname rather than a uuid pers
 processes, no migration — at the cost that two hosts deliberately given the SAME hostname and the
 same pid still collide; a persisted per-clone uuid is the stronger option if that ever bites.
 
+### fix(ledger): `_flags` no longer swallows a value that itself starts with '--' (#541)
+The four hand-rolled CLI flag parsers (`ledger.py`, `loop.py`, `slices.py`, `sdlc-setup/setup.py`)
+shared the same gap: a value beginning with `--` could never be told apart from "no value was
+given" — `--why "--the CLI is missing a --verbose flag"` parsed to `{"why": "true", "the CLI is
+missing a --verbose flag": "true"}`, silently replacing a hand-off's real reason with the literal
+string `"true"` and leaking the reason's own text in as a second, nonsense flag key. Every copy now
+unconditionally consumes the next token for that module's own known value-taking flags (sourced
+live from `OPTIONAL_FIELDS`/`EVENT_FIELDS`/`AGENT_FIELDS` where those already exist, so the known
+set can never drift from the real field vocabulary), supports `--name=value` for any flag
+(unambiguous by construction), and never keeps a whitespace-bearing "flag name" as a key — that
+shape is always leaked prose from an unconsumed value, never a flag a caller meant to pass.
+`handoff.py`'s `open`/`track`/`ack` verbs needed no changes of their own: they call `ledger._flags`
+directly and inherit the fix for `--why`/`--area`/etc. automatically.
+
 ### fix(mirror): the board mirror and board sync now page from the OLDEST goals, like next_pending (#539)
 `mirror.py`'s open-issue fetch and `sources.py`'s `_sync_backlog` both ran a bare
 `gh issue list --limit 200`, which is created-DESC, while `next_pending` passes

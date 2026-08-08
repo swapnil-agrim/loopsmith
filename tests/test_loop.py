@@ -667,6 +667,21 @@ def test_cli_skip_is_empty_for_a_bare_flag_with_no_value():
     assert lp._cli_skip(["--skip"]) == set()
 
 
+def test_flags_consumes_a_known_event_field_value_that_starts_with_a_double_dash():
+    """#541: loop.py's own `_flags` copy gets the same known-value-flags fix as ledger.py's --
+    `why`/`model` (free-text EVENT_FIELDS, e.g. gate/park/spend) unconditionally consume the next
+    token even when it starts with '--', instead of silently landing on the "true" sentinel."""
+    lp = _loop()
+    assert lp._flags(["--why", "--needs a --fix before this can land"]) == {
+        "why": "--needs a --fix before this can land"}
+    assert lp._flags(["--model=--claude-ish"]) == {"model": "--claude-ish"}
+
+
+def test_flags_never_keeps_a_whitespace_bearing_leaked_key():
+    lp = _loop()
+    assert lp._flags(["--this looks like leaked prose, not a flag"]) == {}
+
+
 def test_next_batch_extra_skip_excludes_a_goal_this_call_never_picked_itself():
     """The whole point: a goal skipped via `extra_skip` here was NOT claimed by this call at all --
     unlike the internal accumulation test above, which skips goals THIS batch just picked. This is
