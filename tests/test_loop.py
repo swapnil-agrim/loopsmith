@@ -168,6 +168,28 @@ def test_record_done_with_verify_enforce_refuses_an_unsafe_goal_cleanly_instead_
         assert "unsafe goal" in r.stderr
 
 
+def test_record_done_advances_iteration_by_exactly_k_under_k_parallel_real_processes():
+    """The end-to-end proof `_record`'s old cross-call `load_cursor` + `save_cursor` RMW is really
+    gone (#531): K REAL OS processes, each recording a DIFFERENT goal `done` via the actual CLI at
+    genuinely overlapping instants, must advance `iteration` by exactly K -- no lost increments,
+    matching the issue's own concurrent-recorders probe. `_backlog`'s config has no `work` key, so
+    each call prints the `work.enabled is off` warning to stderr -- expected, not asserted empty
+    (LocalSource's default `record ... done` path works fine against this bare fixture)."""
+    k = 8
+    with tempfile.TemporaryDirectory() as d:
+        base = _backlog(d, k)
+        procs = [subprocess.Popen(
+                     [sys.executable, str(S / "loop.py"), "record", base,
+                      f"{base}/goals/{i:04d}.md", "done"],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                 for i in range(1, k + 1)]
+        for p in procs:
+            _, err = p.communicate(timeout=60)
+            assert p.returncode == 0, err
+        lp = _loop()
+        assert lp.state.load_cursor(base)["iteration"] == k
+
+
 def test_start_surfaces_the_work_off_and_verify_traps(capsys):
     with tempfile.TemporaryDirectory() as d:
         base = _backlog(d, 0); lp = _loop()

@@ -614,9 +614,9 @@ def _record(sdlc_dir, source, goal, result, detail=""):
         source.fail(goal, detail or result)      # hasattr: a source without fail() parks instead
     else:                                        # parked (or failed on a fail-less source)
         source.park(goal, detail or result)
-    cur = state.load_cursor(sdlc_dir)
-    state.save_cursor(sdlc_dir, cur["iteration"] + 1, cur["run_iteration"] + 1,
-                      f"last: {pathlib.Path(goal).name} -> {result}")
+    # Single atomic patch (#531) -- the old load_cursor-then-save_cursor pair spanned two calls,
+    # so two concurrent _record()s could each read the same pre-increment cursor and lose one.
+    state.advance_cursor(sdlc_dir, f"last: {pathlib.Path(goal).name} -> {result}")
     # The outcome, once, on the single chokepoint both the CLI and run_loop paths pass through.
     outcome = result if result in ("done", "failed") else "parked"
     ledger.safe_append(sdlc_dir, outcome, goal, why=detail or None)

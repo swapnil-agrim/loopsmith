@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### fix(state): serialize STATE.md cursor writers with a kernel flock + atomic replace (#531)
+`save_cursor`/`add_tokens` were unlocked read-modify-write over a file shared across the whole run,
+compounded by a `_state_file` scaffold-on-demand with its own unlocked clobber window; under
+`parallel.goals`, concurrent recorders/spenders lost increments (the issue's own probe: 90/120 lost
+at high contention) and could publish a torn file. Worst case, concurrent writers could destroy
+STATE.md down to a handful of bytes, wiping `run_started_at` entirely — which silently degrades
+`done_refusal`'s freshness comparison to `at < 0.0`, always false, so ANY verify evidence (however
+stale) reads as fresh: exactly the unattended-drain scenario `budget.max_iterations`/`max_tokens`
+exist to bound, silently let a stale green through instead. Fixed with the same kernel `flock`
+primitive that closed the identical race in `_try_acquire_claim_lock` (#387), plus `os.replace`
+atomic publish so a lock-free reader (`load_cursor` stays deliberately lock-free) never observes a
+torn file either. `save_cursor` is deleted — `loop.py`'s `_record` (its only caller) now goes
+through the new, single-call-atomic `advance_cursor` instead of a two-call load-then-save RMW.
+
 ## 1.0.7 — the decomposition release
 
 ### fix(loop): `kg.py::load_config()` no longer crashes on a non-dict `config.json` (#475)
