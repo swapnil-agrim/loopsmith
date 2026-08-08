@@ -552,7 +552,7 @@ def test_bootstrap_seeds_my_file_and_pushes(tmp_path, monkeypatch):
         calls.append(args[0])
         return "entries/rae.jsonl" if args[0] == "diff" else ""
     out = sync.bootstrap(d, ON, run=git)
-    mine = sync.worktree(d) / "entries" / f"{ledger.actor(ON)}-{os.getpid()}.jsonl"
+    mine = sync.worktree(d) / "entries" / f"{ledger.actor(ON)}-{ledger._instance_token()}.jsonl"
     assert mine.exists()                                          # my entries file was seeded
     assert "push" in calls                                        # and the branch pushed
     assert "already a worktree" in out and "published" in out
@@ -574,7 +574,7 @@ def test_publish_renders_and_stages_team_md(tmp_path, monkeypatch):
     team = (ledger.ledger_dir(d) / "TEAM.md").read_text()
     assert team.startswith("# Team ledger") and "claimed" in team    # the rolled-up view goes on the branch
     staged = next(a for a in calls if a[0] == "add")
-    assert "TEAM.md" in staged and f"entries/{ME}-{os.getpid()}.jsonl" in staged  # alongside my entries
+    assert "TEAM.md" in staged and f"entries/{ME}-{ledger._instance_token()}.jsonl" in staged  # alongside my entries
 
 
 def test_ensure_gitattributes_is_additive_and_idempotent(tmp_path):
@@ -607,8 +607,8 @@ def test_publish_stages_my_events_file_when_present(tmp_path, monkeypatch):
 
     assert sync.publish(d, ON, run=git) == "published"
     staged = next(a for a in calls if a[0] == "add")
-    assert f"events/{ME}-{os.getpid()}.jsonl" in staged
-    assert f"entries/{ME}-{os.getpid()}.jsonl" in staged
+    assert f"events/{ME}-{ledger._instance_token()}.jsonl" in staged
+    assert f"entries/{ME}-{ledger._instance_token()}.jsonl" in staged
     assert "TEAM.md" in staged
 
 
@@ -812,7 +812,7 @@ def test_bootstrap_e2e_creates_the_worktree_and_seeds_my_file(tmp_path):
 
     sync.bootstrap(d, ON, run=git)
     assert sync.is_worktree(d)                                    # the ops-branch worktree exists
-    seeded = sync.worktree(d) / "entries" / f"{ME}-{os.getpid()}.jsonl"
+    seeded = sync.worktree(d) / "entries" / f"{ME}-{ledger._instance_token()}.jsonl"
     assert seeded.exists()                                        # my entries file was seeded
 
 

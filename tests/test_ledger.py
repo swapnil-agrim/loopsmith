@@ -62,8 +62,8 @@ def test_append_writes_one_json_line_per_entry(tmp_path):
     lines = path.read_text().strip().splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0])["kind"] == "claimed"
-    pid = os.getpid()
-    assert first["id"] == f"dana:{pid}:1" and second["id"] == f"dana:{pid}:2"  # monotonic per author
+    inst = ledger._instance_token()          # <host>.<pid> (#540), not the bare pid
+    assert first["id"] == f"dana:{inst}:1" and second["id"] == f"dana:{inst}:2"  # monotonic per author
 
 
 def test_entry_carries_the_core_fields(tmp_path):
@@ -356,7 +356,7 @@ def test_cli_append_prints_the_entry_id(tmp_path, capsys):
     d = _sdlc(tmp_path, ON)
     assert ledger.main(["ledger.py", "append", str(d), "handoff", "g.md",
                         "--to", "rae", "--issue", "61", "--priority", "P0"]) == 0
-    assert capsys.readouterr().out.strip() == f"dana:{os.getpid()}:1"
+    assert capsys.readouterr().out.strip() == f"dana:{ledger._instance_token()}:1"
     assert json.loads(ledger.entry_file(d, "dana").read_text())["issue"] == 61   # coerced to int
 
 
@@ -506,8 +506,8 @@ def test_writer_is_actor_pid_for_a_3_part_id_but_falls_back_to_bare_actor_for_le
     assert ledger._writer({"actor": "dana"}) == "dana"                      # id missing entirely
 
 
-def test_my_writer_is_actor_colon_this_processs_own_pid():
-    assert ledger.my_writer({"ledger": {"actor": "dana"}}) == f"dana:{os.getpid()}"
+def test_my_writer_is_actor_colon_this_writer_instance():
+    assert ledger.my_writer({"ledger": {"actor": "dana"}}) == f"dana:{ledger._instance_token()}"
 
 
 def test_writer_pid_extracts_the_pid_or_none_for_a_legacy_writer():
@@ -735,19 +735,19 @@ def test_event_ids_monotonic_per_actor_and_stream(tmp_path):
     e2 = ledger.append(d, ON, "done", "g.md")
     e3 = ledger.append(d, ON, "phase", "g.md", stream="events", phase="implement", state="start")
     e4 = ledger.append(d, ON, "phase", "g.md", stream="events", phase="implement", state="end")
-    pid = os.getpid()
-    assert e1["id"] == f"dana:{pid}:1" and e2["id"] == f"dana:{pid}:2"
-    assert e3["id"] == f"dana:{pid}:1" and e4["id"] == f"dana:{pid}:2"  # independent per-stream counter
+    inst = ledger._instance_token()
+    assert e1["id"] == f"dana:{inst}:1" and e2["id"] == f"dana:{inst}:2"
+    assert e3["id"] == f"dana:{inst}:1" and e4["id"] == f"dana:{inst}:2"  # independent per-stream counter
 
 
 def test_default_stream_unchanged(tmp_path):
     d = _sdlc(tmp_path, ON)
     ledger.append(d, ON, "note", "g.md")
     assert ledger.entry_file(d, "dana").exists()
-    # F10: the filename now carries the writing pid too, not just the actor (see
-    # test_entry_file_is_per_actor_per_process below for the reason) — still under entries_dir,
-    # still named after the actor.
-    assert ledger.entry_file(d, "dana") == ledger.entries_dir(d) / f"dana-{os.getpid()}.jsonl"
+    # F10/#540: the filename now carries the writing INSTANCE too (<host>.<pid>), not just the
+    # actor (see test_entry_file_is_per_actor_per_process below for the reason) — still under
+    # entries_dir, still named after the actor.
+    assert ledger.entry_file(d, "dana") == ledger.entries_dir(d) / f"dana-{ledger._instance_token()}.jsonl"
     assert len(ledger.read_all(d)) == 1
 
 
@@ -756,7 +756,7 @@ def test_default_stream_unchanged(tmp_path):
 
 def test_entry_file_is_per_actor_per_process(tmp_path):
     d = _sdlc(tmp_path, ON)
-    assert ledger.entry_file(d, "dana").name == f"dana-{os.getpid()}.jsonl"
+    assert ledger.entry_file(d, "dana").name == f"dana-{ledger._instance_token()}.jsonl"
 
 
 def test_concurrent_same_actor_writers_never_collide_on_id(tmp_path, monkeypatch):
@@ -772,7 +772,8 @@ def test_concurrent_same_actor_writers_never_collide_on_id(tmp_path, monkeypatch
     assert e1["id"] != e2["id"]                            # the collision this finding is about
     assert e1["actor"] == e2["actor"] == "dana"             # same person, correctly attributed
     files = sorted(p.name for p in ledger.entries_dir(d).glob("*.jsonl"))
-    assert files == ["dana-111.jsonl", "dana-222.jsonl"]    # never sharing a file
+    host = ledger._host_token()
+    assert files == [f"dana-{host}.111.jsonl", f"dana-{host}.222.jsonl"]   # never sharing a file
     all_entries = ledger.read_all(d)
     assert len(all_entries) == 2
     assert len({e["id"] for e in all_entries}) == 2         # both entries survive the union, no collision
@@ -785,10 +786,11 @@ def test_concurrent_same_actor_writers_each_still_get_their_own_monotonic_sequen
     a2 = ledger.append(d, ON, "done", "g.md")
     monkeypatch.setattr(os, "getpid", lambda: 222)
     b1 = ledger.append(d, ON, "claimed", "h.md")
-    # id embeds the pid too (not just the filename) — watch_classify.py's cursor keys off it to
-    # tell these two writers apart (see test_watch.py's writer/cursor tests).
-    assert a1["id"] == "dana:111:1" and a2["id"] == "dana:111:2"  # process 111's own sequence
-    assert b1["id"] == "dana:222:1"                          # process 222 starts its own, in its own file
+    # id embeds the writer instance too (not just the filename) — watch_classify.py's cursor keys
+    # off it to tell these two writers apart (see test_watch.py's writer/cursor tests).
+    host = ledger._host_token()
+    assert a1["id"] == f"dana:{host}.111:1" and a2["id"] == f"dana:{host}.111:2"  # 111's own sequence
+    assert b1["id"] == f"dana:{host}.222:1"                  # process 222 starts its own, in its own file
 
 
 def test_event_fields_land_in_the_jsonl(tmp_path):
@@ -1377,3 +1379,114 @@ def test_reject_newline_names_the_field_and_says_why():
     assert "--reason" in msg
     assert "newline" in msg
     assert "single-line" in msg
+
+
+# --------------------------------------------------------------- #540: per-host writer identity
+# Two hosts authenticated as the SAME login (one shared bot account, several machines / containers)
+# both resolve to the same `actor`, and a fresh container pid namespace hands out low pids, so both
+# regularly draw the SAME pid. Pre-#540 that made their writer identity identical in three places at
+# once, and `entries/*.jsonl merge=union` lands both files' lines with no conflict and exit 0:
+#   * `entry_file()` -> the same filename, so the two hosts' lines interleave in one file;
+#   * the entry `id` -> the same `actor:pid` writer segment, so `watch_classify.classify()` skips
+#     host B's seqs as "already seen" (that check runs BEFORE the signature check, so a hand-off
+#     addressed to a teammate is dropped permanently, not merely deduped);
+#   * `claim_belongs_to_me()` -> `holder_writer == my_writer` short-circuits True, re-opening the
+#     #374 race ACROSS machines.
+# Every test below drives the host component explicitly rather than trusting the real hostname, so
+# they are hermetic and identical on a dev box and in CI.
+
+
+def _as_host(monkeypatch, token):
+    """Pin the per-host component, the way these tests already pin `os.getpid`.
+
+    `raising=False` on purpose: without it these tests go red on a bare AttributeError, which
+    proves only that a helper is missing. Letting the patch be a no-op against code that does not
+    consult a host makes each test fail on the REAL mechanism instead — two hosts collapsing to one
+    filename, one id, one writer identity."""
+    monkeypatch.setattr(ledger, "_host_token", lambda: token, raising=False)
+
+
+def test_entry_file_differs_between_two_hosts_sharing_one_login_and_pid(tmp_path, monkeypatch):
+    d = _sdlc(tmp_path, ON)
+    monkeypatch.setattr(os, "getpid", lambda: 42)        # the colliding pid both hosts drew
+    _as_host(monkeypatch, "aaaaaaaa")
+    host_a = ledger.entry_file(d, "dana")
+    _as_host(monkeypatch, "bbbbbbbb")
+    host_b = ledger.entry_file(d, "dana")
+    assert host_a != host_b, "both hosts would append to one file and union-merge would interleave them"
+
+
+def _two_hosts_one_handoff_each(tmp_path, monkeypatch):
+    """Each host is its OWN clone (its own `.sdlc`), which is the whole point: each writes seq 1
+    into what it believes is its own file. Union-merge then lands both sets of lines in one
+    directory, so the reader sees them together — modelled here by returning both entries."""
+    monkeypatch.setattr(os, "getpid", lambda: 42)        # the colliding pid both hosts drew
+    _as_host(monkeypatch, "aaaaaaaa")
+    first = ledger.append(_sdlc(tmp_path / "hostA", ON), ON, "handoff", "0001-a.md", to="rae")
+    _as_host(monkeypatch, "bbbbbbbb")
+    second = ledger.append(_sdlc(tmp_path / "hostB", ON), ON, "handoff", "0002-b.md", to="rae")
+    return first, second
+
+
+def test_entry_ids_differ_between_two_hosts_sharing_one_login_and_pid(tmp_path, monkeypatch):
+    first, second = _two_hosts_one_handoff_each(tmp_path, monkeypatch)
+    # both are seq 1 of their own clone's file; only the writer segment can tell them apart
+    assert first["id"] != second["id"]
+
+
+def test_second_hosts_handoff_is_not_dropped_by_the_watcher_cursor(tmp_path, monkeypatch):
+    """The consequence that actually loses work: `classify()` skips `seq <= cursor[writer][stream]`
+    BEFORE the signature check, so once host A's seq 1 is in the cursor, host B's seq 1 is gone for
+    good — the recipient never sees the hand-off, and no later tick can recover it."""
+    classify = _mod("watch_classify")
+    first, second = _two_hosts_one_handoff_each(tmp_path, monkeypatch)
+
+    surfaced_a, cursor = classify.classify([first], dict(classify.EMPTY_CURSOR), "rae")
+    assert [e["goal"] for e in surfaced_a] == ["0001-a.md"]
+    surfaced_b, _ = classify.classify([second], cursor, "rae")
+    assert [e["goal"] for e in surfaced_b] == ["0002-b.md"], "host B's hand-off never reached rae"
+
+
+def test_claim_belongs_to_me_does_not_short_circuit_across_hosts(tmp_path, monkeypatch):
+    """Same actor, same pid, different machine: that claim is emphatically NOT mine to resume."""
+    monkeypatch.setattr(os, "getpid", lambda: 42)
+    _as_host(monkeypatch, "aaaaaaaa")
+    theirs = ledger.my_writer(ON)
+    _as_host(monkeypatch, "bbbbbbbb")
+    mine = ledger.my_writer(ON)
+    assert theirs != mine
+    assert ledger.claim_belongs_to_me("dana", theirs, "dana", mine) is False
+
+
+def test_writer_pid_still_reads_the_pid_out_of_the_new_writer_shape(tmp_path, monkeypatch):
+    """The host rides WITH the pid, so `claim_belongs_to_me`'s liveness check must still find it —
+    otherwise every same-host sibling claim degrades to the legacy always-mine branch and #374
+    quietly reopens locally while being fixed globally."""
+    monkeypatch.setattr(os, "getpid", lambda: 4242)
+    _as_host(monkeypatch, "aaaaaaaa")
+    assert ledger.writer_pid(ledger.my_writer(ON)) == 4242
+
+
+def test_files_for_finds_a_writer_file_carrying_the_host_component(tmp_path, monkeypatch):
+    """`sync.py`'s publish/bootstrap stage exactly the files `files_for()` names — if the new
+    filename shape falls out of that match, the ledger silently stops publishing."""
+    d = _sdlc(tmp_path, ON)
+    monkeypatch.setattr(os, "getpid", lambda: 42)
+    _as_host(monkeypatch, "aaaaaaaa")
+    ledger.append(d, ON, "note", "g.md")
+    written = ledger.entry_file(d, "dana")
+    assert ledger.files_for(ledger.entries_dir(d), "dana") == [written]
+
+
+def test_files_for_still_refuses_a_different_actors_prefix_match(tmp_path, monkeypatch):
+    """The exact-match guard the #488 docstring calls out ("team" must not match "team-bot") has to
+    survive the extra segment."""
+    d = _sdlc(tmp_path, ON)
+    entries = ledger.entries_dir(d)
+    entries.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(os, "getpid", lambda: 42)
+    _as_host(monkeypatch, "aaaaaaaa")
+    theirs = ledger.entry_file(d, "team-bot")
+    theirs.write_text(json.dumps({"id": "team-bot:x:1", "ts": "2026-01-01T00:00:00Z",
+                                   "actor": "team-bot", "kind": "note", "goal": "g"}) + "\n")
+    assert ledger.files_for(entries, "team") == []
