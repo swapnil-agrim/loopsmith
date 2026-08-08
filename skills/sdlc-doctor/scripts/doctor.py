@@ -463,23 +463,43 @@ def _standing_docs(base):
     return [d for d in docs if d.is_file()]
 
 
+def _under(root, ref):
+    """`ref` resolved UNDER `root`, with a leading `/` meaning root-relative — never the machine's
+    filesystem root. `pathlib`'s `/` operator DISCARDS its left operand the moment the right side is
+    absolute, so `repo_root / "/docs/architecture.md"` quietly became `/docs/architecture.md` and the
+    reference was checked against the OS instead of the repo (#545). That broke the check both ways
+    at once: the ordinary repo-root-relative citation form was reported STALE while the file sat
+    right there, and any absolute path that happened to exist on the box running doctor passed
+    silently — an answer that changed with the machine rather than with the repo.
+
+    A genuinely OS-absolute reference (`/usr/local/bin/foo`) is therefore now read as repo-relative
+    and reported. Deliberate: a standing doc's cited paths are claims about THIS repo, and a
+    check whose verdict depends on what else is installed on the runner is worse than one that is
+    occasionally too strict — the same crying-wolf reasoning `_CITED` above is built on."""
+    return root / str(ref).lstrip("/")
+
+
 def _stale_paths(text, repo_root):
     out = []
     for ref in _CITED.findall(text):
         if _ABSTRACT.search(ref) or "://" in ref or ref.startswith(("-", "$")):
             continue
-        if not (repo_root / ref.rstrip("/")).exists():
+        if not _under(repo_root, ref.rstrip("/")).exists():
             out.append(ref)
     return out
 
 
-def _dangling_links(text, doc_dir):
+def _dangling_links(text, doc_dir, repo_root):
+    """A markdown target starting with `/` follows the same repo-root-relative convention as a cited
+    path (that is what the form means in a repo's own docs); everything else stays relative to the
+    document doing the linking."""
     out = []
     for target in _MDLINK.findall(text):
         target = target.split()[0].split("#")[0].strip()      # drop a title and any anchor
         if not target or "://" in target or target.startswith(("#", "mailto:")):
             continue
-        if _ABSTRACT.search(target) or not (doc_dir / target).exists():
+        base = repo_root if target.startswith("/") else doc_dir
+        if _ABSTRACT.search(target) or not _under(base, target).exists():
             out.append(target)
     return out
 
@@ -502,7 +522,7 @@ def hygiene(sdlc_dir=".sdlc", repo_root="."):
             continue
         if bad := _stale_paths(text, root):
             stale[doc.name] = bad
-        if bad := _dangling_links(text, doc.parent):
+        if bad := _dangling_links(text, doc.parent, root):
             dangling[doc.name] = bad
     return [
         _chk("standing docs: cited paths resolve", not stale, _detail(stale, "moved or deleted")),

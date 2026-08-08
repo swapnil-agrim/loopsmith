@@ -862,6 +862,45 @@ def test_hygiene_caps_the_offender_list():
         assert "+4 more" in fix and fix.count("src/gone") == 3
 
 
+# --- #545: a leading "/" is repo-root-relative, never the OS filesystem root -------------------
+# `repo_root / ref` and `doc_dir / target` DISCARD the left operand when the right side is absolute
+# (pathlib semantics), so both scanners silently resolved a `/...` reference against the machine's
+# own filesystem. That broke the check in both directions at once, and the second is the nastier
+# one: the answer depended on what happened to exist on whichever box ran doctor.
+
+def test_hygiene_treats_a_leading_slash_as_repo_root_relative():
+    """`/docs/architecture.md` is the ordinary repo-root-relative citation form. It was checked
+    against the OS root, found nothing there, and reported STALE for a file sitting right in the
+    repo — the false positive that gets a whole advisory check tuned out."""
+    with tempfile.TemporaryDirectory() as d:
+        (pathlib.Path(d) / "docs").mkdir()
+        (pathlib.Path(d) / "docs" / "architecture.md").write_text("# arch")
+        sdlc = _hyg(d, project_md="Architecture: `/docs/architecture.md`.",
+                    north_star="See [arch](/docs/architecture.md).")
+        rows = {c["name"]: c for c in _doc().hygiene(sdlc, d)}
+        cited, links = rows["standing docs: cited paths resolve"], rows["standing docs: links resolve"]
+        assert cited["ok"], cited["fix"]
+        assert links["ok"], links["fix"]
+
+
+def test_hygiene_flags_an_absolute_reference_that_lives_outside_the_repo():
+    """The machine-dependent false OK: an absolute path that EXISTS on this box but is nowhere in
+    the repo used to pass silently. The fixture plants a real file OUTSIDE the repo root and cites
+    it by absolute path, so this proves the resolution target itself rather than depending on
+    whichever system paths happen to exist wherever CI runs."""
+    with tempfile.TemporaryDirectory() as d:
+        outside = pathlib.Path(d) / "outside.md"
+        outside.write_text("# not in the repo")
+        repo = pathlib.Path(d) / "repo"
+        repo.mkdir()
+        assert outside.is_absolute() and outside.exists()      # the precondition the bug relied on
+        sdlc = _hyg(str(repo), project_md=f"Spec: `{outside}`.",
+                    north_star=f"See [spec]({outside}).")
+        rows = {c["name"]: c for c in _doc().hygiene(sdlc, str(repo))}
+        assert not rows["standing docs: cited paths resolve"]["ok"]
+        assert not rows["standing docs: links resolve"]["ok"]
+
+
 def test_check_surfaces_rot_without_scoring_it_as_setup(capsys):
     """Setup readiness and content rot are different questions: the rot must show up in a `check`
     run (or nobody runs it) but must NOT move the N/M ready score."""
