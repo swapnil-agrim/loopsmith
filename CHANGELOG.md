@@ -48,6 +48,16 @@ merge-and-close) and `outstanding()` settles only on ack `resolved`/`declined`, 
 release rule the filer would park forever. A target missing from the corpus still blocks: unknown
 is not finished.
 
+### fix(ledger): issue-less hand-offs no longer collapse onto one settlement key (#533)
+A goal handed off to TWO areas filed two hand-offs that both fell back to the same bare `goal` (no
+issue number to key on locally) — one terminal `ack` for either one silently settled BOTH, so the
+live blocker disappeared from the inbox, TEAM.md, and backlog_check's blocked-by check. Settlement
+is now area-qualified for issue-less hand-offs (`(goal, area)`, via the new `ledger.settlement_key()`
+— `handoff_key()` itself is unchanged, still the pairing/display key backlog_check's #532 fix reads);
+an `ack` with no `--area` still settles every area on the goal, so existing ledger history replays
+identically. `handoff.py ack` gains an optional `--area`; a typo'd or ambiguous value never refuses —
+it warns on stderr and writes anyway, matching this command's existing dangling-ack posture.
+
 ### fix(state): serialize STATE.md cursor writers with a kernel flock + atomic replace (#531)
 `save_cursor`/`add_tokens` were unlocked read-modify-write over a file shared across the whole run,
 compounded by a `_state_file` scaffold-on-demand with its own unlocked clobber window; under

@@ -59,7 +59,9 @@ when the ledger is on — never log those by hand. Use the ledger directly only 
   picks it up): `python3 "$LS/handoff.py" open .sdlc <goal> --area <area> --why "needs your call on X" --priority P1`
 - **Answer a hand-off that landed on you**:
   `python3 "$LS/handoff.py" ack .sdlc --issue <n> --state accepted|deferred|declined|resolved`
-  (`deferred` does NOT settle it — reply `resolved`/`declined` to close it out.)
+  (no issue — a local/issue-less hand-off — use `--goal <goal> --area <area>` in place of `--issue
+  <n>`; `--area` narrows to one hand-off when that goal carries more than one outstanding.
+  `deferred` does NOT settle it — reply `resolved`/`declined` to close it out.)
 
 ## The one safety feature to know: claim leases
 

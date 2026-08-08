@@ -376,6 +376,24 @@ def test_render_inbox_escapes_every_field_not_just_priority():
     assert "safe ## INJECTED" in out                                  # flattened into inert content
 
 
+def test_render_inbox_shows_the_exact_ack_command_for_an_issueless_handoff():
+    """#533: an issue-less hand-off has no `<n>` for the generic `--issue` instruction above to fill
+    in, and may now need `--area` too (one goal can carry more than one outstanding hand-off) -- the
+    per-item reply hint spells out the exact command instead of making the reader assemble it from
+    the goal/area fields shown elsewhere in the entry."""
+    items = [_entry("amy", 1, to=ME, why="needs a flag", area="engine", goal="g.md")]
+    out = classify.render_inbox(items, ME)
+    assert "handoff.py ack .sdlc --goal g.md --area engine --state" in out
+
+
+def test_render_inbox_omits_the_goal_area_hint_for_an_issue_bearing_handoff():
+    """The generic `--issue <n>` instruction already covers the github-mode case -- no per-item hint
+    needed (or wanted) when `issue` is present."""
+    items = [_entry("amy", 1, to=ME, issue=61, why="needs a flag", area="engine", goal="g.md")]
+    out = classify.render_inbox(items, ME)
+    assert "--goal g.md --area engine --state" not in out
+
+
 def test_summarise_neutralizes_a_newline_so_the_log_line_stays_one_line():
     """Same #427 gap in summarise() -- lower severity (its output only ever reaches watch.log via
     `echo "watch: $summary"`, or a human running `watch.py show`, never the agent-facing inbox

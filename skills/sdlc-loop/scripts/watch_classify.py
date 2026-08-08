@@ -211,7 +211,8 @@ def render_inbox(items, me):
              f"{len(items)} item{'s' if plural else ''} from the team ledger "
              f"{'need' if plural else 'needs'} you.",
              "Answer each with `handoff.py ack .sdlc --issue <n> --state "
-             "accepted|deferred|declined|resolved [--why ...]`.", ""]
+             "accepted|deferred|declined|resolved [--why ...]` (a local/issue-less hand-off: use "
+             "the exact `--goal ... --area ...` command shown per item below instead).", ""]
     for entry in items:
         # #427: EVERY interpolated field goes through `_cell()`, not just some -- same gap F19/#346
         # closed in ledger.render()'s tables, but more severe here: this text is not just a human
@@ -232,8 +233,16 @@ def render_inbox(items, me):
             f"- **needs:** {why}",
             f"- **area:** {area}  ·  **raised:** {ts}"
             + (f"  ·  **their goal:** {_cell(goal)}" if goal else ""),
-            "",
         ]
+        if not issue and goal:
+            # #533: an issue-less hand-off has no `<n>` for the generic instruction above to fill
+            # in, and may need --area too (one goal can carry more than one outstanding hand-off) --
+            # spell out the exact command instead of making the reader assemble it from the two
+            # fields shown above.
+            lines.append(
+                f"- **reply:** `handoff.py ack .sdlc --goal {_cell(goal)} --area {area} --state "
+                "accepted|deferred|declined|resolved`")
+        lines.append("")
     return "\n".join(lines)
 
 
