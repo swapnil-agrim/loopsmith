@@ -22,16 +22,22 @@ CFG="$PROJECT/.sdlc/config.json"
 command -v python3 >/dev/null 2>&1 || exit 0
 enabled="$(python3 -c '
 import json, sys
+mode, hours = "off", 24
 try:
     cfg = json.load(open(sys.argv[1]))
     gate = (cfg.get("gates") or {}).get("hard_plan_gate") or {}
-    print("on" if gate.get("enabled") is True else "off")
-    print(int(gate.get("plan_freshness_hours") or 24))
+    mode = "on" if gate.get("enabled") is True else "off"
+    try:              # a bad freshness value must NOT corrupt the mode line — parse it independently
+        hours = int(gate.get("plan_freshness_hours") or 24)
+    except Exception:
+        hours = 24
 except Exception:
-    print("off"); print(24)
+    mode, hours = "off", 24
+print(mode); print(hours)
 ' "$CFG" 2>/dev/null || printf 'off\n24\n')"
 mode="$(printf '%s' "$enabled" | sed -n 1p)"
 fresh_hours="$(printf '%s' "$enabled" | sed -n 2p)"
+case "$fresh_hours" in ''|*[!0-9]*) fresh_hours=24 ;; esac   # defensive: never let a non-numeric reach $(( ))
 [ "$mode" = "on" ] || exit 0
 
 # Deliberate-override sentinel.
@@ -53,8 +59,10 @@ case "$file_path" in
   *"/.sdlc/"*|".sdlc/"*|*"/docs/"*|"docs/"*) exit 0 ;;
   *.md|*.markdown|*.json|*.yaml|*.yml|*.toml|*.txt|*.csv|*.lock) exit 0 ;;
 esac
+# Kept in lockstep with completion_gate.sh's identical list (each hook inlines its own copy so it
+# stays path-independent); tests/test_plan_gate.py asserts the two sets are equal.
 case "$file_path" in
-  *.py|*.ts|*.tsx|*.js|*.jsx|*.sh|*.go|*.rs|*.java|*.rb|*.c|*.cc|*.cpp|*.h|*.hpp|*.swift|*.kt|*.php) ;;
+  *.py|*.ts|*.tsx|*.js|*.jsx|*.sh|*.go|*.rs|*.java|*.rb|*.c|*.cc|*.cpp|*.h|*.hpp|*.swift|*.kt|*.php|*.scala|*.ex|*.exs) ;;
   *) exit 0 ;;   # not a recognized source extension → allow
 esac
 
