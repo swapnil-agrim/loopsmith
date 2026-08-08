@@ -58,7 +58,7 @@ test_span_aware_stream_kwarg_on_a_continuation_line).
 
 ALIAS-AWARE (post-review fix). The direct-attribute match above (`ledger.append(...)`, an
 `ast.Attribute` on `ast.Name(id="ledger")`) misses a call reached through a simple alias -- and this
-codebase's own house style already aliases module attributes this way: loop.py:205-206 assigns
+codebase's own house style already aliases module attributes this way: loop.py:894-895 assigns
 `_evidence_path = state.evidence_path` and `_done_refusal = state.done_refusal` two lines apart. A
 reviewer proved by mutation that `from ledger import safe_append as _sa` then
 `_sa(sdlc_dir, "gaet", goal, stream=ledger.EVENTS, ...)` -- a typo of the real kind `gate` -- was
@@ -493,7 +493,7 @@ def test_direction_b_fails_on_a_typo_d_kind_at_an_events_stream_site(tmp_path):
 def test_aliased_ledger_calls_are_detected(tmp_path):
     """Finding 2 fix, the positive proof: `from ledger import safe_append as _sa`,
     `_emit = ledger.safe_append`, `from ledger import EVENTS as _EV`, and `EV2 = ledger.EVENTS` are
-    all this codebase's own house style (loop.py:205-206 already assigns `_evidence_path =
+    all this codebase's own house style (loop.py:894-895 already assigns `_evidence_path =
     state.evidence_path` / `_done_refusal = state.done_refusal` two lines apart, the identical
     idiom applied to a different module). All four alias forms must resolve to a real EVENTS-stream
     site, exactly as if written out directly, so neither direction goes blind on this codebase's

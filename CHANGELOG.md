@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.8 — the hardening release
+
 ### chore(repo): remove the stray zero-byte `err` file from the repo root (#530)
 Committed by accident in `aab822c` and tracked ever since, so it shipped in the public plugin — the
 manifest carries no file list, which makes the repo tree itself the shipped surface. Nothing
@@ -148,7 +150,10 @@ default `weight: 0.5` this could only pollute candidate ordering, but at an oper
 it could park a goal as a confident duplicate of an unrelated issue. The cache key now folds in
 `embed.command`'s own text, so a swap is self-invalidating — every doc misses under the new key and
 is genuinely re-embedded, no separate "clear the cache" step needed (and nothing to document at
-adoption time either, since there is no manual step left to forget).
+adoption time either, since there is no manual step left to forget). Upgrading is the same event: if
+you already run the opt-in embed layer, the FIRST run after this release re-embeds the whole corpus
+once under the new key — real provider tokens on a large backlog — and the superseded entries persist
+unread in the file rather than ageing out.
 
 ### fix(hooks): plan_gate no longer locks itself on, and gates Scala/Elixir like its sibling (#536)
 `plan_gate.sh` had drifted from the hardened `completion_gate.sh` on two counts. It printed the
@@ -232,7 +237,7 @@ at high contention) and could publish a torn file. Worst case, concurrent writer
 STATE.md down to a handful of bytes, wiping `run_started_at` entirely — which silently degrades
 `done_refusal`'s freshness comparison to `at < 0.0`, always false, so ANY verify evidence (however
 stale) reads as fresh: exactly the unattended-drain scenario `budget.max_iterations`/`max_tokens`
-exist to bound, silently let a stale green through instead. Fixed with the same kernel `flock`
+exist to bound, silently letting a stale green through instead. Fixed with the same kernel `flock`
 primitive that closed the identical race in `_try_acquire_claim_lock` (#387), plus `os.replace`
 atomic publish so a lock-free reader (`load_cursor` stays deliberately lock-free) never observes a
 torn file either. `save_cursor` is deleted — `loop.py`'s `_record` (its only caller) now goes
