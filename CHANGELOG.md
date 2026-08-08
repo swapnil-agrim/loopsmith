@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### fix(predict): security goals phrased as "insecure" now reach the opus/high tier (#543)
+`\b` anchors the whole keyword alternation, and there is no word boundary between the "n" and the
+"s" of "insecure" — so the plain `secure` term could never match it. "Fix the insecure default in
+the token store", i.e. a security goal named by its DEFECT rather than its property, routed to
+sonnet/medium. Separately the effort list carried `securit` but not `secure`, so "Make the token
+store secure by default" reached opus on the model axis and only medium on the effort axis — the
+two lists disagreeing with each other, independent of the boundary question. Both now use
+`(?:in)?secur`, so secure / security / insecure / insecurity route identically on both axes. Only
+the `in-` prefix is admitted: "resecuring" still has no boundary before its "secur" and stays put,
+pinned by test alongside the existing revision/provision guards. Both directions of the old
+behavior contradicted this module's own stated bias that over-powering a mislabelled goal is
+cheaper than under-powering a hard one. `model_selection` still ships "off", so nothing changes for
+anyone who has not opted in.
+
 ### fix(ledger): writer identity now carries the HOST, so two machines cannot collide (#540)
 Writer files were named `<actor>-<pid>.jsonl` and entry ids were `<actor>:<pid>:<seq>`. Several
 hosts authenticating as one shared login all resolve to the same actor, and a fresh container pid
